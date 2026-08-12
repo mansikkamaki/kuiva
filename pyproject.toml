@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]      # >=61 for [project] and [tool.setuptools.dynamic]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kuiva"
+# ⚠ The version is NOT written here. `kuiva/__init__.py`'s `__version__` is the single source
+# of truth; setuptools reads that literal statically, without importing the
+# package, so there is no second place to forget to bump.
+dynamic = ["version"]
+description = "Relativistic multireference quantum chemistry (2c X2C, CASSCF/DMRG, SC-NEVPT2)"
+readme = "README.md"
+requires-python = ">=3.9" # baseline: oneAPI intelpython 3.9
+license = { text = "Apache-2.0" }   # LICENSE + NOTICE at the repository root
+authors = [{ name = "Akseli Mansikkamäki" }]
+dependencies = [
+    "numpy>=1.22,<2", # NumPy 1.x — capped by Python 3.9
+    "scipy>=1.6",
+    "h5py>=3",
+    "pyscf==2.14.0", # pinned front-end
+    "basis_set_exchange>=0.11",   # authoritative basis data for families PySCF does not bundle
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools.dynamic]
+version = { attr = "kuiva.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["kuiva*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The default suite must stay laptop-fast, so slow tests are opt-in. The qc tests are
+# deselected for a different reason: they need external/venv_qc and a different
+# interpreter, so they are run under it explicitly, never as part of a laptop run.
+# Run them with:  pytest -m slow  /  pytest -m qc      (or  pytest -m ''  for everything)
+addopts = "-m 'not slow and not qc'"
+markers = [
+    "slow: marks tests that are too slow for the default laptop suite ",
+    "external: requires OpenMolcas/DIRAC installs (Tier-2 generation, not run by default)",
+    "qc: requires the quantum-computing simulator stack in external/venv_qc; run under that interpreter, never in the default suite",
+    "stage_under_test(*names): the calculation stages this test is the test OF; they and everything downstream are always computed, never replayed from a checkpoint (tests/stages.py)",
+]

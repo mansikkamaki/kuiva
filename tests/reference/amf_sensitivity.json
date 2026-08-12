@@ -1,0 +1,98 @@
+{
+  "basis": "x2c-SVPall-2c",
+  "construction": "splittings from a self-consistent two-component SCF; the frozen-orbital construction gives a different number for the same operator",
+  "environment": {
+    "idle_injection_available": true,
+    "n_cpus": 8,
+    "package_temp_c": 82.0,
+    "powerclamp_state": 0
+  },
+  "generator": "tests/generate/amf_sensitivity.py",
+  "purpose": "how much the X2CAMF correction depends on the atomic reference configuration, neutral atom vs free ion",
+  "records": {
+    "Lu+3/uncontracted": {
+      "basis": "x2c-SVPall-2c",
+      "charge": 3,
+      "element": "Lu",
+      "ionic": {
+        "configuration": "s10 p24 d20 f14",
+        "max_dh_sf": 2.9985932622970557,
+        "max_dw": 0.5365196035177235,
+        "splitting_cm": 12029.703888541977
+      },
+      "manifold_width": 14,
+      "neutral": {
+        "configuration": "s12 p24 d21 f14",
+        "max_dh_sf": 2.9986558619579755,
+        "max_dw": 0.536519478114735,
+        "splitting_cm": 12029.973834102375
+      },
+      "resources": {
+        "cpu_seconds": 38835.4,
+        "effective_cores": 7.41,
+        "idle_injected_seconds": 0.4,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 91.0,
+        "temp_start_c": 81.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 5238.3
+      },
+      "sensitivity": {
+        "dh_sf_relative": 2.0875907006861692e-05,
+        "dw_relative": 2.3373426998318332e-07,
+        "splitting_difference_cm": -0.2699455603979004,
+        "splitting_relative": 2.2439413761039374e-05
+      },
+      "state": "s10 p24 d20 f14",
+      "status": "ok",
+      "uncontracted": true,
+      "uncorrected_splitting_cm": 20877.990998994122,
+      "valence_shell": "f^14"
+    },
+    "Ti+3/uncontracted": {
+      "basis": "x2c-SVPall-2c",
+      "charge": 3,
+      "element": "Ti",
+      "ionic": {
+        "configuration": "s6 p12 d1",
+        "max_dh_sf": 0.07593308104894278,
+        "max_dw": 0.008390253361715184,
+        "splitting_cm": 346.6058602974714
+      },
+      "manifold_width": 10,
+      "neutral": {
+        "configuration": "s8 p12 d2",
+        "max_dh_sf": 0.07592973681969406,
+        "max_dw": 0.008384169771945511,
+        "splitting_cm": 345.64207073432726
+      },
+      "resources": {
+        "cpu_seconds": 772.9,
+        "effective_cores": 7.64,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 89.0,
+        "temp_start_c": 46.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 101.1
+      },
+      "sensitivity": {
+        "dh_sf_relative": 4.4043735548049164e-05,
+        "dw_relative": 0.0007256043156508197,
+        "splitting_difference_cm": 0.9637895631441324,
+        "splitting_relative": 0.0027884035097247616
+      },
+      "state": "s6 p12 d1",
+      "status": "ok",
+      "uncontracted": true,
+      "uncorrected_splitting_cm": 685.3771856809176,
+      "valence_shell": "d^1"
+    }
+  },
+  "schema": 1,
+  "uncontracted": true
+}

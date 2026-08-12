@@ -1,0 +1,236 @@
+================================================================================
+                                   K U I V A                                    
+                 relativistic multireference quantum chemistry                  
+                       example 1: the front end (Ne atom)                       
+                                 version 0.3.0                                  
+                compiled kernels: disabled (KUIVA_KERNELS=numpy)                
+           threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
+================================================================================
+   output file                                   output/scf_and_reference.out
+
+================================================================================
+ Scalar-relativistic X2C reference                                    t = 0.21 s
+================================================================================
+   atoms                                                          1   (Ne)
+   charge                                                         0
+   spin (2S)                                                      0
+
+ -- Memory pre-flight ----------------------------------------------------------
+   phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF                                                       external 
+   two-electron integrals            0.000           0.000       0.000  ok       
+   two-electron SOC picture change          0.000           0.000       0.000  ok       
+   spinor MO transform               0.001           0.001       0.002  ok       
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
+     mol.max_memory = the rest of the limit
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     three-index AO factors                                   0.000  GB   (naux ~ 112)
+     assembled AMF correction                                 0.000  GB   (h_sf and the three w_k over nao = 14)
+     three-index MO integrals B^P_pq                          0.001  GB   (28 spinors)
+   memory limit                                               2.000  GB   (set for this calculation)
+   planned peak                                               0.002  GB
+   machine available                                         10.864  GB
+   SCF reference                                                RHF
+   SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
+   AO basis functions                                            14
+   molecular orbitals                                            14
+   electrons (alpha, beta)                                     5, 5
+   two-electron route                                  conventional
+   gauge origin (property operators)             (0.0000, 0.0000, 0.0000) bohr   (centre of mass)
+   nuclear repulsion                                 0.000000000000  Eh
+   scalar X2C SCF energy                          -128.512061726104  Eh
+   SCF converged                                                yes
+   SCF time                                                    0.04  s wall   (0.17 s cpu)
+   AO integral time                                            0.00  s wall   (0.02 s cpu)
+
+ -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
+   two-component Hamiltonian                                X2C-AMF
+   one-electron decoupling                                       1e   (exact molecular decoupling, pyscf)
+   spin-orbit operator scale, max |w|                      0.001927  Eh
+   picture-change shift vs sfx2c1e                        6.334e-03  Eh   (guess orbitals only)
+   discarded time-reversal-odd part                       1.136e-11  Eh   (2.3e-13 relative)
+   two-electron SOC picture change                           x2camf
+   atomic reference interaction                             coulomb
+   atomic reference backend                            pyscf 2.14.0
+   elements corrected                                            Ne
+   reference configurations                               Ne: s4 p6
+   spin-free correction, max |dh_sf|                   6.333909e-03  Eh
+   spin-orbit correction, max |dw|                     5.331946e-04  Eh
+   discarded time-reversal-odd part                       2.949e-12  Eh   (9.8e-14 relative)
+
+================================================================================
+ The finished SCF stage                                               t = 1.06 s
+================================================================================
+ScalarSCF
+  E(SCF) [Eh] : -128.512061726104
+  converged   : True
+  reference   : rhf
+  hamiltonian : X2C-AMF
+
+================================================================================
+ Orthonormal working basis                                            t = 1.06 s
+================================================================================
+   orthogonalization scheme                               canonical
+   AO basis functions                                            14
+   working-basis functions                                       14
+   linear-dependence threshold                             1.00e-07
+   largest overlap eigenvalue                          1.928046e+00
+   smallest retained overlap eigenvalue                1.912748e-01
+   condition number of S (retained)                       1.008e+01
+
+================================================================================
+ Spinor expansion                                                     t = 1.06 s
+================================================================================
+   scalar basis functions                                        14   (working basis)
+   spinors                                                       28
+   Kramers pairs                                                 14
+   ordering                                      interleaved (p, pbar); rows [alpha|beta]
+   Kramers pairing deviation                               0.00e+00
+   orthonormality error                                    1.27e-13
+
+================================================================================
+ Two-electron integrals                                               t = 1.06 s
+================================================================================
+
+ -- Cholesky decomposition of the AO two-electron integrals --------------------
+   factorization                                           cholesky
+   AO basis functions                                            14
+   auxiliary / Cholesky vectors                                  91   (6.5 per AO)
+   decomposition threshold                                 1.00e-08  Eh
+   pivot selection                               complete symmetry orbits   (spherical symmetry exact by construction, not to the threshold)
+   largest neglected diagonal                             2.731e-09  Eh
+   factor storage                                             0.000  GB
+   decomposition time                                          0.01  s wall
+
+================================================================================
+ The finished Reference stage                                         t = 1.07 s
+================================================================================
+Reference
+  spinors                       : 28
+  working-basis columns dropped : 0
+  two-electron factorization    : cholesky (91 vectors)
+
+================================================================================
+ Checks on the ingested reference                                     t = 1.07 s
+================================================================================
+
+ -- Orthonormal working basis --------------------------------------------------
+   max |X^T S X - 1|                                      6.661e-16   (must be ~1e-14)
+   orbital round-trip error                               6.661e-16   (AO -> working -> AO)
+   directions dropped                                             0   (linear dependence removed at the threshold)
+
+ -- Spinor guess ---------------------------------------------------------------
+   spinors                                                       28   (14 Kramers pairs)
+   Kramers pairing deviation                              0.000e+00   (|barred - T(unbarred)|)
+   max |T^2 C + C|                                        0.000e+00   (T^2 = -1)
+   orthonormality error                                   1.269e-13
+
+ -- Two-electron integrals -----------------------------------------------------
+   factorization route                                     cholesky
+   Cholesky vectors                                              91   (6.5 per AO function)
+   decomposition threshold                                1.000e-08  Eh
+   largest neglected diagonal                             2.731e-09  Eh
+   max |(pq|rs) rebuilt - exact|                          2.731e-09  Eh   (over all 14^4 AO integrals)
+
+ -- One-electron Hamiltonian (two-component) -----------------------------------
+   dimension                                                28 x 28   (spinor basis)
+   hermiticity error                                      3.553e-15  Eh
+   largest spin-free element                              4.999e+01  Eh
+   largest spin-orbit element                             1.927e-03  Eh   (the whole reason for the two-component treatment)
+   the Hamiltonian provenance printed above travels with every stored
+   product: a property file that does not say whether it was screened is
+   not interpretable, the difference being 5-30% on every splitting.
+
+================================================================================
+ Loewdin population analysis                                          t = 1.09 s
+================================================================================
+
+ -- Loewdin atomic populations -------------------------------------------------
+   atom            Z   population      charge       |s|
+   ----------  -----  -----------  ----------  --------
+   0 Ne           10      10.0000     +0.0000    0.0000
+   ----------  -----  -----------  ----------  --------
+   total electrons 10.000000, total charge +0.0000, |total spin| 0.0000
+
+ -- Loewdin reduced orbital populations ----------------------------------------
+   spinor             occ       energy [Eh]  atom        AO                %
+   ------------  --------  ----------------  ----------  ---------  --------
+   4-5             1.0000   -0.838087181012  0 Ne        2px           54.61
+                                             0 Ne        3px           33.19
+                                             0 Ne        2py            5.77
+                                             0 Ne        3py            3.51
+                                             0 Ne        2pz            1.82
+                                             0 Ne        3pz            1.11
+   6-7             1.0000   -0.838087181010  0 Ne        2py           28.97
+                                             0 Ne        2pz           26.03
+                                             0 Ne        3py           17.61
+                                             0 Ne        3pz           15.82
+                                             0 Ne        2px            7.19
+                                             0 Ne        3px            4.37
+   8-9             1.0000   -0.838087180999  0 Ne        2pz           34.34
+                                             0 Ne        2py           27.45
+                                             0 Ne        3pz           20.87
+                                             0 Ne        3py           16.69
+   10-11           0.0000    1.641337523396  0 Ne        3s            53.45
+                                             0 Ne        2s            45.50
+                                             0 Ne        1s             1.05
+   12-13           0.0000    1.697606638020  0 Ne        3py           55.53
+                                             0 Ne        2py           33.75
+                                             0 Ne        3px            4.81
+                                             0 Ne        2px            2.93
+                                             0 Ne        3pz            1.85
+                                             0 Ne        2pz            1.13
+   14-15           0.0000    1.697606638026  0 Ne        3pz           56.77
+                                             0 Ne        2pz           34.50
+                                             0 Ne        3px            4.90
+                                             0 Ne        2px            2.98
+   ------------  --------  ----------------  ----------  ---------  --------
+   contributions below 1.0% of a spinor are collected in 'remainder'
+   the reduced ORBITAL populations are the robust number here. The Loewdin
+   atomic CHARGES in the same table are the weakest quantity this code
+   produces -- do not read one as an oxidation state.
+
+================================================================================
+ Result                                                               t = 1.10 s
+================================================================================
+   check                                                           verdict   
+   --------------------------------------------------------------  ----------
+   the SCF converged                                               ok        
+   the working basis is orthonormal                                ok        
+   orbitals survive the AO -> working -> AO round trip             ok        
+   the spinor guess is exactly Kramers paired                      ok        
+   time reversal squares to -1                                     ok        
+   the Cholesky error respects its threshold                       ok        
+   the two-component Hamiltonian is Hermitian                      ok        
+   spin-orbit coupling was ingested                                ok        
+   --------------------------------------------------------------  ----------
+   checks                                              all 8 passed
+
+================================================================================
+ Timings                                                              t = 1.10 s
+================================================================================
+   region                           calls     wall [s]       cpu [s]   cpu/wall   % wall
+   ------------------------------  ------  -----------  ------------  ---------  -------
+   scalar X2C SCF                       1         0.04          0.17       3.85      8.8
+   AO integrals                         1         0.00          0.02       4.00      0.8
+     angular-momentum integrals         1         0.00          0.00       4.01      0.0
+   X2C spin-orbit integrals             1         0.01          0.02       3.89      1.2
+   atomic mean-field correction         1         0.43          1.63       3.76     87.3
+     atomic 4c solve                    1         0.40          1.51       3.76     80.8
+       atomic 4c DHF                    1         0.36          1.33       3.75     71.5
+     atomic mean-field decoupling       1         0.02          0.09       3.73      5.0
+   orthogonalization (canonical)        1         0.00          0.00       2.98      0.1
+   Cholesky decomposition               1         0.01          0.03       3.40      1.8
+   ------------------------------  ------  -----------  ------------  ---------  -------
+   total (top-level regions)                                   0.50  s wall
+   total CPU                                                   1.87  s cpu
+   cost is cpu [s]; wall [s] also reflects thread count and, on a
+   thermally clamped machine, time the CPU was forced to stay idle.
+
+ -- Memory ---------------------------------------------------------------------
+   limit                                                      2.000  GB   (set for this calculation)
+   pre-flight estimate                                        0.002  GB
+   declared peak (Kuiva arrays)                               0.002  GB
+   peak resident set (VmHWM)                                  0.148  GB

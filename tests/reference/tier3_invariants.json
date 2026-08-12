@@ -1,0 +1,1080 @@
+{
+  "conventional_ci_spinor_ceiling": 14,
+  "ed_max_dim": 2000,
+  "environment": {
+    "idle_injection_available": true,
+    "n_cpus": 8,
+    "package_temp_c": 66.0,
+    "powerclamp_state": 0
+  },
+  "generator": "tests/generate/tier3_invariants.py",
+  "note": "Derived invariants only - no external program can produce a reference for these systems (see tier3_systems.py). Values are exact combinatorics, theorems, or dense ED of an effective spin model.",
+  "records": {
+    "cr7ni_ring": {
+      "beyond_conventional_ci": true,
+      "bipartite": true,
+      "cas_determinants": 363413731121503794368,
+      "cas_electrons": 25,
+      "cas_orbitals": 40,
+      "cas_spinors": 80,
+      "connected_components": 1,
+      "cycle_rank": 1,
+      "degree_sequence": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "diameter": 4,
+      "edges": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          3,
+          4
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          7,
+          0
+        ]
+      ],
+      "experimental_twice_spin": 1,
+      "formula": "[Cr7NiF8(HCO2)16]-",
+      "frustrated": false,
+      "heisenberg_ed": null,
+      "hilbert_dim": 49152,
+      "is_tree": false,
+      "isotropic_exchange": true,
+      "key": "cr7ni_ring",
+      "kramers_system": true,
+      "label": "Cr(III)7Ni(II) ring (qubit candidate)",
+      "lieb_mattis_twice_spin": 1,
+      "local_dims": [
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        3
+      ],
+      "n_edges": 8,
+      "n_sites": 8,
+      "network_target": "periodic MPS; identical topology, different local quantum numbers",
+      "provenance": "Larsen et al., Phys. Rev. Lett. 91, 067201 (2003); Timco et al., Nat. Nanotechnol. 4, 173 (2009)",
+      "resources": {
+        "cpu_seconds": 0.0,
+        "effective_cores": 4.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 71.0,
+        "temp_start_c": 69.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 0.0
+      },
+      "sites": [
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr1",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr2",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr3",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr4",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr5",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr6",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr7",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Ni(II)",
+          "kind": "ion",
+          "label": "Ni8",
+          "local_dim": 3,
+          "twice_spin": 2
+        }
+      ],
+      "spin_decomposition": {
+        "1": 574,
+        "11": 644,
+        "13": 385,
+        "15": 196,
+        "17": 83,
+        "19": 28,
+        "21": 7,
+        "23": 1,
+        "3": 1000,
+        "5": 1190,
+        "7": 1141,
+        "9": 925
+      },
+      "sublattices": [
+        [
+          0,
+          2,
+          4,
+          6
+        ],
+        [
+          1,
+          3,
+          5,
+          7
+        ]
+      ],
+      "topology": "cycle C8 with one substituted site",
+      "total_unpaired_electrons": 23,
+      "truncation": "pivalate replaced by formate; the Cr7NiF8 ring core is intact"
+    },
+    "cr8_ring": {
+      "beyond_conventional_ci": true,
+      "bipartite": true,
+      "cas_determinants": 162238272822099908200,
+      "cas_electrons": 24,
+      "cas_orbitals": 40,
+      "cas_spinors": 80,
+      "connected_components": 1,
+      "cycle_rank": 1,
+      "degree_sequence": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "diameter": 4,
+      "edges": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          3,
+          4
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          7,
+          0
+        ]
+      ],
+      "experimental_twice_spin": 0,
+      "formula": "[Cr8F8(HCO2)16]",
+      "frustrated": false,
+      "heisenberg_ed": null,
+      "hilbert_dim": 65536,
+      "is_tree": false,
+      "isotropic_exchange": true,
+      "key": "cr8_ring",
+      "kramers_system": false,
+      "label": "Cr(III)8 antiferromagnetic ring",
+      "lieb_mattis_twice_spin": 0,
+      "local_dims": [
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4
+      ],
+      "n_edges": 8,
+      "n_sites": 8,
+      "network_target": "periodic MPS / one long-range bond",
+      "provenance": "van Slageren et al., Chem. Eur. J. 8, 277 (2002)",
+      "resources": {
+        "cpu_seconds": 0.0,
+        "effective_cores": 4.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 69.0,
+        "temp_start_c": 70.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 0.0
+      },
+      "sites": [
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr1",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr2",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr3",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr4",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr5",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr6",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr7",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Cr(III)",
+          "kind": "ion",
+          "label": "Cr8",
+          "local_dim": 4,
+          "twice_spin": 3
+        }
+      ],
+      "spin_decomposition": {
+        "0": 364,
+        "10": 1044,
+        "12": 700,
+        "14": 406,
+        "16": 202,
+        "18": 84,
+        "2": 1000,
+        "20": 28,
+        "22": 7,
+        "24": 1,
+        "4": 1400,
+        "6": 1505,
+        "8": 1351
+      },
+      "sublattices": [
+        [
+          0,
+          2,
+          4,
+          6
+        ],
+        [
+          1,
+          3,
+          5,
+          7
+        ]
+      ],
+      "topology": "cycle C8",
+      "total_unpaired_electrons": 24,
+      "truncation": "pivalate replaced by formate; the Cr8F8 ring core is intact"
+    },
+    "dy2_n2rad": {
+      "beyond_conventional_ci": true,
+      "bipartite": true,
+      "cas_determinants": 54627300,
+      "cas_electrons": 19,
+      "cas_orbitals": 15,
+      "cas_spinors": 30,
+      "connected_components": 1,
+      "cycle_rank": 0,
+      "degree_sequence": [
+        2,
+        1,
+        1
+      ],
+      "diameter": 2,
+      "edges": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ]
+      ],
+      "experimental_twice_spin": null,
+      "formula": "[{Dy(NH2)2}2(mu-N2)]-",
+      "frustrated": false,
+      "heisenberg_ed": null,
+      "hilbert_dim": 512,
+      "is_tree": true,
+      "isotropic_exchange": false,
+      "key": "dy2_n2rad",
+      "kramers_system": true,
+      "label": "Dy2 N2(3-) radical-bridged SMM",
+      "lieb_mattis_twice_spin": null,
+      "local_dims": [
+        16,
+        2,
+        16
+      ],
+      "n_edges": 2,
+      "n_sites": 3,
+      "network_target": "MPS with inhomogeneous local dimensions",
+      "provenance": "Rinehart, Fang, Evans, Long, J. Am. Chem. Soc. 133, 14236 (2011)",
+      "resources": {
+        "cpu_seconds": 0.1,
+        "effective_cores": 4.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 65.0,
+        "temp_start_c": 68.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 0.0
+      },
+      "sites": [
+        {
+          "ion": "Dy(III) 6H15/2",
+          "kind": "ion_soc",
+          "label": "Dy1",
+          "local_dim": 16,
+          "twice_spin": 15
+        },
+        {
+          "ion": "N2(3-) pi* radical",
+          "kind": "radical",
+          "label": "N2rad",
+          "local_dim": 2,
+          "twice_spin": 1
+        },
+        {
+          "ion": "Dy(III) 6H15/2",
+          "kind": "ion_soc",
+          "label": "Dy2",
+          "local_dim": 16,
+          "twice_spin": 15
+        }
+      ],
+      "spin_decomposition": {
+        "1": 2,
+        "11": 2,
+        "13": 2,
+        "15": 2,
+        "17": 2,
+        "19": 2,
+        "21": 2,
+        "23": 2,
+        "25": 2,
+        "27": 2,
+        "29": 2,
+        "3": 2,
+        "31": 1,
+        "5": 2,
+        "7": 2,
+        "9": 2
+      },
+      "sublattices": [
+        [
+          0,
+          2
+        ],
+        [
+          1
+        ]
+      ],
+      "topology": "path P3 (mixed local dimensions)",
+      "total_unpaired_electrons": 31,
+      "truncation": "N(SiMe3)2- and THF replaced by NH2-; the N2(3-) bridge and both Dy(III) centres - the entire magnetic core - are kept intact"
+    },
+    "fe3_oxo": {
+      "beyond_conventional_ci": true,
+      "bipartite": false,
+      "cas_determinants": 155117520,
+      "cas_electrons": 15,
+      "cas_orbitals": 15,
+      "cas_spinors": 30,
+      "connected_components": 1,
+      "cycle_rank": 1,
+      "degree_sequence": [
+        2,
+        2,
+        2
+      ],
+      "diameter": 1,
+      "edges": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          0
+        ]
+      ],
+      "experimental_twice_spin": null,
+      "formula": "[Fe3(mu3-O)(HCO2)6(H2O)3]+",
+      "frustrated": true,
+      "heisenberg_ed": {
+        "degeneracy": 4,
+        "first_gap": 1.4999999999999947,
+        "ground_energy": -12.75,
+        "hilbert_dim": 216,
+        "s2_spread": 8.881784197001252e-16,
+        "twice_total_spin": 1
+      },
+      "hilbert_dim": 216,
+      "is_tree": false,
+      "isotropic_exchange": true,
+      "key": "fe3_oxo",
+      "kramers_system": true,
+      "label": "Fe(III)3 basic carboxylate triangle",
+      "lieb_mattis_twice_spin": null,
+      "local_dims": [
+        6,
+        6,
+        6
+      ],
+      "n_edges": 3,
+      "n_sites": 3,
+      "network_target": "frustrated loop (non-bipartite)",
+      "provenance": "Cannon and White, Prog. Inorg. Chem. 36, 195 (1988)",
+      "resources": {
+        "cpu_seconds": 0.1,
+        "effective_cores": 4.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 65.0,
+        "temp_start_c": 65.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 0.0
+      },
+      "sites": [
+        {
+          "ion": "Fe(III)",
+          "kind": "ion",
+          "label": "Fe1",
+          "local_dim": 6,
+          "twice_spin": 5
+        },
+        {
+          "ion": "Fe(III)",
+          "kind": "ion",
+          "label": "Fe2",
+          "local_dim": 6,
+          "twice_spin": 5
+        },
+        {
+          "ion": "Fe(III)",
+          "kind": "ion",
+          "label": "Fe3",
+          "local_dim": 6,
+          "twice_spin": 5
+        }
+      ],
+      "spin_decomposition": {
+        "1": 2,
+        "11": 3,
+        "13": 2,
+        "15": 1,
+        "3": 4,
+        "5": 6,
+        "7": 5,
+        "9": 4
+      },
+      "sublattices": null,
+      "topology": "cycle C3",
+      "total_unpaired_electrons": 15,
+      "truncation": "pivalate/acetate replaced by formate; the mu3-oxo triangle is intact"
+    },
+    "fe4_star": {
+      "beyond_conventional_ci": true,
+      "bipartite": true,
+      "cas_determinants": 137846528820,
+      "cas_electrons": 20,
+      "cas_orbitals": 20,
+      "cas_spinors": 40,
+      "connected_components": 1,
+      "cycle_rank": 0,
+      "degree_sequence": [
+        3,
+        1,
+        1,
+        1
+      ],
+      "diameter": 2,
+      "edges": [
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ]
+      ],
+      "experimental_twice_spin": 10,
+      "formula": "[Fe4(mu-OMe)6(HCO2)6]",
+      "frustrated": false,
+      "heisenberg_ed": {
+        "degeneracy": 11,
+        "first_gap": 2.5000000000000036,
+        "ground_energy": -21.250000000000032,
+        "hilbert_dim": 1296,
+        "s2_spread": 1.1013412404281553e-13,
+        "twice_total_spin": 10
+      },
+      "hilbert_dim": 1296,
+      "is_tree": true,
+      "isotropic_exchange": true,
+      "key": "fe4_star",
+      "kramers_system": false,
+      "label": "Fe(III)4 star SMM",
+      "lieb_mattis_twice_spin": 10,
+      "local_dims": [
+        6,
+        6,
+        6,
+        6
+      ],
+      "n_edges": 3,
+      "n_sites": 4,
+      "network_target": "TTNS (minimal genuine tree)",
+      "provenance": "Barra, Caneschi, Cornia, Fabrizi de Biani, Gatteschi, Sangregorio, Sessoli, Sorace, J. Am. Chem. Soc. 121, 5302 (1999)",
+      "resources": {
+        "cpu_seconds": 4.7,
+        "effective_cores": 3.95,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 69.0,
+        "temp_start_c": 66.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 1.2
+      },
+      "sites": [
+        {
+          "ion": "Fe(III) central",
+          "kind": "ion",
+          "label": "Fe_c",
+          "local_dim": 6,
+          "twice_spin": 5
+        },
+        {
+          "ion": "Fe(III) peripheral",
+          "kind": "ion",
+          "label": "Fe1",
+          "local_dim": 6,
+          "twice_spin": 5
+        },
+        {
+          "ion": "Fe(III) peripheral",
+          "kind": "ion",
+          "label": "Fe2",
+          "local_dim": 6,
+          "twice_spin": 5
+        },
+        {
+          "ion": "Fe(III) peripheral",
+          "kind": "ion",
+          "label": "Fe3",
+          "local_dim": 6,
+          "twice_spin": 5
+        }
+      ],
+      "spin_decomposition": {
+        "0": 6,
+        "10": 21,
+        "12": 15,
+        "14": 10,
+        "16": 6,
+        "18": 3,
+        "2": 15,
+        "20": 1,
+        "4": 21,
+        "6": 24,
+        "8": 24
+      },
+      "sublattices": [
+        [
+          0
+        ],
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "topology": "star K(1,3)",
+      "total_unpaired_electrons": 20,
+      "truncation": "dpm- (dipivaloylmethanide) replaced by formate; the Fe4 core and all six methoxide bridges are kept"
+    },
+    "fe4s4": {
+      "beyond_conventional_ci": true,
+      "bipartite": false,
+      "cas_determinants": 41432089765583440,
+      "cas_electrons": 54,
+      "cas_orbitals": 36,
+      "cas_spinors": 72,
+      "connected_components": 1,
+      "cycle_rank": 3,
+      "degree_sequence": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "diameter": 1,
+      "edges": [
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          3
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "experimental_twice_spin": null,
+      "formula": "[Fe4S4(SH)4]2-",
+      "frustrated": true,
+      "heisenberg_ed": {
+        "degeneracy": 5,
+        "first_gap": 0.9999999999999982,
+        "ground_energy": -14.750000000000014,
+        "hilbert_dim": 900,
+        "s2_spread": 1.3233338359130306e-15,
+        "twice_total_spin": 0
+      },
+      "hilbert_dim": 900,
+      "is_tree": false,
+      "isotropic_exchange": true,
+      "key": "fe4s4",
+      "kramers_system": false,
+      "label": "[4Fe-4S] ferredoxin cubane (2+ state)",
+      "lieb_mattis_twice_spin": null,
+      "local_dims": [
+        6,
+        6,
+        5,
+        5
+      ],
+      "n_edges": 6,
+      "n_sites": 4,
+      "network_target": "PEPS-like; the worst case for any 1D ordering",
+      "provenance": "Beinert, Holm, Munck, Science 277, 653 (1997); DMRG benchmark: Sharma, Sivalingam, Neese, Chan, Nat. Chem. 6, 927 (2014)",
+      "resources": {
+        "cpu_seconds": 2.2,
+        "effective_cores": 4.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 71.0,
+        "temp_start_c": 68.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 0.5
+      },
+      "sites": [
+        {
+          "ion": "Fe(III)",
+          "kind": "ion",
+          "label": "Fe1",
+          "local_dim": 6,
+          "twice_spin": 5
+        },
+        {
+          "ion": "Fe(III)",
+          "kind": "ion",
+          "label": "Fe2",
+          "local_dim": 6,
+          "twice_spin": 5
+        },
+        {
+          "ion": "Fe(II)",
+          "kind": "ion",
+          "label": "Fe3",
+          "local_dim": 5,
+          "twice_spin": 4
+        },
+        {
+          "ion": "Fe(II)",
+          "kind": "ion",
+          "label": "Fe4",
+          "local_dim": 5,
+          "twice_spin": 4
+        }
+      ],
+      "spin_decomposition": {
+        "0": 5,
+        "10": 15,
+        "12": 10,
+        "14": 6,
+        "16": 3,
+        "18": 1,
+        "2": 13,
+        "4": 18,
+        "6": 20,
+        "8": 19
+      },
+      "sublattices": null,
+      "topology": "complete graph K4",
+      "total_unpaired_electrons": 18,
+      "truncation": "cysteinate replaced by SH-, the standard computational truncation of the biological cluster; the Fe4S4 core is untouched"
+    },
+    "mn3_linear": {
+      "beyond_conventional_ci": true,
+      "bipartite": true,
+      "cas_determinants": 155117520,
+      "cas_electrons": 15,
+      "cas_orbitals": 15,
+      "cas_spinors": 30,
+      "connected_components": 1,
+      "cycle_rank": 0,
+      "degree_sequence": [
+        2,
+        1,
+        1
+      ],
+      "diameter": 2,
+      "edges": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ]
+      ],
+      "experimental_twice_spin": null,
+      "formula": "[Mn3(mu-OH)2(HCO2)4]",
+      "frustrated": false,
+      "heisenberg_ed": {
+        "degeneracy": 6,
+        "first_gap": 2.5000000000000107,
+        "ground_energy": -15.000000000000014,
+        "hilbert_dim": 216,
+        "s2_spread": 2.1316282072803006e-14,
+        "twice_total_spin": 5
+      },
+      "hilbert_dim": 216,
+      "is_tree": true,
+      "isotropic_exchange": true,
+      "key": "mn3_linear",
+      "kramers_system": true,
+      "label": "Mn(II)3 linear chain",
+      "lieb_mattis_twice_spin": 5,
+      "local_dims": [
+        6,
+        6,
+        6
+      ],
+      "n_edges": 2,
+      "n_sites": 3,
+      "network_target": "MPS",
+      "provenance": "[Mn3(O2CR)6L2] structural family",
+      "resources": {
+        "cpu_seconds": 0.1,
+        "effective_cores": 1.3,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 68.0,
+        "temp_start_c": 66.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 0.1
+      },
+      "sites": [
+        {
+          "ion": "Mn(II)",
+          "kind": "ion",
+          "label": "Mn1",
+          "local_dim": 6,
+          "twice_spin": 5
+        },
+        {
+          "ion": "Mn(II)",
+          "kind": "ion",
+          "label": "Mn2",
+          "local_dim": 6,
+          "twice_spin": 5
+        },
+        {
+          "ion": "Mn(II)",
+          "kind": "ion",
+          "label": "Mn3",
+          "local_dim": 6,
+          "twice_spin": 5
+        }
+      ],
+      "spin_decomposition": {
+        "1": 2,
+        "11": 3,
+        "13": 2,
+        "15": 1,
+        "3": 4,
+        "5": 6,
+        "7": 5,
+        "9": 4
+      },
+      "sublattices": [
+        [
+          0,
+          2
+        ],
+        [
+          1
+        ]
+      ],
+      "topology": "path P3",
+      "total_unpaired_electrons": 15,
+      "truncation": "model linear trinuclear Mn(II) carboxylate; bulky RCO2- replaced by formate. Truncation touches no metal and no exchange pathway"
+    },
+    "mn4ca_oec": {
+      "beyond_conventional_ci": true,
+      "bipartite": false,
+      "cas_determinants": 23206929840,
+      "cas_electrons": 14,
+      "cas_orbitals": 20,
+      "cas_spinors": 40,
+      "connected_components": 1,
+      "cycle_rank": 1,
+      "degree_sequence": [
+        3,
+        2,
+        2,
+        1
+      ],
+      "diameter": 2,
+      "edges": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "experimental_twice_spin": null,
+      "formula": "[Mn4CaO5(H2O)4]",
+      "frustrated": true,
+      "heisenberg_ed": {
+        "degeneracy": 8,
+        "first_gap": 1.0,
+        "ground_energy": -10.750000000000012,
+        "hilbert_dim": 400,
+        "s2_spread": 3.5649491185148365,
+        "twice_total_spin": 3
+      },
+      "hilbert_dim": 400,
+      "is_tree": false,
+      "isotropic_exchange": true,
+      "key": "mn4ca_oec",
+      "kramers_system": false,
+      "label": "Photosystem II Mn4CaO5 cluster (S1 state)",
+      "lieb_mattis_twice_spin": null,
+      "local_dims": [
+        4,
+        4,
+        5,
+        5
+      ],
+      "n_edges": 4,
+      "n_sites": 4,
+      "network_target": "hierarchical: loop with a tree branch",
+      "provenance": "Umena, Kawakami, Shen, Kamiya, Nature 473, 55 (2011)",
+      "resources": {
+        "cpu_seconds": 0.2,
+        "effective_cores": 4.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 68.0,
+        "temp_start_c": 68.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 0.1
+      },
+      "sites": [
+        {
+          "ion": "Mn(IV)",
+          "kind": "ion",
+          "label": "Mn1",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Mn(IV)",
+          "kind": "ion",
+          "label": "Mn2",
+          "local_dim": 4,
+          "twice_spin": 3
+        },
+        {
+          "ion": "Mn(III)",
+          "kind": "ion",
+          "label": "Mn3",
+          "local_dim": 5,
+          "twice_spin": 4
+        },
+        {
+          "ion": "Mn(III) dangler",
+          "kind": "ion",
+          "label": "Mn4",
+          "local_dim": 5,
+          "twice_spin": 4
+        }
+      ],
+      "spin_decomposition": {
+        "0": 4,
+        "10": 6,
+        "12": 3,
+        "14": 1,
+        "2": 10,
+        "4": 13,
+        "6": 13,
+        "8": 10
+      },
+      "sublattices": null,
+      "topology": "triangle + pendant vertex",
+      "total_unpaired_electrons": 14,
+      "truncation": "protein ligands replaced by aqua/hydroxo; Ca(II) is closed-shell and is not a network site, though it does mediate structure"
+    }
+  },
+  "schema": 2
+}

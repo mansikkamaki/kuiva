@@ -1,0 +1,3492 @@
+{
+  "basis": "dyall.v2z",
+  "code": "DIRAC 26.1",
+  "controlled": {
+    "contraction": "uncontracted (*READIN .UNCONTRACTED), matching uncontract=True",
+    "nuclear_model": "point charge (.NUCMOD 1; DIRAC defaults to Gaussian)",
+    "speed_of_light": 137.035999084,
+    "speed_of_light_note": "forced to PySCF's CODATA-2018 value; DIRAC 26.1 defaults to CODATA 2022, 137.035999177",
+    "two_electron": "(SS|SS) computed explicitly (.DOSSSS), not Visscher-corrected"
+  },
+  "environment": {
+    "idle_injection_available": true,
+    "n_cpus": 8,
+    "package_temp_c": 45.0,
+    "powerclamp_state": 0
+  },
+  "generator": "tests/generate/x2camf_dirac.py",
+  "hamiltonians": {
+    "dc": "four-component Dirac-Coulomb with (SS|SS)",
+    "dcg": "four-component Dirac-Coulomb-Gaunt with (SS|SS)"
+  },
+  "purpose": "four-component atomic references for the X2CAMF two-electron picture-change correction",
+  "pyscf_basis": "dyallv2z",
+  "records": {
+    "Ar/dc": {
+      "atomic_number": 18,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "e_total": -528.6633766033584,
+      "element": "Ar",
+      "hamiltonian": "dc",
+      "n_occupied_spinors": 18,
+      "nuclear_model": "point charge",
+      "resources": {
+        "cpu_seconds": 1.1,
+        "effective_cores": 0.72,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 38.0,
+        "temp_start_c": 37.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 1.6
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -119.12194739785,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -12.40667115905,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.28323700977,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -9.62581173096,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.59186695888,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -9.5415609345,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.58444809614,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -9.54156093448,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.58444809617,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -119.12194739785,
+        -119.12194739785,
+        -12.40667115905,
+        -12.40667115905,
+        -9.62581173096,
+        -9.62581173096,
+        -9.5415609345,
+        -9.5415609345,
+        -9.54156093448,
+        -9.54156093448,
+        -1.28323700977,
+        -1.28323700977,
+        -0.59186695888,
+        -0.59186695888,
+        -0.58444809617,
+        -0.58444809617,
+        -0.58444809614,
+        -0.58444809614
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "3p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 1628.2521649956625,
+      "valence_splitting_eh": 0.007418862739999921
+    },
+    "Ar/dcg": {
+      "atomic_number": 18,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "e_total": -528.5200302569465,
+      "element": "Ar",
+      "hamiltonian": "dcg",
+      "n_occupied_spinors": 18,
+      "nuclear_model": "point charge",
+      "resources": {
+        "cpu_seconds": 1.6,
+        "effective_cores": 0.79,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 41.0,
+        "temp_start_c": 36.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 2.0
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -119.03751942268,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -12.4029259191,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.28309783901,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -9.61797636504,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.59150750539,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -9.53694260208,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.58438077035,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -9.53694260206,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.58438077036,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -119.03751942268,
+        -119.03751942268,
+        -12.4029259191,
+        -12.4029259191,
+        -9.61797636504,
+        -9.61797636504,
+        -9.53694260208,
+        -9.53694260208,
+        -9.53694260206,
+        -9.53694260206,
+        -1.28309783901,
+        -1.28309783901,
+        -0.59150750539,
+        -0.59150750539,
+        -0.58438077036,
+        -0.58438077036,
+        -0.58438077035,
+        -0.58438077035
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "3p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 1564.137545727188,
+      "valence_splitting_eh": 0.007126735039999943
+    },
+    "Bi/dc": {
+      "atomic_number": 83,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "configuration": "[Xe]4f14 5d10 6s2 6p3",
+      "e_total": -21571.587932956325,
+      "element": "Bi",
+      "hamiltonian": "dc",
+      "n_electrons": 83.0,
+      "n_occupied_spinors": 86,
+      "nuclear_model": "point charge",
+      "open_electrons": 3,
+      "open_shell": true,
+      "open_spinors": 6,
+      "resources": {
+        "cpu_seconds": 260.8,
+        "effective_cores": 1.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 53.0,
+        "temp_start_c": 45.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 261.2
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -3351.789204565,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -607.756135157,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -149.376027795,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -35.752672899,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -6.687957046,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.684540401,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -100.615448368,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -18.022473237,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.386339943,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -100.615448368,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -18.022473237,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -1.386339943,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -96.548973776,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -17.110445356,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.267913023,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -96.548973776,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -17.110445356,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -1.267913023,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -96.548973776,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -17.110445356,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -1.267913023,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -582.48732981,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -138.099750053,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -30.829452457,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -4.906280659,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.262216817,
+          "occupation": 0.5,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -497.091963762,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -118.739545861,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -25.996212307,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -3.973521466,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.189090724,
+          "occupation": 0.5,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -497.091963762,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -118.739545861,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -25.996212307,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -3.973521466,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.189090724,
+          "occupation": 0.5,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "f 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -6.700963565,
+          "occupation": 1.0,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -6.700963565,
+          "occupation": 1.0,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -6.700963565,
+          "occupation": 1.0,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 7/2;  1/2",
+          "degeneracy": 2,
+          "energy": -6.4923658,
+          "occupation": 1.0,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2; -3/2",
+          "degeneracy": 2,
+          "energy": -6.4923658,
+          "occupation": 1.0,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2;  5/2",
+          "degeneracy": 2,
+          "energy": -6.4923658,
+          "occupation": 1.0,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2; -7/2",
+          "degeneracy": 2,
+          "energy": -6.4923658,
+          "occupation": 1.0,
+          "shell": "f 7/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -3351.789204565,
+        -3351.789204565,
+        -607.756135157,
+        -607.756135157,
+        -582.48732981,
+        -582.48732981,
+        -497.091963762,
+        -497.091963762,
+        -497.091963762,
+        -497.091963762,
+        -149.376027795,
+        -149.376027795,
+        -138.099750053,
+        -138.099750053,
+        -118.739545861,
+        -118.739545861,
+        -118.739545861,
+        -118.739545861,
+        -100.615448368,
+        -100.615448368,
+        -100.615448368,
+        -100.615448368,
+        -96.548973776,
+        -96.548973776,
+        -96.548973776,
+        -96.548973776,
+        -96.548973776,
+        -96.548973776,
+        -35.752672899,
+        -35.752672899,
+        -30.829452457,
+        -30.829452457,
+        -25.996212307,
+        -25.996212307,
+        -25.996212307,
+        -25.996212307,
+        -18.022473237,
+        -18.022473237,
+        -18.022473237,
+        -18.022473237,
+        -17.110445356,
+        -17.110445356,
+        -17.110445356,
+        -17.110445356,
+        -17.110445356,
+        -17.110445356,
+        -6.700963565,
+        -6.700963565,
+        -6.700963565,
+        -6.700963565,
+        -6.700963565,
+        -6.700963565,
+        -6.687957046,
+        -6.687957046,
+        -6.4923658,
+        -6.4923658,
+        -6.4923658,
+        -6.4923658,
+        -6.4923658,
+        -6.4923658,
+        -6.4923658,
+        -6.4923658,
+        -4.906280659,
+        -4.906280659,
+        -3.973521466,
+        -3.973521466,
+        -3.973521466,
+        -3.973521466,
+        -1.386339943,
+        -1.386339943,
+        -1.386339943,
+        -1.386339943,
+        -1.267913023,
+        -1.267913023,
+        -1.267913023,
+        -1.267913023,
+        -1.267913023,
+        -1.267913023,
+        -0.684540401,
+        -0.684540401,
+        -0.262216817,
+        -0.262216817,
+        -0.189090724,
+        -0.189090724,
+        -0.189090724,
+        -0.189090724
+      ],
+      "spinor_occupations": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "6p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 16049.32230420608,
+      "valence_splitting_eh": 0.073126093
+    },
+    "C/dc": {
+      "atomic_number": 6,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "configuration": "[He]2s2 2p2",
+      "e_total": -37.674799039086736,
+      "element": "C",
+      "hamiltonian": "dc",
+      "n_electrons": 5.999800000000002,
+      "n_occupied_spinors": 10,
+      "nuclear_model": "point charge",
+      "open_electrons": 2,
+      "open_shell": true,
+      "open_spinors": 6,
+      "resources": {
+        "cpu_seconds": 0.8,
+        "effective_cores": 0.66,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 42.0,
+        "temp_start_c": 43.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 1.3
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -11.3429560995,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.71238195033,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.23600843742,
+          "occupation": 0.3333,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.23576085672,
+          "occupation": 0.3333,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.23576085672,
+          "occupation": 0.3333,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -11.3429560995,
+        -11.3429560995,
+        -0.71238195033,
+        -0.71238195033,
+        -0.23600843742,
+        -0.23600843742,
+        -0.23576085672,
+        -0.23576085672,
+        -0.23576085672,
+        -0.23576085672
+      ],
+      "spinor_occupations": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.3333,
+        0.3333,
+        0.3333,
+        0.3333,
+        0.3333,
+        0.3333
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "2p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 54.33768286514293,
+      "valence_splitting_eh": 0.00024758069999999965
+    },
+    "Ce/dc": {
+      "atomic_number": 58,
+      "basis": "dyall.v2z",
+      "charge": 3,
+      "configuration": "[Xe]4f1",
+      "e_total": -8860.24426528409,
+      "element": "Ce",
+      "hamiltonian": "dc",
+      "n_electrons": 54.99959999999996,
+      "n_occupied_spinors": 68,
+      "nuclear_model": "point charge",
+      "open_electrons": 1,
+      "open_shell": true,
+      "open_spinors": 14,
+      "resources": {
+        "cpu_seconds": 310.1,
+        "effective_cores": 1.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 51.0,
+        "temp_start_c": 46.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 310.5
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1495.943494259,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -244.217418151,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -54.975224742,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -12.544534467,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.714125109,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -35.179988752,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -5.59239752,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -35.179988752,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -5.59239752,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -34.478838572,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -5.465507808,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -34.478838572,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -5.465507808,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -34.478838571,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -5.465507808,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -229.989981025,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -48.927181221,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -10.212124698,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.978420853,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -213.524904098,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -45.614668435,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -9.495474705,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.865466722,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -213.524904098,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -45.614668435,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -9.495474705,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -1.865466722,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "f 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.976101742,
+          "occupation": 0.0714,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.976101742,
+          "occupation": 0.0714,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -0.976101742,
+          "occupation": 0.0714,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 7/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.966963738,
+          "occupation": 0.0714,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.966963738,
+          "occupation": 0.0714,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2;  5/2",
+          "degeneracy": 2,
+          "energy": -0.966963738,
+          "occupation": 0.0714,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2; -7/2",
+          "degeneracy": 2,
+          "energy": -0.966963738,
+          "occupation": 0.0714,
+          "shell": "f 7/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -1495.943494259,
+        -1495.943494259,
+        -244.217418151,
+        -244.217418151,
+        -229.989981025,
+        -229.989981025,
+        -213.524904098,
+        -213.524904098,
+        -213.524904098,
+        -213.524904098,
+        -54.975224742,
+        -54.975224742,
+        -48.927181221,
+        -48.927181221,
+        -45.614668435,
+        -45.614668435,
+        -45.614668435,
+        -45.614668435,
+        -35.179988752,
+        -35.179988752,
+        -35.179988752,
+        -35.179988752,
+        -34.478838572,
+        -34.478838572,
+        -34.478838572,
+        -34.478838572,
+        -34.478838571,
+        -34.478838571,
+        -12.544534467,
+        -12.544534467,
+        -10.212124698,
+        -10.212124698,
+        -9.495474705,
+        -9.495474705,
+        -9.495474705,
+        -9.495474705,
+        -5.59239752,
+        -5.59239752,
+        -5.59239752,
+        -5.59239752,
+        -5.465507808,
+        -5.465507808,
+        -5.465507808,
+        -5.465507808,
+        -5.465507808,
+        -5.465507808,
+        -2.714125109,
+        -2.714125109,
+        -1.978420853,
+        -1.978420853,
+        -1.865466722,
+        -1.865466722,
+        -1.865466722,
+        -1.865466722,
+        -0.976101742,
+        -0.976101742,
+        -0.976101742,
+        -0.976101742,
+        -0.976101742,
+        -0.976101742,
+        -0.966963738,
+        -0.966963738,
+        -0.966963738,
+        -0.966963738,
+        -0.966963738,
+        -0.966963738,
+        -0.966963738,
+        -0.966963738
+      ],
+      "spinor_occupations": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714,
+        0.0714
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "4f",
+      "valence_spinors": 14,
+      "valence_splitting_cm": 2005.560059295442,
+      "valence_splitting_eh": 0.009138003999999977
+    },
+    "Dy/dc": {
+      "atomic_number": 66,
+      "basis": "dyall.v2z",
+      "charge": 3,
+      "configuration": "[Xe]4f9",
+      "e_total": -12161.167549187092,
+      "element": "Dy",
+      "hamiltonian": "dc",
+      "n_electrons": 63.00059999999996,
+      "n_occupied_spinors": 68,
+      "nuclear_model": "point charge",
+      "open_electrons": 9,
+      "open_shell": true,
+      "open_spinors": 14,
+      "resources": {
+        "cpu_seconds": 367.4,
+        "effective_cores": 1.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 53.0,
+        "temp_start_c": 50.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 367.8
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1990.095632279,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -336.869000898,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -77.891869331,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -17.315973282,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -3.293585865,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -51.413994133,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -7.855224637,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -51.413994133,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -7.855224637,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -50.068395559,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -7.594672161,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -50.068395558,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -7.594672158,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -50.068395559,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -7.59467216,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -319.596180731,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -70.374483165,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -14.28810489,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.349852129,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -290.115018075,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -64.135705848,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -12.878310858,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.149631996,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -290.115018075,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -64.135705848,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -12.878310859,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -2.149631996,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "f 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.50190403,
+          "occupation": 0.6429,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -1.501904029,
+          "occupation": 0.6429,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -1.501904029,
+          "occupation": 0.6429,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 7/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.467079503,
+          "occupation": 0.6429,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2; -3/2",
+          "degeneracy": 2,
+          "energy": -1.467079503,
+          "occupation": 0.6429,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2;  5/2",
+          "degeneracy": 2,
+          "energy": -1.467079497,
+          "occupation": 0.6429,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2; -7/2",
+          "degeneracy": 2,
+          "energy": -1.467079504,
+          "occupation": 0.6429,
+          "shell": "f 7/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -1990.095632279,
+        -1990.095632279,
+        -336.869000898,
+        -336.869000898,
+        -319.596180731,
+        -319.596180731,
+        -290.115018075,
+        -290.115018075,
+        -290.115018075,
+        -290.115018075,
+        -77.891869331,
+        -77.891869331,
+        -70.374483165,
+        -70.374483165,
+        -64.135705848,
+        -64.135705848,
+        -64.135705848,
+        -64.135705848,
+        -51.413994133,
+        -51.413994133,
+        -51.413994133,
+        -51.413994133,
+        -50.068395559,
+        -50.068395559,
+        -50.068395559,
+        -50.068395559,
+        -50.068395558,
+        -50.068395558,
+        -17.315973282,
+        -17.315973282,
+        -14.28810489,
+        -14.28810489,
+        -12.878310859,
+        -12.878310859,
+        -12.878310858,
+        -12.878310858,
+        -7.855224637,
+        -7.855224637,
+        -7.855224637,
+        -7.855224637,
+        -7.594672161,
+        -7.594672161,
+        -7.59467216,
+        -7.59467216,
+        -7.594672158,
+        -7.594672158,
+        -3.293585865,
+        -3.293585865,
+        -2.349852129,
+        -2.349852129,
+        -2.149631996,
+        -2.149631996,
+        -2.149631996,
+        -2.149631996,
+        -1.50190403,
+        -1.50190403,
+        -1.501904029,
+        -1.501904029,
+        -1.501904029,
+        -1.501904029,
+        -1.467079504,
+        -1.467079504,
+        -1.467079503,
+        -1.467079503,
+        -1.467079503,
+        -1.467079503,
+        -1.467079497,
+        -1.467079497
+      ],
+      "spinor_occupations": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429,
+        0.6429
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "4f",
+      "valence_spinors": 14,
+      "valence_splitting_cm": 7643.101542570566,
+      "valence_splitting_eh": 0.03482453299999988
+    },
+    "Kr/dc": {
+      "atomic_number": 36,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "e_total": -2788.8350176894046,
+      "element": "Kr",
+      "hamiltonian": "dc",
+      "n_occupied_spinors": 36,
+      "nuclear_model": "point charge",
+      "resources": {
+        "cpu_seconds": 7.3,
+        "effective_cores": 0.94,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 43.0,
+        "temp_start_c": 43.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 7.7
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -529.6860200344,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -72.0744513286,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -11.2185375553,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.183194011,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -3.7714412654,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -3.7714412654,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -3.7207506113,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -3.7207506113,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -3.7207506113,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -64.8662410088,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -8.6136449676,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.5360668541,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -62.8734812543,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -8.3071083405,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.5094534653,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -62.8734812543,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -8.3071083405,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.5094534653,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -529.6860200344,
+        -529.6860200344,
+        -72.0744513286,
+        -72.0744513286,
+        -64.8662410088,
+        -64.8662410088,
+        -62.8734812543,
+        -62.8734812543,
+        -62.8734812543,
+        -62.8734812543,
+        -11.2185375553,
+        -11.2185375553,
+        -8.6136449676,
+        -8.6136449676,
+        -8.3071083405,
+        -8.3071083405,
+        -8.3071083405,
+        -8.3071083405,
+        -3.7714412654,
+        -3.7714412654,
+        -3.7714412654,
+        -3.7714412654,
+        -3.7207506113,
+        -3.7207506113,
+        -3.7207506113,
+        -3.7207506113,
+        -3.7207506113,
+        -3.7207506113,
+        -1.183194011,
+        -1.183194011,
+        -0.5360668541,
+        -0.5360668541,
+        -0.5094534653,
+        -0.5094534653,
+        -0.5094534653,
+        -0.5094534653
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "4p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 5840.963696205509,
+      "valence_splitting_eh": 0.02661338879999997
+    },
+    "Kr/dcg": {
+      "atomic_number": 36,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "e_total": -2787.2580660160374,
+      "element": "Kr",
+      "hamiltonian": "dcg",
+      "n_occupied_spinors": 36,
+      "nuclear_model": "point charge",
+      "resources": {
+        "cpu_seconds": 14.9,
+        "effective_cores": 0.97,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 46.0,
+        "temp_start_c": 41.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 15.3
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -528.8442510262,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -72.0109469923,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -11.2122426984,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.1829811108,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -3.7708157072,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -3.7708157072,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -3.722489523,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -3.722489523,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -3.722489523,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -64.7457906871,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -8.5997972185,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.5354472292,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -62.7893636534,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -8.2989605832,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.5093191554,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -62.7893636534,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -8.2989605832,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.5093191554,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -528.8442510262,
+        -528.8442510262,
+        -72.0109469923,
+        -72.0109469923,
+        -64.7457906871,
+        -64.7457906871,
+        -62.7893636534,
+        -62.7893636534,
+        -62.7893636534,
+        -62.7893636534,
+        -11.2122426984,
+        -11.2122426984,
+        -8.5997972185,
+        -8.5997972185,
+        -8.2989605832,
+        -8.2989605832,
+        -8.2989605832,
+        -8.2989605832,
+        -3.7708157072,
+        -3.7708157072,
+        -3.7708157072,
+        -3.7708157072,
+        -3.722489523,
+        -3.722489523,
+        -3.722489523,
+        -3.722489523,
+        -3.722489523,
+        -3.722489523,
+        -1.1829811108,
+        -1.1829811108,
+        -0.5354472292,
+        -0.5354472292,
+        -0.5093191554,
+        -0.5093191554,
+        -0.5093191554,
+        -0.5093191554
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "4p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 5734.449365485493,
+      "valence_splitting_eh": 0.02612807380000004
+    },
+    "Ne/dc": {
+      "atomic_number": 10,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "e_total": -128.6857417690165,
+      "element": "Ne",
+      "hamiltonian": "dc",
+      "n_occupied_spinors": 10,
+      "nuclear_model": "point charge",
+      "resources": {
+        "cpu_seconds": 0.8,
+        "effective_cores": 0.65,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 43.0,
+        "temp_start_c": 43.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 1.3
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -32.81524591046,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.93455757073,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.85117144067,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.84668806562,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.84668806561,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -32.81524591046,
+        -32.81524591046,
+        -1.93455757073,
+        -1.93455757073,
+        -0.85117144067,
+        -0.85117144067,
+        -0.84668806562,
+        -0.84668806562,
+        -0.84668806561,
+        -0.84668806561
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "2p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 983.9870885564561,
+      "valence_splitting_eh": 0.004483375059999961
+    },
+    "Ne/dcg": {
+      "atomic_number": 10,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "e_total": -128.66820922757586,
+      "element": "Ne",
+      "hamiltonian": "dcg",
+      "n_occupied_spinors": 10,
+      "nuclear_model": "point charge",
+      "resources": {
+        "cpu_seconds": 1.1,
+        "effective_cores": 0.71,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 39.0,
+        "temp_start_c": 44.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 1.5
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -32.80397996153,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.93437336557,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.85072942445,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.84661185561,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.8466118556,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -32.80397996153,
+        -32.80397996153,
+        -1.93437336557,
+        -1.93437336557,
+        -0.85072942445,
+        -0.85072942445,
+        -0.84661185561,
+        -0.84661185561,
+        -0.8466118556,
+        -0.8466118556
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "2p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 903.7019054663521,
+      "valence_splitting_eh": 0.004117568850000031
+    },
+    "O/dc": {
+      "atomic_number": 8,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "configuration": "[He]2s2 2p4",
+      "e_total": -74.82199833270484,
+      "element": "O",
+      "hamiltonian": "dc",
+      "n_electrons": 8.000199999999998,
+      "n_occupied_spinors": 10,
+      "nuclear_model": "point charge",
+      "open_electrons": 4,
+      "open_shell": true,
+      "open_spinors": 6,
+      "resources": {
+        "cpu_seconds": 0.8,
+        "effective_cores": 0.66,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 42.0,
+        "temp_start_c": 41.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 1.3
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -20.69730190021,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.25179513382,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.49519003577,
+          "occupation": 0.6667,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.49383934379,
+          "occupation": 0.6667,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.49383934376,
+          "occupation": 0.6667,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -20.69730190021,
+        -20.69730190021,
+        -1.25179513382,
+        -1.25179513382,
+        -0.49519003577,
+        -0.49519003577,
+        -0.49383934379,
+        -0.49383934379,
+        -0.49383934376,
+        -0.49383934376
+      ],
+      "spinor_occupations": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.6667,
+        0.6667,
+        0.6667,
+        0.6667,
+        0.6667,
+        0.6667
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "2p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 296.4426309799669,
+      "valence_splitting_eh": 0.0013506920099999875
+    },
+    "Ti/dc": {
+      "atomic_number": 22,
+      "basis": "dyall.v2z",
+      "charge": 3,
+      "configuration": "[Ar]3d1",
+      "e_total": -851.1910462136481,
+      "element": "Ti",
+      "hamiltonian": "dc",
+      "n_electrons": 19.000000000000014,
+      "n_occupied_spinors": 28,
+      "nuclear_model": "point charge",
+      "open_electrons": 1,
+      "open_shell": true,
+      "open_spinors": 10,
+      "resources": {
+        "cpu_seconds": 9.3,
+        "effective_cores": 0.96,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 46.0,
+        "temp_start_c": 49.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 9.7
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -185.7156903152,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -22.9191541714,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -4.1032513447,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.2651545398,
+          "occupation": 0.1,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -1.2651545395,
+          "occupation": 0.1,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.2635804049,
+          "occupation": 0.1,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -1.2635804048,
+          "occupation": 0.1,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -1.2635804011,
+          "occupation": 0.1,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -19.2276147696,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.9975650986,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -19.0113739259,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.9706232548,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -19.0113739277,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -2.9706232599,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -185.7156903152,
+        -185.7156903152,
+        -22.9191541714,
+        -22.9191541714,
+        -19.2276147696,
+        -19.2276147696,
+        -19.0113739277,
+        -19.0113739277,
+        -19.0113739259,
+        -19.0113739259,
+        -4.1032513447,
+        -4.1032513447,
+        -2.9975650986,
+        -2.9975650986,
+        -2.9706232599,
+        -2.9706232599,
+        -2.9706232548,
+        -2.9706232548,
+        -1.2651545398,
+        -1.2651545398,
+        -1.2651545395,
+        -1.2651545395,
+        -1.2635804049,
+        -1.2635804049,
+        -1.2635804048,
+        -1.2635804048,
+        -1.2635804011,
+        -1.2635804011
+      ],
+      "spinor_occupations": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "3d",
+      "valence_spinors": 10,
+      "valence_splitting_cm": 345.4835108970236,
+      "valence_splitting_eh": 0.001574138699999894
+    },
+    "Xe/dc": {
+      "atomic_number": 54,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "e_total": -7447.130686796212,
+      "element": "Xe",
+      "hamiltonian": "dc",
+      "n_occupied_spinors": 54,
+      "nuclear_model": "point charge",
+      "resources": {
+        "cpu_seconds": 25.8,
+        "effective_cores": 0.98,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 50.0,
+        "temp_start_c": 48.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 26.2
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1277.360762288,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -202.474973066,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -43.010034138,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -8.427417391,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.007570297,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -26.020129308,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.708227946,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -26.020129308,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -2.708227946,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -25.533953666,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.630711164,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -25.533953666,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -2.630711164,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -25.533953666,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -2.630711164,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -189.673601268,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -37.65612559,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -6.449030772,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.489277736,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -177.700792435,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -35.322009167,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -5.979550805,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.437186898,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -177.700792435,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -35.322009167,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -5.979550805,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.437186898,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -1277.360762288,
+        -1277.360762288,
+        -202.474973066,
+        -202.474973066,
+        -189.673601268,
+        -189.673601268,
+        -177.700792435,
+        -177.700792435,
+        -177.700792435,
+        -177.700792435,
+        -43.010034138,
+        -43.010034138,
+        -37.65612559,
+        -37.65612559,
+        -35.322009167,
+        -35.322009167,
+        -35.322009167,
+        -35.322009167,
+        -26.020129308,
+        -26.020129308,
+        -26.020129308,
+        -26.020129308,
+        -25.533953666,
+        -25.533953666,
+        -25.533953666,
+        -25.533953666,
+        -25.533953666,
+        -25.533953666,
+        -8.427417391,
+        -8.427417391,
+        -6.449030772,
+        -6.449030772,
+        -5.979550805,
+        -5.979550805,
+        -5.979550805,
+        -5.979550805,
+        -2.708227946,
+        -2.708227946,
+        -2.708227946,
+        -2.708227946,
+        -2.630711164,
+        -2.630711164,
+        -2.630711164,
+        -2.630711164,
+        -2.630711164,
+        -2.630711164,
+        -1.007570297,
+        -1.007570297,
+        -0.489277736,
+        -0.489277736,
+        -0.437186898,
+        -0.437186898,
+        -0.437186898,
+        -0.437186898
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "5p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 11432.617467450176,
+      "valence_splitting_eh": 0.05209083800000003
+    },
+    "Xe/dcg": {
+      "atomic_number": 54,
+      "basis": "dyall.v2z",
+      "charge": 0,
+      "e_total": -7440.6961809552295,
+      "element": "Xe",
+      "hamiltonian": "dcg",
+      "n_occupied_spinors": 54,
+      "nuclear_model": "point charge",
+      "resources": {
+        "cpu_seconds": 55.2,
+        "effective_cores": 0.99,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 53.0,
+        "temp_start_c": 46.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 55.6
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1274.169156415,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -202.174243527,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -42.967469573,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -8.421583988,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.00733135,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -25.995414314,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.708132014,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -25.995414314,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -2.708132014,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -25.522256712,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.632752758,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -25.522256712,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -2.632752758,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -25.522256712,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -2.632752758,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -189.134282528,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -37.572325411,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -6.435982969,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.488456588,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -177.317124173,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -35.267832241,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -5.972520266,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -0.437016157,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -177.317124173,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -35.267832241,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -5.972520266,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -0.437016157,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -1274.169156415,
+        -1274.169156415,
+        -202.174243527,
+        -202.174243527,
+        -189.134282528,
+        -189.134282528,
+        -177.317124173,
+        -177.317124173,
+        -177.317124173,
+        -177.317124173,
+        -42.967469573,
+        -42.967469573,
+        -37.572325411,
+        -37.572325411,
+        -35.267832241,
+        -35.267832241,
+        -35.267832241,
+        -35.267832241,
+        -25.995414314,
+        -25.995414314,
+        -25.995414314,
+        -25.995414314,
+        -25.522256712,
+        -25.522256712,
+        -25.522256712,
+        -25.522256712,
+        -25.522256712,
+        -25.522256712,
+        -8.421583988,
+        -8.421583988,
+        -6.435982969,
+        -6.435982969,
+        -5.972520266,
+        -5.972520266,
+        -5.972520266,
+        -5.972520266,
+        -2.708132014,
+        -2.708132014,
+        -2.708132014,
+        -2.708132014,
+        -2.632752758,
+        -2.632752758,
+        -2.632752758,
+        -2.632752758,
+        -2.632752758,
+        -2.632752758,
+        -1.00733135,
+        -1.00733135,
+        -0.488456588,
+        -0.488456588,
+        -0.437016157,
+        -0.437016157,
+        -0.437016157,
+        -0.437016157
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "5p",
+      "valence_spinors": 6,
+      "valence_splitting_cm": 11289.869630889127,
+      "valence_splitting_eh": 0.05144043100000001
+    },
+    "Yb/dc": {
+      "atomic_number": 70,
+      "basis": "dyall.v2z",
+      "charge": 3,
+      "configuration": "[Xe]4f13",
+      "e_total": -14067.784341259987,
+      "element": "Yb",
+      "hamiltonian": "dc",
+      "n_electrons": 67.00040000000004,
+      "n_occupied_spinors": 68,
+      "nuclear_model": "point charge",
+      "open_electrons": 13,
+      "open_shell": true,
+      "open_spinors": 14,
+      "resources": {
+        "cpu_seconds": 422.6,
+        "effective_cores": 1.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 53.0,
+        "temp_start_c": 50.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 423.0
+      },
+      "shells": [
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2269.530436396,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -390.252814791,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -91.029377072,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -19.969532862,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "s 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -3.588860915,
+          "occupation": 1.0,
+          "shell": "s 1/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -60.485956462,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -9.045036847,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -60.485956462,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -9.045036847,
+          "occupation": 1.0,
+          "shell": "d 3/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -58.686624663,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -8.689638267,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -58.686624663,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -8.689638267,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -58.686624663,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "d 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -8.689638267,
+          "occupation": 1.0,
+          "shell": "d 5/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -371.322056806,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -82.720341041,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -16.563149028,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 1/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.532834574,
+          "occupation": 1.0,
+          "shell": "p 1/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -332.75689866,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -74.394232683,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -14.65777292,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2;  1/2",
+          "degeneracy": 2,
+          "energy": -2.275114954,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -332.75689866,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -74.394232683,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -14.65777292,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "p 3/2; -3/2",
+          "degeneracy": 2,
+          "energy": -2.275114954,
+          "occupation": 1.0,
+          "shell": "p 3/2"
+        },
+        {
+          "block": "f 5/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.760707018,
+          "occupation": 0.9286,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 5/2; -3/2",
+          "degeneracy": 2,
+          "energy": -1.760707018,
+          "occupation": 0.9286,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 5/2;  5/2",
+          "degeneracy": 2,
+          "energy": -1.760707018,
+          "occupation": 0.9286,
+          "shell": "f 5/2"
+        },
+        {
+          "block": "f 7/2;  1/2",
+          "degeneracy": 2,
+          "energy": -1.703698465,
+          "occupation": 0.9286,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2; -3/2",
+          "degeneracy": 2,
+          "energy": -1.703698465,
+          "occupation": 0.9286,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2;  5/2",
+          "degeneracy": 2,
+          "energy": -1.703698465,
+          "occupation": 0.9286,
+          "shell": "f 7/2"
+        },
+        {
+          "block": "f 7/2; -7/2",
+          "degeneracy": 2,
+          "energy": -1.703698465,
+          "occupation": 0.9286,
+          "shell": "f 7/2"
+        }
+      ],
+      "speed_of_light": 137.035999084,
+      "spinor_energies": [
+        -2269.530436396,
+        -2269.530436396,
+        -390.252814791,
+        -390.252814791,
+        -371.322056806,
+        -371.322056806,
+        -332.75689866,
+        -332.75689866,
+        -332.75689866,
+        -332.75689866,
+        -91.029377072,
+        -91.029377072,
+        -82.720341041,
+        -82.720341041,
+        -74.394232683,
+        -74.394232683,
+        -74.394232683,
+        -74.394232683,
+        -60.485956462,
+        -60.485956462,
+        -60.485956462,
+        -60.485956462,
+        -58.686624663,
+        -58.686624663,
+        -58.686624663,
+        -58.686624663,
+        -58.686624663,
+        -58.686624663,
+        -19.969532862,
+        -19.969532862,
+        -16.563149028,
+        -16.563149028,
+        -14.65777292,
+        -14.65777292,
+        -14.65777292,
+        -14.65777292,
+        -9.045036847,
+        -9.045036847,
+        -9.045036847,
+        -9.045036847,
+        -8.689638267,
+        -8.689638267,
+        -8.689638267,
+        -8.689638267,
+        -8.689638267,
+        -8.689638267,
+        -3.588860915,
+        -3.588860915,
+        -2.532834574,
+        -2.532834574,
+        -2.275114954,
+        -2.275114954,
+        -2.275114954,
+        -2.275114954,
+        -1.760707018,
+        -1.760707018,
+        -1.760707018,
+        -1.760707018,
+        -1.760707018,
+        -1.760707018,
+        -1.703698465,
+        -1.703698465,
+        -1.703698465,
+        -1.703698465,
+        -1.703698465,
+        -1.703698465,
+        -1.703698465,
+        -1.703698465
+      ],
+      "spinor_occupations": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286,
+        0.9286
+      ],
+      "status": "ok",
+      "uncontracted": true,
+      "valence_shell": "4f",
+      "valence_spinors": 14,
+      "valence_splitting_cm": 12511.931154224441,
+      "valence_splitting_eh": 0.05700855299999996
+    }
+  },
+  "schema": 1
+}

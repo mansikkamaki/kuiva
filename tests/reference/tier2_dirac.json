@@ -1,0 +1,298 @@
+{
+  "basis": "dyall.v2z",
+  "code": "DIRAC",
+  "degeneracy_tol_cm": 1.0,
+  "environment": {
+    "idle_injection_available": true,
+    "n_cpus": 8,
+    "package_temp_c": 89.0,
+    "powerclamp_state": 0
+  },
+  "generator": "tests/generate/tier2_dirac.py",
+  "hamiltonian": "X2C AOC-DHF + KRCI (LUCIAREL)",
+  "records": {
+    "bi": {
+      "basis": "dyall.v2z",
+      "degeneracy_pattern": [
+        4,
+        4,
+        6,
+        2,
+        4
+      ],
+      "e_scf_total": -21556.463371779137,
+      "e_soc_total_lowest": -21556.54336682,
+      "hamiltonian": "x2c",
+      "key": "bi",
+      "label": "Bi",
+      "multiplets": [
+        {
+          "energy_cm": 0.0,
+          "size": 4,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 12615.979,
+          "size": 4,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 17404.3668,
+          "size": 6,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 25344.3247,
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 36389.7191,
+          "size": 4,
+          "spread_cm": 0.0
+        }
+      ],
+      "n_soc_states": 20,
+      "omega_blocks": [
+        {
+          "energies": [
+            -21556.54336682,
+            -21556.48588419,
+            -21556.46406669,
+            -21556.42788958,
+            -21556.37756306
+          ],
+          "n_roots": 5,
+          "omega_2x": "1u"
+        },
+        {
+          "energies": [
+            -21556.54336682,
+            -21556.48588419,
+            -21556.46406669,
+            -21556.37756306
+          ],
+          "n_roots": 4,
+          "omega_2x": "3u"
+        },
+        {
+          "energies": [
+            -21556.46406669
+          ],
+          "n_roots": 1,
+          "omega_2x": "5u"
+        }
+      ],
+      "resources": {
+        "cpu_seconds": 26.5,
+        "effective_cores": 0.97,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 92.0,
+        "temp_start_c": 88.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 27.2
+      },
+      "soc_rel_cm": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        12615.979,
+        12615.979,
+        12615.979,
+        12615.979,
+        17404.3668,
+        17404.3668,
+        17404.3668,
+        17404.3668,
+        17404.3668,
+        17404.3668,
+        25344.3247,
+        25344.3247,
+        36389.7191,
+        36389.7191,
+        36389.7191,
+        36389.7191
+      ],
+      "status": "ok"
+    },
+    "ce3p": {
+      "basis": "dyall.v2z",
+      "degeneracy_pattern": [
+        6,
+        8
+      ],
+      "e_scf_total": -8857.359845374534,
+      "e_soc_total_lowest": -8857.36583077,
+      "hamiltonian": "x2c",
+      "key": "ce3p",
+      "label": "Ce(3+)",
+      "multiplets": [
+        {
+          "energy_cm": 0.0,
+          "size": 6,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 2298.8739,
+          "size": 8,
+          "spread_cm": 0.0
+        }
+      ],
+      "n_soc_states": 14,
+      "omega_blocks": [
+        {
+          "energies": [
+            -8857.36583077,
+            -8857.35535633
+          ],
+          "n_roots": 2,
+          "omega_2x": "1u"
+        },
+        {
+          "energies": [
+            -8857.36583077,
+            -8857.35535633
+          ],
+          "n_roots": 2,
+          "omega_2x": "3u"
+        },
+        {
+          "energies": [
+            -8857.36583077,
+            -8857.35535633
+          ],
+          "n_roots": 2,
+          "omega_2x": "5u"
+        },
+        {
+          "energies": [
+            -8857.35535633
+          ],
+          "n_roots": 1,
+          "omega_2x": "7u"
+        }
+      ],
+      "resources": {
+        "cpu_seconds": 32.8,
+        "effective_cores": 0.99,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 91.0,
+        "temp_start_c": 91.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 33.3
+      },
+      "soc_rel_cm": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2298.8739,
+        2298.8739,
+        2298.8739,
+        2298.8739,
+        2298.8739,
+        2298.8739,
+        2298.8739,
+        2298.8739
+      ],
+      "status": "ok"
+    },
+    "yb3p": {
+      "basis": "dyall.v2z",
+      "degeneracy_pattern": [
+        8,
+        6
+      ],
+      "e_scf_total": -14061.439582002418,
+      "e_soc_total_lowest": -14061.46026999,
+      "hamiltonian": "x2c",
+      "key": "yb3p",
+      "label": "Yb(3+)",
+      "multiplets": [
+        {
+          "energy_cm": 0.0,
+          "size": 8,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 10594.4728,
+          "size": 6,
+          "spread_cm": 0.0
+        }
+      ],
+      "n_soc_states": 14,
+      "omega_blocks": [
+        {
+          "energies": [
+            -14061.46026999,
+            -14061.41199802
+          ],
+          "n_roots": 2,
+          "omega_2x": "1u"
+        },
+        {
+          "energies": [
+            -14061.46026999,
+            -14061.41199802
+          ],
+          "n_roots": 2,
+          "omega_2x": "3u"
+        },
+        {
+          "energies": [
+            -14061.46026999,
+            -14061.41199802
+          ],
+          "n_roots": 2,
+          "omega_2x": "5u"
+        },
+        {
+          "energies": [
+            -14061.46026999
+          ],
+          "n_roots": 1,
+          "omega_2x": "7u"
+        }
+      ],
+      "resources": {
+        "cpu_seconds": 37.7,
+        "effective_cores": 0.99,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 87.0,
+        "temp_start_c": 90.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 38.1
+      },
+      "soc_rel_cm": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        10594.4728,
+        10594.4728,
+        10594.4728,
+        10594.4728,
+        10594.4728,
+        10594.4728
+      ],
+      "status": "ok"
+    }
+  },
+  "schema": 2
+}

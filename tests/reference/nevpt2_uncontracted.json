@@ -1,0 +1,124 @@
+{
+ "basis": "x2c-SVPall-2c",
+ "cas_gap_cm": 45258.77398753091,
+ "cholesky_naux": 468,
+ "cholesky_orbit_complete": true,
+ "cholesky_tol": 1e-08,
+ "classes": {
+  "Si": {
+   "energy": -0.00013430760424929712,
+   "energy_kuiva": -0.0001343076042492779,
+   "energy_uncontracted": -0.0001343319854337982,
+   "norm": 6.55490619184853e-05,
+   "norm_kuiva": 6.554906191847975e-05
+  },
+  "Sij": {
+   "energy": -0.000163390940980361,
+   "energy_kuiva": -0.0001633909409803554,
+   "energy_uncontracted": -0.00016339094098036095,
+   "norm": 0.00021195145366064246,
+   "norm_kuiva": 0.0002119514536606448
+  },
+  "Sijr": {
+   "energy": -0.00010160824601056219,
+   "energy_kuiva": -0.0001016082460105598,
+   "energy_uncontracted": -0.00010160835793823369,
+   "norm": 0.00012618197591751515,
+   "norm_kuiva": 0.0001261819759175152
+  },
+  "Sijrs": {
+   "energy": -0.00037042897522512484,
+   "energy_kuiva": -0.0003704289752251249,
+   "energy_uncontracted": -0.00037042897522512484,
+   "norm": 0.0005586390400624423,
+   "norm_kuiva": 0.0005586390400624423
+  },
+  "Sir": {
+   "energy": -9.560183225386247e-07,
+   "energy_kuiva": -9.56018322543147e-07,
+   "energy_uncontracted": -9.582251248046117e-07,
+   "norm": 7.268064929190971e-07,
+   "norm_kuiva": 7.268064929225073e-07
+  },
+  "Sr": {
+   "energy": -0.00013863602892163945,
+   "energy_kuiva": -0.0001386360289216609,
+   "energy_uncontracted": -0.00013893684048394285,
+   "norm": 0.00015042092352674115,
+   "norm_kuiva": 0.0001504209235267727
+  },
+  "Srs": {
+   "energy": -0.00028482629048545135,
+   "energy_kuiva": -0.0002848262904854462,
+   "energy_uncontracted": -0.00028482629048545135,
+   "norm": 0.0005436809000914604,
+   "norm_kuiva": 0.0005436809000914621
+  },
+  "Srsi": {
+   "energy": -4.2981843890720513e-10,
+   "energy_kuiva": -4.298184389072144e-10,
+   "energy_uncontracted": -4.2988961119136e-10,
+   "norm": 6.497423902020464e-10,
+   "norm_kuiva": 6.497423902020689e-10
+  }
+ },
+ "cpu_seconds": 9.472864061000001,
+ "deleted_virtual_threshold": 0.4183704682941515,
+ "dyall_residual": 1.5164640665995823e-16,
+ "e2_kuiva": -0.001194154534013407,
+ "e2_reference": -0.0011941545340134134,
+ "e_casscf": -7111.677906911093,
+ "eps_inactive_kept": [
+  -0.3793279546484481,
+  -0.3793279546484354
+ ],
+ "eps_virtual_kept": [
+  0.3747154348068533,
+  0.374715434806942
+ ],
+ "eri_imaginary_over_real": 0.05376828418218339,
+ "frozen_core_threshold": -0.45303900622629023,
+ "geometry": "r(H-I) = 1.609 A, experimental r_e (Huber & Herzberg 1979)",
+ "hamiltonian": {
+  "decoupling": {
+   "block_scales": {},
+   "decoupling": "1e",
+   "fragments": 0,
+   "implementation": "pyscf",
+   "partition": "",
+   "source": ""
+  },
+  "method": "X2C-1e",
+  "one_electron": "X2C (approx=1e)",
+  "picture_change_shift": 0.19621069539113023,
+  "screening": {
+   "backend": "",
+   "backend_version": "",
+   "configurations": {},
+   "elements": [],
+   "interaction": "none",
+   "light_speed": null,
+   "method": "none",
+   "spin_free_scale": 0.0,
+   "spin_orbit_scale": 0.0,
+   "tr_residual": 0.0,
+   "tr_residual_rel": 0.0
+  },
+  "soc_strength": 4.872207166144204,
+  "tr_residual": 1.1268852517874813e-10,
+  "tr_residual_rel": 7.711256040137059e-14
+ },
+ "key": "hi",
+ "label": "HI",
+ "n_deleted": 52,
+ "n_frozen": 50,
+ "n_retained_spinors": 8,
+ "nao": 55,
+ "ncas": 2,
+ "nelecas": 2,
+ "nspinor": 110,
+ "schema": 1,
+ "screening": "none",
+ "wall_seconds": 2.6297523975372314,
+ "with_soc": true
+}

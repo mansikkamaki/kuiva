@@ -1,0 +1,42 @@
+# --- External toolchain sandbox: git-ignored, reproduced by
+#     scripts/bootstrap/. Includes external/src/ (large upstream tarballs, staged or
+#     downloaded). Two files are kept BY EXCEPTION (env entry points). ---
+external/*
+!external/env.sh
+!external/env.openmpi.sh
+
+# --- Local development scratch (never tracked) ---
+/temp/
+
+# --- Personal Claude Code settings (shared settings.json, if added, stays tracked) ---
+.claude/settings.local.json
+.claude/settings.local.json.tmp.*
+
+# --- Compiled kernel backend: generated build configuration. It records one machine's
+#     compiler, interpreter and MKL paths; cpp/configure regenerates it. ---
+cpp/config.mk
+
+# --- Python / build noise ---
+__pycache__/
+*.py[cod]
+*.so
+*.o
+*.a
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+
+# --- Example run outputs. Each example writes output/<name>.out plus its own scratch
+#     spin-orbit cache; the committed record of a known-good run is
+#     examples/*/reference/*.ref.out, which a run never writes to. ---
+examples/*/output/
+
+# --- Stage checkpoints for the heavy tests (tests/stages.py). Machine-local
+#     replayable intermediates, never a reference: tests/reference/*.json is what is
+#     committed, and the default suite computes everything regardless of what is here. ---
+tests/checkpoints/
+
+# --- Research papers: local-only LaTeX material, never pushed. Nothing
+#     outside research/ may depend on anything inside it. ---
+/research/

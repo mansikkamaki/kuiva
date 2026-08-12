@@ -1,0 +1,1398 @@
+"""Shared state-averaged orbital optimizer.
+
+**The contract is the point of this module.** One optimizer, consumed identically by the cheap
+CI, by conventional-CI CASSCF and by DMRG-CASSCF: *reduced density
+matrices in, orbital rotation out*. The CI method enters only as a callback
+(:func:`optimize_orbitals`), so nothing here knows or cares whether the RDMs came from a
+truncated determinant list, a full CI or a matrix-product state. Never bypass it.
+
+The energy and its gradient
+---------------------------
+With inactive (fully occupied) spinors ``i``, active ``t``, virtual ``a``::
+
+    F^I_pq = h_pq + sum_i [(pq|ii) - (pi|iq)]                     inactive Fock
+    F^A_pq = sum_tu gamma_tu [(pq|tu) - (pu|tq)]                  active Fock
+    E      = E_nuc + 1/2 sum_i (h_ii + F^I_ii)
+             + sum_tu F^I_tu gamma_tu + 1/2 sum_tuvw (tu|vw) Gamma_tuvw
+
+Orbitals rotate as ``C -> C exp(kappa)`` with ``kappa`` **anti-Hermitian**. Expanding the
+energy to first order gives ``dE = 2 Re sum_{p>q} G_pq kappa_pq`` with the anti-Hermitian
+gradient matrix ``G = F^dag - F`` built from the generalized Fock
+
+    F_pq = sum_r D_pr h_qr + sum_rst Gamma_prst (qr|st)
+
+which specializes (derivation in the tests, verified against the general form *and* against
+finite differences) to
+
+    F_iq = (F^I + F^A)_qi,     F_tq = sum_u gamma_tu F^I_qu + sum_uvw Gamma_tuvw (qu|vw),
+    F_aq = 0.
+
+Everything is complex: ``kappa`` has independent real and imaginary parts, and the imaginary
+part is not decoration — it is what lets the optimizer build spinors that mix the Kramers
+partners, i.e. what makes the wavefunction respond to spin-orbit coupling at all.
+
+Why the Fock matrices are built in the AO basis
+-----------------------------------------------
+``F^I`` and ``F^A`` are ordinary Coulomb/exchange builds from a density, so they are formed by
+:func:`kuiva.integrals.transform.coulomb_exchange` in the **AO** basis and transformed to MO
+afterwards. The alternative — a full ``(naux, n, n)`` MO three-index transform — costs
+``naux * n^2`` storage against ``nao^2`` here, gigabytes against megabytes for a CASSCF over
+all spinors, and it is repeated every macro-iteration. The only three-index quantity that must
+be transformed is ``B^P_{p,t}`` with **one active index** (:attr:`CASIntegrals.b_act`), which
+is ``n_active/n`` of the full array. This is the single most important performance decision in
+the module.
+
+Three step types, one optimizer
+------------------------------
+``OrbitalOptimizer(mode=...)`` selects how the step is built. All three share the exact
+gradient, the trust region and the accept/reject logic; they differ only in the curvature
+model:
+
+* ``"quasi-newton"`` — self-scaled L-BFGS preconditioned by an approximate diagonal Hessian.
+  No Hessian-vector products at all. **Cheapest by far where it works**: measured at 3-4x
+  less total work than the second-order step on problems that converge.
+* ``"second-order"`` — the exact orbital Hessian (:class:`OrbitalHessian`) through an
+  augmented-Hessian eigenproblem (:func:`augmented_hessian_step`). Converges cases where the
+  quasi-Newton step does not converge at all, which is not a speed difference but the
+  difference between an answer and none.
+* ``"auto"`` (default) — start cheap, escalate when the **gradient trajectory** shows the
+  cheap step is not getting anywhere. The robust choice, not the cheapest one.
+
+⚠ Stability notes. The diagonal Hessian is a **preconditioner**, not a curvature
+claim: it is floored away from zero, its anisotropy is clamped (measured up to 10x too small
+on soft modes), and a persistently negative diagonal is reported rather than silently damped.
+The L-BFGS curvature is accumulated on the **CI-optimized** surface — legitimate, because a
+re-solved CI makes ``E(kappa)`` smooth with precisely the orbital gradient — but the pairs are
+transported between charts without correction, which is exact only to first order in the step.
+
+⚠ The scheme is **two-step**: the orbital-CI coupling is not in the Hessian, so the asymptotic
+rate is linear rather than quadratic. Demonstrated cleanly on a stiff case — with the RDMs
+frozen (a pure orbital minimization, where the Hessian is exact for the surface) the same
+optimizer converges to ``|g| = 1.1e-8``; with the CI re-solved each macro-iteration it settles
+at ``6e-4``. That gap *is* the neglected coupling. Including it would require applying the
+Hessian to CI vectors, which would break the ci_solver contract that lets a truncated CI, a full CI
+and a DMRG plug in identically.
+
+References
+----------
+* CASSCF orbital gradients, the generalized Fock matrix and the exponential parametrization:
+  T. Helgaker, P. Jorgensen, J. Olsen, "Molecular Electronic-Structure Theory", Wiley (2000),
+  ch. 10 and 12; B. O. Roos, P. R. Taylor, P. E. M. Siegbahn, Chem. Phys. 48, 157 (1980),
+  doi:10.1016/0301-0104(80)80045-0; P. E. M. Siegbahn, J. Almlof, A. Heiberg, B. O. Roos,
+  J. Chem. Phys. 74, 2384 (1981), doi:10.1063/1.441359.
+* Second-order / augmented-Hessian MCSCF: H. J. Aa. Jensen, H. Agren, Chem. Phys. Lett. 110,
+  140 (1984), doi:10.1016/0009-2614(84)80166-1; H. J. Aa. Jensen, P. Jorgensen, J. Chem.
+  Phys. 80, 1204 (1984), doi:10.1063/1.446797; D. A. Kreplin, P. J. Knowles, H.-J. Werner,
+  J. Chem. Phys. 150, 194106 (2019), doi:10.1063/1.5094644.
+* One-index transformed Fock matrices, which make a Hessian-vector product cost the same
+  order as a gradient: P. Jorgensen, P. Swanstrom, D. L. Yeager, J. Chem. Phys. 78, 347
+  (1983), doi:10.1063/1.444508; Helgaker, Jorgensen & Olsen (2000), section 10.8.
+* Inexact-Newton forcing sequences for the augmented-Hessian solve: S. C. Eisenstat,
+  H. F. Walker, SIAM J. Sci. Comput. 17, 16 (1996), doi:10.1137/0917003; R. S. Dembo,
+  S. C. Eisenstat, T. Steihaug, SIAM J. Numer. Anal. 19, 400 (1982), doi:10.1137/0719025.
+* Level shifting to enforce a trust radius: T. Helgaker, Chem. Phys. Lett. 182, 503 (1991),
+  doi:10.1016/0009-2614(91)90115-P.
+* L-BFGS: J. Nocedal, Math. Comput. 35, 773 (1980), doi:10.1090/S0025-5718-1980-0572855-7;
+  D. C. Liu, J. Nocedal, Math. Program. 45, 503 (1989), doi:10.1007/BF01589116. Trust-region
+  globalization: J. Nocedal, S. J. Wright, "Numerical Optimization", 2nd ed., Springer (2006).
+* Two-component / relativistic MCSCF, where the rotation parameters are complex:
+  H. J. Aa. Jensen, K. G. Dyall, T. Saue, K. Fægri, J. Chem. Phys. 104, 4083 (1996),
+  doi:10.1063/1.471644; T. Fleig, J. Olsen, C. M. Marian, J. Chem. Phys. 114, 4775 (2001),
+  doi:10.1063/1.1349076.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Sequence, Tuple
+
+import numpy as np
+
+from ..integrals.transform import ThreeIndexAO, assemble_4c, coulomb_exchange, transform_3c
+from ..util import output as out
+from ..util import threads
+from ..util.logging import get_logger
+from ..util.timing import timer
+
+log = get_logger(__name__)
+
+#: Largest single rotation angle [rad] allowed in one macro-iteration.
+DEFAULT_MAX_STEP = 0.20
+#: Gradient norm below which ``mode="auto"`` escalates to the second-order step. **Zero by
+#: default: escalation is driven by failure, not by proximity.** Measured: where the
+#: quasi-Newton step converges at all it costs 3-4x less total work than the second-order one
+#: (118 vs 454 gradient-equivalents on an easy case), because a Hessian-vector product is not
+#: free and an augmented-Hessian solve needs many. Raise it when a *macro-iteration* is the
+#: expensive thing — a DMRG-CASSCF, where one CI solve dwarfs any number of Fock builds, wants
+#: the fewest possible iterations and should set this high or use ``mode="second-order"``.
+SECOND_ORDER_START = 0.0
+#: Cost of one Hessian-vector product relative to one macro-iteration, for
+#: :attr:`CASSCFResult.work_units`. See that docstring: system dependent, measured ~2.9 on
+#: TiCl3 with the cheap CI.
+HVP_WORK_WEIGHT = 1.5
+#: Iterations over which gradient progress is judged, and the reduction expected across that
+#: window. Escalation is driven by the *gradient trajectory*, not the energy: an energy that
+#: has stopped moving cannot distinguish "converging slowly" from "stuck", because a
+#: quasi-Newton run does both with the same tiny per-iteration energy change. A gradient that
+#: keeps falling — however slowly — is converging and does not need rescuing.
+STALL_WINDOW = 15
+STALL_FACTOR = 2.0
+#: Absolute floor on the diagonal Hessian preconditioner [Eh]; see the stability note above.
+HESSIAN_FLOOR = 1.0e-3
+#: Relative floor, as a fraction of the median diagonal. The approximate diagonal is a poor
+#: estimate of curvature for *soft* modes specifically — measured against a numerical diagonal
+#: Hessian it is a factor 0.67 too small on average but up to 10x too small on the softest
+#: rotations, which makes the preconditioned step there far too long and costs rejections.
+#: Clamping the anisotropy keeps the reliable information (virtual-inactive rotations really
+#: are stiffer than active ones) and discards the unreliable extreme. Measured effect on a
+#: stiff synthetic CASSCF: 300 macro-iterations to |g| < 1e-5 without it, 156 with.
+HESSIAN_RELATIVE_FLOOR = 0.3
+
+
+# --- Orbital spaces --------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class OrbitalSpaces:
+    """Partition of the spinors into inactive / active / virtual.
+
+    Index arrays rather than counts, because the active space is selected by orbital
+    *character* and need not be contiguous (necessarily so for an unrestricted
+    reference).
+    """
+
+    inactive: np.ndarray
+    active: np.ndarray
+    virtual: np.ndarray
+    n_orb: int
+
+    def __post_init__(self) -> None:
+        for name in ("inactive", "active", "virtual"):
+            object.__setattr__(self, name,
+                               np.asarray(getattr(self, name), dtype=int).ravel())
+        allidx = np.concatenate([self.inactive, self.active, self.virtual])
+        if allidx.size != self.n_orb or np.unique(allidx).size != self.n_orb:
+            raise ValueError(
+                "the three spaces must partition the {} spinors exactly; got {} indices "
+                "({} unique)".format(self.n_orb, allidx.size, np.unique(allidx).size))
+
+    @classmethod
+    def from_counts(cls, n_inactive: int, n_active: int, n_orb: int) -> "OrbitalSpaces":
+        """Contiguous partition — valid for a Kramers-paired restricted reference."""
+        i = np.arange(n_inactive)
+        a = np.arange(n_inactive, n_inactive + n_active)
+        v = np.arange(n_inactive + n_active, n_orb)
+        return cls(inactive=i, active=a, virtual=v, n_orb=n_orb)
+
+    @property
+    def n_inactive(self) -> int:
+        return int(self.inactive.size)
+
+    @property
+    def n_active(self) -> int:
+        return int(self.active.size)
+
+    @property
+    def n_virtual(self) -> int:
+        return int(self.virtual.size)
+
+    def rotation_pairs(self, active_active: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+        """Non-redundant rotation pairs ``(p, q)``, ``p`` from the higher space.
+
+        Inactive-inactive and virtual-virtual rotations are **exactly** redundant (they
+        change no observable) and are always excluded. Active-active rotations are redundant
+        with the CI parameters for an exact CAS and are excluded by default; they are *not*
+        redundant for a truncated CI, which is why the flag exists — but the
+        preferred way to fix the active-space basis there is the natural-spinor rotation, not
+        an energy gradient that a truncated CI cannot make stationary.
+        """
+        rows, cols = [], []
+        for hi, lo in ((self.active, self.inactive), (self.virtual, self.inactive),
+                       (self.virtual, self.active)):
+            if hi.size and lo.size:
+                rows.append(np.repeat(hi, lo.size))
+                cols.append(np.tile(lo, hi.size))
+        if active_active and self.active.size > 1:
+            t = self.active
+            lo_pos, hi_pos = np.triu_indices(t.size, k=1)
+            rows.append(t[hi_pos])
+            cols.append(t[lo_pos])
+        if not rows:
+            return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
+        return np.concatenate(rows), np.concatenate(cols)
+
+    def __repr__(self) -> str:
+        return "OrbitalSpaces(inactive={}, active={}, virtual={})".format(
+            self.n_inactive, self.n_active, self.n_virtual)
+
+
+# --- Integrals in the form the gradient needs ------------------------------------------
+
+@dataclass
+class CASIntegrals:
+    """The integral quantities the orbital gradient and the CI need, at fixed orbitals.
+
+    Deliberately *not* the full MO integral set: only the one-electron matrix, the inactive
+    Fock, and the three-index block with one active index. See the module docstring.
+    """
+
+    h: np.ndarray                    # (n, n) one-electron, MO basis
+    f_inactive: np.ndarray           # (n, n) inactive Fock, MO basis
+    b_act: np.ndarray                # (naux, n, n_active)
+    e_core: float                    # inactive energy, including E_nuc
+    spaces: OrbitalSpaces
+    #: Inactive Fock in the **AO** basis. Kept because :class:`OrbitalHessian` needs it and
+    #: rebuilding it costs a J/K build — measured at a third of a second-order step's setup
+    #: on a real system, for a matrix that was already in hand.
+    f_inactive_ao: Optional[np.ndarray] = None
+
+    @property
+    def n_orb(self) -> int:
+        return int(self.h.shape[0])
+
+    def active_eri(self) -> np.ndarray:
+        """``(tu|vw)`` over the active spinors."""
+        b = self.b_act[:, self.spaces.active, :]
+        return assemble_4c(b, b)
+
+    def h_active_effective(self) -> np.ndarray:
+        """The active-space one-electron Hamiltonian, i.e. ``F^I`` restricted to active."""
+        act = self.spaces.active
+        return self.f_inactive[np.ix_(act, act)]
+
+    @classmethod
+    def build(cls, factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
+              spaces: OrbitalSpaces, e_nuc: float = 0.0) -> "CASIntegrals":
+        """Transform at the current orbitals. One AO Fock build plus one active transform."""
+        with timer("CAS integrals"):
+            c = np.ascontiguousarray(c_spinor)
+            h_mo = c.conj().T @ h_ao @ c
+            # Factorized inactive density: every inactive spinor is singly occupied.
+            j, k = coulomb_exchange(factors, np.ascontiguousarray(c[:, spaces.inactive]))
+            f_i_ao = h_ao + j - k
+            f_i = c.conj().T @ f_i_ao @ c
+            inac = np.ix_(spaces.inactive, spaces.inactive)
+            e_core = 0.5 * float(np.real(np.trace(h_mo[inac]) + np.trace(f_i[inac]))) + e_nuc
+            b_act = transform_3c(factors, c, np.ascontiguousarray(c[:, spaces.active]))
+        return cls(h=h_mo, f_inactive=f_i, b_act=b_act, e_core=e_core, spaces=spaces,
+                   f_inactive_ao=f_i_ao)
+
+
+# --- Energy, generalized Fock, gradient --------------------------------------------------
+
+def cas_energy(ints: CASIntegrals, gamma: np.ndarray, gamma2: np.ndarray) -> float:
+    """State-averaged CASSCF energy for the given RDMs [Eh]."""
+    act = ints.spaces.active
+    e1 = np.einsum("tu,tu->", ints.f_inactive[np.ix_(act, act)], gamma)
+    e2 = 0.5 * np.einsum("tuvw,tuvw->", ints.active_eri(), gamma2)
+    return float(np.real(e1 + e2)) + ints.e_core
+
+
+def _active_fock(ints: CASIntegrals, factors: ThreeIndexAO, c_spinor: np.ndarray,
+                 gamma: np.ndarray) -> np.ndarray:
+    """``F^A`` in the MO basis, built as an AO Coulomb/exchange from the active density.
+
+    The active density ``sum_tu c_t gamma_tu c_u^dag`` is not idempotent, so it is factorized
+    through the natural spinors of ``gamma`` — which exist because a 1-RDM is Hermitian
+    positive semidefinite — and fed to the same occupied-index-first builder as the inactive
+    density. Occupation numbers below zero can only come from rounding and are clamped there.
+    """
+    return c_spinor.conj().T @ _active_fock_ao(factors, c_spinor, ints.spaces,
+                                               gamma) @ c_spinor
+
+
+def _active_fock_ao(factors: ThreeIndexAO, c_spinor: np.ndarray, spaces: OrbitalSpaces,
+                    gamma: np.ndarray) -> np.ndarray:
+    """``F^A`` in the AO basis. Kept separate so callers that need both the MO and the AO form
+    (the gradient and the Hessian) build it once instead of twice."""
+    c_act = np.ascontiguousarray(c_spinor[:, spaces.active])
+    # The AO density reproducing sum_tu gamma_tu (pq|tu) is C gamma^T C^dag; with the
+    # two-factor builder no eigendecomposition is needed — pass the weight matrix directly.
+    j, k = coulomb_exchange(factors, np.ascontiguousarray(c_act @ gamma.T),
+                            orbitals_right=c_act)
+    return j - k
+
+
+def averaged_fock(ints: CASIntegrals, factors: ThreeIndexAO, c_spinor: np.ndarray,
+                  gamma: np.ndarray) -> np.ndarray:
+    """``F^I + F^A`` in the MO basis, for the state-averaged 1-RDM ``gamma`` [Eh].
+
+    The one-body operator whose *diagonal* :func:`fock_diagonal` reports and whose
+    inactive/virtual blocks SC-NEVPT2 diagonalizes to define the Dyall zeroth-order orbital
+    energies (:func:`kuiva.pt.nevpt2.pseudo_canonicalize`). Exposed as its own function
+    only so that the perturbation layer does not have to re-derive it or reach into a private
+    name; nothing about the construction is new here.
+
+    ⚠ **Hermitian in exact arithmetic, and the caller should symmetrize rather than assume.**
+    ``F^A`` comes from a Coulomb/exchange build on a factorized density, so its Hermiticity is
+    accurate to rounding and not exact.
+    """
+    return ints.f_inactive + _active_fock(ints, factors, c_spinor, gamma)
+
+
+def fock_diagonal(ints: CASIntegrals, factors: ThreeIndexAO, c_spinor: np.ndarray,
+                  gamma: np.ndarray) -> np.ndarray:
+    """Diagonal of ``F^I + F^A`` in the current orbital basis — "orbital energies" [Eh].
+
+    What the molden dump and any orbital listing print as ``Ene=``. It is the natural
+    generalization of an SCF eigenvalue to an MCSCF orbital set: for an inactive orbital it is
+    the usual Fock expectation value, and for an active one it is the average-of-configuration
+    energy of that spinor in the field of the converged density.
+
+    ⚠ **It is a label, not a physical excitation energy**, and the orbitals are not
+    eigenfunctions of this operator unless they were canonicalized — the off-diagonal elements
+    are generally not small. Use it for ordering and identification; the energies that mean
+    something are the state energies.
+
+    Real by construction (the diagonal of a Hermitian matrix); the imaginary part is discarded
+    after being checked.
+    """
+    f = averaged_fock(ints, factors, c_spinor, gamma)
+    diag = np.diag(f)
+    imag = float(np.max(np.abs(diag.imag))) if diag.size else 0.0
+    if imag > 1e-8 * max(float(np.max(np.abs(diag.real))), 1.0):
+        log.warning("Fock diagonal has a non-negligible imaginary part (max %.2e); the Fock "
+                    "matrix should be Hermitian", imag)
+    return np.ascontiguousarray(diag.real)
+
+
+def generalized_fock(ints: CASIntegrals, gamma: np.ndarray, gamma2: np.ndarray,
+                     f_active: np.ndarray) -> np.ndarray:
+    """The generalized Fock ``F`` (see the module docstring). Virtual rows are zero."""
+    sp = ints.spaces
+    n = ints.n_orb
+    f = np.zeros((n, n), dtype=np.complex128)
+    fia = ints.f_inactive + f_active
+    # inactive rows: F_iq = (F^I + F^A)_qi
+    f[sp.inactive, :] = fia[:, sp.inactive].T
+    # active rows: F_tq = sum_u gamma_tu F^I_qu + sum_uvw Gamma_tuvw (qu|vw)
+    act = sp.active
+    b_act_act = ints.b_act[:, act, :]                          # (naux, nact, nact)
+    # As GEMMs over flattened index pairs, not einsum — see OrbitalHessian for why.
+    nact = sp.n_active
+    naux = b_act_act.shape[0]
+    m = (b_act_act.reshape(naux, nact ** 2)
+         @ gamma2.reshape(nact ** 2, nact ** 2).T).reshape(naux, nact, nact)
+    lhs = np.ascontiguousarray(m.transpose(1, 0, 2)).reshape(nact, -1)
+    rhs = np.ascontiguousarray(ints.b_act.transpose(1, 0, 2)).reshape(n, -1)
+    f[act, :] = gamma @ ints.f_inactive[:, act].T + lhs @ rhs.T
+    return f
+
+
+def orbital_gradient(ints: CASIntegrals, gamma: np.ndarray, gamma2: np.ndarray,
+                     f_active: np.ndarray) -> np.ndarray:
+    """The anti-Hermitian gradient matrix ``G = F^dag - F``.
+
+    ``dE = 2 Re sum_{p>q} G_pq kappa_pq`` for an anti-Hermitian step ``kappa``.
+    """
+    f = generalized_fock(ints, gamma, gamma2, f_active)
+    return f.conj().T - f
+
+
+class OrbitalHessian:
+    """Exact orbital-orbital Hessian-vector products at fixed RDMs.
+
+    ``H(kappa) = d/dt grad(C exp(t kappa))|_0``, computed analytically. The energy depends on
+    ``kappa`` only through the integrals, so differentiating the gradient means differentiating
+    the integrals — a **one-index transformation**. Written in terms of the orbital response
+    ``X = C kappa``, every two-electron term collapses into ordinary Coulomb/exchange builds
+    with *transition* densities:
+
+        dD^I = X_I C_I^dag + C_I X_I^dag,    dD^A = X_T g^T C_T^dag + C_T g^T X_T^dag
+
+    which are Hermitian but **indefinite**, hence the two-factor
+    :func:`~kuiva.integrals.transform.coulomb_exchange`. So one Hessian-vector product costs
+    two J/K builds plus one three-index transform — the same order as a gradient, not the
+    ``O(n^4)`` an explicit Hessian would need, and no ``(naux, n, n)`` array is ever formed.
+
+    The one economy worth naming: the *bra*-side three-index response needs no new integrals
+    at all. Since ``X = C kappa``,
+
+        Bx1^P_{p,t} = sum_mu conj(X_{mu p}) L^P C_{nu t} = sum_r conj(kappa_{rp}) Bc^P_{r,t}
+
+    is a small contraction with the ``b_act`` already held by :class:`CASIntegrals`. Only the
+    ket-side response ``Bx2 = transform_3c(L, C, X_act)`` is a genuine transform.
+
+    The chart curvature term
+    ------------------------
+    The raw derivative of the gradient *field* is **not symmetric**: differentiating
+    ``g(kappa')`` — the gradient at the rotated point, expressed in *that point's* frame —
+    is not the same as the Hessian of ``f(kappa) = E(C exp(kappa))``. They differ by a
+    curvature term of the exponential chart,
+
+        d^2 f . kappa  =  dg/dt  -  1/2 [kappa, conj(G)]
+
+    with ``G`` the gradient matrix. The correction is applied here, so :meth:`matvec` returns
+    the **true, symmetric** Hessian-vector product. It was verified by building both operators
+    densely on a small case: the identity holds to ``7e-15``, and the corrected operator's
+    symmetry to machine precision.
+
+    This is not a cosmetic detail. The correction vanishes at a stationary point and has zero
+    quadratic form everywhere — ``<A d, d>`` equals ``d^2f/dt^2`` with or without it — so it is
+    invisible to every obvious check. But an asymmetric operator makes Davidson wander: before
+    the correction the augmented-Hessian solve hit its iteration limit without converging on
+    every step away from the solution, and the optimizer converged *linearly*.
+
+    .. warning::
+       This is the **orbital-orbital** block only; the orbital-CI coupling is not included.
+       That makes the scheme a *two-step* second-order MCSCF: the CI is re-solved between
+       macro-iterations, and near convergence the neglected coupling slows the asymptotic rate
+       relative to a fully coupled one-step method. It is also what keeps the solver-agnostic contract
+       intact — the optimizer never needs to apply H to a CI vector, so DMRG and a truncated CI
+       plug in on equal terms. A one-step method would have to break that.
+    """
+
+    def __init__(self, ints: CASIntegrals, factors: ThreeIndexAO, h_ao: np.ndarray,
+                 c_spinor: np.ndarray, gamma: np.ndarray, gamma2: np.ndarray,
+                 rows: np.ndarray, cols: np.ndarray,
+                 f_active_ao: Optional[np.ndarray] = None):
+        self.ints = ints
+        self.factors = factors
+        self.h_ao = h_ao
+        self.c = np.ascontiguousarray(c_spinor)
+        self.gamma = gamma
+        self.gamma2 = gamma2
+        self.rows, self.cols = rows, cols
+        sp = ints.spaces
+        self.sp = sp
+        self.n_calls = 0
+        # kappa-independent quantities, built once per macro-iteration.
+        self.c_i = np.ascontiguousarray(self.c[:, sp.inactive])
+        self.c_t = np.ascontiguousarray(self.c[:, sp.active])
+        # Reuse the AO Fock matrices the caller already built. Each is a J/K build, and on a
+        # real system the *setup* of a Hessian dominates its first few matrix-vector products.
+        if ints.f_inactive_ao is not None:
+            self.f_i_ao = ints.f_inactive_ao
+        else:
+            j_i, k_i = coulomb_exchange(factors, self.c_i)
+            self.f_i_ao = h_ao + j_i - k_i
+        if f_active_ao is not None:
+            self.f_a_ao = f_active_ao
+        else:
+            j_a, k_a = coulomb_exchange(factors, np.ascontiguousarray(self.c_t @ gamma.T),
+                                        orbitals_right=self.c_t)
+            self.f_a_ao = j_a - k_a
+        self.b_act = ints.b_act                                   # (naux, n, nact)
+        self.nact = sp.n_active
+        self.g2_flat = np.ascontiguousarray(
+            gamma2.reshape(self.nact ** 2, self.nact ** 2))
+        self.mc = self._contract_gamma2(self.b_act[:, sp.active, :])
+        # Gradient matrix, for the chart-curvature correction (see the class docstring).
+        f_active = self.c.conj().T @ self.f_a_ao @ self.c
+        self.g_dual = np.conj(orbital_gradient(ints, gamma, gamma2, f_active))
+
+    def _fock_mo(self, f_ao: np.ndarray, x: np.ndarray) -> np.ndarray:
+        """``X^dag F C + C^dag F X`` — the one-electron part of a one-index transformation."""
+        return x.conj().T @ f_ao @ self.c + self.c.conj().T @ f_ao @ x
+
+    def _contract_gamma2(self, b_aa: np.ndarray) -> np.ndarray:
+        """``M^P_{tu} = sum_vw Gamma_tuvw B^P_{vw}`` as one GEMM over the flattened pairs."""
+        naux = b_aa.shape[0]
+        flat = b_aa.reshape(naux, self.nact ** 2)
+        return (flat @ self.g2_flat.T).reshape(naux, self.nact, self.nact)
+
+    @staticmethod
+    def _pair_contract(b_gen: np.ndarray, m_act: np.ndarray) -> np.ndarray:
+        """``R_{tq} = sum_{P,u} B^P_{qu} M^P_{tu}`` as one GEMM over the flattened ``(P, u)``."""
+        naux, n_gen, nact = b_gen.shape
+        lhs = np.ascontiguousarray(m_act.transpose(1, 0, 2)).reshape(m_act.shape[1], -1)
+        rhs = np.ascontiguousarray(b_gen.transpose(1, 0, 2)).reshape(n_gen, -1)
+        return lhs @ rhs.T
+
+    def matvec(self, kappa_vec: np.ndarray) -> np.ndarray:
+        """Hessian applied to a packed rotation vector, in the gradient's own representation."""
+        self.n_calls += 1
+        sp = self.sp
+        n = self.ints.n_orb
+        kappa = _unpack(kappa_vec, self.rows, self.cols, n)
+        x = self.c @ kappa                                        # orbital response
+
+        with timer("Hessian-vector product"):
+            x_i = np.ascontiguousarray(x[:, sp.inactive])
+            x_t = np.ascontiguousarray(x[:, sp.active])
+            # Transition densities, as two-factor (indefinite) low-rank objects.
+            j_i, k_i = coulomb_exchange(
+                self.factors, np.concatenate([x_i, self.c_i], axis=1),
+                orbitals_right=np.concatenate([self.c_i, x_i], axis=1))
+            j_a, k_a = coulomb_exchange(
+                self.factors,
+                np.concatenate([x_t @ self.gamma.T, self.c_t @ self.gamma.T], axis=1),
+                orbitals_right=np.concatenate([self.c_t, x_t], axis=1))
+            d_f_i = self._fock_mo(self.f_i_ao, x) + self.c.conj().T @ (j_i - k_i) @ self.c
+            d_f_a = self._fock_mo(self.f_a_ao, x) + self.c.conj().T @ (j_a - k_a) @ self.c
+
+            # Three-index response. Bra side: free from b_act — but it must be a *batched
+            # GEMM*, not an einsum. `einsum("rp,Prt->Ppt", ...)` is 1.2e9 flops that NumPy
+            # will not dispatch to BLAS, and it dominated the Hessian-vector product
+            # (measured at 16 s per product on a real system before this was written as
+            # matmul). Same trap as the J/K build; coefficients and densities transform oppositely.
+            bx = np.matmul(kappa.conj().T, self.b_act)
+            bx = bx + transform_3c(self.factors, self.c, x_t)
+
+            d_f = np.zeros((n, n), dtype=np.complex128)
+            d_f[sp.inactive, :] = (d_f_i + d_f_a)[:, sp.inactive].T
+            act = sp.active
+            mx = self._contract_gamma2(bx[:, act, :])
+            d_f[act, :] = (self.gamma @ d_f_i[:, act].T
+                           + self._pair_contract(bx, self.mc)
+                           + self._pair_contract(self.b_act, mx))
+        d_g = d_f.conj().T - d_f
+        raw = 2.0 * np.conj(_pack(d_g, self.rows, self.cols))
+        # Remove the chart-curvature term: it *is* the antisymmetric part of the raw operator,
+        # so subtracting it leaves the true (symmetric) Hessian. Already a dual element, so it
+        # is packed without the extra conjugation the primal gradient needs.
+        curv = -0.5 * (kappa @ self.g_dual - self.g_dual @ kappa)
+        return raw - 2.0 * _pack(curv, self.rows, self.cols)
+
+    __call__ = matvec
+
+
+def diagonal_hessian(ints: CASIntegrals, gamma: np.ndarray, f_active: np.ndarray,
+                     rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
+    """Approximate diagonal Hessian for the rotation pairs — a **preconditioner** (see above).
+
+    ``H_pq ~ 2 (D_pp - D_qq) (f_qq - f_pp)`` with ``f = F^I + F^A`` and ``D`` the total
+    occupations. Positive whenever the orbital ordering is sane, which is exactly the
+    condition under which a Newton-like step is meaningful.
+    """
+    sp = ints.spaces
+    n = ints.n_orb
+    occ = np.zeros(n)
+    occ[sp.inactive] = 1.0
+    occ[sp.active] = np.clip(np.real(np.diag(gamma)), 0.0, 1.0)
+    fdiag = np.real(np.diag(ints.f_inactive + f_active))
+    hdiag = 2.0 * (occ[cols] - occ[rows]) * (fdiag[rows] - fdiag[cols])
+    n_bad = int(np.count_nonzero(hdiag < 0.0))
+    if n_bad:
+        log.debug("%d of %d rotation pairs have a negative approximate curvature; the step "
+                  "is preconditioned with the floored magnitude", n_bad, hdiag.size)
+    hdiag = np.abs(hdiag)
+    floor = HESSIAN_FLOOR
+    if hdiag.size:
+        floor = max(floor, HESSIAN_RELATIVE_FLOOR * float(np.median(hdiag)))
+    return np.maximum(hdiag, floor)
+
+
+# --- Rotations ----------------------------------------------------------------------------
+
+@dataclass
+class AHResult:
+    """Outcome of an augmented-Hessian solve.
+
+    The step solves ``(H + shift - eigenvalue) x = -g``: ``eigenvalue`` is the automatic level
+    shift from the augmented formulation, ``shift`` the additional one imposed to respect the
+    trust radius. Both are reported so the model that was actually solved is checkable rather
+    than implicit — a step is only meaningful together with the model it came from.
+    """
+    step: np.ndarray
+    eigenvalue: float
+    residual: float
+    n_matvec: int
+    converged: bool
+    shift: float = 0.0
+
+
+def augmented_hessian_step(grad: np.ndarray, hvp: Callable[[np.ndarray], np.ndarray],
+                           hdiag: np.ndarray, *, max_iter: int = 24, tol: float = 1e-3,
+                           max_subspace: int = 100,
+                           trust: Optional[float] = None,
+                           guess: Optional[np.ndarray] = None) -> AHResult:
+    """Newton step from the augmented-Hessian eigenproblem, solved by Davidson.
+
+    Solves for the lowest eigenpair of
+
+        [ 0    g^T ] [ 1 ]        [ 1 ]
+        [ g    H   ] [ x ]  = mu  [ x ]
+
+    whose eigenvector gives the step ``x``. The augmented formulation is preferred over
+    solving ``H x = -g`` directly because the eigenvalue ``mu`` acts as an **automatic level
+    shift**: it lies below the lowest eigenvalue of ``H``, so the step is well defined and
+    downhill even when ``H`` is indefinite — which it is whenever the orbitals are far from a
+    minimum, exactly when a raw Newton step would run to a saddle.
+
+    Only Hessian-vector products are used, so nothing of size ``n_param^2`` is ever formed.
+    The projected matrix is **symmetrized** before the Ritz step, which is what makes this
+    exact for the true Hessian despite the asymmetry of :class:`OrbitalHessian` — see its
+    docstring.
+
+    ``hdiag`` preconditions the expansion, as in any Davidson.
+
+    ``trust`` caps the largest rotation angle. It is enforced by **raising the level shift**,
+    not by scaling the converged step down: a truncated Newton step is no longer the solution
+    of any model, whereas ``(H - mu - sigma) x = -g`` for a larger ``sigma`` is exactly the
+    Newton step of a more conservative model, and stays second-order informed. The shift is
+    found by bisection **inside the Krylov subspace already built**, so it costs no additional
+    Hessian-vector products — the projected matrix is ``S + sigma P`` with ``P`` the Gram
+    matrix of the step components, and only the small eigenproblem is re-solved.
+
+    ``tol`` is **relative to the gradient norm**. An absolute tolerance is actively harmful
+    here: the initial residual is ``|g|`` itself, so once the gradient is small any absolute
+    threshold is met before a single Hessian-vector product is taken, the solver returns a
+    **zero step**, and the optimization stalls at precisely the point where Newton should be
+    taking over. (Observed, before this was fixed: the gradient parked at 4e-4 while the trust
+    region collapsed through five successive rejections.) The caller chooses ``tol``;
+    :class:`OrbitalOptimizer` supplies an inexact-Newton forcing sequence.
+    """
+    m = grad.size
+    gnorm = float(np.linalg.norm(grad))
+    if m == 0 or gnorm == 0.0:
+        return AHResult(np.zeros_like(grad), 0.0, 0.0, 0, True)
+    target = tol * gnorm
+
+    def dot(a1, x1, a2, x2):
+        return float(a1 * a2 + np.real(np.vdot(x1, x2)))
+
+    # Start from the "no step" direction; the first expansion is the preconditioned gradient.
+    basis = [(1.0, np.zeros_like(grad))]
+    applied = [(0.0, grad.copy())]                    # A applied to the first basis vector
+    n_matvec = 0
+    if guess is not None and np.any(guess):
+        # Warm start from the previous macro-iteration's step. The solution moves slowly
+        # between iterations, so this seeds the subspace with the soft directions that are
+        # expensive to rediscover — and those are exactly the ones a diagonal preconditioner
+        # is worst at finding. Measured: it is the difference between the Davidson converging
+        # and hitting its iteration limit on an ill-conditioned Hessian.
+        t_x = np.asarray(guess, dtype=np.complex128).copy()
+        nrm = np.sqrt(np.real(np.vdot(t_x, t_x)))
+        if nrm > 1e-14:
+            t_x /= nrm
+            basis.append((0.0, t_x))
+            applied.append((float(np.real(np.vdot(grad, t_x))), hvp(t_x)))
+            n_matvec += 1
+    lam, step, resid = 0.0, np.zeros_like(grad), gnorm
+    converged = False
+
+    for it_ah in range(max_iter):
+        k = len(basis)
+        s = np.zeros((k, k))
+        for i in range(k):
+            for j in range(k):
+                s[i, j] = dot(basis[i][0], basis[i][1], applied[j][0], applied[j][1])
+        s = 0.5 * (s + s.T)                           # exact projection of the true Hessian
+        vals, vecs = np.linalg.eigh(s)
+        c = vecs[:, 0]
+        lam = float(vals[0])
+        y_a = sum(c[i] * basis[i][0] for i in range(k))
+        y_x = sum(c[i] * basis[i][1] for i in range(k))
+        ay_a = sum(c[i] * applied[i][0] for i in range(k))
+        ay_x = sum(c[i] * applied[i][1] for i in range(k))
+        r_a = ay_a - lam * y_a
+        r_x = ay_x - lam * y_x
+        resid = float(np.sqrt(r_a ** 2 + np.real(np.vdot(r_x, r_x))))
+        if abs(y_a) > 1e-12:
+            step = y_x / y_a
+        # At least one expansion always happens: the k == 1 subspace contains only the
+        # "no step" vector, so accepting it would return a zero step and stall the caller.
+        if (it_ah > 0 and resid < target) or k >= max_subspace:
+            converged = resid < target
+            break
+        # Davidson preconditioning with the diagonal Hessian.
+        denom = hdiag - lam
+        denom = np.where(np.abs(denom) < 1e-8, 1e-8, denom)
+        t_a = r_a / (-lam if abs(lam) > 1e-8 else -1e-8)
+        t_x = r_x / denom
+        for (b_a, b_x) in basis:                      # modified Gram-Schmidt
+            ov = dot(b_a, b_x, t_a, t_x)
+            t_a -= ov * b_a
+            t_x -= ov * b_x
+        nrm = np.sqrt(t_a ** 2 + np.real(np.vdot(t_x, t_x)))
+        if nrm < 1e-10:
+            converged = True
+            break
+        t_a, t_x = t_a / nrm, t_x / nrm
+        basis.append((t_a, t_x))
+        applied.append((float(np.real(np.vdot(grad, t_x))), t_a * grad + hvp(t_x)))
+        n_matvec += 1
+
+    shift = 0.0
+    if trust is not None and step.size and float(np.max(np.abs(step))) > trust:
+        step, lam, shift = _shift_to_trust(basis, applied, trust, lam)
+    return AHResult(step=step, eigenvalue=lam, residual=resid, n_matvec=n_matvec,
+                    converged=converged, shift=shift)
+
+
+def _shift_to_trust(basis, applied, trust: float, lam0: float):
+    """Raise the level shift until the augmented-Hessian step fits the trust radius.
+
+    Operates entirely on the small projected matrices, so it is free in Hessian-vector
+    products. Returns ``(step, eigenvalue, shift)``.
+    """
+    k = len(basis)
+
+    def dot(a1, x1, a2, x2):
+        return float(a1 * a2 + np.real(np.vdot(x1, x2)))
+
+    s = np.zeros((k, k))
+    p = np.zeros((k, k))
+    for i in range(k):
+        for j in range(k):
+            s[i, j] = dot(basis[i][0], basis[i][1], applied[j][0], applied[j][1])
+            p[i, j] = float(np.real(np.vdot(basis[i][1], basis[j][1])))
+    s = 0.5 * (s + s.T)
+
+    def solve(sigma):
+        vals, vecs = np.linalg.eigh(s + sigma * p)
+        c = vecs[:, 0]
+        y_a = sum(c[i] * basis[i][0] for i in range(k))
+        y_x = sum(c[i] * basis[i][1] for i in range(k))
+        if abs(y_a) < 1e-12:
+            return None, float(vals[0])
+        return y_x / y_a, float(vals[0])
+
+    lo, hi = 0.0, 1.0
+    for _ in range(40):                                # bracket a shift that is large enough
+        st, _ = solve(hi)
+        if st is not None and float(np.max(np.abs(st))) <= trust:
+            break
+        hi *= 4.0
+    best, best_lam = solve(hi)
+    best_sigma = hi
+    for _ in range(40):                                # bisect to the largest usable step
+        mid = 0.5 * (lo + hi)
+        st, lm = solve(mid)
+        if st is not None and float(np.max(np.abs(st))) <= trust:
+            best, best_lam, best_sigma, hi = st, lm, mid, mid
+        else:
+            lo = mid
+        if hi - lo < 1e-3 * max(hi, 1.0):
+            break
+    if best is None:
+        return np.zeros_like(basis[0][1]), lam0, 0.0
+    return best, best_lam, best_sigma
+
+
+def unitary_from_antihermitian(kappa: np.ndarray) -> np.ndarray:
+    """``exp(kappa)`` for anti-Hermitian ``kappa``, unitary to machine precision.
+
+    Via the Hermitian eigendecomposition of ``i*kappa`` rather than a Pade ``expm``: the
+    result is a product of unitary factors and is unitary *exactly*, where ``expm`` leaves an
+    error that accumulates over macro-iterations and slowly destroys orbital orthonormality —
+    a silent corruption of everything downstream.
+    """
+    kappa = np.asarray(kappa)
+    if kappa.size == 0:
+        return np.eye(0, dtype=np.complex128)
+    a = 1j * kappa                                   # Hermitian if kappa is anti-Hermitian
+    herm_err = float(np.max(np.abs(a - a.conj().T)))
+    if herm_err > 1e-10:
+        log.warning("rotation generator is not anti-Hermitian (deviation %.2e); the "
+                    "resulting transformation would not be unitary", herm_err)
+        a = 0.5 * (a + a.conj().T)
+    w, v = np.linalg.eigh(a)
+    return (v * np.exp(-1j * w)) @ v.conj().T
+
+
+def _as_optional_vector(value) -> Optional[np.ndarray]:
+    """A stored complex vector, or ``None``. HDF5 has no null array, so an absent optional is
+    written as an empty one and read back as ``None`` — otherwise a restored optimizer would
+    warm start its augmented Hessian from a zero-length guess instead of from nothing."""
+    if value is None:
+        return None
+    array = np.ascontiguousarray(value, dtype=np.complex128)
+    return None if array.size == 0 else array
+
+
+def _pack(mat: np.ndarray, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
+    return mat[rows, cols]
+
+
+def _unpack(vec: np.ndarray, rows: np.ndarray, cols: np.ndarray, n: int) -> np.ndarray:
+    kappa = np.zeros((n, n), dtype=np.complex128)
+    kappa[rows, cols] = vec
+    kappa[cols, rows] = -np.conj(vec)
+    return kappa
+
+
+# --- The optimizer -------------------------------------------------------------------------
+
+@dataclass
+class OrbitalStep:
+    """A *proposed* orbital rotation. Whether it is kept is the caller's decision — see
+    :meth:`OrbitalOptimizer.step`, :meth:`~OrbitalOptimizer.accept` and
+    :meth:`~OrbitalOptimizer.reject`."""
+    kappa: np.ndarray
+    unitary: np.ndarray
+    energy: float
+    grad_norm: float
+    max_rotation: float
+    trust: float
+    second_order: bool = False
+
+
+class OrbitalOptimizer:
+    """Trust-region L-BFGS orbital optimizer. **RDMs in, rotation out**.
+
+    Stateful only in the L-BFGS memory and the trust radius; the orbitals themselves live
+    with the caller, which is what lets the same object drive a CI-CASSCF and a DMRG-CASSCF.
+    """
+
+    def __init__(self, spaces: OrbitalSpaces, *, max_step: float = DEFAULT_MAX_STEP,
+                 memory: int = 10, active_active: bool = False,
+                 trust: Optional[float] = None, mode: str = "auto",
+                 second_order_start: float = SECOND_ORDER_START,
+                 stall_patience: int = 3, stall_window: int = STALL_WINDOW,
+                 stall_factor: float = STALL_FACTOR,
+                 conv_grad: float = 1e-4, ah_tol: float = 1e-3, ah_max_iter: int = 60):
+        if mode not in ("auto", "quasi-newton", "second-order"):
+            raise ValueError("unknown optimizer mode {!r}; expected 'auto', 'quasi-newton' "
+                             "or 'second-order'".format(mode))
+        self.spaces = spaces
+        self.max_step = float(max_step)
+        self.memory = int(memory)
+        self.rows, self.cols = spaces.rotation_pairs(active_active)
+        self.trust = float(trust if trust is not None else max_step)
+        self.mode = mode
+        self.second_order_start = float(second_order_start)
+        self.stall_patience = int(stall_patience)
+        self.stall_window = int(stall_window)
+        self.stall_factor = float(stall_factor)
+        self.conv_grad = float(conv_grad)
+        self._gnorm_history: List[float] = []
+        self.ah_tol = float(ah_tol)
+        self.ah_max_iter = int(ah_max_iter)
+        self._second_order = (mode == "second-order")
+        self._stalls = 0
+        self.n_hessian_matvec = 0
+        self.n_second_order_steps = 0
+        self._s: List[np.ndarray] = []
+        self._y: List[np.ndarray] = []
+        self._prev_grad: Optional[np.ndarray] = None
+        self._prev_step: Optional[np.ndarray] = None
+        self._prev_energy: Optional[float] = None
+        self._pending: Optional[Tuple[np.ndarray, np.ndarray, float]] = None
+        self._ah_guess: Optional[np.ndarray] = None
+        self.n_rejected = 0
+
+    @property
+    def n_parameters(self) -> int:
+        """Complex rotation parameters (twice this many real degrees of freedom)."""
+        return int(self.rows.size)
+
+    # -- L-BFGS ---------------------------------------------------------------------------
+    @staticmethod
+    def _dot(a: np.ndarray, b: np.ndarray) -> float:
+        """Real inner product on the complex parameter space."""
+        return float(np.real(np.vdot(a, b)))
+
+    def _two_loop(self, g: np.ndarray, hdiag: np.ndarray) -> np.ndarray:
+        """L-BFGS two-loop recursion with the diagonal Hessian as the initial inverse.
+
+        The initial inverse is ``tau / hdiag`` rather than ``1 / hdiag``, with the standard
+        self-scaling ``tau = (s.y) / (y. D^-1 .y)`` from the most recent pair. Without it the
+        method inherits whatever absolute scale the approximate diagonal happens to have, and
+        since that diagonal is a *preconditioner* and not a curvature estimate (see the module
+        docstring), the resulting steps are systematically mis-scaled — measured here as
+        convergence in ~180 macro-iterations instead of ~20.
+        """
+        q = g.copy()
+        alphas = []
+        for s, y in zip(reversed(self._s), reversed(self._y)):
+            rho = 1.0 / self._dot(y, s)
+            a = rho * self._dot(s, q)
+            q = q - a * y
+            alphas.append((rho, a, s, y))
+        tau = 1.0
+        if self._s:
+            s, y = self._s[-1], self._y[-1]
+            denom = self._dot(y, y / hdiag)
+            if denom > 0.0:
+                tau = self._dot(s, y) / denom
+        r = tau * q / hdiag
+        for rho, a, s, y in reversed(alphas):
+            b = rho * self._dot(y, r)
+            r = r + (a - b) * s
+        return r
+
+    def _update_memory(self, grad: np.ndarray) -> None:
+        if self._prev_grad is None or self._prev_step is None:
+            return
+        s = self._prev_step
+        y = grad - self._prev_grad
+        curv = self._dot(y, s)
+        if curv > 1e-12 * max(self._dot(s, s), 1e-30):
+            self._s.append(s)
+            self._y.append(y)
+            if len(self._s) > self.memory:
+                self._s.pop(0)
+                self._y.pop(0)
+        else:
+            # Negative or vanishing curvature: keeping the pair would make the L-BFGS inverse
+            # indefinite and the step a direction of ascent. Standard remedy is to skip it.
+            log.debug("skipped an L-BFGS pair with curvature %.3e", curv)
+
+    def reset_memory(self) -> None:
+        """Forget the accumulated curvature (after a rejected step or an active-space change)."""
+        self._s.clear()
+        self._y.clear()
+        self._prev_grad = None
+        self._prev_step = None
+
+    def reset_chart(self, *, trust_floor: Optional[float] = None,
+                    keep_memory: bool = False) -> None:
+        """Discard everything that belongs to the surface just left behind.
+
+        Every piece of state this optimizer accumulates — L-BFGS pairs, the augmented-Hessian
+        warm start, the stall counter, the gradient trajectory, the trust radius — is a
+        statement about *one* energy surface. When an adaptive solver changes its space
+        (:mod:`kuiva.mcscf.events`), that surface no longer exists, and carrying the state
+        across is not conservatism but a wrong model: measured on the Ti(2+) benchmark, a run
+        kept rejecting steps long after the determinant space had stabilized and the
+        surface-to-surface jump was exactly zero, because the memory accumulated across the
+        hops had poisoned both the curvature and the trust radius.
+
+        The trust radius is **restored to a floor**, not inherited: the collapse that a run of
+        rejections produced was a response to a surface that has been replaced, and starting
+        the new chart at 1e-6 rad would spend a dozen iterations climbing back out.
+
+        ``keep_memory`` retains the L-BFGS pairs, transporting curvature across the hop and
+        hoping the surfaces are close. Measured, and reset wins: on the truncation benchmark
+        with ``mode="quasi-newton"``, resetting gives a 1.5x lower final gradient and **2.6x
+        fewer space changes** (5 adoptions in 14 proposals against 13 in 21). Transported
+        curvature produces worse steps, which land the iterate where the selection keeps
+        changing; the churn is the visible symptom.
+
+        ⚠ **That comparison is meaningless under ``mode="second-order"``**, where the
+        augmented-Hessian step never consults the pairs: reset and transport come out bitwise
+        identical there, and reading it as "no difference" is a mistake already made once.
+        Measure this knob with a step engine that uses the memory.
+        """
+        if not keep_memory:
+            self.reset_memory()
+        self._prev_grad = None
+        self._prev_step = None
+        self._ah_guess = None
+        self._pending = None
+        self._prev_energy = None
+        self._stalls = 0
+        self._gnorm_history.clear()
+        if trust_floor is not None:
+            self.trust = min(self.max_step, max(self.trust, float(trust_floor)))
+
+    # -- the step -------------------------------------------------------------------------
+    def gradient(self, ints: CASIntegrals, gamma: np.ndarray, gamma2: np.ndarray,
+                 factors: ThreeIndexAO, c_spinor: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Packed orbital gradient and the diagonal Hessian preconditioner at ``c_spinor``.
+
+        ``dE = 2 Re sum_{p>q} G_pq kappa_pq``, so the vector conjugate to ``kappa`` under the
+        real inner product ``Re <g, kappa>`` is ``2 conj(G)``.
+        """
+        f_active_ao = _active_fock_ao(factors, c_spinor, self.spaces, gamma)
+        self._f_active_ao = f_active_ao        # handed to the Hessian; one J/K build saved
+        f_active = c_spinor.conj().T @ f_active_ao @ c_spinor
+        g_mat = orbital_gradient(ints, gamma, gamma2, f_active)
+        grad = 2.0 * np.conj(_pack(g_mat, self.rows, self.cols))
+        hdiag = diagonal_hessian(ints, gamma, f_active, self.rows, self.cols)
+        return grad, hdiag
+
+    def step(self, ints: CASIntegrals, gamma: np.ndarray, gamma2: np.ndarray,
+             factors: ThreeIndexAO, c_spinor: np.ndarray, *,
+             energy: Optional[float] = None, h_ao: Optional[np.ndarray] = None,
+             hessian_vector: Optional[Callable[[np.ndarray], np.ndarray]] = None
+             ) -> OrbitalStep:
+        """Propose an orbital rotation for the current RDMs.
+
+        The proposal is **not** committed: whether it is kept is decided by the caller after
+        evaluating the energy at the rotated orbitals, via :meth:`accept` or :meth:`reject`.
+        That separation is what makes the trust region real — a step that raises the energy
+        can actually be undone, rather than merely making the *next* step smaller.
+
+        ``h_ao`` is needed only when a second-order step is taken (to build
+        :class:`OrbitalHessian`); ``hessian_vector`` overrides that with a caller-supplied
+        product, which is how a future one-step method including the orbital-CI coupling would
+        plug in.
+        """
+        if h_ao is None and hessian_vector is None and self.mode != "quasi-newton":
+            raise ValueError("a second-order step needs h_ao (or an explicit hessian_vector); "
+                             "pass it, or construct the optimizer with mode='quasi-newton'")
+        grad, hdiag = self.gradient(ints, gamma, gamma2, factors, c_spinor)
+        e_now = cas_energy(ints, gamma, gamma2) if energy is None else float(energy)
+        gnorm = float(np.linalg.norm(grad))
+
+        use_second_order = self._decide_second_order(gnorm)
+        second_order = False
+        direction = None
+        if use_second_order:
+            hv = hessian_vector
+            if hv is None:
+                hess = OrbitalHessian(ints, factors, h_ao, c_spinor, gamma, gamma2,
+                                      self.rows, self.cols,
+                                      f_active_ao=getattr(self, "_f_active_ao", None))
+                hv = hess.matvec
+            # Inexact Newton (Eisenstat-Walker): solve loosely while the gradient is large —
+            # the step is trust-region capped there anyway, so a tight solve burns
+            # Hessian-vector products for a step that gets truncated — and tighten
+            # automatically as the gradient falls, which is what buys superlinear convergence.
+            eta = max(self.ah_tol, min(0.5, float(np.sqrt(gnorm))))
+            ah = augmented_hessian_step(grad, hv, hdiag, tol=eta,
+                                        max_iter=self.ah_max_iter, trust=self.trust,
+                                        guess=self._ah_guess)
+            self._ah_guess = ah.step.copy() if ah.step.size else None
+            self.n_hessian_matvec += ah.n_matvec
+            if self._dot(ah.step, grad) < 0.0:          # must be downhill to be usable
+                direction = ah.step
+                second_order = True
+                self.n_second_order_steps += 1
+            else:
+                log.debug("augmented-Hessian step was not a descent direction (mu = %.3e); "
+                          "falling back on the quasi-Newton step", ah.eigenvalue)
+
+        if direction is None:
+            direction = -self._two_loop(grad, hdiag)
+            if self._dot(direction, grad) > 0.0:        # not a descent direction: fall back
+                log.debug("L-BFGS direction was uphill; falling back on the preconditioned "
+                          "gradient")
+                self.reset_memory()
+                direction = -grad / hdiag
+
+        max_rot = float(np.max(np.abs(direction))) if direction.size else 0.0
+        if max_rot > self.trust:
+            direction = direction * (self.trust / max_rot)
+            max_rot = self.trust
+
+        self._pending = (grad, direction, e_now)
+        kappa = _unpack(direction, self.rows, self.cols, ints.n_orb)
+        return OrbitalStep(kappa=kappa, unitary=unitary_from_antihermitian(kappa),
+                           energy=e_now, grad_norm=gnorm, max_rotation=max_rot,
+                           trust=self.trust, second_order=second_order)
+
+    def _decide_second_order(self, gnorm: float) -> bool:
+        """Escalation policy for ``mode="auto"``.
+
+        Escalation is driven by **failure, not proximity**: where the quasi-Newton
+        step converges at all it costs 3-4x less total work, because Hessian-vector products
+        are not free. So the question is only "is the cheap step actually getting anywhere?",
+        and the honest measure of that is the **gradient trajectory**:
+
+        * *stalled* — the gradient has not fallen by ``stall_factor`` across the last
+          ``stall_window`` iterations, or steps are being rejected repeatedly.
+        * *not stalled* — the gradient keeps falling, however slowly. Leave it alone.
+
+        Judging this on the **energy** instead does not work, and the trace that proved it is
+        worth recording: on an easy problem the quasi-Newton run reached ``|g| = 1e-3`` with a
+        per-iteration energy change of 1.5e-7, looking for all the world like a stall — and
+        then converged on its own in 51 more cheap iterations. An energy-based detector
+        escalated there and turned 118 work units into 332. The gradient was falling the whole
+        time; the energy simply had nothing left to say.
+
+        Once escalated the optimizer stays there: dropping back would discard the only model
+        that was working.
+        """
+        if self.mode == "second-order":
+            return True
+        if self.mode == "quasi-newton":
+            return False
+        if self._second_order:
+            return True
+        self._gnorm_history.append(gnorm)
+        if len(self._gnorm_history) > self.stall_window:
+            self._gnorm_history.pop(0)
+        no_progress = (len(self._gnorm_history) >= self.stall_window
+                       and gnorm > self._gnorm_history[0] / self.stall_factor)
+        stalled = (no_progress or self._stalls >= self.stall_patience) and gnorm > self.conv_grad
+        if gnorm < self.second_order_start or stalled:
+            self._second_order = True
+            log.debug("escalating to the second-order step (|g| = %.3e, stalls = %d)",
+                      gnorm, self._stalls)
+            return True
+        return False
+
+    def accept(self, new_gradient: Optional[np.ndarray] = None) -> None:
+        """Commit the pending step; ``new_gradient`` (at the rotated orbitals) feeds L-BFGS."""
+        if self._pending is None:
+            return
+        grad, direction, energy = self._pending
+        if new_gradient is not None:
+            self._prev_grad = grad
+            self._prev_step = direction
+            self._update_memory(new_gradient)
+        self._stalls = 0                    # progress was made; the rejection run is broken
+        self._prev_energy = energy
+        self.trust = min(1.5 * self.trust, self.max_step)
+        self._pending = None
+
+    # -- checkpointing ---------------------------------------------------------------
+    def state_dict(self, *, space_key: Optional[str] = None) -> dict:
+        """Everything a restart needs, as plain arrays and scalars.
+
+        The trust radius, the L-BFGS pairs, the augmented-Hessian warm start, the stall
+        counter, the gradient trajectory and the escalation flag — i.e. the whole of what
+        makes iteration *n+1* differ from a cold start at the same orbitals. The orbitals
+        themselves are the caller's, by the same design that lets one optimizer drive a
+        CI-CASSCF and a DMRG-CASSCF.
+
+        ``space_key`` is the identity of the *solver's* surface
+        (:meth:`kuiva.mcscf.adaptive.AdaptiveCISolver.space_key`). It is recorded rather than
+        used: :meth:`load_state_dict` is where it decides something.
+
+        ⚠ The **pending step is deliberately not saved**. A checkpoint is written between
+        macro-iterations, where the accept/reject has already happened and there is nothing
+        pending; saving a half-evaluated trial step would restore a proposal whose trial
+        energy was never computed.
+        """
+        empty = np.zeros((0, self.n_parameters), dtype=np.complex128)
+        return {
+            "n_parameters": self.n_parameters,
+            "space_key": space_key,
+            "trust": float(self.trust),
+            "second_order": bool(self._second_order),
+            "stalls": int(self._stalls),
+            "grad_norm_history": np.asarray(self._gnorm_history, dtype=np.float64),
+            "lbfgs_s": np.array(self._s, dtype=np.complex128) if self._s else empty,
+            "lbfgs_y": np.array(self._y, dtype=np.complex128) if self._y else empty,
+            "prev_grad": self._prev_grad,
+            "prev_step": self._prev_step,
+            "prev_energy": self._prev_energy,
+            "ah_guess": self._ah_guess,
+            "n_hessian_matvec": int(self.n_hessian_matvec),
+            "n_second_order_steps": int(self.n_second_order_steps),
+            "n_rejected": int(self.n_rejected),
+        }
+
+    def load_state_dict(self, state: dict, *, space_key: Optional[str] = None) -> None:
+        """Restore :meth:`state_dict`. ⚠ **Curvature memory is chart-scoped**.
+
+        If ``space_key`` differs from the one recorded in ``state``, the L-BFGS pairs, the
+        augmented-Hessian warm start, the stall counter and the gradient trajectory are
+        **cleared, not restored**, and the trust radius is taken to a floor rather than
+        inherited. Every one of those is a statement about an energy surface, and restoring
+        them against a *different* space is precisely the bug chart-scoping exists to prevent
+        — the same reasoning as :meth:`reset_chart`, applied across a process boundary.
+
+        The parameter count is checked: a state dict from a different orbital partition
+        describes rotations that do not exist here, and restoring it would leave an L-BFGS
+        memory indexed against the wrong pairs — plausible-looking and wrong.
+        """
+        stored = int(state.get("n_parameters", self.n_parameters))
+        if stored != self.n_parameters:
+            raise ValueError(
+                "this optimizer has {} rotation parameters and the stored state has {}; the "
+                "orbital partition (or active_active) differs from the run that wrote it"
+                .format(self.n_parameters, stored))
+        recorded = state.get("space_key")
+        same_chart = space_key is None or recorded is None or recorded == space_key
+
+        self.trust = float(state.get("trust", self.trust))
+        self._second_order = bool(state.get("second_order", self._second_order))
+        self.n_hessian_matvec = int(state.get("n_hessian_matvec", 0))
+        self.n_second_order_steps = int(state.get("n_second_order_steps", 0))
+        self.n_rejected = int(state.get("n_rejected", 0))
+        self._pending = None
+
+        if not same_chart:
+            log.warning("the checkpoint was written on CI space %r and this run is on %r; "
+                        "the L-BFGS curvature, the augmented-Hessian warm start and the "
+                        "trust radius belong to the surface that no longer exists and are "
+                        "discarded rather than restored ",
+                        recorded, space_key)
+            self.reset_chart(trust_floor=0.1 * self.max_step)
+            return
+
+        self._stalls = int(state.get("stalls", 0))
+        self._gnorm_history = [float(g) for g in
+                               np.asarray(state.get("grad_norm_history", []), dtype=float)]
+        pairs_s = np.asarray(state.get("lbfgs_s", np.zeros((0, self.n_parameters))),
+                             dtype=np.complex128)
+        pairs_y = np.asarray(state.get("lbfgs_y", np.zeros((0, self.n_parameters))),
+                             dtype=np.complex128)
+        self._s = [np.ascontiguousarray(row) for row in pairs_s]
+        self._y = [np.ascontiguousarray(row) for row in pairs_y]
+        self._prev_grad = _as_optional_vector(state.get("prev_grad"))
+        self._prev_step = _as_optional_vector(state.get("prev_step"))
+        self._ah_guess = _as_optional_vector(state.get("ah_guess"))
+        energy = state.get("prev_energy")
+        self._prev_energy = None if energy is None else float(energy)
+
+    def reject(self) -> None:
+        """Discard the pending step, shrink the trust region, and count the stall.
+
+        The L-BFGS memory is deliberately **kept**: in a trust-region method a rejection means
+        the step was too long, not that the accumulated curvature is wrong, and discarding
+        hard-won pairs on every rejection throws the method back to preconditioned steepest
+        descent exactly when it is struggling.
+        """
+        self.trust = max(0.25 * self.trust, 1e-6)
+        self.n_rejected += 1
+        self._stalls += 1
+        self._pending = None
+
+
+# --- Driver ---------------------------------------------------------------------------------
+
+@dataclass
+class CASSCFResult:
+    """Outcome of an orbital optimization."""
+    energy: float
+    coeff: np.ndarray
+    gamma: np.ndarray
+    gamma2: np.ndarray
+    converged: bool
+    n_iterations: int
+    grad_norm: float
+    history: List[float] = field(default_factory=list)
+    #: Cost bookkeeping. The honest measure of an MCSCF optimizer is not the macro-iteration
+    #: count but the total work, because a Hessian-vector product is not free: it is two J/K
+    #: builds plus a three-index transform. A method that halves the iterations while spending
+    #: tens of products per iteration is more expensive, not less.
+    n_hessian_matvec: int = 0
+    n_second_order_steps: int = 0
+    n_rejected: int = 0
+
+    @property
+    def work_units(self) -> float:
+        """Approximate total cost in macro-iteration-equivalents.
+
+        ⚠ The weight is **indicative, not exact**, and it is system dependent: it is the ratio
+        of one Hessian-vector product to one (integral transform + CI solve). Measured on
+        TiCl3 with the cheap CI — 12.9 s per product against 4.4 s per iteration — the ratio
+        is ~2.9; the operation count alone suggests ~1.5. Where the CI is expensive (DMRG) the
+        ratio falls below 1 and macro-iterations dominate instead. Use this to compare
+        optimizer modes on *one* system, not to compare systems.
+        """
+        return self.n_iterations + HVP_WORK_WEIGHT * self.n_hessian_matvec
+
+
+@threads.blas_stage
+def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
+                      spaces: OrbitalSpaces,
+                      ci_solver: Callable[[CASIntegrals], Tuple[float, np.ndarray, np.ndarray]],
+                      *, e_nuc: float = 0.0, max_iter: int = 50, conv_grad: float = 1e-4,
+                      conv_energy: float = 1e-8, max_step: float = DEFAULT_MAX_STEP,
+                      memory: int = 10, active_active: bool = False, mode: str = "auto",
+                      second_order_start: float = SECOND_ORDER_START,
+                      callback: Optional[Callable[[dict], Optional[bool]]] = None,
+                      report: bool = True,
+                      optimizer_state: Optional[dict] = None, start_iteration: int = 0,
+                      space_key: Optional[str] = None,
+                      history: Optional[Sequence[float]] = None) -> CASSCFResult:
+    """Alternate CI and orbital steps to convergence — the shared MCSCF driver.
+
+    ``ci_solver(ints) -> (energy, gamma, gamma2)`` is the **only** thing that distinguishes a
+    cheap-CI pre-optimization from a CASSCF or a DMRG-CASSCF. It receives the integrals at the
+    current orbitals and returns the state-averaged RDMs over the active space.
+
+    Convergence is on the orbital gradient norm *and* the energy change; both must be met,
+    because a truncated CI can stall the energy while the orbitals are still moving.
+
+    ``callback(info)`` is invoked after every macro-iteration with the current iteration,
+    energy, gradient norm, energy change and step type — **plus** the current orbitals, RDMs
+    and the optimizer itself, which is what a checkpoint writer needs
+    (:mod:`kuiva.io.checkpoint`). The dict is extended additively and never renamed.
+    **Returning ``False`` stops the run**, which is how an external wall-clock budget is
+    enforced from the inside — a run killed by an external timeout leaves nothing behind,
+    whereas one that stops itself has already written every iteration it completed.
+
+    Restart
+    ------------
+    ``optimizer_state`` (from :meth:`OrbitalOptimizer.state_dict`), ``start_iteration`` and
+    ``history`` resume a checkpointed run: pass the checkpointed orbitals as ``c_spinor`` and
+    the three of these, and the trajectory continues rather than starting over.
+    ``space_key`` is the CI solver's chart identity and is what makes the restored curvature
+    chart-scoped — see :meth:`OrbitalOptimizer.load_state_dict`. ⚠ ``max_iter`` counts
+    **total** macro-iterations, so a restart at iteration 12 with ``max_iter=50`` runs 38
+    more; that is what makes an interrupted-and-restarted run cost the same as an
+    uninterrupted one.
+    """
+    c = np.ascontiguousarray(c_spinor, dtype=np.complex128)
+    opt = OrbitalOptimizer(spaces, max_step=max_step, memory=memory,
+                           active_active=active_active, mode=mode,
+                           second_order_start=second_order_start, conv_grad=conv_grad)
+    if optimizer_state is not None:
+        opt.load_state_dict(optimizer_state, space_key=space_key)
+    if report:
+        out.subsection(log, "Orbital optimization")
+        out.entries(log, [
+            ("inactive / active / virtual spinors",
+             "{} / {} / {}".format(spaces.n_inactive, spaces.n_active, spaces.n_virtual)),
+            ("orbital rotation parameters", opt.n_parameters, "", "complex"),
+            ("optimizer mode", mode, "",
+             "second order below |g| = {:.1e}".format(second_order_start)
+             if mode == "auto" else ""),
+            ("gradient convergence", conv_grad, "", "", "{:.1e}"),
+            ("maximum rotation per step", max_step, "rad", "", "{:.2f}"),
+        ])
+        table = out.Table(log, [out.col_iter(), out.col_energy("E [Eh]"), out.col_delta(),
+                                out.col_resid("|g|"), out.Column("max rot", "{:.4f}", 8),
+                                out.Column("step", "{}", 6, align="<"), out.col_time()])
+        table.start()
+
+    # Trust-region loop with genuine accept/reject: a trial rotation is evaluated before it
+    # is kept, so a step that raises the energy is undone rather than merely regretted.
+    ints = CASIntegrals.build(factors, h_ao, c, spaces, e_nuc=e_nuc)
+    energy, gamma, gamma2 = ci_solver(ints)
+    # ⚠ On a restart the supplied history already ends with the energy at these orbitals (it
+    # is the checkpoint's own energy), so it is taken as it stands. Appending the recomputed
+    # value instead would duplicate the last entry and make a restarted trajectory one
+    # element longer than the uninterrupted one it is supposed to reproduce.
+    history = [energy] if history is None else [float(e) for e in history]
+    converged = False
+    gnorm = np.inf
+    it = int(start_iteration)
+    for it in range(int(start_iteration) + 1, max_iter + 1):
+        with timer("macro-iteration") as t_it:
+            step = opt.step(ints, gamma, gamma2, factors, c, energy=energy, h_ao=h_ao)
+            gnorm = step.grad_norm
+            if gnorm < conv_grad:
+                converged = True
+                de = 0.0
+            else:
+                c_try = np.ascontiguousarray(c @ step.unitary)
+                ints_try = CASIntegrals.build(factors, h_ao, c_try, spaces, e_nuc=e_nuc)
+                e_try, g_try, g2_try = ci_solver(ints_try)
+                de = e_try - energy
+                if de <= conv_energy:                      # accept (a tiny rise is noise)
+                    grad_new, _ = opt.gradient(ints_try, g_try, g2_try, factors, c_try)
+                    opt.accept(grad_new)
+                    c, ints, energy, gamma, gamma2 = c_try, ints_try, e_try, g_try, g2_try
+                    history.append(energy)
+                    if abs(de) < conv_energy and gnorm < conv_grad:
+                        converged = True
+                else:
+                    opt.reject()
+                    log.debug("rejected a step that raised the energy by %.3e Eh; trust "
+                              "radius now %.2e", de, opt.trust)
+        if report:
+            table.row(it, energy, de, gnorm, step.max_rotation,
+                      "2nd" if step.second_order else "qn", t_it.wall)
+        if callback is not None:
+            # Extended additively for the checkpoint writer: the orbitals, the RDMs and
+            # the optimizer are what a restart needs, and they are already in hand here. A
+            # callback that ignores them is unaffected, which is why this is an extension
+            # rather than a new hook -- optimize_orbitals' loop is the validated driver.
+            info = {"iteration": it, "energy": energy, "grad_norm": gnorm, "de": de,
+                    "second_order": step.second_order, "converged": converged,
+                    "n_hessian_matvec": opt.n_hessian_matvec, "wall": t_it.wall,
+                    "coeff": c, "gamma": gamma, "gamma2": gamma2, "spaces": spaces,
+                    "optimizer": opt, "trust": opt.trust, "history": history,
+                    "ci_solver": ci_solver, "e_nuc": e_nuc}
+            if callback(info) is False:
+                log.warning("orbital optimization stopped by callback at iteration %d "
+                            "(|g| = %.3e); the result is the last iterate, not a converged "
+                            "one", it, gnorm)
+                break
+        if converged:
+            break
+
+    if report:
+        table.end("converged" if converged else
+                  "NOT converged in {} macro-iterations".format(max_iter))
+        out.entries(log, [
+            ("second-order steps taken", opt.n_second_order_steps),
+            ("Hessian-vector products", opt.n_hessian_matvec),
+            ("rejected steps", opt.n_rejected),
+        ])
+    if not converged:
+        log.warning("orbital optimization did not converge in %d macro-iterations "
+                    "(|g| = %.3e, target %.1e); the orbitals are the last iterate and may "
+                    "not be stationary", max_iter, gnorm, conv_grad)
+    return CASSCFResult(energy=energy, coeff=c, gamma=gamma, gamma2=gamma2,
+                        converged=converged, n_iterations=it, grad_norm=gnorm,
+                        history=history, n_hessian_matvec=opt.n_hessian_matvec,
+                        n_second_order_steps=opt.n_second_order_steps,
+                        n_rejected=opt.n_rejected)
+
+
+__all__ = ["OrbitalSpaces", "CASIntegrals", "OrbitalOptimizer", "OrbitalStep", "CASSCFResult",
+           "OrbitalHessian", "augmented_hessian_step", "AHResult",
+           "cas_energy", "generalized_fock", "averaged_fock", "fock_diagonal",
+           "orbital_gradient",
+           "diagonal_hessian",
+           "optimize_orbitals", "unitary_from_antihermitian", "DEFAULT_MAX_STEP",
+           "SECOND_ORDER_START", "STALL_WINDOW", "STALL_FACTOR"]

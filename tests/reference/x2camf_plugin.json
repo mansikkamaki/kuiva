@@ -1,0 +1,728 @@
+{
+  "code": "x2camf plugin (github.com/Warlocat/x2camf), pinned in scripts/bootstrap/versions.env::X2CAMF_COMMIT",
+  "controlled": {
+    "contraction": "both decontract; the primitive bases are checked to agree on their overlap matrices before anything is compared",
+    "interaction": "passed explicitly to the plugin, which defaults to full Breit (with_gaunt and with_gauge both True)",
+    "reference_configuration": "neutral atom on both sides \u2014 the plugin takes no configuration input",
+    "speed_of_light": "PySCF's lib.param.LIGHT_SPEED, which both codes read"
+  },
+  "environment": {
+    "idle_injection_available": true,
+    "n_cpus": 8,
+    "package_temp_c": 51.0,
+    "powerclamp_state": 0
+  },
+  "generator": "tests/generate/x2camf_plugin.py",
+  "purpose": "term-by-term comparison of Kuiva's X2CAMF correction against the authors' own implementation",
+  "records": {
+    "Ar/dyallv2z/coulomb": {
+      "basis": "dyallv2z",
+      "configuration": "s6 p12",
+      "element": "Ar",
+      "energy_functional": {
+        "error_eh": {
+          "kuiva": -1.1188382131877006e-06,
+          "none": 0.05009842348033544,
+          "plugin_pcc": -1.118980208048015e-06,
+          "plugin_soc": 0.050247720408947316
+        },
+        "total_eh": {
+          "four_component": -528.6633765870109,
+          "kuiva": -528.6633777058491,
+          "none": -528.6132781635306,
+          "plugin_pcc": -528.6633777059911,
+          "plugin_soc": -528.613128866602
+        }
+      },
+      "interaction": "coulomb",
+      "molecular_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.25293612273014787,
+          "max_dw": 0.08787971789865814
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 1.2589751463565335e-10,
+          "abs_dw": 5.989365800024641e-11,
+          "rel_dh_sf": 4.977443050709317e-10,
+          "rel_dw": 6.815413092499673e-10
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.2529361226479523,
+          "max_dw": 0.0878797179090422
+        }
+      },
+      "nao_molecular": 41,
+      "nao_primitive": 41,
+      "plugin_version": "0.1",
+      "primitive_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.252936122955866,
+          "max_dw": 0.0878797178983021
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 3.079136945416394e-10,
+          "abs_dw": 4.6028543229931596e-11,
+          "rel_dh_sf": 1.2173575325789518e-09,
+          "rel_dw": 5.237675350479884e-10
+        },
+        "kuiva_vs_plugin_soc": {
+          "abs_dh_sf": 0.25304614384337365,
+          "abs_dw": 0.00027825660084931925,
+          "rel_dh_sf": 1.0004349749898194,
+          "rel_dw": 0.0031563406762907683
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.2529361226479523,
+          "max_dw": 0.0878797179090422
+        },
+        "plugin_soc": {
+          "max_dh_sf": 0.0014100672153627275,
+          "max_dw": 0.08815797449859487
+        }
+      },
+      "resources": {
+        "cpu_seconds": 29.0,
+        "effective_cores": 7.67,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 82.0,
+        "temp_start_c": 80.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 3.8
+      },
+      "splitting_cm": {
+        "four_component": 1628.2627989058349,
+        "kuiva": 1628.2521788633403,
+        "one_electron_x2c": 1882.439229323051,
+        "plugin_pcc": 1628.2521778601197
+      },
+      "splitting_construction": "self-consistent two-component SCF in the molecular (contracted) basis; the four-component column is in the primitive basis the decoupling used",
+      "status": "ok",
+      "valence_shell": "3p",
+      "valence_spinors": 6
+    },
+    "Ar/dyallv2z/gaunt": {
+      "basis": "dyallv2z",
+      "configuration": "s6 p12",
+      "element": "Ar",
+      "energy_functional": {
+        "error_eh": {
+          "kuiva": 1.8515750980441226e-05,
+          "none": -0.09324792174447794,
+          "plugin_pcc": 1.851561012244929e-05,
+          "plugin_soc": 0.05028484903834851
+        },
+        "total_eh": {
+          "four_component": -528.5200302417863,
+          "kuiva": -528.5200117260354,
+          "none": -528.6132781635308,
+          "plugin_pcc": -528.5200117261762,
+          "plugin_soc": -528.469745392748
+        }
+      },
+      "interaction": "gaunt",
+      "molecular_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.2111357655499262,
+          "max_dw": 0.13470265585696298
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 3.190550046383578e-10,
+          "abs_dw": 3.9278667279142145e-11,
+          "rel_dh_sf": 1.5111367029993433e-09,
+          "rel_dw": 2.915953440086055e-10
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.21113576540881246,
+          "max_dw": 0.13470265587636737
+        }
+      },
+      "nao_molecular": 41,
+      "nao_primitive": 41,
+      "plugin_version": "0.1",
+      "primitive_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.21113576555181623,
+          "max_dw": 0.13470265585662242
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 3.2088820489661884e-10,
+          "abs_dw": 6.396165168111104e-11,
+          "rel_dh_sf": 1.5198192691700428e-09,
+          "rel_dw": 4.748358617354676e-10
+        },
+        "kuiva_vs_plugin_soc": {
+          "abs_dh_sf": 0.2540460871183741,
+          "abs_dw": 0.000368699916949794,
+          "rel_dh_sf": 0.6564413994351158,
+          "rel_dw": 0.0027296676992803414
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.21113576540881246,
+          "max_dw": 0.13470265587636737
+        },
+        "plugin_soc": {
+          "max_dh_sf": 0.3870049746054821,
+          "max_dw": 0.13507135577235252
+        }
+      },
+      "resources": {
+        "cpu_seconds": 87.7,
+        "effective_cores": 7.82,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 83.0,
+        "temp_start_c": 81.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 11.2
+      },
+      "splitting_cm": {
+        "four_component": 1564.1715514731,
+        "kuiva": 1564.156379736804,
+        "one_electron_x2c": 1882.439229318543,
+        "plugin_pcc": 1564.1563802639748
+      },
+      "splitting_construction": "self-consistent two-component SCF in the molecular (contracted) basis; the four-component column is in the primitive basis the decoupling used",
+      "status": "ok",
+      "valence_shell": "3p",
+      "valence_spinors": 6
+    },
+    "Ar/x2c-SVPall-2c/coulomb": {
+      "basis": "x2c-SVPall-2c",
+      "configuration": "s6 p12",
+      "element": "Ar",
+      "energy_functional": {
+        "error_eh": {
+          "kuiva": -1.1301950735287392e-06,
+          "none": 0.050022702556361764,
+          "plugin_pcc": -1.130840814766998e-06,
+          "plugin_soc": 0.05017212518305314
+        },
+        "total_eh": {
+          "four_component": -528.5220553966394,
+          "kuiva": -528.5220565268345,
+          "none": -528.472032694083,
+          "plugin_pcc": -528.5220565274802,
+          "plugin_soc": -528.4718832714564
+        }
+      },
+      "interaction": "coulomb",
+      "molecular_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.04062595343242559,
+          "max_dw": 0.006060261571789625
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 1.6312359796266662e-10,
+          "abs_dw": 1.336986858030409e-11,
+          "rel_dh_sf": 4.015255853109077e-09,
+          "rel_dw": 2.2061537101152387e-09
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.040625953595549186,
+          "max_dw": 0.00606026158513031
+        }
+      },
+      "nao_molecular": 21,
+      "nao_primitive": 51,
+      "plugin_version": "0.1",
+      "primitive_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.20064782710900886,
+          "max_dw": 0.1024622115322188
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 3.086679434185363e-10,
+          "abs_dw": 7.063719971262547e-11,
+          "rel_dh_sf": 1.5383567692399804e-09,
+          "rel_dw": 6.893975705120749e-10
+        },
+        "kuiva_vs_plugin_soc": {
+          "abs_dh_sf": 0.2007496458689547,
+          "abs_dw": 0.00011099565504735232,
+          "rel_dh_sf": 1.0005074501000726,
+          "rel_dw": 0.0010821115776167383
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.200647827337889,
+          "max_dw": 0.10246221155110417
+        },
+        "plugin_soc": {
+          "max_dh_sf": 0.0019997434413846563,
+          "max_dw": 0.10257320718424538
+        }
+      },
+      "resources": {
+        "cpu_seconds": 55.3,
+        "effective_cores": 7.83,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 72.0,
+        "temp_start_c": 67.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 7.1
+      },
+      "splitting_cm": {
+        "four_component": 1608.9011888317984,
+        "kuiva": 1657.11456888263,
+        "one_electron_x2c": 1910.208731856465,
+        "plugin_pcc": 1657.1145683476132
+      },
+      "splitting_construction": "self-consistent two-component SCF in the molecular (contracted) basis; the four-component column is in the primitive basis the decoupling used",
+      "status": "ok",
+      "valence_shell": "3p",
+      "valence_spinors": 6
+    },
+    "Ar/x2c-SVPall-2c/gaunt": {
+      "basis": "x2c-SVPall-2c",
+      "configuration": "s6 p12",
+      "element": "Ar",
+      "energy_functional": {
+        "error_eh": {
+          "kuiva": 1.8522485675021017e-05,
+          "none": -0.09323404119561474,
+          "plugin_pcc": 1.8522462823966634e-05,
+          "plugin_soc": 0.0502093951124607
+        },
+        "total_eh": {
+          "four_component": -528.3787986528882,
+          "kuiva": -528.3787801304026,
+          "none": -528.4720326940839,
+          "plugin_pcc": -528.3787801304254,
+          "plugin_soc": -528.3285892577758
+        }
+      },
+      "interaction": "gaunt",
+      "molecular_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.05942151574995691,
+          "max_dw": 0.007774553272435469
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 2.9953204846999704e-11,
+          "abs_dw": 2.0204476980367758e-11,
+          "rel_dh_sf": 5.040801209622699e-10,
+          "rel_dw": 2.59879586925282e-09
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.05942151572337484,
+          "max_dw": 0.007774553291935449
+        }
+      },
+      "nao_molecular": 21,
+      "nao_primitive": 51,
+      "plugin_version": "0.1",
+      "primitive_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.21462247605579066,
+          "max_dw": 0.1506583747752787
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 1.1264938981625505e-10,
+          "abs_dw": 6.931055774776116e-11,
+          "rel_dh_sf": 5.24872286847404e-10,
+          "rel_dw": 4.6005114437350567e-10
+        },
+        "kuiva_vs_plugin_soc": {
+          "abs_dh_sf": 0.20041873080237183,
+          "abs_dw": 0.00015233360569782972,
+          "rel_dh_sf": 0.5585914954856007,
+          "rel_dw": 0.0010100980715151955
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.21462247600516093,
+          "max_dw": 0.1506583748251464
+        },
+        "plugin_soc": {
+          "max_dh_sf": 0.35879302213174885,
+          "max_dw": 0.15081070837935767
+        }
+      },
+      "resources": {
+        "cpu_seconds": 207.0,
+        "effective_cores": 7.8,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 79.0,
+        "temp_start_c": 72.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 26.5
+      },
+      "splitting_cm": {
+        "four_component": 1545.771595310051,
+        "kuiva": 1592.7837062404922,
+        "one_electron_x2c": 1910.208731858999,
+        "plugin_pcc": 1592.783706280234
+      },
+      "splitting_construction": "self-consistent two-component SCF in the molecular (contracted) basis; the four-component column is in the primitive basis the decoupling used",
+      "status": "ok",
+      "valence_shell": "3p",
+      "valence_spinors": 6
+    },
+    "Ne/dyallv2z/coulomb": {
+      "basis": "dyallv2z",
+      "configuration": "s4 p6",
+      "element": "Ne",
+      "energy_functional": {
+        "error_eh": {
+          "kuiva": -1.0732975397331757e-07,
+          "none": 0.007099672367388621,
+          "plugin_pcc": -1.0775903547255439e-07,
+          "plugin_soc": 0.007106250311920803
+        },
+        "total_eh": {
+          "four_component": -128.68574176775502,
+          "kuiva": -128.68574187508477,
+          "none": -128.67864209538763,
+          "plugin_pcc": -128.68574187551405,
+          "plugin_soc": -128.6786355174431
+        }
+      },
+      "interaction": "coulomb",
+      "molecular_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.04141868634894408,
+          "max_dw": 0.012435027847837834
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 4.163318578775943e-10,
+          "abs_dw": 8.288663158606546e-11,
+          "rel_dh_sf": 1.0051788052595806e-08,
+          "rel_dw": 6.6655766758477785e-09
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.041418686476390576,
+          "max_dw": 0.012435027764951204
+        }
+      },
+      "nao_molecular": 33,
+      "nao_primitive": 33,
+      "plugin_version": "0.1",
+      "primitive_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.04141868631812784,
+          "max_dw": 0.012435027847845037
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 4.165290369562147e-10,
+          "abs_dw": 8.289383415793772e-11,
+          "rel_dh_sf": 1.0056548683494442e-08,
+          "rel_dw": 6.666155892228503e-09
+        },
+        "kuiva_vs_plugin_soc": {
+          "abs_dh_sf": 0.04142217945060447,
+          "abs_dw": 1.038327685425923e-05,
+          "rel_dh_sf": 1.0000843371141663,
+          "rel_dw": 0.0008343056529255474
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.041418686476390576,
+          "max_dw": 0.012435027764951204
+        },
+        "plugin_soc": {
+          "max_dh_sf": 5.220820999555709e-05,
+          "max_dw": 0.012445411124627515
+        }
+      },
+      "resources": {
+        "cpu_seconds": 15.8,
+        "effective_cores": 7.85,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 65.0,
+        "temp_start_c": 62.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 2.0
+      },
+      "splitting_cm": {
+        "four_component": 984.1276546846232,
+        "kuiva": 984.004196718496,
+        "one_electron_x2c": 1262.8944447434362,
+        "plugin_pcc": 984.0041949052327
+      },
+      "splitting_construction": "self-consistent two-component SCF in the molecular (contracted) basis; the four-component column is in the primitive basis the decoupling used",
+      "status": "ok",
+      "valence_shell": "2p",
+      "valence_spinors": 6
+    },
+    "Ne/dyallv2z/gaunt": {
+      "basis": "dyallv2z",
+      "configuration": "s4 p6",
+      "element": "Ne",
+      "energy_functional": {
+        "error_eh": {
+          "kuiva": 7.340132412991807e-07,
+          "none": -0.010432868931445682,
+          "plugin_pcc": 7.338651926147577e-07,
+          "plugin_soc": 0.007107751241932192
+        },
+        "total_eh": {
+          "four_component": -128.6682092264562,
+          "kuiva": -128.66820849244297,
+          "none": -128.67864209538766,
+          "plugin_pcc": -128.66820849259102,
+          "plugin_soc": -128.66110147521428
+        }
+      },
+      "interaction": "gaunt",
+      "molecular_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.04508347629107233,
+          "max_dw": 0.01992459266272697
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 1.3297452028382395e-10,
+          "abs_dw": 2.0306124837166095e-11,
+          "rel_dh_sf": 2.9495178993141723e-09,
+          "rel_dw": 1.019148805718829e-09
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.045083476235504336,
+          "max_dw": 0.019924592682855298
+        }
+      },
+      "nao_molecular": 33,
+      "nao_primitive": 33,
+      "plugin_version": "0.1",
+      "primitive_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.045083476304226267,
+          "max_dw": 0.01992459266281719
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 1.330064912374862e-10,
+          "abs_dw": 2.0323867588878386e-11,
+          "rel_dh_sf": 2.9502270485964668e-09,
+          "rel_dw": 1.0200393007966811e-09
+        },
+        "kuiva_vs_plugin_soc": {
+          "abs_dh_sf": 0.04145546272666553,
+          "abs_dw": 2.004633857410551e-05,
+          "rel_dh_sf": 0.5175492067416763,
+          "rel_dw": 0.0010050990931946343
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.045083476235504336,
+          "max_dw": 0.019924592682855298
+        },
+        "plugin_soc": {
+          "max_dh_sf": 0.08009955804522594,
+          "max_dw": 0.019944639001105536
+        }
+      },
+      "resources": {
+        "cpu_seconds": 41.6,
+        "effective_cores": 7.81,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 67.0,
+        "temp_start_c": 64.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 5.3
+      },
+      "splitting_cm": {
+        "four_component": 903.7294227584337,
+        "kuiva": 903.7197215573829,
+        "one_electron_x2c": 1262.894444725137,
+        "plugin_pcc": 903.7197225452771
+      },
+      "splitting_construction": "self-consistent two-component SCF in the molecular (contracted) basis; the four-component column is in the primitive basis the decoupling used",
+      "status": "ok",
+      "valence_shell": "2p",
+      "valence_spinors": 6
+    },
+    "Ne/x2c-SVPall-2c/coulomb": {
+      "basis": "x2c-SVPall-2c",
+      "configuration": "s4 p6",
+      "element": "Ne",
+      "energy_functional": {
+        "error_eh": {
+          "kuiva": -1.1220691931157489e-07,
+          "none": 0.007058587572885244,
+          "plugin_pcc": -1.1240649655519519e-07,
+          "plugin_soc": 0.007064009736609478
+        },
+        "total_eh": {
+          "four_component": -128.58991791985522,
+          "kuiva": -128.58991803206214,
+          "none": -128.58285933228234,
+          "plugin_pcc": -128.58991803226172,
+          "plugin_soc": -128.58285391011862
+        }
+      },
+      "interaction": "coulomb",
+      "molecular_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.006333909068596304,
+          "max_dw": 0.000533194582876907
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 1.8679630325174612e-10,
+          "abs_dw": 8.706785130114386e-12,
+          "rel_dh_sf": 2.9491471336238388e-08,
+          "rel_dw": 1.6329470346709112e-08
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.006333909255392608,
+          "max_dw": 0.0005331945820334182
+        }
+      },
+      "nao_molecular": 14,
+      "nao_primitive": 24,
+      "plugin_version": "0.1",
+      "primitive_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.03026327144956298,
+          "max_dw": 0.005003514098695904
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 2.0001911932299166e-10,
+          "abs_dw": 8.707416677879859e-12,
+          "rel_dh_sf": 6.609302590456186e-09,
+          "rel_dw": 1.7402602460960194e-09
+        },
+        "kuiva_vs_plugin_soc": {
+          "abs_dh_sf": 0.03026580015078228,
+          "abs_dw": 2.12620345082723e-06,
+          "rel_dh_sf": 1.0000835567702426,
+          "rel_dw": 0.0004247615334879783
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.030263271591138632,
+          "max_dw": 0.005003514099350072
+        },
+        "plugin_soc": {
+          "max_dh_sf": 1.0147269796607382e-05,
+          "max_dw": 0.005005640302142393
+        }
+      },
+      "resources": {
+        "cpu_seconds": 8.7,
+        "effective_cores": 7.09,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 59.0,
+        "temp_start_c": 49.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 1.2
+      },
+      "splitting_cm": {
+        "four_component": 903.2741195324884,
+        "kuiva": 905.7004763674554,
+        "one_electron_x2c": 1173.8615789055762,
+        "plugin_pcc": 905.7004772633658
+      },
+      "splitting_construction": "self-consistent two-component SCF in the molecular (contracted) basis; the four-component column is in the primitive basis the decoupling used",
+      "status": "ok",
+      "valence_shell": "2p",
+      "valence_spinors": 6
+    },
+    "Ne/x2c-SVPall-2c/gaunt": {
+      "basis": "x2c-SVPall-2c",
+      "configuration": "s4 p6",
+      "element": "Ne",
+      "energy_functional": {
+        "error_eh": {
+          "kuiva": 6.92672870172828e-07,
+          "none": -0.010362240906431452,
+          "plugin_pcc": 6.926444484633976e-07,
+          "plugin_soc": 0.007065475211732064
+        },
+        "total_eh": {
+          "four_component": -128.5724970913759,
+          "kuiva": -128.57249639870304,
+          "none": -128.58285933228234,
+          "plugin_pcc": -128.57249639873146,
+          "plugin_soc": -128.56543161616418
+        }
+      },
+      "interaction": "gaunt",
+      "molecular_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.007793328898467565,
+          "max_dw": 0.000691147303064709
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 2.1663951882411325e-11,
+          "abs_dw": 4.360333708680608e-13,
+          "rel_dh_sf": 2.779807212636849e-09,
+          "rel_dw": 6.308834147240206e-10
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.007793328876803613,
+          "max_dw": 0.0006911473034345074
+        }
+      },
+      "nao_molecular": 14,
+      "nao_primitive": 24,
+      "plugin_version": "0.1",
+      "primitive_basis": {
+        "kuiva": {
+          "max_dh_sf": 0.04961025344780623,
+          "max_dw": 0.008054211980454518
+        },
+        "kuiva_vs_plugin_pcc": {
+          "abs_dh_sf": 2.1575657926931058e-11,
+          "abs_dw": 3.391304598254763e-12,
+          "rel_dh_sf": 4.3490319879633294e-10,
+          "rel_dw": 4.210597641437915e-10
+        },
+        "kuiva_vs_plugin_soc": {
+          "abs_dh_sf": 0.030163858750821407,
+          "abs_dw": 7.283146679266245e-06,
+          "rel_dh_sf": 0.3781158814493246,
+          "rel_dw": 0.0009034486239173152
+        },
+        "plugin_pcc": {
+          "max_dh_sf": 0.04961025346938189,
+          "max_dw": 0.008054211983780611
+        },
+        "plugin_soc": {
+          "max_dh_sf": 0.07977411219862764,
+          "max_dw": 0.008061495127068573
+        }
+      },
+      "resources": {
+        "cpu_seconds": 16.2,
+        "effective_cores": 7.71,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 62.0,
+        "temp_start_c": 60.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 2.1
+      },
+      "splitting_cm": {
+        "four_component": 827.9828856013974,
+        "kuiva": 830.8193682360236,
+        "one_electron_x2c": 1173.8615788922477,
+        "plugin_pcc": 830.8193680199165
+      },
+      "splitting_construction": "self-consistent two-component SCF in the molecular (contracted) basis; the four-component column is in the primitive basis the decoupling used",
+      "status": "ok",
+      "valence_shell": "2p",
+      "valence_spinors": 6
+    }
+  },
+  "schema": 1,
+  "variants": {
+    "pcc": "the full two-electron picture change \u2014 the counterpart of Kuiva's dG",
+    "soc": "the plugin's default entry point: the spin-DEPENDENT part only, with no two-electron scalar picture change at all"
+  }
+}

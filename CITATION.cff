@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use Kuiva in published work, please cite it as below, and cite the methods and basis sets it implements as listed in the References section of README.md."
+title: "Kuiva: relativistic multireference quantum chemistry"
+abstract: >-
+  Two-component (X2C) relativistic multireference quantum chemistry for strongly
+  correlated, strongly relativistic systems. Spin-orbit coupling is introduced at
+  the CASSCF/CI level, with two-electron spin-orbit coupling by atomic mean-field
+  X2C; the CI step is solved by conventional complex determinant CI or by an
+  in-house tree tensor network (DMRG/TTNS), and dynamic correlation by strongly
+  contracted NEVPT2.
+type: software
+authors:
+  - family-names: "Mansikkamäki"
+    given-names: "Akseli"
+version: 0.3.5
+date-released: "2026-08-12"
+license: Apache-2.0
+repository-code: "https://github.com/mansikkamaki/kuiva"
+keywords:
+  - quantum chemistry
+  - relativistic quantum chemistry
+  - X2C
+  - spin-orbit coupling
+  - multireference
+  - CASSCF
+  - NEVPT2
+  - DMRG
+  - tensor networks
+  - single-molecule magnets

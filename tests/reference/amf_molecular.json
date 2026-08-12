@@ -1,0 +1,463 @@
+{
+  "generator": "tests/generate/amf_molecular.py",
+  "schema": 1,
+  "systems": {
+    "cecl3": {
+      "basis": "x2c-SVPall-2c",
+      "disk_hits": 0,
+      "e_scf": -10238.872689788272,
+      "elements": [
+        "Ce",
+        "Cl"
+      ],
+      "label": "CeCl3",
+      "memory_gb": 9.5,
+      "nao": 175,
+      "natm": 4,
+      "off_atom_nonzeros": 0,
+      "per_element": {
+        "Ce": {
+          "configuration": "s10 p24 d20 f1",
+          "dh_sf": 1.5513062178869474,
+          "dw": 0.2550150261292985,
+          "n_atoms": 1,
+          "nao": 112,
+          "w_one_electron": 6.6453809344697135
+        },
+        "Cl": {
+          "configuration": "s6 p11",
+          "dh_sf": 0.033955538925775755,
+          "dw": 0.004854965666533058,
+          "n_atoms": 3,
+          "nao": 21,
+          "w_one_electron": 0.04069343425555824
+        }
+      },
+      "plugin": {
+        "comparable": false,
+        "non_neutral_reference": [
+          "Ce"
+        ]
+      },
+      "provenance": {
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 1.5513062179668395,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Ce": "s10 p24 d20 f1",
+            "Cl": "s6 p11"
+          },
+          "elements": [
+            "Ce",
+            "Cl"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 1.5513062178869474,
+          "spin_orbit_scale": 0.2550150261292985,
+          "tr_residual": 5.782019651553584e-07,
+          "tr_residual_rel": 1.5241854589247296e-09
+        },
+        "soc_strength": 6.390365908340415,
+        "tr_residual": 0.00012313159476207147,
+        "tr_residual_rel": 6.936179559372763e-08
+      },
+      "resources": {
+        "cpu_seconds": 17715.0,
+        "effective_cores": 7.85,
+        "idle_injected_seconds": 0.4,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 90.0,
+        "temp_start_c": 85.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 2255.9
+      },
+      "scf_converged": true,
+      "soc_reduction": 0.03837477921040322,
+      "soc_strength_one_electron": 6.6453809344697135,
+      "soc_strength_screened": 6.390365908340415,
+      "solves": 2,
+      "spin_free_scale": 1.5513062178869474,
+      "spin_orbit_scale": 0.2550150261292985,
+      "tr_residual_rel": 1.5241854589247296e-09
+    },
+    "hi": {
+      "basis": "x2c-SVPall-2c",
+      "disk_hits": 0,
+      "e_scf": -7112.685646208845,
+      "elements": [
+        "H",
+        "I"
+      ],
+      "label": "HI",
+      "memory_gb": null,
+      "nao": 55,
+      "natm": 2,
+      "off_atom_nonzeros": 0,
+      "per_element": {
+        "H": {
+          "configuration": "s1",
+          "dh_sf": 0.0,
+          "dw": 0.0,
+          "n_atoms": 1,
+          "nao": 5,
+          "w_one_electron": 5.8263988117016846e-05
+        },
+        "I": {
+          "configuration": "s10 p23 d20",
+          "dh_sf": 1.1670606835669806,
+          "dw": 0.2006446944636122,
+          "n_atoms": 1,
+          "nao": 50,
+          "w_one_electron": 4.872207166144204
+        }
+      },
+      "plugin": {
+        "comparable": true,
+        "dh_sf_relative": 1.6103903816820242e-06,
+        "dw_relative": 5.330713875612277e-07,
+        "off_atom_nonzeros": 0,
+        "resources": {
+          "cpu_seconds": 38.6,
+          "effective_cores": 7.75,
+          "idle_injected_seconds": 0.0,
+          "n_cpus": 8,
+          "powerclamp_end": 0,
+          "temp_end_c": 89.0,
+          "temp_start_c": 92.0,
+          "thermally_throttled": false,
+          "throttle_fraction": 0.0,
+          "wall_seconds": 5.0
+        }
+      },
+      "provenance": {
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 1.1670606835325543,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "H": "s1",
+            "I": "s10 p23 d20"
+          },
+          "elements": [
+            "H",
+            "I"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 1.1670606835669806,
+          "spin_orbit_scale": 0.2006446944636122,
+          "tr_residual": 1.3610455851258649e-07,
+          "tr_residual_rel": 4.1026580079743776e-10
+        },
+        "soc_strength": 4.671562471680591,
+        "tr_residual": 1.1268852517874813e-10,
+        "tr_residual_rel": 7.711256040137059e-14
+      },
+      "resources": {
+        "cpu_seconds": 2311.6,
+        "effective_cores": 7.66,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 92.0,
+        "temp_start_c": 65.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 301.7
+      },
+      "scf_converged": true,
+      "soc_reduction": 0.04118147845966902,
+      "soc_strength_one_electron": 4.872207166144204,
+      "soc_strength_screened": 4.671562471680591,
+      "solves": 1,
+      "spin_free_scale": 1.1670606835669806,
+      "spin_orbit_scale": 0.2006446944636122,
+      "tr_residual_rel": 4.1026580079743776e-10
+    },
+    "ne": {
+      "basis": "x2c-SVPall-2c",
+      "disk_hits": 0,
+      "e_scf": -128.51206172615497,
+      "elements": [
+        "Ne"
+      ],
+      "label": "Ne",
+      "memory_gb": null,
+      "nao": 14,
+      "natm": 1,
+      "off_atom_nonzeros": 0,
+      "per_element": {
+        "Ne": {
+          "configuration": "s4 p6",
+          "dh_sf": 0.0063339090686417195,
+          "dw": 0.0005331945828755083,
+          "n_atoms": 1,
+          "nao": 14,
+          "w_one_electron": 0.002459850669383714
+        }
+      },
+      "plugin": {
+        "comparable": true,
+        "dh_sf_relative": 2.948430205853792e-08,
+        "dw_relative": 1.6329060208342417e-08,
+        "off_atom_nonzeros": 0,
+        "resources": {
+          "cpu_seconds": 0.2,
+          "effective_cores": 4.18,
+          "idle_injected_seconds": 0.0,
+          "n_cpus": 8,
+          "powerclamp_end": 0,
+          "temp_end_c": 90.0,
+          "temp_start_c": 88.0,
+          "thermally_throttled": false,
+          "throttle_fraction": 0.0,
+          "wall_seconds": 0.0
+        }
+      },
+      "provenance": {
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 0.006333909057481435,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Ne": "s4 p6"
+          },
+          "elements": [
+            "Ne"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 0.0063339090686417195,
+          "spin_orbit_scale": 0.0005331945828755083,
+          "tr_residual": 2.3091288497351528e-12,
+          "tr_residual_rel": 7.656330967455952e-14
+        },
+        "soc_strength": 0.0019266560865082054,
+        "tr_residual": 1.135847248943759e-11,
+        "tr_residual_rel": 2.2725378173091687e-13
+      },
+      "resources": {
+        "cpu_seconds": 3.0,
+        "effective_cores": 3.79,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 89.0,
+        "temp_start_c": 89.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 0.8
+      },
+      "scf_converged": true,
+      "soc_reduction": 0.21675892342241,
+      "soc_strength_one_electron": 0.002459850669383714,
+      "soc_strength_screened": 0.0019266560865082054,
+      "solves": 1,
+      "spin_free_scale": 0.0063339090686417195,
+      "spin_orbit_scale": 0.0005331945828755083,
+      "tr_residual_rel": 7.656330967455952e-14
+    },
+    "ti2cl6": {
+      "basis": "x2c-SVPall-2c",
+      "disk_hits": 0,
+      "e_scf": -4470.061229899425,
+      "elements": [
+        "Ti",
+        "Cl"
+      ],
+      "label": "Ti2Cl6 (dimer)",
+      "memory_gb": 9.5,
+      "nao": 210,
+      "natm": 8,
+      "off_atom_nonzeros": 0,
+      "per_element": {
+        "Cl": {
+          "configuration": "s6 p11",
+          "dh_sf": 0.03395553892565453,
+          "dw": 0.004854965666530672,
+          "n_atoms": 6,
+          "nao": 21,
+          "w_one_electron": 0.040688465039726326
+        },
+        "Ti": {
+          "configuration": "s8 p12 d2",
+          "dh_sf": 0.07592973681987764,
+          "dw": 0.008384169771953968,
+          "n_atoms": 2,
+          "nao": 42,
+          "w_one_electron": 0.07970297006667657
+        }
+      },
+      "plugin": {
+        "comparable": true,
+        "dh_sf_relative": 6.672074058244567e-06,
+        "dw_relative": 4.708734416888381e-06,
+        "off_atom_nonzeros": 0,
+        "resources": {
+          "cpu_seconds": 14.8,
+          "effective_cores": 3.61,
+          "idle_injected_seconds": 0.0,
+          "n_cpus": 8,
+          "powerclamp_end": 0,
+          "temp_end_c": 89.0,
+          "temp_start_c": 90.0,
+          "thermally_throttled": false,
+          "throttle_fraction": 0.0,
+          "wall_seconds": 4.1
+        }
+      },
+      "provenance": {
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 0.0759297367727072,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Cl": "s6 p11",
+            "Ti": "s8 p12 d2"
+          },
+          "elements": [
+            "Ti",
+            "Cl"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 0.07592973681987764,
+          "spin_orbit_scale": 0.008384169771953968,
+          "tr_residual": 8.766192692929522e-10,
+          "tr_residual_rel": 9.555845082852941e-12
+        },
+        "soc_strength": 0.0713188002947916,
+        "tr_residual": 2.054889593274728e-11,
+        "tr_residual_rel": 7.735075234026055e-14
+      },
+      "resources": {
+        "cpu_seconds": 648.0,
+        "effective_cores": 3.75,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 90.0,
+        "temp_start_c": 90.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 173.0
+      },
+      "scf_converged": true,
+      "soc_reduction": 0.10519268936786141,
+      "soc_strength_one_electron": 0.07970297006671556,
+      "soc_strength_screened": 0.0713188002947916,
+      "solves": 2,
+      "spin_free_scale": 0.07592973681987764,
+      "spin_orbit_scale": 0.008384169771953968,
+      "tr_residual_rel": 9.555845082852941e-12
+    },
+    "ticl3": {
+      "basis": "x2c-SVPall-2c",
+      "disk_hits": 0,
+      "e_scf": -2235.1383288028364,
+      "elements": [
+        "Ti",
+        "Cl"
+      ],
+      "label": "TiCl3",
+      "memory_gb": null,
+      "nao": 105,
+      "natm": 4,
+      "off_atom_nonzeros": 0,
+      "per_element": {
+        "Cl": {
+          "configuration": "s6 p11",
+          "dh_sf": 0.03395553892569751,
+          "dw": 0.004854965666531861,
+          "n_atoms": 3,
+          "nao": 21,
+          "w_one_electron": 0.040690737074610885
+        },
+        "Ti": {
+          "configuration": "s8 p12 d2",
+          "dh_sf": 0.07592973681969589,
+          "dw": 0.008384169771935719,
+          "n_atoms": 1,
+          "nao": 42,
+          "w_one_electron": 0.07970018423923565
+        }
+      },
+      "plugin": {
+        "comparable": true,
+        "dh_sf_relative": 6.672073330160272e-06,
+        "dw_relative": 4.708732316404525e-06,
+        "off_atom_nonzeros": 0,
+        "resources": {
+          "cpu_seconds": 13.8,
+          "effective_cores": 3.81,
+          "idle_injected_seconds": 0.0,
+          "n_cpus": 8,
+          "powerclamp_end": 0,
+          "temp_end_c": 90.0,
+          "temp_start_c": 89.0,
+          "thermally_throttled": false,
+          "throttle_fraction": 0.0,
+          "wall_seconds": 3.6
+        }
+      },
+      "provenance": {
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 0.07592973685075322,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Cl": "s6 p11",
+            "Ti": "s8 p12 d2"
+          },
+          "elements": [
+            "Ti",
+            "Cl"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 0.07592973681969589,
+          "spin_orbit_scale": 0.008384169771935719,
+          "tr_residual": 6.520832456877695e-10,
+          "tr_residual_rel": 7.108224397054383e-12
+        },
+        "soc_strength": 0.07131601446729993,
+        "tr_residual": 1.3343992579422097e-11,
+        "tr_residual_rel": 5.2235638246871537e-14
+      },
+      "resources": {
+        "cpu_seconds": 509.6,
+        "effective_cores": 3.79,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 90.0,
+        "temp_start_c": 88.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 134.3
+      },
+      "scf_converged": true,
+      "soc_reduction": 0.1051963662564317,
+      "soc_strength_one_electron": 0.07970018423923565,
+      "soc_strength_screened": 0.07131601446729993,
+      "solves": 2,
+      "spin_free_scale": 0.07592973681969589,
+      "spin_orbit_scale": 0.008384169771935719,
+      "tr_residual_rel": 7.108224397054383e-12
+    }
+  }
+}

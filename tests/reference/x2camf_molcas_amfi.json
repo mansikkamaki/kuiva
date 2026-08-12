@@ -1,0 +1,114 @@
+{
+  "basis": {
+    "molcas": "ANO-RCC-VDZP",
+    "pyscf": "ano-rcc-vdzp"
+  },
+  "code": "OpenMolcas v26.06 (DKH2 + AMFI, RASSCF/RASSI-SO) and Kuiva",
+  "confound": "NOT a controlled single-variable comparison. OpenMolcas differs from Kuiva in the Hamiltonian (DKH2 vs X2C), in the two-electron spin-orbit treatment (Breit-Pauli AMFI, which has no two-electron scalar picture change at all, vs X2CAMF) and in how the splitting is obtained (RASSI-SO term energy vs one-particle spinor splitting). The third is reduced to the choice of orbitals by taking a p^5 cation, whose (5e,3o) active space spans exactly the three components of 2P and holds no correlation; the first two remain and this table cannot separate them.",
+  "environment": {
+    "idle_injection_available": true,
+    "n_cpus": 8,
+    "package_temp_c": 49.0,
+    "powerclamp_state": 0
+  },
+  "generator": "tests/generate/x2camf_molcas_amfi.py",
+  "observable": "the \u00b2P\u2083/\u2082-\u00b2P\u2081/\u2082 splitting of a singly charged p-block cation: one hole outside a closed shell, and therefore the one open-shell case where a term splitting and a one-particle splitting are the same observable",
+  "purpose": "method-decomposition table for the two-electron spin-orbit treatment",
+  "records": {
+    "Ar": {
+      "charge": 1,
+      "construction": "self-consistent two-component average-of-configuration SCF in the contracted molecular basis; the mean field is decoupled in the primitive basis and contracted back",
+      "element": "Ar",
+      "experiment_cm": 1431.6,
+      "mean_field_reference": "s6 p12",
+      "molcas": {
+        "degeneracies": [
+          4,
+          2
+        ],
+        "hamiltonian": "DKH2 (order 2, EXP parametrization) + AMFI spin-orbit",
+        "so_energies_cm": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1369.6025,
+          1369.6025
+        ],
+        "splitting_cm": 1369.6025
+      },
+      "resources": {
+        "cpu_seconds": 474.7,
+        "effective_cores": 6.87,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 86.0,
+        "temp_start_c": 49.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 69.1
+      },
+      "splitting_cm": {
+        "experiment": 1431.6,
+        "four_component_contracted": 1668.5693557072016,
+        "four_component_primitive": 1718.1816364167914,
+        "kuiva_coulomb": 1646.9919215473049,
+        "kuiva_gaunt": 1587.6881268276088,
+        "molcas_dkh2_amfi": 1369.6025,
+        "one_electron_x2c": 1906.0539714996034
+      },
+      "state": "s6 p11",
+      "status": "ok",
+      "valence_shell": "3p"
+    },
+    "Ne": {
+      "charge": 1,
+      "construction": "self-consistent two-component average-of-configuration SCF in the contracted molecular basis; the mean field is decoupled in the primitive basis and contracted back",
+      "element": "Ne",
+      "experiment_cm": 780.4,
+      "mean_field_reference": "s4 p6",
+      "molcas": {
+        "degeneracies": [
+          4,
+          2
+        ],
+        "hamiltonian": "DKH2 (order 2, EXP parametrization) + AMFI spin-orbit",
+        "so_energies_cm": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          791.8176,
+          791.8176
+        ],
+        "splitting_cm": 791.8176
+      },
+      "resources": {
+        "cpu_seconds": 197.7,
+        "effective_cores": 6.85,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 75.0,
+        "temp_start_c": 50.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 28.8
+      },
+      "splitting_cm": {
+        "experiment": 780.4,
+        "four_component_contracted": 1049.356030671844,
+        "four_component_primitive": 1014.8871309928928,
+        "kuiva_coulomb": 1044.9433477756922,
+        "kuiva_gaunt": 961.1798486271915,
+        "molcas_dkh2_amfi": 791.8176,
+        "one_electron_x2c": 1333.023115447074
+      },
+      "state": "s4 p5",
+      "status": "ok",
+      "valence_shell": "2p"
+    }
+  },
+  "schema": 1
+}

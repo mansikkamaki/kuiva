@@ -1,0 +1,4718 @@
+{
+  "code": "kuiva",
+  "conv_grad": 0.0001,
+  "degeneracy_tol_cm": 1.0,
+  "environment": {
+    "idle_injection_available": true,
+    "n_cpus": 8,
+    "package_temp_c": 45.0,
+    "powerclamp_state": 0
+  },
+  "generator": "tests/generate/tier2_kuiva.py",
+  "kuiva_version": "0.0.1",
+  "max_iter": 60,
+  "optimizer_mode": "auto",
+  "records": {
+    "bi/x2c-SVPall-2c": {
+      "active_l": "",
+      "active_space": "6 explicit spinors",
+      "basis": "x2c-SVPall-2c",
+      "boundary_gap_cm": null,
+      "boundary_margin": 8,
+      "boundary_ndet": 20,
+      "boundary_spans_full_ci": true,
+      "casscf_converged": true,
+      "casscf_grad_norm": 8.599880587203067e-05,
+      "casscf_iterations": 16,
+      "charge": 0,
+      "cholesky_naux": 782,
+      "cholesky_orbit_complete": true,
+      "cholesky_tol": 1e-08,
+      "degeneracy_pattern": [
+        4,
+        4,
+        6,
+        2,
+        4
+      ],
+      "degeneracy_tol_cm": 1.0,
+      "dump_bytes": 258209,
+      "dump_path": "temp/tier2_dumps/bi-x2c-SVPall-2c.prop",
+      "e_casscf_avg": -21576.345283356743,
+      "e_scf": -21532.721495450496,
+      "e_soc_total_lowest": -21576.427702666148,
+      "gauge_origin_choice": "centre of mass",
+      "hamiltonian": {
+        "decoupling": {
+          "block_scales": {},
+          "decoupling": "1e",
+          "fragments": 0,
+          "implementation": "pyscf",
+          "partition": "",
+          "source": ""
+        },
+        "method": "X2C-AMF",
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 5.150782911398892,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Bi": "s12 p27 d30 f14"
+          },
+          "elements": [
+            "Bi"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 5.150782911283862,
+          "spin_orbit_scale": 0.9867429936643817,
+          "tr_residual": 1.0430922482517213e-05,
+          "tr_residual_rel": 1.5205992419794735e-08
+        },
+        "soc_strength": 39.42017340199647,
+        "tr_residual": 3.5156674584868597e-06,
+        "tr_residual_rel": 9.167752443599738e-10
+      },
+      "inactive_moment_l": [
+        -1.977557657559248e-14,
+        -4.069872016438866e-14,
+        4.891486521385602e-14
+      ],
+      "key": "bi",
+      "label": "Bi",
+      "moment_hermiticity": 4.045372421708157e-16,
+      "multiplets": [
+        {
+          "energy_cm": 0.0,
+          "g_values": [
+            1.762392,
+            1.762392,
+            1.762392
+          ],
+          "m_tensor": [
+            [
+              15.53012446,
+              0.0,
+              1e-08
+            ],
+            [
+              0.0,
+              15.53012445,
+              0.0
+            ],
+            [
+              1e-08,
+              0.0,
+              15.53012447
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 5.1898863743583205e-05
+        },
+        {
+          "energy_cm": 13034.5739,
+          "g_values": [
+            1.12229,
+            1.12229,
+            1.12229
+          ],
+          "m_tensor": [
+            [
+              6.29767596,
+              -7e-08,
+              -0.0
+            ],
+            [
+              -7e-08,
+              6.29767598,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              6.29767602
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 7.66506291256519e-05
+        },
+        {
+          "energy_cm": 17941.3987,
+          "g_values": [
+            1.200464,
+            1.200464,
+            1.200464
+          ],
+          "m_tensor": [
+            [
+              25.21948595,
+              8e-08,
+              -0.0
+            ],
+            [
+              8e-08,
+              25.21948594,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              25.21948588
+            ]
+          ],
+          "size": 6,
+          "spread_cm": 2.395332558080554e-06
+        },
+        {
+          "energy_cm": 26216.8793,
+          "g_values": [
+            0.665894,
+            0.665894,
+            0.665894
+          ],
+          "m_tensor": [
+            [
+              0.22170712,
+              1e-08,
+              0.0
+            ],
+            [
+              1e-08,
+              0.22170712,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.22170712
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 37389.626,
+          "g_values": [
+            1.25128,
+            1.25128,
+            1.25128
+          ],
+          "m_tensor": [
+            [
+              7.82850707,
+              -2e-08,
+              -0.0
+            ],
+            [
+              -2e-08,
+              7.82850707,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              7.82850708
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 8.543350850231946e-05
+        }
+      ],
+      "n_soc_states": 20,
+      "nao": 89,
+      "ncas": 3,
+      "nelecas": 3,
+      "nroots": {
+        "2": 8,
+        "4": 1
+      },
+      "nspinor": 178,
+      "optimizer_mode": "auto",
+      "resources": {
+        "cpu_seconds": 927.0,
+        "effective_cores": 3.78,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 77.0,
+        "temp_start_c": 47.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 245.4
+      },
+      "scf_converged": true,
+      "screening": "x2camf",
+      "seconds": 245.35,
+      "soc_rel_cm": [
+        0.0,
+        0.0,
+        0.0001,
+        0.0001,
+        13034.5739,
+        13034.5739,
+        13034.574,
+        13034.574,
+        17941.3987,
+        17941.3987,
+        17941.3987,
+        17941.3987,
+        17941.3987,
+        17941.3987,
+        26216.8793,
+        26216.8793,
+        37389.626,
+        37389.626,
+        37389.626,
+        37389.626
+      ],
+      "spin": 3,
+      "status": "ok"
+    },
+    "ce3p/x2c-SVPall-2c": {
+      "active_l": "f",
+      "active_space": "7 lowest Kramers pairs of l=3 character on 0 Ce",
+      "basis": "x2c-SVPall-2c",
+      "boundary_gap_cm": null,
+      "boundary_margin": 8,
+      "boundary_ndet": 14,
+      "boundary_spans_full_ci": true,
+      "casscf_converged": true,
+      "casscf_grad_norm": 1.4193712822079394e-05,
+      "casscf_iterations": 22,
+      "charge": 3,
+      "cholesky_naux": 961,
+      "cholesky_orbit_complete": true,
+      "cholesky_tol": 1e-08,
+      "degeneracy_pattern": [
+        6,
+        8
+      ],
+      "degeneracy_tol_cm": 1.0,
+      "dump_bytes": 129308,
+      "dump_path": "temp/tier2_dumps/ce3p-x2c-SVPall-2c.prop",
+      "e_casscf_avg": -8862.12758795097,
+      "e_scf": -8855.133679338858,
+      "e_soc_total_lowest": -8862.133358602137,
+      "gauge_origin_choice": "centre of mass",
+      "hamiltonian": {
+        "decoupling": {
+          "block_scales": {},
+          "decoupling": "1e",
+          "fragments": 0,
+          "implementation": "pyscf",
+          "partition": "",
+          "source": ""
+        },
+        "method": "X2C-AMF",
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 1.551306217852698,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Ce": "s10 p24 d20 f1"
+          },
+          "elements": [
+            "Ce"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 1.5513062178847945,
+          "spin_orbit_scale": 0.2550150260759605,
+          "tr_residual": 7.960528736915584e-07,
+          "tr_residual_rel": 2.0984574382927997e-09
+        },
+        "soc_strength": 6.3903653025605225,
+        "tr_residual": 0.00016157671450400812,
+        "tr_residual_rel": 9.156031647238332e-08
+      },
+      "inactive_moment_l": [
+        2.4643549462362302e-14,
+        -6.714529381618786e-15,
+        5.974821332133118e-14
+      ],
+      "key": "ce3p",
+      "label": "Ce(3+)",
+      "moment_hermiticity": 3.1088180704526017e-15,
+      "multiplets": [
+        {
+          "energy_cm": 0.003,
+          "g_values": [
+            0.856811,
+            0.856811,
+            0.856812
+          ],
+          "m_tensor": [
+            [
+              12.84720364,
+              1.4e-07,
+              -4e-08
+            ],
+            [
+              1.4e-07,
+              12.84720267,
+              2e-08
+            ],
+            [
+              -4e-08,
+              2e-08,
+              12.8472084
+            ]
+          ],
+          "size": 6,
+          "spread_cm": 0.006624690345853997
+        },
+        {
+          "energy_cm": 2216.3929,
+          "g_values": [
+            1.143188,
+            1.143188,
+            1.143189
+          ],
+          "m_tensor": [
+            [
+              54.88895676,
+              -1.8e-07,
+              6e-08
+            ],
+            [
+              -1.8e-07,
+              54.88895806,
+              -2e-08
+            ],
+            [
+              6e-08,
+              -2e-08,
+              54.8889504
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.005607871838492429
+        }
+      ],
+      "n_soc_states": 14,
+      "nao": 112,
+      "ncas": 7,
+      "nelecas": 1,
+      "nroots": {
+        "2": 7
+      },
+      "nspinor": 224,
+      "optimizer_mode": "auto",
+      "resources": {
+        "cpu_seconds": 1443.3,
+        "effective_cores": 3.61,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 77.0,
+        "temp_start_c": 77.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 399.8
+      },
+      "scf_converged": true,
+      "screening": "x2camf",
+      "seconds": 399.77,
+      "soc_rel_cm": [
+        0.0,
+        0.0,
+        0.0024,
+        0.0024,
+        0.0066,
+        0.0066,
+        2216.3905,
+        2216.3905,
+        2216.392,
+        2216.392,
+        2216.3931,
+        2216.3931,
+        2216.3962,
+        2216.3962
+      ],
+      "spin": 1,
+      "status": "ok"
+    },
+    "cecl3/x2c-SVPall-2c": {
+      "active_l": "f",
+      "active_space": "7 lowest Kramers pairs of l=3 character on 0 Ce",
+      "basis": "x2c-SVPall-2c",
+      "boundary_gap_cm": null,
+      "boundary_margin": 8,
+      "boundary_ndet": 14,
+      "boundary_spans_full_ci": true,
+      "casscf_converged": true,
+      "casscf_grad_norm": 1.4714933836838281e-05,
+      "casscf_iterations": 24,
+      "charge": 0,
+      "cholesky_naux": 1732,
+      "cholesky_orbit_complete": true,
+      "cholesky_tol": 1e-08,
+      "degeneracy_pattern": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "degeneracy_tol_cm": 1.0,
+      "dump_bytes": 129440,
+      "dump_path": "temp/tier2_dumps/cecl3-x2c-SVPall-2c.prop",
+      "e_casscf_avg": -10246.235355666382,
+      "e_scf": -10238.872689788246,
+      "e_soc_total_lowest": -10246.243289333997,
+      "gauge_origin_choice": "centre of mass",
+      "hamiltonian": {
+        "decoupling": {
+          "block_scales": {},
+          "decoupling": "1e",
+          "fragments": 0,
+          "implementation": "pyscf",
+          "partition": "",
+          "source": ""
+        },
+        "method": "X2C-AMF",
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 1.5513062179645658,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Ce": "s10 p24 d20 f1",
+            "Cl": "s6 p11"
+          },
+          "elements": [
+            "Ce",
+            "Cl"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 1.5513062178847945,
+          "spin_orbit_scale": 0.2550150260759605,
+          "tr_residual": 7.960528736915584e-07,
+          "tr_residual_rel": 2.0984574382927997e-09
+        },
+        "soc_strength": 6.390365908393753,
+        "tr_residual": 0.00012313159476207147,
+        "tr_residual_rel": 6.936179559372763e-08
+      },
+      "inactive_moment_l": [
+        9.979716831120353e-14,
+        -3.735620009607592e-14,
+        8.68526171121653e-14
+      ],
+      "key": "cecl3",
+      "label": "CeCl3",
+      "moment_hermiticity": 2.2591401799415137e-15,
+      "multiplets": [
+        {
+          "energy_cm": 0.0,
+          "g_values": [
+            0.922313,
+            2.501378,
+            2.50139
+          ],
+          "m_tensor": [
+            [
+              3.12844671,
+              -3.93e-06,
+              -0.0
+            ],
+            [
+              -3.93e-06,
+              3.12847549,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.42533027
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 229.3625,
+          "g_values": [
+            6e-06,
+            6e-06,
+            2.630546
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              2e-08
+            ],
+            [
+              0.0,
+              0.0,
+              -1e-08
+            ],
+            [
+              2e-08,
+              -1e-08,
+              3.45988613
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 1119.4417,
+          "g_values": [
+            0.001704,
+            0.001705,
+            4.62166
+          ],
+          "m_tensor": [
+            [
+              1.45e-06,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              1.45e-06,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              10.67987233
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 2176.5296,
+          "g_values": [
+            1.054649,
+            4.503059,
+            4.503102
+          ],
+          "m_tensor": [
+            [
+              10.13878827,
+              5.426e-05,
+              -0.0
+            ],
+            [
+              5.426e-05,
+              10.13894735,
+              2e-08
+            ],
+            [
+              -0.0,
+              2e-08,
+              0.55614188
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 2336.0209,
+          "g_values": [
+            2e-05,
+            2.3e-05,
+            3.323853
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              1e-08
+            ],
+            [
+              -0.0,
+              0.0,
+              -1e-07
+            ],
+            [
+              1e-08,
+              -1e-07,
+              5.52399993
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 2739.9969,
+          "g_values": [
+            0.037278,
+            0.037281,
+            5.256358
+          ],
+          "m_tensor": [
+            [
+              0.00069494,
+              -2e-08,
+              -1e-08
+            ],
+            [
+              -2e-08,
+              0.00069482,
+              3e-08
+            ],
+            [
+              -1e-08,
+              3e-08,
+              13.81465039
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 3587.3197,
+          "g_values": [
+            0.035437,
+            0.035437,
+            7.902165
+          ],
+          "m_tensor": [
+            [
+              0.00062788,
+              0.0,
+              -1e-08
+            ],
+            [
+              0.0,
+              0.00062788,
+              0.0
+            ],
+            [
+              -1e-08,
+              0.0,
+              31.22210449
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        }
+      ],
+      "n_soc_states": 14,
+      "nao": 175,
+      "ncas": 7,
+      "nelecas": 1,
+      "nroots": {
+        "2": 7
+      },
+      "nspinor": 350,
+      "optimizer_mode": "auto",
+      "resources": {
+        "cpu_seconds": 8812.9,
+        "effective_cores": 2.82,
+        "idle_injected_seconds": 1.2,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 75.0,
+        "temp_start_c": 73.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 3127.1
+      },
+      "scf_converged": true,
+      "screening": "x2camf",
+      "seconds": 3127.01,
+      "soc_rel_cm": [
+        0.0,
+        0.0,
+        229.3625,
+        229.3625,
+        1119.4417,
+        1119.4417,
+        2176.5296,
+        2176.5296,
+        2336.0209,
+        2336.0209,
+        2739.9969,
+        2739.9969,
+        3587.3197,
+        3587.3197
+      ],
+      "spin": 1,
+      "status": "ok"
+    },
+    "dy3p/x2c-SVPall-2c": {
+      "active_l": "f",
+      "active_space": "7 lowest Kramers pairs of l=3 character on 0 Dy",
+      "basis": "x2c-SVPall-2c",
+      "boundary_gap_cm": 2057.527366820861,
+      "boundary_margin": 8,
+      "boundary_ndet": 2002,
+      "boundary_next_cm": [
+        25023.9834,
+        27081.5107,
+        27081.5107,
+        27081.5119,
+        27081.5119,
+        27081.5127,
+        27081.5127,
+        27081.5132,
+        27081.5132
+      ],
+      "boundary_spans_full_ci": false,
+      "casscf_converged": true,
+      "casscf_grad_norm": 2.0844103865098292e-06,
+      "casscf_iterations": 26,
+      "charge": 3,
+      "cholesky_naux": 988,
+      "cholesky_orbit_complete": true,
+      "cholesky_tol": 1e-08,
+      "degeneracy_pattern": [
+        16,
+        14,
+        12,
+        10,
+        8,
+        12,
+        6,
+        10,
+        8,
+        6,
+        4,
+        2,
+        10,
+        16
+      ],
+      "degeneracy_tol_cm": 1.0,
+      "dump_bytes": 11327144,
+      "dump_path": "temp/tier2_dumps/dy3p-x2c-SVPall-2c.prop",
+      "e_casscf_avg": -12164.22840647714,
+      "e_scf": -12151.46456761862,
+      "e_soc_total_lowest": -12164.278694554687,
+      "gauge_origin_choice": "centre of mass",
+      "hamiltonian": {
+        "decoupling": {
+          "block_scales": {},
+          "decoupling": "1e",
+          "fragments": 0,
+          "implementation": "pyscf",
+          "partition": "",
+          "source": ""
+        },
+        "method": "X2C-AMF",
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 2.355123428128991,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Dy": "s10 p24 d20 f9"
+          },
+          "elements": [
+            "Dy"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 2.3551234280964217,
+          "spin_orbit_scale": 0.4085361304298038,
+          "tr_residual": 6.958783313032698e-06,
+          "tr_residual_rel": 1.4946591796173678e-08
+        },
+        "soc_strength": 12.005017991541889,
+        "tr_residual": 1.9093343113250002e-05,
+        "tr_residual_rel": 8.225979266952366e-09
+      },
+      "inactive_moment_l": [
+        1.6098381240797592e-14,
+        -2.1093271850318104e-15,
+        -3.150778249416675e-14
+      ],
+      "key": "dy3p",
+      "label": "Dy(3+)",
+      "moment_hermiticity": 4.782987168225453e-15,
+      "multiplets": [
+        {
+          "energy_cm": 0.0033,
+          "g_values": [
+            1.327102,
+            1.327102,
+            1.327102
+          ],
+          "m_tensor": [
+            [
+              598.80782016,
+              2.699e-05,
+              -5.8e-07
+            ],
+            [
+              2.699e-05,
+              598.80777672,
+              1.19e-06
+            ],
+            [
+              -5.8e-07,
+              1.19e-06,
+              598.80783502
+            ]
+          ],
+          "size": 16,
+          "spread_cm": 0.004984686251556769
+        },
+        {
+          "energy_cm": 3370.7496,
+          "g_values": [
+            1.278032,
+            1.278032,
+            1.278032
+          ],
+          "m_tensor": [
+            [
+              371.59067782,
+              1.937e-05,
+              -4.1e-07
+            ],
+            [
+              1.937e-05,
+              371.5906469,
+              8.5e-07
+            ],
+            [
+              -4.1e-07,
+              8.5e-07,
+              371.59068848
+            ]
+          ],
+          "size": 14,
+          "spread_cm": 0.00437826798952301
+        },
+        {
+          "energy_cm": 5763.1066,
+          "g_values": [
+            1.202495,
+            1.202495,
+            1.202495
+          ],
+          "m_tensor": [
+            [
+              206.77722856,
+              7.99e-06,
+              -1.6e-07
+            ],
+            [
+              7.99e-06,
+              206.77721606,
+              3.5e-07
+            ],
+            [
+              -1.6e-07,
+              3.5e-07,
+              206.77723304
+            ]
+          ],
+          "size": 12,
+          "spread_cm": 0.0037047804271423956
+        },
+        {
+          "energy_cm": 7606.8601,
+          "g_values": [
+            1.073124,
+            1.073124,
+            1.073124
+          ],
+          "m_tensor": [
+            [
+              95.00662214,
+              -3.46e-06,
+              8e-08
+            ],
+            [
+              -3.46e-06,
+              95.00662801,
+              -1.6e-07
+            ],
+            [
+              8e-08,
+              -1.6e-07,
+              95.00662034
+            ]
+          ],
+          "size": 10,
+          "spread_cm": 0.003159443136610207
+        },
+        {
+          "energy_cm": 9029.2632,
+          "g_values": [
+            0.832591,
+            0.832591,
+            0.832591
+          ],
+          "m_tensor": [
+            [
+              29.11472183,
+              -1.007e-05,
+              2.2e-07
+            ],
+            [
+              -1.007e-05,
+              29.11473808,
+              -4.5e-07
+            ],
+            [
+              2.2e-07,
+              -4.5e-07,
+              29.11471629
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.003046862524570315
+        },
+        {
+          "energy_cm": 9765.7037,
+          "g_values": [
+            1.448302,
+            1.448302,
+            1.448302
+          ],
+          "m_tensor": [
+            [
+              299.95357198,
+              -2.406e-05,
+              5e-07
+            ],
+            [
+              -2.406e-05,
+              299.95360975,
+              -1.06e-06
+            ],
+            [
+              5e-07,
+              -1.06e-06,
+              299.95355905
+            ]
+          ],
+          "size": 12,
+          "spread_cm": 0.002531067662857822
+        },
+        {
+          "energy_cm": 10087.1327,
+          "g_values": [
+            0.301778,
+            0.301778,
+            0.30178
+          ],
+          "m_tensor": [
+            [
+              1.59372689,
+              -8.07e-06,
+              1.7e-07
+            ],
+            [
+              -8.07e-06,
+              1.59373965,
+              -3.5e-07
+            ],
+            [
+              1.7e-07,
+              -3.5e-07,
+              1.59372238
+            ]
+          ],
+          "size": 6,
+          "spread_cm": 0.0036313235741545213
+        },
+        {
+          "energy_cm": 11108.705,
+          "g_values": [
+            1.422281,
+            1.422281,
+            1.422281
+          ],
+          "m_tensor": [
+            [
+              166.88786837,
+              4.71e-06,
+              -8e-08
+            ],
+            [
+              4.71e-06,
+              166.88786124,
+              2e-07
+            ],
+            [
+              -8e-08,
+              2e-07,
+              166.88787095
+            ]
+          ],
+          "size": 10,
+          "spread_cm": 0.0013673354496859247
+        },
+        {
+          "energy_cm": 12969.692,
+          "g_values": [
+            1.386194,
+            1.386194,
+            1.386194
+          ],
+          "m_tensor": [
+            [
+              80.70441303,
+              1.62e-06,
+              -2e-08
+            ],
+            [
+              1.62e-06,
+              80.70441058,
+              7e-08
+            ],
+            [
+              -2e-08,
+              7e-08,
+              80.70441397
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.0006619101241085446
+        },
+        {
+          "energy_cm": 14376.7514,
+          "g_values": [
+            1.307372,
+            1.307372,
+            1.307372
+          ],
+          "m_tensor": [
+            [
+              29.91136955,
+              3.72e-06,
+              -7e-08
+            ],
+            [
+              3.72e-06,
+              29.9113638,
+              1.6e-07
+            ],
+            [
+              -7e-08,
+              1.6e-07,
+              29.91137153
+            ]
+          ],
+          "size": 6,
+          "spread_cm": 0.00024631999076518696
+        },
+        {
+          "energy_cm": 15226.8612,
+          "g_values": [
+            1.067496,
+            1.067498,
+            1.067498
+          ],
+          "m_tensor": [
+            [
+              5.69775357,
+              4.96e-06,
+              -1.1e-07
+            ],
+            [
+              4.96e-06,
+              5.69774578,
+              2.2e-07
+            ],
+            [
+              -1.1e-07,
+              2.2e-07,
+              5.69775619
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 0.000275463200523518
+        },
+        {
+          "energy_cm": 15766.8617,
+          "g_values": [
+            0.621764,
+            0.621764,
+            0.621776
+          ],
+          "m_tensor": [
+            [
+              0.19329643,
+              -2.83e-06,
+              7e-08
+            ],
+            [
+              -2.83e-06,
+              0.19330104,
+              -1.3e-07
+            ],
+            [
+              7e-08,
+              -1.3e-07,
+              0.19329495
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 24266.0525,
+          "g_values": [
+            1.295216,
+            1.295216,
+            1.295216
+          ],
+          "m_tensor": [
+            [
+              138.40068828,
+              1.388e-05,
+              -2.9e-07
+            ],
+            [
+              1.388e-05,
+              138.40066636,
+              6e-07
+            ],
+            [
+              -2.9e-07,
+              6e-07,
+              138.40069515
+            ]
+          ],
+          "size": 10,
+          "spread_cm": 0.0010499539348529652
+        },
+        {
+          "energy_cm": 25023.9822,
+          "g_values": [
+            1.14125,
+            1.14125,
+            1.14125
+          ],
+          "m_tensor": [
+            [
+              442.83348007,
+              -1.335e-05,
+              3.2e-07
+            ],
+            [
+              -1.335e-05,
+              442.83350272,
+              -6.2e-07
+            ],
+            [
+              3.2e-07,
+              -6.2e-07,
+              442.83347082
+            ]
+          ],
+          "size": 16,
+          "spread_cm": 0.0027666086571116466
+        }
+      ],
+      "n_soc_states": 134,
+      "nao": 112,
+      "ncas": 7,
+      "nelecas": 9,
+      "nroots": {
+        "6": 21
+      },
+      "nspinor": 224,
+      "optimizer_mode": "auto",
+      "resources": {
+        "cpu_seconds": 4281.0,
+        "effective_cores": 3.9,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 82.0,
+        "temp_start_c": 79.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 1098.3
+      },
+      "scf_converged": true,
+      "screening": "x2camf",
+      "seconds": 1098.26,
+      "soc_rel_cm": [
+        0.0,
+        0.0,
+        0.0012,
+        0.0012,
+        0.0026,
+        0.0026,
+        0.0036,
+        0.0036,
+        0.0044,
+        0.0044,
+        0.0047,
+        0.0047,
+        0.0049,
+        0.0049,
+        0.005,
+        0.005,
+        3370.7469,
+        3370.7469,
+        3370.7483,
+        3370.7483,
+        3370.7493,
+        3370.7493,
+        3370.75,
+        3370.75,
+        3370.7506,
+        3370.7506,
+        3370.751,
+        3370.751,
+        3370.7512,
+        3370.7512,
+        5763.1043,
+        5763.1043,
+        5763.1057,
+        5763.1057,
+        5763.1065,
+        5763.1065,
+        5763.1071,
+        5763.1071,
+        5763.1077,
+        5763.1077,
+        5763.108,
+        5763.108,
+        7606.8582,
+        7606.8582,
+        7606.8596,
+        7606.8596,
+        7606.8602,
+        7606.8602,
+        7606.8609,
+        7606.8609,
+        7606.8614,
+        7606.8614,
+        9029.2615,
+        9029.2615,
+        9029.263,
+        9029.263,
+        9029.2638,
+        9029.2638,
+        9029.2645,
+        9029.2645,
+        9765.7026,
+        9765.7026,
+        9765.7028,
+        9765.7028,
+        9765.7033,
+        9765.7033,
+        9765.7039,
+        9765.7039,
+        9765.7046,
+        9765.7046,
+        9765.7051,
+        9765.7051,
+        10087.1307,
+        10087.1307,
+        10087.1332,
+        10087.1332,
+        10087.1343,
+        10087.1343,
+        11108.7045,
+        11108.7045,
+        11108.7045,
+        11108.7045,
+        11108.7047,
+        11108.7047,
+        11108.7052,
+        11108.7052,
+        11108.7059,
+        11108.7059,
+        12969.6918,
+        12969.6918,
+        12969.6919,
+        12969.6919,
+        12969.692,
+        12969.692,
+        12969.6925,
+        12969.6925,
+        14376.7512,
+        14376.7512,
+        14376.7514,
+        14376.7514,
+        14376.7515,
+        14376.7515,
+        15226.8611,
+        15226.8611,
+        15226.8613,
+        15226.8613,
+        15766.8617,
+        15766.8617,
+        24266.0521,
+        24266.0521,
+        24266.0521,
+        24266.0521,
+        24266.0524,
+        24266.0524,
+        24266.0527,
+        24266.0527,
+        24266.0531,
+        24266.0531,
+        25023.9806,
+        25023.9806,
+        25023.9811,
+        25023.9811,
+        25023.9816,
+        25023.9816,
+        25023.9822,
+        25023.9822,
+        25023.9826,
+        25023.9826,
+        25023.9829,
+        25023.9829,
+        25023.9833,
+        25023.9833,
+        25023.9834,
+        25023.9834
+      ],
+      "spin": 5,
+      "status": "ok"
+    },
+    "ti2cl6/x2c-SVPall-2c": {
+      "active_l": "d",
+      "active_space": "10 lowest Kramers pairs of l=2 character on 0 Ti and 1 Ti",
+      "basis": "x2c-SVPall-2c",
+      "boundary_gap_cm": 73827.18848462589,
+      "boundary_margin": 8,
+      "boundary_ndet": 190,
+      "boundary_next_cm": [
+        23691.1098,
+        97518.2983,
+        97520.4009,
+        97527.0855,
+        97609.5919,
+        97611.7255,
+        97618.1882,
+        98541.9045,
+        98555.4503
+      ],
+      "boundary_spans_full_ci": false,
+      "casscf_converged": true,
+      "casscf_grad_norm": 1.507799042876536e-05,
+      "casscf_iterations": 32,
+      "charge": 0,
+      "cholesky_naux": 2406,
+      "cholesky_orbit_complete": true,
+      "cholesky_tol": 1e-08,
+      "degeneracy_pattern": [
+        2,
+        1,
+        1,
+        1,
+        1,
+        2,
+        1,
+        2,
+        1,
+        1,
+        2,
+        1,
+        1,
+        2,
+        4,
+        1,
+        1,
+        2,
+        2,
+        2,
+        1,
+        1,
+        4,
+        1,
+        1,
+        1,
+        1,
+        2,
+        1,
+        2,
+        1,
+        3,
+        1,
+        1,
+        3,
+        1,
+        1,
+        3,
+        2,
+        1,
+        1,
+        1,
+        2,
+        1,
+        1,
+        2,
+        1,
+        2,
+        1,
+        1,
+        1,
+        3,
+        3,
+        1,
+        3,
+        1,
+        3,
+        1,
+        3,
+        1,
+        3,
+        1
+      ],
+      "degeneracy_tol_cm": 1.0,
+      "dump_bytes": 6312493,
+      "dump_path": "temp/tier2_dumps/ti2cl6-x2c-SVPall-2c.prop",
+      "e_casscf_avg": -4471.092895558102,
+      "e_scf": -4470.061229899421,
+      "e_soc_total_lowest": -4471.132537833469,
+      "gauge_origin_choice": "centre of mass",
+      "hamiltonian": {
+        "decoupling": {
+          "block_scales": {},
+          "decoupling": "1e",
+          "fragments": 0,
+          "implementation": "pyscf",
+          "partition": "",
+          "source": ""
+        },
+        "method": "X2C-AMF",
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 0.07592973677253667,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Cl": "s6 p11",
+            "Ti": "s8 p12 d2"
+          },
+          "elements": [
+            "Ti",
+            "Cl"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 0.07592973681969406,
+          "spin_orbit_scale": 0.008384169771945511,
+          "tr_residual": 6.521323854955545e-10,
+          "tr_residual_rel": 7.108760059921052e-12
+        },
+        "soc_strength": 0.07131880029478171,
+        "tr_residual": 2.054889593274728e-11,
+        "tr_residual_rel": 7.735075234026055e-14
+      },
+      "inactive_moment_l": [
+        -9.599971571724394e-12,
+        6.563737623199355e-11,
+        1.2475714553225256e-11
+      ],
+      "key": "ti2cl6",
+      "label": "Ti2Cl6 (dimer)",
+      "moment_hermiticity": 3.108632213242024e-15,
+      "multiplets": [
+        {
+          "energy_cm": 0.0038,
+          "g_values": [
+            0.0,
+            0.0,
+            0.902005
+          ],
+          "m_tensor": [
+            [
+              0.40680689,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.007593602209743817
+        },
+        {
+          "energy_cm": 6.1932,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 26.6198,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 119.9116,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 154.635,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 291.7761,
+          "g_values": [
+            0.0,
+            0.0,
+            6.216209
+          ],
+          "m_tensor": [
+            [
+              19.32062431,
+              8.5e-07,
+              5e-08
+            ],
+            [
+              8.5e-07,
+              0.0,
+              0.0
+            ],
+            [
+              5e-08,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.00360717064114624
+        },
+        {
+          "energy_cm": 308.4911,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 324.6199,
+          "g_values": [
+            0.0,
+            0.0,
+            3.85694
+          ],
+          "m_tensor": [
+            [
+              7.43799349,
+              1.3e-07,
+              2e-08
+            ],
+            [
+              1.3e-07,
+              0.0,
+              0.0
+            ],
+            [
+              2e-08,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.009022417850815145
+        },
+        {
+          "energy_cm": 332.9836,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 447.6019,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 651.5577,
+          "g_values": [
+            0.0,
+            0.0,
+            6.267804
+          ],
+          "m_tensor": [
+            [
+              19.64268529,
+              -1.06e-06,
+              6e-08
+            ],
+            [
+              -1.06e-06,
+              0.0,
+              0.0
+            ],
+            [
+              6e-08,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.04952149656207894
+        },
+        {
+          "energy_cm": 653.2484,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 3314.5746,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 3316.9356,
+          "g_values": [
+            0.0,
+            0.0,
+            1.324672
+          ],
+          "m_tensor": [
+            [
+              0.87737803,
+              -1e-08,
+              0.0
+            ],
+            [
+              -1e-08,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.05233920564160144
+        },
+        {
+          "energy_cm": 3325.1536,
+          "g_values": [
+            0.38341,
+            0.552647,
+            0.594816
+          ],
+          "m_tensor": [
+            [
+              0.73501666,
+              1.6e-07,
+              -1e-08
+            ],
+            [
+              1.6e-07,
+              1.76903263,
+              0.0
+            ],
+            [
+              -1e-08,
+              0.0,
+              1.52709173
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 1.144404079029755
+        },
+        {
+          "energy_cm": 3340.8791,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 3510.6574,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 3517.5382,
+          "g_values": [
+            0.0,
+            0.0,
+            6.832558
+          ],
+          "m_tensor": [
+            [
+              23.34192414,
+              4.5e-07,
+              5e-08
+            ],
+            [
+              4.5e-07,
+              0.0,
+              0.0
+            ],
+            [
+              5e-08,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.027555302482596744
+        },
+        {
+          "energy_cm": 3523.0729,
+          "g_values": [
+            0.0,
+            0.0,
+            2e-06
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.709983642008865
+        },
+        {
+          "energy_cm": 3524.5817,
+          "g_values": [
+            0.0,
+            0.0,
+            6.951421
+          ],
+          "m_tensor": [
+            [
+              24.16112501,
+              1.59e-06,
+              -2e-08
+            ],
+            [
+              1.59e-06,
+              0.0,
+              -0.0
+            ],
+            [
+              -2e-08,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.027832961403419176
+        },
+        {
+          "energy_cm": 3586.7966,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 6330.6036,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 6336.9437,
+          "g_values": [
+            0.0,
+            1e-06,
+            0.779414
+          ],
+          "m_tensor": [
+            [
+              3.03743185,
+              3e-08,
+              8e-08
+            ],
+            [
+              3e-08,
+              0.0,
+              0.0
+            ],
+            [
+              8e-08,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 0.11345790252926236
+        },
+        {
+          "energy_cm": 6343.7168,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 6372.3006,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 6377.0439,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 6534.7324,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 6546.4235,
+          "g_values": [
+            0.0,
+            0.0,
+            6.615564
+          ],
+          "m_tensor": [
+            [
+              21.88284042,
+              -7.4e-07,
+              1.3e-07
+            ],
+            [
+              -7.4e-07,
+              0.0,
+              -0.0
+            ],
+            [
+              1.3e-07,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.04977759749363031
+        },
+        {
+          "energy_cm": 6577.7701,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 6655.1272,
+          "g_values": [
+            0.0,
+            0.0,
+            5.750627
+          ],
+          "m_tensor": [
+            [
+              16.534858,
+              9.3e-07,
+              2.9e-07
+            ],
+            [
+              9.3e-07,
+              0.0,
+              0.0
+            ],
+            [
+              2.9e-07,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.04315610092362476
+        },
+        {
+          "energy_cm": 6660.0844,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 6676.7056,
+          "g_values": [
+            1.929462,
+            1.960194,
+            2.138838
+          ],
+          "m_tensor": [
+            [
+              9.14925959,
+              -1.62e-06,
+              -1e-08
+            ],
+            [
+              -1.62e-06,
+              7.68471989,
+              -0.0
+            ],
+            [
+              -1e-08,
+              -0.0,
+              7.44564908
+            ]
+          ],
+          "size": 3,
+          "spread_cm": 0.054493008486133476
+        },
+        {
+          "energy_cm": 6685.6548,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 6724.0621,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 9580.3819,
+          "g_values": [
+            1.997817,
+            2.04862,
+            2.07436
+          ],
+          "m_tensor": [
+            [
+              8.60593573,
+              -3e-08,
+              1e-07
+            ],
+            [
+              -3e-08,
+              7.98254607,
+              1e-08
+            ],
+            [
+              1e-07,
+              1e-08,
+              8.39368731
+            ]
+          ],
+          "size": 3,
+          "spread_cm": 0.2502046217196039
+        },
+        {
+          "energy_cm": 9617.1825,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 9705.3014,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 9718.1123,
+          "g_values": [
+            1.996522,
+            2.043456,
+            2.071668
+          ],
+          "m_tensor": [
+            [
+              8.58361679,
+              5e-08,
+              7e-08
+            ],
+            [
+              5e-08,
+              7.97220189,
+              0.0
+            ],
+            [
+              7e-08,
+              0.0,
+              8.35142328
+            ]
+          ],
+          "size": 3,
+          "spread_cm": 0.20058152314959443
+        },
+        {
+          "energy_cm": 11779.8961,
+          "g_values": [
+            0.0,
+            0.0,
+            1.39111
+          ],
+          "m_tensor": [
+            [
+              0.96759358,
+              -7e-08,
+              0.0
+            ],
+            [
+              -7e-08,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.03563615517850849
+        },
+        {
+          "energy_cm": 11785.7124,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 11798.0457,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 11803.2288,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 11828.9616,
+          "g_values": [
+            0.0,
+            0.0,
+            1.403369
+          ],
+          "m_tensor": [
+            [
+              0.98472178,
+              -1.1e-07,
+              -0.0
+            ],
+            [
+              -1.1e-07,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.05324504042437184
+        },
+        {
+          "energy_cm": 11861.2916,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 11981.9053,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 12003.8492,
+          "g_values": [
+            0.0,
+            0.0,
+            6.481071
+          ],
+          "m_tensor": [
+            [
+              21.00214377,
+              1.3e-07,
+              4e-08
+            ],
+            [
+              1.3e-07,
+              0.0,
+              0.0
+            ],
+            [
+              4e-08,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.054626747865768266
+        },
+        {
+          "energy_cm": 12038.2672,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 12046.0089,
+          "g_values": [
+            0.0,
+            0.0,
+            6.460668
+          ],
+          "m_tensor": [
+            [
+              20.8701153,
+              4.1e-07,
+              5e-08
+            ],
+            [
+              4.1e-07,
+              0.0,
+              0.0
+            ],
+            [
+              5e-08,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.012835187837481499
+        },
+        {
+          "energy_cm": 12061.3573,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 12073.0062,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 12746.3228,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 12785.6431,
+          "g_values": [
+            2.00412,
+            2.032728,
+            2.154647
+          ],
+          "m_tensor": [
+            [
+              8.03299667,
+              -1e-08,
+              1e-07
+            ],
+            [
+              -1e-08,
+              8.26396716,
+              1e-08
+            ],
+            [
+              1e-07,
+              1e-08,
+              9.2850104
+            ]
+          ],
+          "size": 3,
+          "spread_cm": 0.06139455930861004
+        },
+        {
+          "energy_cm": 15162.6377,
+          "g_values": [
+            1.970207,
+            2.009424,
+            2.069733
+          ],
+          "m_tensor": [
+            [
+              8.56759045,
+              -1.7e-07,
+              0.0
+            ],
+            [
+              -1.7e-07,
+              8.07556634,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              7.76343385
+            ]
+          ],
+          "size": 3,
+          "spread_cm": 0.11859369431840605
+        },
+        {
+          "energy_cm": 15170.4798,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 15185.8582,
+          "g_values": [
+            1.970673,
+            2.009536,
+            2.074058
+          ],
+          "m_tensor": [
+            [
+              8.60343065,
+              -1.6e-07,
+              -1e-08
+            ],
+            [
+              -1.6e-07,
+              8.07647338,
+              -0.0
+            ],
+            [
+              -1e-08,
+              -0.0,
+              7.76710149
+            ]
+          ],
+          "size": 3,
+          "spread_cm": 0.1121775974825141
+        },
+        {
+          "energy_cm": 15198.3112,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 18103.9474,
+          "g_values": [
+            2.002588,
+            2.046035,
+            2.084849
+          ],
+          "m_tensor": [
+            [
+              8.02071362,
+              -2e-07,
+              9e-08
+            ],
+            [
+              -2e-07,
+              8.37252149,
+              1e-08
+            ],
+            [
+              9e-08,
+              1e-08,
+              8.69319453
+            ]
+          ],
+          "size": 3,
+          "spread_cm": 0.0076950046022830065
+        },
+        {
+          "energy_cm": 18126.1561,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 18163.2773,
+          "g_values": [
+            2.002313,
+            2.045181,
+            2.084581
+          ],
+          "m_tensor": [
+            [
+              8.01851773,
+              -1.5e-07,
+              6e-08
+            ],
+            [
+              -1.5e-07,
+              8.36553382,
+              0.0
+            ],
+            [
+              6e-08,
+              0.0,
+              8.69095207
+            ]
+          ],
+          "size": 3,
+          "spread_cm": 0.029992153748025885
+        },
+        {
+          "energy_cm": 18166.0567,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 23672.099,
+          "g_values": [
+            2.001717,
+            2.01083,
+            2.057661
+          ],
+          "m_tensor": [
+            [
+              8.01374088,
+              -3.1e-07,
+              -0.0
+            ],
+            [
+              -3.1e-07,
+              8.46793678,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              8.08687174
+            ]
+          ],
+          "size": 3,
+          "spread_cm": 0.007061638854793273
+        },
+        {
+          "energy_cm": 23691.1098,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        }
+      ],
+      "n_soc_states": 100,
+      "nao": 210,
+      "ncas": 10,
+      "nelecas": 2,
+      "nroots": {
+        "1": 25,
+        "3": 25
+      },
+      "nspinor": 420,
+      "optimizer_mode": "auto",
+      "resources": {
+        "cpu_seconds": 50745.2,
+        "effective_cores": 2.98,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 75.0,
+        "temp_start_c": 76.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 17029.7
+      },
+      "scf_converged": true,
+      "screening": "x2camf",
+      "seconds": 17029.53,
+      "soc_rel_cm": [
+        0.0,
+        0.0076,
+        6.1932,
+        26.6198,
+        119.9116,
+        154.635,
+        291.7743,
+        291.7779,
+        308.4911,
+        324.6154,
+        324.6244,
+        332.9836,
+        447.6019,
+        651.5329,
+        651.5825,
+        653.2484,
+        3314.5746,
+        3316.9094,
+        3316.9617,
+        3324.4739,
+        3324.9908,
+        3325.5313,
+        3325.6183,
+        3340.8791,
+        3510.6574,
+        3517.5244,
+        3517.5519,
+        3522.7179,
+        3523.4279,
+        3524.5678,
+        3524.5956,
+        3586.7966,
+        6330.6036,
+        6336.904,
+        6336.9154,
+        6336.9379,
+        6337.0175,
+        6343.7168,
+        6372.3006,
+        6377.0439,
+        6534.7324,
+        6546.3987,
+        6546.4484,
+        6577.7701,
+        6655.1056,
+        6655.1488,
+        6660.0844,
+        6676.6696,
+        6676.7232,
+        6676.724,
+        6685.6548,
+        6724.0621,
+        9580.2306,
+        9580.4343,
+        9580.4808,
+        9617.1825,
+        9705.3014,
+        9718.0377,
+        9718.061,
+        9718.2382,
+        11779.8783,
+        11779.9139,
+        11785.7124,
+        11798.0457,
+        11803.2288,
+        11828.935,
+        11828.9883,
+        11861.2916,
+        11981.9053,
+        12003.8219,
+        12003.8765,
+        12038.2672,
+        12046.0024,
+        12046.0153,
+        12061.3573,
+        12073.0062,
+        12746.3228,
+        12785.6226,
+        12785.6228,
+        12785.6839,
+        15162.5894,
+        15162.6156,
+        15162.708,
+        15170.4798,
+        15185.7921,
+        15185.8782,
+        15185.9043,
+        15198.3112,
+        18103.9438,
+        18103.9469,
+        18103.9515,
+        18126.1561,
+        18163.2582,
+        18163.2854,
+        18163.2882,
+        18166.0567,
+        23672.0966,
+        23672.0968,
+        23672.1037,
+        23691.1098
+      ],
+      "spin": 0,
+      "status": "ok"
+    },
+    "ti2cl6_far/x2c-SVPall-2c": {
+      "active_l": "d",
+      "active_space": "10 lowest Kramers pairs of l=2 character on 0 Ti and 4 Ti",
+      "basis": "x2c-SVPall-2c",
+      "boundary_gap_cm": 106149.57548272438,
+      "boundary_margin": 8,
+      "boundary_ndet": 190,
+      "boundary_next_cm": [
+        24451.9226,
+        130601.4981,
+        130606.4043,
+        130635.972,
+        130640.8819,
+        130667.9032,
+        130671.2396,
+        130673.8407,
+        130675.0746
+      ],
+      "boundary_spans_full_ci": false,
+      "casscf_converged": true,
+      "casscf_grad_norm": 1.0309319875320402e-05,
+      "casscf_iterations": 44,
+      "charge": 0,
+      "cholesky_naux": 2278,
+      "cholesky_orbit_complete": true,
+      "cholesky_tol": 1e-08,
+      "degeneracy_pattern": [
+        4,
+        8,
+        8,
+        4,
+        8,
+        4,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        4,
+        8,
+        4
+      ],
+      "degeneracy_tol_cm": 1.0,
+      "dump_bytes": 6312467,
+      "dump_path": "temp/tier2_dumps/ti2cl6_far-x2c-SVPall-2c.prop",
+      "e_casscf_avg": -4471.109598610095,
+      "e_scf": -4469.980180688366,
+      "e_soc_total_lowest": -4471.162316659906,
+      "gauge_origin_choice": "centre of mass",
+      "hamiltonian": {
+        "decoupling": {
+          "block_scales": {},
+          "decoupling": "1e",
+          "fragments": 0,
+          "implementation": "pyscf",
+          "partition": "",
+          "source": ""
+        },
+        "method": "X2C-AMF",
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 0.07592973681579451,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Cl": "s6 p11",
+            "Ti": "s8 p12 d2"
+          },
+          "elements": [
+            "Ti",
+            "Cl"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 0.07592973681969406,
+          "spin_orbit_scale": 0.008384169771945511,
+          "tr_residual": 6.521323854955545e-10,
+          "tr_residual_rel": 7.108760059921052e-12
+        },
+        "soc_strength": 0.07131602376106083,
+        "tr_residual": 1.8398171850912848e-11,
+        "tr_residual_rel": 7.158667923525963e-14
+      },
+      "inactive_moment_l": [
+        -8.732070900794314e-14,
+        1.2167721807301785e-12,
+        -2.995716874435242e-13
+      ],
+      "key": "ti2cl6_far",
+      "label": "Ti2Cl6 (25 A)",
+      "moment_hermiticity": 1.9984508379119008e-15,
+      "multiplets": [
+        {
+          "energy_cm": 0.0,
+          "g_values": [
+            1.077376,
+            1.077378,
+            1.260432
+          ],
+          "m_tensor": [
+            [
+              5.8036913,
+              -0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              5.80371267,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              7.94344799
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 2217.0833,
+          "g_values": [
+            0.37752,
+            0.37753,
+            0.436063
+          ],
+          "m_tensor": [
+            [
+              5.98588272,
+              1e-08,
+              -1e-08
+            ],
+            [
+              1e-08,
+              5.98622856,
+              0.0
+            ],
+            [
+              -1e-08,
+              0.0,
+              7.9863315
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.002245823523026047
+        },
+        {
+          "energy_cm": 2351.1828,
+          "g_values": [
+            0.371731,
+            0.37187,
+            0.945664
+          ],
+          "m_tensor": [
+            [
+              5.80371287,
+              -0.0,
+              -2e-08
+            ],
+            [
+              -0.0,
+              5.80805352,
+              4e-08
+            ],
+            [
+              -2e-08,
+              4e-08,
+              37.55978809
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.0025566178724147903
+        },
+        {
+          "energy_cm": 4434.1701,
+          "g_values": [
+            0.092611,
+            0.190921,
+            0.191025
+          ],
+          "m_tensor": [
+            [
+              0.182255,
+              1e-08,
+              -0.0
+            ],
+            [
+              1e-08,
+              0.18245224,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              0.04288371
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 1.4571603969670832e-05
+        },
+        {
+          "energy_cm": 4568.2696,
+          "g_values": [
+            0.065878,
+            0.066698,
+            0.84034
+          ],
+          "m_tensor": [
+            [
+              0.18227871,
+              1e-08,
+              -1e-08
+            ],
+            [
+              1e-08,
+              0.18684144,
+              5e-08
+            ],
+            [
+              -1e-08,
+              5e-08,
+              29.65922127
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.13367191112411092
+        },
+        {
+          "energy_cm": 4702.3691,
+          "g_values": [
+            0.002159,
+            0.029633,
+            2.433776
+          ],
+          "m_tensor": [
+            [
+              2.332e-05,
+              0.0,
+              -1e-08
+            ],
+            [
+              0.0,
+              0.0043906,
+              4e-08
+            ],
+            [
+              -1e-08,
+              4e-08,
+              29.6163341
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 1.4571603969670832e-05
+        },
+        {
+          "energy_cm": 12131.453,
+          "g_values": [
+            0.37173,
+            0.371741,
+            0.475138
+          ],
+          "m_tensor": [
+            [
+              5.80370425,
+              -0.0,
+              -1e-08
+            ],
+            [
+              -0.0,
+              5.80404989,
+              1e-08
+            ],
+            [
+              -1e-08,
+              1e-08,
+              9.48175585
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.07895034802641021
+        },
+        {
+          "energy_cm": 12225.9525,
+          "g_values": [
+            0.371731,
+            0.371731,
+            1.154266
+          ],
+          "m_tensor": [
+            [
+              5.8037102,
+              -0.0,
+              4e-08
+            ],
+            [
+              -0.0,
+              5.80373135,
+              -6e-08
+            ],
+            [
+              4e-08,
+              -6e-08,
+              55.95783411
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.07659573650016682
+        },
+        {
+          "energy_cm": 14348.5442,
+          "g_values": [
+            0.06589,
+            0.065955,
+            0.194029
+          ],
+          "m_tensor": [
+            [
+              0.18234037,
+              1e-08,
+              -1e-08
+            ],
+            [
+              1e-08,
+              0.18270358,
+              1e-08
+            ],
+            [
+              -1e-08,
+              1e-08,
+              1.58119085
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.0032947794043138856
+        },
+        {
+          "energy_cm": 14443.0436,
+          "g_values": [
+            0.065891,
+            0.065899,
+            1.069682
+          ],
+          "m_tensor": [
+            [
+              0.18234835,
+              1e-08,
+              5e-08
+            ],
+            [
+              1e-08,
+              0.18239284,
+              -6e-08
+            ],
+            [
+              5e-08,
+              -6e-08,
+              48.05726025
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.009883140544843627
+        },
+        {
+          "energy_cm": 14482.6437,
+          "g_values": [
+            0.000946,
+            0.010663,
+            0.861265
+          ],
+          "m_tensor": [
+            [
+              3.761e-05,
+              0.0,
+              -2e-08
+            ],
+            [
+              0.0,
+              0.00477563,
+              6e-08
+            ],
+            [
+              -2e-08,
+              6e-08,
+              31.15463225
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.009795112086067093
+        },
+        {
+          "energy_cm": 14577.1432,
+          "g_values": [
+            0.001023,
+            0.010312,
+            1.359541
+          ],
+          "m_tensor": [
+            [
+              4.394e-05,
+              0.0,
+              4e-08
+            ],
+            [
+              0.0,
+              0.0044664,
+              -1e-08
+            ],
+            [
+              4e-08,
+              -1e-08,
+              77.63074239
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.003303163066448178
+        },
+        {
+          "energy_cm": 24262.9239,
+          "g_values": [
+            0.001501,
+            0.007845,
+            0.554673
+          ],
+          "m_tensor": [
+            [
+              1.126e-05,
+              0.0,
+              -1e-08
+            ],
+            [
+              0.0,
+              0.00030774,
+              1e-08
+            ],
+            [
+              -1e-08,
+              1e-08,
+              1.5383093
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 7.984417607076466e-07
+        },
+        {
+          "energy_cm": 24357.4232,
+          "g_values": [
+            0.000834,
+            0.002758,
+            1.086198
+          ],
+          "m_tensor": [
+            [
+              2.92e-05,
+              0.0,
+              4e-08
+            ],
+            [
+              0.0,
+              0.00031958,
+              -5e-08
+            ],
+            [
+              4e-08,
+              -5e-08,
+              49.55273095
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 0.02486674173269421
+        },
+        {
+          "energy_cm": 24451.9226,
+          "g_values": [
+            0.001527,
+            0.001894,
+            3.098852
+          ],
+          "m_tensor": [
+            [
+              1.793e-05,
+              -0.0,
+              5e-08
+            ],
+            [
+              -0.0,
+              1.165e-05,
+              -6e-08
+            ],
+            [
+              5e-08,
+              -6e-08,
+              48.0144209
+            ]
+          ],
+          "size": 4,
+          "spread_cm": 7.984453986864537e-07
+        }
+      ],
+      "n_soc_states": 100,
+      "nao": 210,
+      "ncas": 10,
+      "nelecas": 2,
+      "nroots": {
+        "1": 25,
+        "3": 25
+      },
+      "nspinor": 420,
+      "optimizer_mode": "auto",
+      "resources": {
+        "cpu_seconds": 7366.8,
+        "effective_cores": 2.84,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 76.0,
+        "temp_start_c": 74.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 2595.0
+      },
+      "scf_converged": true,
+      "screening": "x2camf",
+      "seconds": 2594.87,
+      "soc_rel_cm": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2217.0822,
+        2217.0822,
+        2217.0823,
+        2217.0823,
+        2217.0843,
+        2217.0843,
+        2217.0844,
+        2217.0844,
+        2351.1815,
+        2351.1815,
+        2351.1817,
+        2351.1818,
+        2351.1837,
+        2351.1838,
+        2351.184,
+        2351.184,
+        4434.1701,
+        4434.1701,
+        4434.1701,
+        4434.1701,
+        4568.2027,
+        4568.2027,
+        4568.2453,
+        4568.2453,
+        4568.2938,
+        4568.2938,
+        4568.3364,
+        4568.3364,
+        4702.3691,
+        4702.3691,
+        4702.3691,
+        4702.3691,
+        12131.4135,
+        12131.4135,
+        12131.4391,
+        12131.4391,
+        12131.4668,
+        12131.4668,
+        12131.4924,
+        12131.4924,
+        12225.9142,
+        12225.9144,
+        12225.939,
+        12225.9391,
+        12225.9659,
+        12225.966,
+        12225.9906,
+        12225.9908,
+        14348.5425,
+        14348.5426,
+        14348.5427,
+        14348.5429,
+        14348.5455,
+        14348.5457,
+        14348.5457,
+        14348.5458,
+        14443.0386,
+        14443.0387,
+        14443.0388,
+        14443.0388,
+        14443.0484,
+        14443.0485,
+        14443.0485,
+        14443.0485,
+        14482.6388,
+        14482.6388,
+        14482.6389,
+        14482.6389,
+        14482.6486,
+        14482.6486,
+        14482.6486,
+        14482.6486,
+        14577.1415,
+        14577.1415,
+        14577.1417,
+        14577.1417,
+        14577.1446,
+        14577.1446,
+        14577.1448,
+        14577.1448,
+        24262.9239,
+        24262.9239,
+        24262.9239,
+        24262.9239,
+        24357.4108,
+        24357.4108,
+        24357.419,
+        24357.419,
+        24357.4275,
+        24357.4275,
+        24357.4357,
+        24357.4357,
+        24451.9226,
+        24451.9226,
+        24451.9226,
+        24451.9226
+      ],
+      "spin": 0,
+      "status": "ok"
+    },
+    "ticl3/x2c-SVPall-2c": {
+      "active_l": "d",
+      "active_space": "5 lowest Kramers pairs of l=2 character on 0 Ti",
+      "basis": "x2c-SVPall-2c",
+      "boundary_gap_cm": null,
+      "boundary_margin": 8,
+      "boundary_ndet": 10,
+      "boundary_spans_full_ci": true,
+      "casscf_converged": true,
+      "casscf_grad_norm": 8.359215053768821e-05,
+      "casscf_iterations": 41,
+      "charge": 0,
+      "cholesky_naux": 1139,
+      "cholesky_orbit_complete": true,
+      "cholesky_tol": 1e-08,
+      "degeneracy_pattern": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "degeneracy_tol_cm": 1.0,
+      "dump_bytes": 68504,
+      "dump_path": "temp/tier2_dumps/ticl3-x2c-SVPall-2c.prop",
+      "e_casscf_avg": -2235.554799751979,
+      "e_scf": -2235.1383288028373,
+      "e_soc_total_lowest": -2235.5811589502027,
+      "gauge_origin_choice": "centre of mass",
+      "hamiltonian": {
+        "decoupling": {
+          "block_scales": {},
+          "decoupling": "1e",
+          "fragments": 0,
+          "implementation": "pyscf",
+          "partition": "",
+          "source": ""
+        },
+        "method": "X2C-AMF",
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 0.07592973685075322,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Cl": "s6 p11",
+            "Ti": "s8 p12 d2"
+          },
+          "elements": [
+            "Ti",
+            "Cl"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 0.07592973681969406,
+          "spin_orbit_scale": 0.008384169771945511,
+          "tr_residual": 6.521323854955545e-10,
+          "tr_residual_rel": 7.108760059921052e-12
+        },
+        "soc_strength": 0.07131601446730179,
+        "tr_residual": 1.3343992579422097e-11,
+        "tr_residual_rel": 5.2235638246871537e-14
+      },
+      "inactive_moment_l": [
+        -1.8520533089071695e-13,
+        -3.647495282435587e-14,
+        9.353391813241713e-14
+      ],
+      "key": "ticl3",
+      "label": "TiCl3",
+      "moment_hermiticity": 1.2787068148073201e-15,
+      "multiplets": [
+        {
+          "energy_cm": 0.0,
+          "g_values": [
+            1.703484,
+            1.703484,
+            1.992931
+          ],
+          "m_tensor": [
+            [
+              1.45092831,
+              -0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              1.45092832,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              1.98588603
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 2217.0664,
+          "g_values": [
+            0.146442,
+            0.301934,
+            0.301935
+          ],
+          "m_tensor": [
+            [
+              0.0455824,
+              1e-08,
+              0.0
+            ],
+            [
+              1e-08,
+              0.0455821,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0107227
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 2351.1432,
+          "g_values": [
+            0.0,
+            0.0,
+            3.848146
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              3e-08
+            ],
+            [
+              0.0,
+              0.0,
+              2e-08
+            ],
+            [
+              3e-08,
+              2e-08,
+              7.40411547
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 12131.566,
+          "g_values": [
+            2e-06,
+            2e-06,
+            0.877054
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              0.38461164
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 12226.101,
+          "g_values": [
+            0.001318,
+            0.001322,
+            4.89973
+          ],
+          "m_tensor": [
+            [
+              8.7e-07,
+              0.0,
+              2e-08
+            ],
+            [
+              0.0,
+              8.7e-07,
+              1e-08
+            ],
+            [
+              2e-08,
+              1e-08,
+              12.00367907
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        }
+      ],
+      "n_soc_states": 10,
+      "nao": 105,
+      "ncas": 5,
+      "nelecas": 1,
+      "nroots": {
+        "2": 5
+      },
+      "nspinor": 210,
+      "optimizer_mode": "auto",
+      "resources": {
+        "cpu_seconds": 436.0,
+        "effective_cores": 3.52,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 73.0,
+        "temp_start_c": 59.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 123.8
+      },
+      "scf_converged": true,
+      "screening": "x2camf",
+      "seconds": 123.72,
+      "soc_rel_cm": [
+        0.0,
+        0.0,
+        2217.0664,
+        2217.0664,
+        2351.1432,
+        2351.1432,
+        12131.566,
+        12131.566,
+        12226.101,
+        12226.101
+      ],
+      "spin": 1,
+      "status": "ok"
+    },
+    "tlh/x2c-SVPall-2c": {
+      "active_l": "",
+      "active_space": "8 explicit spinors",
+      "basis": "x2c-SVPall-2c",
+      "boundary_gap_cm": 25776.168001990052,
+      "boundary_margin": 8,
+      "boundary_ndet": 28,
+      "boundary_next_cm": [
+        40934.5414,
+        66710.7094,
+        68619.0346,
+        68619.0346,
+        74926.9941,
+        74926.9941,
+        75303.6357,
+        83218.6073,
+        89018.2059
+      ],
+      "boundary_spans_full_ci": false,
+      "casscf_converged": true,
+      "casscf_grad_norm": 8.611435151239861e-05,
+      "casscf_iterations": 28,
+      "charge": 0,
+      "cholesky_naux": 880,
+      "cholesky_orbit_complete": true,
+      "cholesky_tol": 1e-08,
+      "degeneracy_pattern": [
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        1,
+        2
+      ],
+      "degeneracy_tol_cm": 1.0,
+      "dump_bytes": 96438,
+      "dump_path": "temp/tier2_dumps/tlh-x2c-SVPall-2c.prop",
+      "e_casscf_avg": -20284.580212763918,
+      "e_scf": -20246.799472104518,
+      "e_soc_total_lowest": -20284.687238947063,
+      "gauge_origin_choice": "centre of mass",
+      "hamiltonian": {
+        "decoupling": {
+          "block_scales": {},
+          "decoupling": "1e",
+          "fragments": 0,
+          "implementation": "pyscf",
+          "partition": "",
+          "source": ""
+        },
+        "method": "X2C-AMF",
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 4.719239567824843,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "H": "s1",
+            "Tl": "s12 p25 d30 f14"
+          },
+          "elements": [
+            "Tl",
+            "H"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 4.719239567907291,
+          "spin_orbit_scale": 0.8945445044660847,
+          "tr_residual": 7.536746297900809e-06,
+          "tr_residual_rel": 1.1464193783091465e-08
+        },
+        "soc_strength": 34.5213139666539,
+        "tr_residual": 1.8435437294547128e-06,
+        "tr_residual_rel": 5.077717967658782e-10
+      },
+      "inactive_moment_l": [
+        3.528504606295026e-12,
+        1.2886664916370477e-12,
+        4.6996599320503485e-12
+      ],
+      "key": "tlh",
+      "label": "TlH",
+      "moment_hermiticity": 8.010741897413915e-16,
+      "multiplets": [
+        {
+          "energy_cm": 0.0,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 15588.0716,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 16911.046,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 17248.7898,
+          "g_values": [
+            0.0,
+            0.0,
+            2.033279
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              -0.0,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              2.06711273
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 6.8666191509692e-05
+        },
+        {
+          "energy_cm": 21318.4459,
+          "g_values": [
+            0.0,
+            0.0,
+            5.998149
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              17.98889585
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 24737.657,
+          "g_values": [
+            0.0,
+            0.0,
+            2.014536
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              2.02917833
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 1.996110222535208e-05
+        },
+        {
+          "energy_cm": 40896.3992,
+          "g_values": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              0.0
+            ]
+          ],
+          "size": 1,
+          "spread_cm": 0.0
+        },
+        {
+          "energy_cm": 40934.5414,
+          "g_values": [
+            0.0,
+            0.0,
+            3.95616
+          ],
+          "m_tensor": [
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -0.0
+            ],
+            [
+              -0.0,
+              -0.0,
+              7.82560248
+            ]
+          ],
+          "size": 2,
+          "spread_cm": 3.992216079495847e-06
+        }
+      ],
+      "n_soc_states": 12,
+      "nao": 94,
+      "ncas": 4,
+      "nelecas": 2,
+      "nroots": {
+        "1": 3,
+        "3": 3
+      },
+      "nspinor": 188,
+      "optimizer_mode": "auto",
+      "resources": {
+        "cpu_seconds": 2670.5,
+        "effective_cores": 3.73,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 79.0,
+        "temp_start_c": 45.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 715.6
+      },
+      "scf_converged": true,
+      "screening": "x2camf",
+      "seconds": 715.51,
+      "soc_rel_cm": [
+        0.0,
+        15588.0716,
+        16911.046,
+        17248.7898,
+        17248.7899,
+        21318.4459,
+        21318.4459,
+        24737.657,
+        24737.657,
+        40896.3992,
+        40934.5414,
+        40934.5414
+      ],
+      "spin": 0,
+      "status": "ok"
+    },
+    "yb3p/x2c-SVPall-2c": {
+      "active_l": "f",
+      "active_space": "7 lowest Kramers pairs of l=3 character on 0 Yb",
+      "basis": "x2c-SVPall-2c",
+      "boundary_gap_cm": null,
+      "boundary_margin": 8,
+      "boundary_ndet": 14,
+      "boundary_spans_full_ci": true,
+      "casscf_converged": true,
+      "casscf_grad_norm": 9.561494855941249e-07,
+      "casscf_iterations": 18,
+      "charge": 3,
+      "cholesky_naux": 995,
+      "cholesky_orbit_complete": true,
+      "cholesky_tol": 1e-08,
+      "degeneracy_pattern": [
+        8,
+        6
+      ],
+      "degeneracy_tol_cm": 1.0,
+      "dump_bytes": 129307,
+      "dump_path": "temp/tier2_dumps/yb3p-x2c-SVPall-2c.prop",
+      "e_casscf_avg": -14071.123678844939,
+      "e_scf": -14053.980378077391,
+      "e_soc_total_lowest": -14071.144124954584,
+      "gauge_origin_choice": "centre of mass",
+      "hamiltonian": {
+        "decoupling": {
+          "block_scales": {},
+          "decoupling": "1e",
+          "fragments": 0,
+          "implementation": "pyscf",
+          "partition": "",
+          "source": ""
+        },
+        "method": "X2C-AMF",
+        "one_electron": "X2C (approx=1e)",
+        "picture_change_shift": 2.86011475780424,
+        "screening": {
+          "backend": "pyscf",
+          "backend_version": "2.14.0",
+          "configurations": {
+            "Yb": "s10 p24 d20 f13"
+          },
+          "elements": [
+            "Yb"
+          ],
+          "interaction": "coulomb",
+          "light_speed": null,
+          "method": "x2camf",
+          "spin_free_scale": 2.860114757793629,
+          "spin_orbit_scale": 0.5087125834365883,
+          "tr_residual": 5.444187164562288e-06,
+          "tr_residual_rel": 1.0613820841275144e-08
+        },
+        "soc_strength": 16.12398349973638,
+        "tr_residual": 4.143601472605951e-06,
+        "tr_residual_rel": 1.5729270034043521e-09
+      },
+      "inactive_moment_l": [
+        1.9087598628140644e-14,
+        2.6587551062683124e-14,
+        6.7845035145452925e-15
+      ],
+      "key": "yb3p",
+      "label": "Yb(3+)",
+      "moment_hermiticity": 2.288783399261119e-15,
+      "multiplets": [
+        {
+          "energy_cm": 0.0,
+          "g_values": [
+            1.143188,
+            1.143188,
+            1.143188
+          ],
+          "m_tensor": [
+            [
+              54.88895507,
+              1e-08,
+              -0.0
+            ],
+            [
+              1e-08,
+              54.88895509,
+              0.0
+            ],
+            [
+              -0.0,
+              0.0,
+              54.88895506
+            ]
+          ],
+          "size": 8,
+          "spread_cm": 4.4313645196444124e-05
+        },
+        {
+          "energy_cm": 10470.6055,
+          "g_values": [
+            0.856812,
+            0.856812,
+            0.856812
+          ],
+          "m_tensor": [
+            [
+              12.8472049,
+              -1e-08,
+              0.0
+            ],
+            [
+              -1e-08,
+              12.84720489,
+              -0.0
+            ],
+            [
+              0.0,
+              -0.0,
+              12.84720491
+            ]
+          ],
+          "size": 6,
+          "spread_cm": 4.910431016469374e-05
+        }
+      ],
+      "n_soc_states": 14,
+      "nao": 112,
+      "ncas": 7,
+      "nelecas": 13,
+      "nroots": {
+        "2": 7
+      },
+      "nspinor": 224,
+      "optimizer_mode": "auto",
+      "resources": {
+        "cpu_seconds": 1246.9,
+        "effective_cores": 3.6,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 78.0,
+        "temp_start_c": 77.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 346.0
+      },
+      "scf_converged": true,
+      "screening": "x2camf",
+      "seconds": 346.03,
+      "soc_rel_cm": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        10470.6055,
+        10470.6055,
+        10470.6055,
+        10470.6055,
+        10470.6055,
+        10470.6055
+      ],
+      "spin": 1,
+      "status": "ok"
+    }
+  },
+  "schema": 1
+}

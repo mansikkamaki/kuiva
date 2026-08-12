@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# configure — set up the build of Kuiva's OPTIONAL compiled kernel backend.
+#
+# Writes cpp/config.mk, which the Makefile next door consumes. Run it once; re-run it after
+# changing compiler, Python environment or flags.
+#
+#     cd cpp && ./configure && make && make check
+#
+# ⚠ NOTHING REQUIRES THIS BUILD. The compiled backend replaces a handful of hot kernels with
+# C++; the pure-NumPy implementations stay in the code and stay first class, and the selection
+# is a run-time switch (KUIVA_KERNELS=auto | numpy | native). A checkout that never builds this
+# runs every calculation, produces every number and passes every test.
+#
+# ⚠ SUPPORTED TOOLCHAIN: INTEL ONEAPI ONLY, and the refusal below is deliberate rather than
+# lazy. The extension shares two runtimes with the interpreter that loads it — one MKL
+# (mkl_rt, the library NumPy has already loaded) and one OpenMP runtime (libiomp5, the one
+# MKL uses). A GCC build brings libgomp alongside libiomp5: two OpenMP runtimes in one
+# process, each sizing its thread pool to the whole machine, with no error message and no
+# symptom other than every CPU-time figure afterwards being inflated. Rather than ship a
+# configuration whose failure is invisible, this refuses and points at KUIVA_KERNELS=numpy.
+#
+# Options (all also readable from the environment):
+#     --python PATH     interpreter whose headers and pybind11 to build against
+#     --cxx PATH        C++ compiler (must be Intel)
+#     --optflags "..."  optimization flags        [default: -O3 -xHost]
+#     --debug           -O0 -g, and skip the ISA flags
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${HERE}/.." && pwd)"
+
+PYTHON="${PYTHON:-}"
+CXX="${CXX:-icpx}"
+OPTFLAGS="${OPTFLAGS:-}"
+DEBUG=0
+
+log() { printf '\033[1;34m[configure]\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31m[configure ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
+
+refuse_toolchain() {
+    cat >&2 <<EOF
+
+[configure ERROR] $1
+
+  The compiled kernel backend is built with Intel oneAPI (icpx) and no other toolchain is
+  supported. The reason is not preference: the extension must link the SAME MKL and the SAME
+  OpenMP runtime that NumPy has already loaded into the process. A GCC build adds a second
+  OpenMP runtime next to MKL's, which oversubscribes every core and reports nothing.
+
+  ⚠ This is not a lost capability. Kuiva runs everything with NumPy:
+
+        KUIVA_KERNELS=auto     (the default) native where built, NumPy otherwise
+        KUIVA_KERNELS=numpy    NumPy always, for reproducibility
+
+  Both are fully supported ways to run, produce the same numbers, and pass the same tests.
+  If you have oneAPI, source its environment (setvars.sh) and run this script again.
+
+EOF
+    exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --python)   PYTHON="${2:?--python needs a path}"; shift 2 ;;
+        --cxx)      CXX="${2:?--cxx needs a path}"; shift 2 ;;
+        --optflags) OPTFLAGS="${2:?--optflags needs a value}"; shift 2 ;;
+        --debug)    DEBUG=1; shift ;;
+        -h|--help)  sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        *)          die "unknown argument: $1" ;;
+    esac
+done
+
+# --- The compiler ---------------------------------------------------------------------------
+command -v "${CXX}" >/dev/null 2>&1 \
+    || refuse_toolchain "C++ compiler not found: ${CXX}"
+CXX_VERSION="$("${CXX}" --version 2>/dev/null | head -1)"
+case "${CXX_VERSION}" in
+    *Intel*) ;;
+    *)       refuse_toolchain "${CXX} is not an Intel compiler: ${CXX_VERSION}" ;;
+esac
+log "compiler  ${CXX}  (${CXX_VERSION})"
+
+# --- MKL ------------------------------------------------------------------------------------
+[[ -n "${MKLROOT:-}" ]] || refuse_toolchain "MKLROOT is unset; source the oneAPI environment."
+MKL_LIB="${MKLROOT}/lib"
+[[ -d "${MKL_LIB}" ]] || MKL_LIB="${MKLROOT}/lib/intel64"
+[[ -d "${MKL_LIB}" ]] || die "no MKL library directory under ${MKLROOT}"
+[[ -f "${MKLROOT}/include/mkl.h" ]] || die "no mkl.h under ${MKLROOT}/include"
+log "mkl       ${MKLROOT}"
+
+# --- Python -------------------------------------------------------------------------------
+if [[ -z "${PYTHON}" ]]; then
+    if [[ -x "${ROOT}/external/venv/bin/python" ]]; then
+        PYTHON="${ROOT}/external/venv/bin/python"          # the developer sandbox, if present
+    else
+        PYTHON="$(command -v python3 || command -v python || true)"
+    fi
+fi
+[[ -n "${PYTHON}" && -x "${PYTHON}" ]] || die "no usable Python interpreter (--python PATH)"
+
+PY_INC="$("${PYTHON}" -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
+EXT_SUFFIX="$("${PYTHON}" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
+[[ -f "${PY_INC}/Python.h" ]] || die "no Python.h in ${PY_INC}: install the development headers"
+log "python    ${PYTHON}  (extension suffix ${EXT_SUFFIX})"
+
+# pybind11 is header-only and is the one build-time Python dependency.
+if ! PB_INC="$("${PYTHON}" -m pybind11 --includes 2>/dev/null)"; then
+    die "pybind11 is not installed for ${PYTHON}.
+       Install it into that interpreter (headers only, nothing is linked):
+           ${PYTHON} -m pip install --no-deps pybind11
+       ⚠ --no-deps on purpose: an unpinned transitive numpy would resolve to 2.x and take the
+       environment off the NumPy 1.x baseline the rest of the code needs."
+fi
+log "pybind11  $("${PYTHON}" -c 'import pybind11; print(pybind11.__version__)')"
+
+# --- Flags ----------------------------------------------------------------------------------
+if [[ "${DEBUG}" -eq 1 ]]; then
+    OPTFLAGS="${OPTFLAGS:--O0 -g}"
+else
+    # -xHost targets the machine doing the build, which is right for a local build and wrong
+    # for one shared across heterogeneous nodes: set OPTFLAGS explicitly there (e.g.
+    # -O3 -xCORE-AVX2 for a build that must also run on pre-AVX-512 hardware).
+    OPTFLAGS="${OPTFLAGS:--O3 -xHost}"
+fi
+log "optflags  ${OPTFLAGS}"
+
+# --- C++20 probe ----------------------------------------------------------------------------
+# The kernels use std::popcount, so the standard-library half of C++20 has to be there and not
+# merely the flag. Checking now costs a second; not checking costs a failed build much later.
+probe="$(mktemp -d)"
+trap 'rm -rf "${probe}"' EXIT
+cat > "${probe}/probe.cpp" <<'EOF'
+#include <bit>
+#include <cstdint>
+int main() { return std::popcount(static_cast<std::uint64_t>(7)) == 3 ? 0 : 1; }
+EOF
+"${CXX}" -std=c++20 -o "${probe}/probe" "${probe}/probe.cpp" >/dev/null 2>&1 \
+    || die "${CXX} cannot compile a C++20 <bit> program; the kernels need std::popcount"
+log "c++20     ok"
+
+# --- Write config.mk --------------------------------------------------------------------------
+cat > "${HERE}/config.mk" <<EOF
+# config.mk — generated by cpp/configure on $(date -u '+%Y-%m-%dT%H:%M:%SZ'). Do not edit;
+# re-run ./configure instead. Git-ignored: it records one machine's paths.
+CXX         := ${CXX}
+CXX_VERSION := ${CXX_VERSION}
+OPTFLAGS    := ${OPTFLAGS}
+PYTHON      := ${PYTHON}
+PY_INC      := ${PY_INC}
+PB_INC      := ${PB_INC}
+EXT_SUFFIX  := ${EXT_SUFFIX}
+MKLROOT     := ${MKLROOT}
+MKL_LIB     := ${MKL_LIB}
+PKG_DIR     := ${ROOT}/kuiva
+ROOT_DIR    := ${ROOT}
+EOF
+
+log "wrote ${HERE}/config.mk"
+log "next: make && make check"
