@@ -89,9 +89,9 @@ References
 * Jordan-Wigner: P. Jordan, E. Wigner, *Z. Phys.* **47**, 631 (1928), doi:10.1007/BF01331938.
 * VQE: A. Peruzzo et al., *Nat. Commun.* **5**, 4213 (2014), doi:10.1038/ncomms5213.
 * The simulator stack the first adapter targets: A. Javadi-Abhari et al., "Quantum computing
-  with Qiskit", arXiv:2405.08810 (2024) — built by ``scripts/bootstrap/90_qiskit.sh``, never a
+  with Qiskit", arXiv:2405.08810 (2024) — an optional install, never a
   runtime dependency.
 """
-from .gate import BOOTSTRAP_SCRIPT, QC_VENV, available, require
+from .gate import INSTALL_HINT, available, require
 
-__all__ = ["BOOTSTRAP_SCRIPT", "QC_VENV", "available", "require"]
+__all__ = ["INSTALL_HINT", "available", "require"]

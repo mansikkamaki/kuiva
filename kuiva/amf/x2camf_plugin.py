@@ -3,7 +3,7 @@
 This module is the whole of Kuiva's contact with
 https://github.com/Warlocat/x2camf — the reference implementation of X2CAMF by the group that
 published the method (J. Liu, L. Cheng, *J. Chem. Phys.* **148**, 144108 (2018)), built by
-``scripts/bootstrap/80_x2camf.sh``.
+the plugin's own build instructions.
 
 Why a second implementation is worth a dependency
 -------------------------------------------------
@@ -135,7 +135,7 @@ def version() -> str:
 
     ⚠ The upstream repository publishes no releases and hard-codes ``0.1``, so this string
     does **not** identify the code. The commit is what pins it
-    (``scripts/bootstrap/versions.env::X2CAMF_COMMIT``), and that is what a reference record
+    (the commit the plugin was built from), and that is what a reference record
     must carry.
     """
     try:
@@ -183,7 +183,7 @@ def _require():
         raise ImportError(
             "the x2camf plugin is not installed ({}: {}). It is an optional, "
             "reference-only dependency; build it with "
-            "`bash scripts/bootstrap/80_x2camf.sh`. Kuiva's own X2CAMF "
+            "the plugin and its dependencies. Kuiva's own X2CAMF "
             "(method=\"x2camf\") needs nothing external.".format(type(exc).__name__, exc))
     _raise_stack_limit()
     return x2camf

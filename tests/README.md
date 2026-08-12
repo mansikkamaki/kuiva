@@ -216,7 +216,7 @@ Hard-won and easy to re-lose:
   `&SINGLE_ANISO` writes. The obvious-looking `rassi.h5` datasets `SOS_ANGMOM_*` / `SOS_SPIN_*`
   exist but are written as **all zeros** unless extra RASSI keywords are given, so taking them
   silently yields a reference with vanishing magnetic moments.
-* **The `x2camf` plugin** — built by `scripts/bootstrap/80_x2camf.sh` and optional. Three
+* **The `x2camf` plugin** — an optional external install. Three
   things bite. Its `install_requires=["numpy"]` is unpinned and pip resolves it to **NumPy
   2.x**, upgrading the venv off the pinned baseline and killing PySCF with `numpy.dtype size
   changed`; install with `--no-deps`. Its atomic solver **segfaults on the default 8 MB

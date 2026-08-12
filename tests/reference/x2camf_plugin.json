@@ -1,5 +1,5 @@
 {
-  "code": "x2camf plugin (github.com/Warlocat/x2camf), pinned in scripts/bootstrap/versions.env::X2CAMF_COMMIT",
+  "code": "x2camf plugin (github.com/Warlocat/x2camf) at the pinned commit recorded with this reference",
   "controlled": {
     "contraction": "both decontract; the primitive bases are checked to agree on their overlap matrices before anything is compared",
     "interaction": "passed explicitly to the plugin, which defaults to full Breit (with_gaunt and with_gauge both True)",

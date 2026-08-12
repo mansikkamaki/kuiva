@@ -2,7 +2,7 @@
 #
 #     ./configure && make && make check
 #
-# This is the only build path for the extension; scripts/bootstrap/95_native.sh is a wrapper
+# This is the only build path for the extension; the development sandbox wraps it
 # around it. The module is written in place next to the package and is git-ignored, so a
 # rebuilt backend is picked up with no install step and a deleted one silently reverts every
 # kernel to its NumPy implementation.

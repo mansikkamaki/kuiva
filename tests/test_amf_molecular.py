@@ -39,7 +39,7 @@ BASIS = "x2c-SVPall-2c"
 
 needs_plugin = pytest.mark.skipif(not plugin.available(),
                                   reason="the x2camf plugin is not installed "
-                                         "(scripts/bootstrap/80_x2camf.sh)")
+                                         "(an optional external plugin)")
 
 
 def molecule(atom, basis=BASIS, **kw):

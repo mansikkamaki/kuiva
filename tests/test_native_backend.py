@@ -20,7 +20,7 @@ from kuiva.ci import kernels
 from kuiva.ci.strings import Determinants, connections
 from kuiva.util import native
 
-NEEDS_BUILD = "native extension not built (bash scripts/bootstrap/95_native.sh)"
+NEEDS_BUILD = "native extension not built (cd cpp && ./configure && make)"
 
 
 def _native_or_skip():
@@ -85,10 +85,10 @@ def test_an_explicit_native_request_is_refused_without_a_build(fresh_gate):
     fresh_gate.setenv("KUIVA_KERNELS", "native")
     fresh_gate.setattr(native, "_import_extension",
                        lambda: (_ for _ in ()).throw(ImportError("no build")))
-    with pytest.raises(ImportError, match="95_native.sh"):
+    with pytest.raises(ImportError, match="configure && make"):
         native.activate()
     # and it refuses on EVERY resolution, not only the first
-    with pytest.raises(ImportError, match="95_native.sh"):
+    with pytest.raises(ImportError, match="configure && make"):
         kernels.spec("cas_rank")
     assert native.fingerprint_token() == "native:unavailable"
 

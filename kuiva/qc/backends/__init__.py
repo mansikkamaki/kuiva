@@ -10,6 +10,6 @@ convention.
 
 Present: :mod:`kuiva.qc.backends.stub` (Kuiva's own exact statevector simulator, the declared
 second implementation the boundary is validated against) and
-:mod:`kuiva.qc.backends.qiskit_aer` (Qiskit Aer, built by ``scripts/bootstrap/90_qiskit.sh``).
+:mod:`kuiva.qc.backends.qiskit_aer` (Qiskit Aer, an optional install -- see :data:`kuiva.qc.gate.INSTALL_HINT`).
 A Cirq, cuQuantum, vendor-REST or IQM adapter is another entry in the same table.
 """

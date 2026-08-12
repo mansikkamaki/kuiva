@@ -236,12 +236,11 @@ def test_the_stub_refuses_a_non_positive_shot_count():
 
 @pytest.fixture(scope="module")
 def aer():
-    """The Aer backend, or a skip that names the script to run."""
+    """The Aer backend, or a skip that says how to install it."""
     from kuiva.qc import gate
 
     if not gate.available("qiskit_aer"):
-        pytest.skip("qiskit_aer is absent; build it with {} (creates {})".format(
-            gate.BOOTSTRAP_SCRIPT, gate.QC_VENV))
+        pytest.skip("qiskit_aer is absent; {}".format(gate.INSTALL_HINT))
     return get_backend("qiskit_aer", seed=1234)
 
 

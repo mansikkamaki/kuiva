@@ -49,11 +49,12 @@ def _top_level_imports(tree):
 
 def test_kuiva_qc_imports_with_nothing_installed():
     """The Stage-0 exit criterion. If this fails the default suite has grown a dependency on
-    ``external/venv_qc``, which is exactly what the package layout exists to prevent."""
+    the quantum-computing stack, which is exactly what the package layout exists to prevent."""
     import kuiva.qc
 
-    assert kuiva.qc.BOOTSTRAP_SCRIPT == "scripts/bootstrap/90_qiskit.sh"
-    assert (REPO / kuiva.qc.BOOTSTRAP_SCRIPT).is_file(), "the gate names a script that is gone"
+    # the gate must say how to get what it guards, in terms that hold outside this tree
+    assert "pip install" in kuiva.qc.INSTALL_HINT
+    assert "3.10" in kuiva.qc.INSTALL_HINT
 
 
 def test_no_framework_is_imported_at_import_time():
@@ -117,7 +118,7 @@ def test_require_refuses_and_says_what_to_run():
         gate.require("kuiva_no_such_framework", purpose="the Aer backend adapter")
     message = str(excinfo.value)
     for expected in ("kuiva_no_such_framework", "the Aer backend adapter",
-                     gate.BOOTSTRAP_SCRIPT, gate.QC_VENV):
+                     gate.INSTALL_HINT):
         assert expected in message, (expected, message)
 
 

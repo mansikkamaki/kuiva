@@ -1,6 +1,6 @@
 // kuiva_native.cpp — the compiled ("native") kernel backend, one extension module.
 //
-// Built by scripts/bootstrap/95_native.sh into kuiva/_native<soabi>.so (git-ignored,
+// Built by `cd cpp && ./configure && make` into kuiva/_native<soabi>.so (git-ignored,
 // in-place). Loaded by exactly one Python module, kuiva/util/native.py, which registers
 // every kernel exported here under backend name "native" in the ci/kernels.py registry
 //. Nothing else imports this module; nothing here is public API.
@@ -28,7 +28,7 @@
 // References:
 //   * pybind11: W. Jakob, J. Rhinelander, D. Moldovan, "pybind11 — Seamless operability
 //     between C++11 and Python", https://github.com/pybind/pybind11 (version pinned in
-//     scripts/bootstrap/versions.env).
+//     the pinned toolchain versions).
 //   * Intel oneAPI Math Kernel Library (MKL): cblas_zgemm, mkl_set_num_threads_local.
 //   * The XOR/popcount determinant connection scan is standard selected-CI practice
 //     (Scemama & Giner, arXiv:1311.6244 (2013); Garniron et al., JCTC 15, 3591 (2019)) and

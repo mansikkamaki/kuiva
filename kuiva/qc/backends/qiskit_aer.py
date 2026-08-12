@@ -22,7 +22,7 @@ The import gate
 :func:`kuiva.qc.gate.require`, never at module scope. ``tests/test_qc_skeleton.py`` asserts
 this from the sources, because the failure mode is invisible on the machine that introduces
 it: an eager import at the top of this file works perfectly there and breaks ``import kuiva``
-everywhere else. The stack is built by ``scripts/bootstrap/90_qiskit.sh`` into
+everywhere else. The stack is an optional install (:data:`kuiva.qc.gate.INSTALL_HINT`), belonging in
 ``external/venv_qc``, **a different interpreter** from the pinned-version baseline (Qiskit dropped 3.9;
 ``qiskit-iqm`` requires >= 3.10), so this adapter runs only under that interpreter with the
 repository root on ``PYTHONPATH``.

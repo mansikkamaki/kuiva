@@ -9,7 +9,7 @@ would be, because a four-component calculation performs no picture change and th
 no term corresponding to any of Kuiva's.
 
 The ``x2camf`` plugin (https://github.com/Warlocat/x2camf, built by
-``scripts/bootstrap/80_x2camf.sh``) is the reference implementation of the same method by the
+an optional external plugin) is the reference implementation of the same method by the
 group that published it, so its correction **is** term-by-term comparable — which is exactly
 what proper attribution asks of a method taken from someone else's paper: check
 it against what they wrote, not only against a different theory that happens to agree.
@@ -242,7 +242,7 @@ def _new_document() -> Dict:
         "schema": 1,
         "generator": "tests/generate/x2camf_plugin.py",
         "code": "x2camf plugin (github.com/Warlocat/x2camf), pinned in "
-                "scripts/bootstrap/versions.env::X2CAMF_COMMIT",
+                "x2camf plugin commit",
         "purpose": ("term-by-term comparison of Kuiva's X2CAMF correction against the "
                     "authors' own implementation"),
         "controlled": {
@@ -281,7 +281,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     if not plugin.available():
-        print("the x2camf plugin is not installed; run scripts/bootstrap/80_x2camf.sh",
+        print("the x2camf plugin is not installed; build it from its own repository",
               file=sys.stderr)
         return 2
 

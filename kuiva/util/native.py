@@ -51,12 +51,11 @@ from .logging import get_logger
 
 log = get_logger(__name__)
 
-#: How to build the extension, named in every refusal. Two routes to one build: ``cpp/`` is
-#: the build itself and works anywhere oneAPI is installed, while the bootstrap script is the
-#: development sandbox's wrapper around it (it adds the pinned venv and pybind11). A refusal
-#: names both, because the reader may be either kind of user.
+#: How to build the extension, named in every refusal. This is the whole build: ``cpp/``
+#: works anywhere an Intel oneAPI toolchain is installed, and needs pybind11 importable by the
+#: interpreter that will load the result. There is exactly one build path, so a refusal names
+#: one command.
 BUILD_COMMAND = "cd cpp && ./configure && make"
-BOOTSTRAP_SCRIPT = "scripts/bootstrap/95_native.sh"
 
 #: The interface version this gate understands. Must equal ``kuiva._native.API_VERSION``;
 #: a mismatch means the .so predates a kernel-signature change and may not register.
@@ -84,8 +83,8 @@ def _import_extension():
     if version != API_VERSION:
         raise ImportError(
             "kuiva._native has API_VERSION {} but this source tree expects {}: the "
-            "extension is stale. Rebuild it with `{}` (in the development sandbox, "
-            "`bash {}`).".format(version, API_VERSION, BUILD_COMMAND, BOOTSTRAP_SCRIPT))
+            "extension is stale. Rebuild it with `{}`."
+            .format(version, API_VERSION, BUILD_COMMAND))
     return module
 
 
@@ -111,16 +110,15 @@ def activate() -> None:
         if requested == "native":
             error = ImportError(
                 "KUIVA_KERNELS=native, but the compiled backend could not be loaded "
-                "({}: {}). Build it with `{}` (in the development sandbox, `bash {}`); "
-                "or unset KUIVA_KERNELS to run the pure-NumPy reference path."
-                .format(type(exc).__name__, exc, BUILD_COMMAND, BOOTSTRAP_SCRIPT))
+                "({}: {}). Build it with `{}`, or unset KUIVA_KERNELS to run the "
+                "pure-NumPy reference path."
+                .format(type(exc).__name__, exc, BUILD_COMMAND))
             _STATE["activated"] = True
             _STATE["error"] = error
             raise error
         _STATE["activated"] = True
         log.debug("compiled kernel backend absent (%s); running pure NumPy. Build it "
-                  "with `%s` (sandbox: `bash %s`) if wanted.", exc, BUILD_COMMAND,
-                  BOOTSTRAP_SCRIPT)
+                  "with `%s` if wanted.", exc, BUILD_COMMAND)
         return
     _register(module)
     _STATE["module"] = module
@@ -279,9 +277,7 @@ def _register(module) -> None:
                        ("sparse_pair_dot", _sparse_pair_dot)):
         if not hasattr(module, name):                          # pragma: no cover - defensive
             raise ImportError("kuiva._native (build {}) does not export {!r}; rebuild "
-                              "with `{}` (sandbox: `bash {}`)"
-                              .format(module.BUILD_ID, name, BUILD_COMMAND,
-                                      BOOTSTRAP_SCRIPT))
+                              "with `{}`".format(module.BUILD_ID, name, BUILD_COMMAND))
         kernels.register(name, "native", impl)
 
 
@@ -303,5 +299,5 @@ def native_probe_numpy(x: np.ndarray, out: np.ndarray) -> np.ndarray:
     return out
 
 
-__all__ = ["BUILD_COMMAND", "BOOTSTRAP_SCRIPT", "API_VERSION", "VALID_MODES", "mode", "activate",
+__all__ = ["BUILD_COMMAND", "API_VERSION", "VALID_MODES", "mode", "activate",
            "available", "build_id", "fingerprint_token", "banner_entry"]

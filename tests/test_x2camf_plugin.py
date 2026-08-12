@@ -56,7 +56,7 @@ that plain one-electron X2C misses by.
 Running
 -------
 The stored records are asserted always. The **live** comparison runs only when the plugin is
-importable (``scripts/bootstrap/80_x2camf.sh``) and is skipped otherwise, so this file is
+importable (an optional external plugin) and is skipped otherwise, so this file is
 green on a machine that has never built it.
 """
 import json
@@ -128,7 +128,7 @@ KEYS = ["Ne/x2c-SVPall-2c/coulomb", "Ne/x2c-SVPall-2c/gaunt",
 
 needs_plugin = pytest.mark.skipif(not plugin.available(),
                                   reason="the x2camf plugin is not installed "
-                                         "(scripts/bootstrap/80_x2camf.sh)")
+                                         "(an optional external plugin)")
 
 
 # --- the stored comparison ----------------------------------------------------------------

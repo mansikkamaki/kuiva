@@ -275,7 +275,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     native.activate()
     if not native.available():
         raise SystemExit("the native backend is not built; run "
-                         "`bash scripts/bootstrap/95_native.sh` first")
+                         "`cd cpp && ./configure && make` first")
 
     out_path = Path(args.out)
     if out_path.exists():

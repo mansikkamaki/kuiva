@@ -142,7 +142,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     native.activate()
     if not native.available():
         raise SystemExit("the native backend is not built; run "
-                         "`bash scripts/bootstrap/95_native.sh` first — this benchmark "
+                         "`cd cpp && ./configure && make` first — this benchmark "
                          "exists to compare it against numpy")
 
     record: Dict = {"schema": 1, "generator": "tests/generate/bench_connections.py",

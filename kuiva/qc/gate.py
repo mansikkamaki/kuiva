@@ -26,14 +26,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-#: The bootstrap script that provisions every framework this gate guards.
-BOOTSTRAP_SCRIPT = "scripts/bootstrap/90_qiskit.sh"
-
-#: Where it installs them. ⚠ A **different interpreter** from ``external/venv``: Qiskit
-#: dropped Python 3.9 and IQM's provider requires >= 3.10, so this venv is not the pinned
-#: baseline one and cannot be put on the baseline interpreter's ``PYTHONPATH``. Run the
-#: qc-marked tests *under* it, with the repository root on ``PYTHONPATH``.
-QC_VENV = "external/venv_qc"
+#: What to do when a framework this gate guards is missing, named in every refusal.
+#: ⚠ It says *separate environment* deliberately, and that is not tidiness: Qiskit dropped
+#: Python 3.9 and some providers require >= 3.10, while Kuiva's floor is 3.9 and its pinned
+#: front-end is built against NumPy 1.x. Installing this stack beside Kuiva's own dependencies
+#: is how a NumPy 2 lands underneath PySCF. Run the qc-marked tests *under* that interpreter,
+#: with the repository root on ``PYTHONPATH``.
+INSTALL_HINT = ("pip install qiskit qiskit-aer, into a separate Python >= 3.10 environment "
+                "from the one Kuiva itself runs in")
 
 
 def available(package: str) -> bool:
@@ -70,10 +70,9 @@ def require(package: str, purpose: Optional[str] = None):
     except Exception as exc:                                                # noqa: BLE001
         raise ImportError(
             "{!r} is not installed{}. It is an optional, research-only dependency of "
-            "kuiva.qc ({}: {}); build it with `bash {}`, which creates {} — then run under "
-            "that interpreter with the repository root on PYTHONPATH. Nothing else in Kuiva "
-            "needs it.".format(package, "" if purpose is None else " (needed for " + purpose + ")",
-                               type(exc).__name__, exc, BOOTSTRAP_SCRIPT, QC_VENV))
+            "kuiva.qc ({}: {}). To get it: {}. Nothing else in Kuiva needs it."
+            .format(package, "" if purpose is None else " (needed for " + purpose + ")",
+                    type(exc).__name__, exc, INSTALL_HINT))
 
 
-__all__ = ["BOOTSTRAP_SCRIPT", "QC_VENV", "available", "require"]
+__all__ = ["INSTALL_HINT", "available", "require"]
