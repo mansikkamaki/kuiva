@@ -302,9 +302,17 @@ cas = kuiva.CASSCF(pre, solver="dmrg", n_states=4, graph="mutual-information",
   upstream. ⚠ Checkpoint/restart of the network state is not wired into this layer.
 
 A third solver, `kuiva.qc`, runs the configuration selection of a CI on a quantum computer or
-its simulator through the same seam. It is a **research vehicle**, never a default, optional,
-and dependent on nothing the rest of the program needs; no number from it is evidence about
-the method. It is described with its references at the end of this file.
+its simulator through the same seam, and can drive a whole CASSCF on Kuiva's own exact simulator
+or on Qiskit Aer. It is a **research vehicle**, never a default, optional, and dependent on
+nothing the rest of the program needs. ⚠ The published algorithms it builds on assume a
+spin-separable, real, non-relativistic Hamiltonian, which is none of what Kuiva has; the
+generalization to complex spinor excitation generators is implemented and exact, as are a
+sample-based Krylov variant, a variational quantum eigensolver, and a time-reversal-aware
+configuration recovery with no counterpart in the spin-separable literature. **Exact is not the
+same as good**: whether such an ansatz concentrates its measurements where they matter, at a
+size where the question is interesting, needs hardware that is not yet reachable. So no number
+from this layer is evidence about the *method*, and none is presented as one. Its references are
+at the end of this file.
 
 A restart takes its active space **from the file**; restating it in a way that disagrees is
 refused rather than reconciled, and `max_iter` counts total macro-iterations across the
@@ -847,7 +855,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.3.5.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.3.7.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -863,7 +871,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.3.5'
+import kuiva; kuiva.__version__          # '0.3.7'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
@@ -1174,23 +1182,7 @@ generate validation reference data live with that code, in `tests/`.
   (2016), DOI:10.1063/1.4939752. Spin–orbit QD-NEVPT2, the closest prior art: R. Majumder,
   A. Yu. Sokolov, _J. Phys. Chem. A_ **127**, 546 (2023), DOI:10.1021/acs.jpca.2c07953.
 
-### Quantum-computing CI solvers (research vehicle; never a default)
-
-`kuiva.qc` is a second CI solver for the CASSCF branch, whose configuration selection runs on a
-quantum computer or its simulator. It is optional, off by default, and depends on nothing the
-rest of the program needs. A whole CASSCF can be driven by it, on Kuiva's own exact simulator
-or on Qiskit Aer.
-
-The families the published work is built on assume a spin separability Kuiva's spin–orbit-
-coupled Hamiltonian does not have; generalizing them to **complex spinor excitation
-generators** is implemented and exact, together with a sample-based Krylov
-variant, a variational quantum eigensolver, and a time-reversal-aware configuration recovery
-that has no counterpart in the spin-separable literature.
-
-⚠ **Exact is not the same as good.** Whether such an ansatz concentrates its measurements where
-they matter, at a size where the question is interesting, needs hardware that is not yet
-reachable — so no number from this layer is evidence about the *method*, and none is presented
-as one.
+### Quantum-computing CI solvers
 
 - **Jordan–Wigner transformation** — the mapping from Kuiva's spinor occupation strings to
   qubits. P. Jordan, E. Wigner, _Z. Phys._ **47**, 631 (1928), DOI:10.1007/BF01331938. The
