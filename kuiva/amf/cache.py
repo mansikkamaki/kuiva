@@ -94,8 +94,16 @@ SCHEMA = 1
 #:     a persistent cache; recorded so the numbering means something.)
 #: 2   ``X`` from the converged four-component Fock, plus
 #:     ``h1e(X_2e) - h1e(X_1e)``. See :func:`kuiva.amf.decouple.x2c_decoupling`.
+#: 3   The atomic SCF is **constrained to spherically symmetric solutions**
+#:     (:func:`kuiva.amf.configuration.spherical_projector`). ⚠ This is why the
+#:     rule above is not paperwork: an ion with two partly filled channels
+#:     converged to a *symmetry-broken* mean field before it, under a key that
+#:     says nothing about which solution was found, and such an entry is
+#:     indistinguishable from a good one on disk. Everything with a single open
+#:     shell, and every closed shell, is numerically unchanged (max |dVeff|
+#:     5.5e-12); the bump exists for the class that is not.
 #: ==  =========================================================================
-FORMULA_VERSION = 2
+FORMULA_VERSION = 3
 
 #: Environment override for the cache directory. ``off`` disables the cache.
 ENV_CACHE_DIR = "KUIVA_AMF_CACHE"

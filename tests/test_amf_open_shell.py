@@ -47,9 +47,10 @@ from pyscf import gto
 from kuiva.amf import amf_correction, validate_correction
 from kuiva.amf.atomic import atomic_solution, cache_statistics, clear_cache, make_request
 from kuiva.amf.configuration import (AtomicConfiguration, OpenShell,
-                                    average_occupations,
-                                    install_configuration_average)
-from kuiva.amf.pyscf_dhf import SPHERICAL_DENSITY_TOLERANCE, _density_anisotropy
+                                    angular_channel_groups, average_occupations,
+                                    install_configuration_average, spherical_projector)
+from kuiva.amf.pyscf_dhf import (SPHERICAL_DENSITY_TOLERANCE, density_anisotropy,
+                                 spinor_symmetry_groups)
 
 BASIS = "x2c-SVPall-2c"
 HARTREE_CM = 219474.6313632
@@ -115,6 +116,65 @@ def test_a_partially_filled_shell_needs_all_of_it_present():
     angular = np.concatenate([np.repeat(np.arange(3), 40), np.full(6, 3)])
     with pytest.raises(RuntimeError, match="needs all 14 orbitals"):
         average_occupations(config, np.arange(angular.size, dtype=float), angular)
+
+
+@pytest.mark.parametrize("configuration,l,fraction,degeneracy", [
+    ("[Ar]3d1", 2, 1.0 / 5.0, 5),          # Ti(3+): one d electron over five d orbitals
+    ("[Xe]4f9", 3, 18.0 / 14.0, 7),        # Dy(3+)
+    ("[Xe]4f14 5d10 6s2 6p3", 1, 1.0, 3),  # Bi 6p3
+    ("[He]2s2 2p4", 1, 8.0 / 6.0, 3),      # O
+])
+def test_the_spatial_filling_rule_describes_the_same_state(configuration, l, fraction,
+                                                           degeneracy):
+    """``spatial=True`` is the same average of configuration on a spin-restricted scalar
+    orbital set: ``2l+1`` orbitals per shell, a full one at occupation 2, and the frontier
+    shell carrying ``q / (2l+1)`` on each of its orbitals.
+
+    ⚠ Asserting the value, as the spinor case above does, is what distinguishes the *same*
+    state in another container from a different state. The two must agree on the electron
+    count, on which shells are open, and on the occupation **per shell** — only the number of
+    orbitals it is written on differs, which is why one function states both.
+    """
+    config = AtomicConfiguration.parse(configuration)
+    angular = np.repeat(np.arange(5), 40)
+    energies = np.arange(angular.size, dtype=float)
+
+    occ = average_occupations(config, energies, angular, spatial=True)
+    spinor = average_occupations(config, energies, angular)
+
+    assert occ.sum() == pytest.approx(config.n_electrons, abs=1e-12)
+    assert occ.sum() == pytest.approx(spinor.sum(), abs=1e-12)
+    fractional = occ[(occ > 1e-12) & (occ < 2.0 - 1e-12)]
+    assert fractional.size == degeneracy
+    assert np.allclose(fractional, fraction)
+    # the same shells are open, and each holds the same number of electrons
+    for channel in range(5):
+        assert (occ[angular == channel].sum()
+                == pytest.approx(spinor[angular == channel].sum(), abs=1e-12))
+    assert np.count_nonzero(occ[angular == l] > 1e-12) == config.spinors_needed(l) // 2
+
+
+def test_a_spatial_shell_needs_all_of_its_orbitals_too():
+    """The counterpart of the spinor refusal above, and it counts *orbitals*: nine ``f``
+    electrons are spread over seven spatial orbitals, so six of them are not enough however
+    the electrons are counted."""
+    config = AtomicConfiguration.parse("[Xe]4f9")
+    angular = np.concatenate([np.repeat(np.arange(3), 40), np.full(6, 3)])
+    with pytest.raises(RuntimeError, match="needs all 7 orbitals"):
+        average_occupations(config, np.arange(angular.size, dtype=float), angular,
+                            spatial=True)
+
+
+def test_a_closed_shell_is_two_per_orbital():
+    """The spatial rule with nothing left over — the RHF occupation vector, unchanged, which
+    is what lets a closed-shell atom take the average-of-configuration path bitwise."""
+    config = AtomicConfiguration.parse("1s2 2s2 2p6")
+    angular = np.repeat(np.arange(3), 20)
+    occ = average_occupations(config, np.arange(angular.size, dtype=float), angular,
+                              spatial=True)
+    assert set(np.unique(occ)) == {0.0, 2.0}
+    assert occ.sum() == 10
+    assert np.count_nonzero(occ) == 5              # 1s, 2s and three 2p orbitals
 
 
 def test_energy_order_within_a_channel_is_what_decides():
@@ -298,7 +358,127 @@ def test_the_averaged_density_is_spherical(symbol, configuration):
                                configuration=configuration)
     assert solution.converged
     mole = atom(symbol).decontract_basis(aggregate=True)[0]
-    assert _density_anisotropy(mole, solution.density.ll) < 1e-3 * SPHERICAL_DENSITY_TOLERANCE
+    assert density_anisotropy(mole, solution.density.ll) < 1e-3 * SPHERICAL_DENSITY_TOLERANCE
+
+
+# --- 3.1 The spherical constraint that keeps it that way -----------------------------------
+#
+# ⚠ **The mechanism half of a fixed defect.** The observable was an anisotropic converged
+# density on a two-open-shell ion; the mechanism is that the spherical solution is an
+# *unstable* fixed point of the iteration, so the symmetry has to be imposed rather than
+# hoped for. These tests are about the projector itself, so that the fix cannot regress into
+# "the one system we tried happens to pass".
+
+def _spherical_matrix(groups, dimension, rng, blocks=1):
+    """A matrix that is spherically symmetric by construction: block diagonal in the angular
+    label, independent of the magnetic component, and Hermitian."""
+    n = dimension // blocks
+    a = np.zeros((dimension, dimension), dtype=complex)
+    for index in groups:
+        radial = index.shape[0]
+        core = rng.normal(size=(blocks, blocks, radial, radial))
+        for bi in range(blocks):
+            for bj in range(blocks):
+                for m in range(index.shape[1]):
+                    rows, columns = index[:, m] + bi * n, index[:, m] + bj * n
+                    a[np.ix_(rows, columns)] = core[bi, bj]
+    return a + a.conj().T
+
+
+def test_the_spherical_projection_is_the_identity_on_a_spherical_matrix():
+    """⚠ **The property the whole fix rests on**: at a spherical fixed point the constraint
+    does nothing, so imposing it cannot move a solution that was already right — it changes
+    the trajectory, not the answer. Asserted to machine precision rather than to a tolerance,
+    because the projection is an average of identical numbers."""
+    rng = np.random.default_rng(4)
+    groups = [np.arange(6).reshape(2, 3), np.arange(6, 16).reshape(2, 5)]
+    a = _spherical_matrix(groups, 16, rng)
+    project = spherical_projector(groups, 16)
+
+    assert np.max(np.abs(project(a) - a)) < 1e-14
+
+
+def test_the_spherical_projection_removes_what_is_not_spherical_and_is_idempotent():
+    """It is a projector: ``P(P(A)) = P(A)``, it kills the anisotropic part of an arbitrary
+    matrix, and it preserves hermiticity — the operator it is applied to is a Fock matrix and
+    a projection that broke that would converge to something that is not a Hamiltonian."""
+    rng = np.random.default_rng(11)
+    groups = [np.arange(6).reshape(2, 3), np.arange(6, 16).reshape(2, 5)]
+    project = spherical_projector(groups, 16)
+    a = rng.normal(size=(16, 16)) + 1j * rng.normal(size=(16, 16))
+    a = a + a.conj().T
+
+    p = project(a)
+    assert np.max(np.abs(project(p) - p)) < 1e-14           # idempotent
+    assert np.max(np.abs(p - p.conj().T)) < 1e-14           # Hermitian
+    assert np.max(np.abs(p - a)) > 0.1                      # it did remove something
+    # What it removes is orthogonal to what it keeps, which is what makes it a projection
+    # rather than a smoothing: <P(A), A - P(A)> = 0.
+    assert abs(np.vdot(p, a - p)) < 1e-12 * np.linalg.norm(a) ** 2
+
+
+def test_a_symmetry_class_that_misses_a_function_is_refused():
+    """⚠ An exact cover, checked rather than trusted: a basis function in no class would have
+    its rows and columns projected to zero — deleted from the calculation, silently, with
+    every remaining number still looking like a Fock matrix."""
+    with pytest.raises(ValueError, match="projected away entirely"):
+        spherical_projector([np.arange(6).reshape(2, 3)], 16)
+    with pytest.raises(ValueError, match="projected away entirely"):     # counted twice
+        spherical_projector([np.arange(6).reshape(2, 3)] * 2, 6)
+
+
+def test_the_projection_covers_the_four_component_matrix_in_both_super_blocks():
+    """The four-component matrix is ``[[LL, LS], [SL, SS]]`` and its small component is
+    kinetically balanced, so it carries the *same* ``(l, j, m_j)`` labels as the large one and
+    every one of the four blocks is projected. A projector that treated only the diagonal
+    blocks would leave the coupling free to break the symmetry it just imposed."""
+    rng = np.random.default_rng(2)
+    groups = [np.arange(6).reshape(2, 3), np.arange(6, 16).reshape(2, 5)]
+    project = spherical_projector(groups, 32, blocks=2)
+    a = _spherical_matrix(groups, 32, rng, blocks=2)
+
+    assert np.max(np.abs(project(a) - a)) < 1e-14
+    off_diagonal_only = np.zeros((32, 32), dtype=complex)
+    off_diagonal_only[0, 16 + 1] = off_diagonal_only[16 + 1, 0] = 1.0   # LS, m to m'
+    assert np.max(np.abs(project(off_diagonal_only))) < 1e-14
+
+
+def test_the_spinor_symmetry_classes_are_the_shells_of_the_basis():
+    """The ``(l, j)`` classes of the j-adapted spinor basis, against what the shell structure
+    says they must be: every class is ``2j+1`` wide, they cover the basis exactly once, and
+    there are two of them per ``l > 0`` shell (``j = l ± 1/2``) and one per s shell."""
+    mol = atom("Ti")
+    groups = spinor_symmetry_groups(mol)
+
+    covered = np.concatenate([g.ravel() for g in groups])
+    assert sorted(covered.tolist()) == list(range(mol.nao_2c()))
+    assert sum(g.shape[0] * g.shape[1] for g in groups) == mol.nao_2c()
+    # The widths are 2j+1 for every j the shells of this basis carry, and nothing else: an
+    # s shell gives j = 1/2 alone, every l > 0 gives j = l -+ 1/2. Derived from the basis
+    # rather than written out, so the test does not silently depend on which polarization
+    # functions this element's set happens to have.
+    ls = {int(mol.bas_angular(ib)) for ib in range(mol.nbas)}
+    expected = {2 * l for l in ls if l} | {2 * l + 2 for l in ls}
+    assert sorted({g.shape[1] for g in groups}) == sorted(expected)
+
+
+def test_the_angular_channels_of_a_scalar_basis_are_in_ascending_m():
+    """⚠ The AO order is *not* ascending ``m`` — a p shell is stored ``px, py, pz`` =
+    ``m = +1, -1, 0`` — so the grouping reorders, and everything built on it (the projection
+    here, the shell extraction of the Slater-Condon feature) shares that one reordering."""
+    from kuiva.interface.pyscf_bridge import ao_layout
+
+    layout = ao_layout(atom("O"))
+    groups = angular_channel_groups(layout.ao_l, layout.ao_m, layout.ao_shell)
+
+    ao_l = np.asarray(layout.ao_l, dtype=int)
+    assert sorted(groups) == sorted(set(ao_l.tolist()))
+    assert all(index.shape[1] == 2 * l + 1 for l, index in groups.items())
+    ao_m = np.asarray(layout.ao_m, dtype=int)
+    for l, index in groups.items():
+        assert np.all(ao_m[index] == np.arange(-l, l + 1)[None, :])
+    covered = np.concatenate([g.ravel() for g in groups.values()])
+    assert sorted(covered.tolist()) == list(range(atom("O").nao))
 
 
 def test_an_open_shell_correction_is_structurally_sound():
@@ -589,6 +769,43 @@ def test_the_committed_fine_structure_records_improve_against_both_references():
 
 
 @pytest.mark.slow
+def test_a_two_open_shell_ion_needs_the_spherical_constraint():
+    """⚠ **The observable the fix was found from, in the four-component solver itself.**
+
+    Ti(+1) ``s7 p12 d2`` — two partly filled channels, the shape every Ln(I) ``4f^n 5d^1
+    6s^1`` reference has. Without the constraint the density comes back anisotropic by a few
+    parts in a million and the sphericity guard **refuses the solution**, which is the failure
+    a user sees: tens of minutes of four-component solve and no mean field at the end of it.
+    (⚠ Sometimes it also reports ``converged = False`` after 100 cycles and sometimes it does
+    not — the trajectory is decided by rounding, which is why the guard rather than the
+    convergence flag is what this asserts.) With the constraint it converges in 12 cycles to
+    the same energy with an anisotropy of 9e-12.
+
+    ⚠ It is **slow-marked and cannot be otherwise**: no light element reproduces it, because
+    the instability needs two open shells close in energy, and the cheapest such
+    four-component solve is 50 s. The scalar half of the same defect runs in the default
+    suite (``tests/test_aoc_scf.py``) and the projector's own properties are unit-tested
+    above; this is the end-to-end statement that they add up.
+    """
+    from kuiva.amf.pyscf_dhf import PySCFDiracBackend
+
+    clear_cache()
+    basis = atom("Ti")._basis["Ti"]
+    backend = PySCFDiracBackend()
+    mole = atom("Ti", charge=1).decontract_basis(aggregate=True)[0]
+
+    with pytest.raises(RuntimeError, match="anisotropic"):
+        backend.solve("Ti", basis, configuration="[Ar]3d2 4s1", spherical=False)
+
+    fixed = backend.solve("Ti", basis, configuration="[Ar]3d2 4s1")
+    assert fixed.converged
+    assert density_anisotropy(mole, fixed.density.ll) < 1e-3 * SPHERICAL_DENSITY_TOLERANCE
+    # The state is the one the configuration names, not a nearby broken one: measured against
+    # the same solve without the constraint, the energies agree to 8e-9 Eh.
+    assert fixed.e_tot == pytest.approx(-852.5245788547, abs=1e-6)
+
+
+@pytest.mark.slow
 def test_titanium_three_plus_converges_from_a_cold_start():
     """Ti(3+) d1 — the ion behind the reference systems ``ticl3`` and ``ti2cl6``, and the cheapest
     member of the open-shell set.
@@ -604,6 +821,6 @@ def test_titanium_three_plus_converges_from_a_cold_start():
     occ = np.asarray(solution.mo_occ)
     fractional = np.sort(occ[(occ > 1e-12) & (occ < 1.0 - 1e-12)])
     assert fractional.size == 10 and np.allclose(fractional, 0.1)
-    assert _density_anisotropy(
+    assert density_anisotropy(
         atom("Ti", charge=3).decontract_basis(aggregate=True)[0],
         solution.density.ll) < 1e-3 * SPHERICAL_DENSITY_TOLERANCE

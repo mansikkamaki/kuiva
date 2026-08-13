@@ -267,7 +267,7 @@ def test_open_shell_atoms_are_averaged_not_refused(symbol, configuration):
     the averaging worked rather than refusing the atom. That inversion is
     the point: nothing was deleted to make open shells work.
     """
-    from kuiva.amf.pyscf_dhf import SPHERICAL_DENSITY_TOLERANCE, _density_anisotropy
+    from kuiva.amf.pyscf_dhf import SPHERICAL_DENSITY_TOLERANCE, density_anisotropy
 
     solution = PySCFDiracBackend().solve(symbol, atomic_basis(symbol),
                                          configuration=configuration)
@@ -277,7 +277,7 @@ def test_open_shell_atoms_are_averaged_not_refused(symbol, configuration):
     occupied = np.asarray(solution.mo_occ)[np.asarray(solution.mo_occ) > 0]
     assert np.any((occupied > 0.0) & (occupied < 1.0))
     assert occupied.sum() == pytest.approx(solution.n_electrons, abs=1e-10)
-    assert _density_anisotropy(_solver_mole(symbol), solution.density.ll) \
+    assert density_anisotropy(_solver_mole(symbol), solution.density.ll) \
         < 1e-3 * SPHERICAL_DENSITY_TOLERANCE
 
 
@@ -342,10 +342,10 @@ def test_closed_shell_density_really_is_spherical(ne, ar):
     """The other side of the same statement: for a genuine closed shell the measure the
     refusal is based on is essentially zero, so the threshold separates two populations rather
     than cutting through one."""
-    from kuiva.amf.pyscf_dhf import SPHERICAL_DENSITY_TOLERANCE, _density_anisotropy
+    from kuiva.amf.pyscf_dhf import SPHERICAL_DENSITY_TOLERANCE, density_anisotropy
 
     for solution, symbol in ((ne, "Ne"), (ar, "Ar")):
-        assert _density_anisotropy(_solver_mole(symbol),
+        assert density_anisotropy(_solver_mole(symbol),
                                    solution.density.ll) < 1e-3 * SPHERICAL_DENSITY_TOLERANCE
 
 

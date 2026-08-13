@@ -49,10 +49,23 @@ spherical symmetry of the atom, and produces a mean field with a spurious spatia
 baked into it — a wrong answer that converges cleanly and looks entirely reasonable.
 :func:`_average_of_configuration_occupation` instead spreads the open-shell electrons equally
 over the whole frontier ``l`` shell, which is spherical by construction, and
-:func:`_density_anisotropy` then *asserts* that the converged density really is spherical.
+:func:`density_anisotropy` then *asserts* that the converged density really is spherical.
 The reference configuration is an explicit, canonical object
 (:mod:`kuiva.amf.configuration`), because for an ion it is a genuine choice that changes the
 answer and has to be part of the cache key.
+
+⚠ **And the occupations are not enough, which was measured the hard way.** "Spherical by
+construction" holds for the density *given* spherical orbitals; it says nothing about whether
+the iteration stays there, and it does not. The symmetric solution is an **unstable fixed
+point** — a fractionally occupied Hartree-Fock functional has broken-symmetry solutions below
+it — so the anisotropy grows about an order of magnitude per cycle from roundoff until the
+guard above refuses the result, or, worse, until the SCF stops just under it. It showed on
+Ti(+1) ``s7 p12 d2`` and the shape that produced it (two partly filled channels in an ion) is
+the shape every Ln(I) reference has. The symmetry is therefore **imposed**: the Fock is
+projected onto its rank-zero part every cycle
+(:func:`kuiva.amf.configuration.spherical_projector` over
+:func:`spinor_symmetry_groups`), which is exact by the Wigner-Eckart theorem and is the
+identity at a spherical fixed point, so nothing that was already clean moves.
 
 **4. Basis contraction is handled here and nowhere else.** X2C decoupling belongs in the
 primitive basis, so the sequence is decontract, solve, contract back — the
@@ -83,7 +96,7 @@ References
 from __future__ import annotations
 
 import contextlib
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -96,7 +109,8 @@ from .backend import (AtomicDiracSolution, FourComponentBlocks, INTERACTIONS,
                       dirac_scf_memory_gb, metric_keep_mask as _metric_keep_mask,
                       solution_memory_gb)
 from .configuration import (SHELL_LETTERS, AtomicConfiguration, OpenShell,
-                            average_occupations, install_configuration_average)
+                            average_occupations, install_configuration_average,
+                            spherical_projector)
 
 log = get_logger(__name__)
 
@@ -111,7 +125,7 @@ log = get_logger(__name__)
 METRIC_LINDEP_THRESHOLD = _METRIC_LINDEP_THRESHOLD
 
 #: Maximum dimensionless anisotropy of the converged atomic density for the mean field to be
-#: usable — see :func:`_density_anisotropy`. An atom is spherical, so this is not a
+#: usable — see :func:`density_anisotropy`. An atom is spherical, so this is not a
 #: closed-shell restriction: it is the check that the *solution* is spherical too. A closed
 #: shell is (measured: 1e-12 for Ne and Ar); an aufbau-occupied open shell is anisotropic at
 #: order unity; and an average-of-configuration solution is spherical again (measured: 1e-13
@@ -221,6 +235,36 @@ def _angular_momentum_map(mol) -> np.ndarray:
     return ls
 
 
+def spinor_symmetry_groups(mol) -> "List[np.ndarray]":
+    """The ``(l, j)`` symmetry classes of the j-adapted 2-spinor basis, as index arrays.
+
+    One ``(n_radial, 2j+1)`` array per class, columns in ascending ``m_j`` — the input
+    :func:`kuiva.amf.configuration.spherical_projector` needs to project an atomic operator
+    onto its spherical part.
+
+    Derived from the shell data rather than from :meth:`Mole.spinor_labels`, for the reason
+    :func:`_angular_momentum_map` is: a label is a display string, and this decides which
+    matrix elements survive. Each shell of angular momentum ``l`` lays out, per contraction,
+    the ``j = l - 1/2`` block (``2l`` functions) and then the ``j = l + 1/2`` block
+    (``2l + 2``), each in ascending ``m_j``, and they are contiguous.
+    """
+    classes: Dict[Tuple[int, int], List[np.ndarray]] = {}
+    position = 0
+    for ib in range(mol.nbas):
+        l = int(mol.bas_angular(ib))
+        for _ in range(int(mol.bas_nctr(ib))):
+            for two_j in ((2 * l - 1, 2 * l + 1) if l else (1,)):
+                classes.setdefault((l, two_j), []).append(
+                    np.arange(position, position + two_j + 1))
+                position += two_j + 1
+    if position != int(mol.nao_2c()):
+        raise RuntimeError(
+            "the spinor symmetry classes cover {} functions of a {}-function spinor basis; "
+            "the shell layout assumed here does not match this Mole".format(
+                position, mol.nao_2c()))
+    return [np.stack(blocks) for blocks in classes.values()]
+
+
 def _average_of_configuration_occupation(mol, configuration, c: float, state=None):
     """A ``get_occ`` implementing **average-of-configuration** occupation.
 
@@ -250,7 +294,7 @@ def _average_of_configuration_occupation(mol, configuration, c: float, state=Non
     An aufbau occupation of an open shell picks one arbitrary determinant out of a degenerate
     manifold, spontaneously breaks the spherical symmetry of the atom, and bakes an arbitrary
     spatial orientation into the mean field — a wrong answer that converges cleanly and looks
-    entirely reasonable (see :func:`_density_anisotropy`). The fractional occupation is
+    entirely reasonable (see :func:`density_anisotropy`). The fractional occupation is
     spherical by construction, and it is spherical whichever ``j`` sub-shell the frontier
     electrons land in, so no choice between ``p_1/2`` and ``p_3/2`` is ever made.
 
@@ -354,7 +398,7 @@ def spinor_to_spin_orbital(mol) -> np.ndarray:
     return u
 
 
-def _density_anisotropy(mol, d_ll: np.ndarray) -> float:
+def density_anisotropy(mol, density: np.ndarray) -> float:
     """How far the converged atomic density is from spherical, dimensionless.
 
     The traceless quadrupole moment of the charge density about the nucleus,
@@ -380,12 +424,27 @@ def _density_anisotropy(mol, d_ll: np.ndarray) -> float:
 
     Only the large component is used. The small component carries ``O(1/c^2)`` of the density
     and cannot rescue a sphericity that the large component does not have.
+
+    ``density`` is either the spin-blocked ``(2 nao, 2 nao)`` large-component density — traced
+    over spin here — or an already spin-traced scalar ``(nao, nao)`` one, which is what a
+    spin-restricted average-of-configuration SCF produces. **Public and shared** for the
+    reason the filling rule is: the four-component backend and the front-end's scalar AOC SCF
+    are asserting the same physical property of the same atom, and a second measurement of it
+    could disagree about what "spherical" means.
     """
     nao = mol.nao
     with mol.with_common_orig((0.0, 0.0, 0.0)):
         rr = np.asarray(mol.intor("int1e_rr")).reshape(3, 3, nao, nao)
         r2 = np.asarray(mol.intor("int1e_r2"))
-    scalar = np.real(d_ll[:nao, :nao] + d_ll[nao:, nao:])        # trace over spin
+    density = np.asarray(density)
+    if density.shape[0] == 2 * nao:
+        scalar = np.real(density[:nao, :nao] + density[nao:, nao:])    # trace over spin
+    elif density.shape[0] == nao:
+        scalar = np.real(density)
+    else:
+        raise ValueError(
+            "a density of dimension {} is neither the scalar ({}) nor the spin-blocked ({}) "
+            "AO basis of this Mole".format(density.shape[0], nao, 2 * nao))
     q = np.einsum("xyij,ji->xy", rr, scalar)
     mean_r2 = float(np.einsum("ij,ji->", r2, scalar))
     q = 3.0 * q - np.trace(q) * np.eye(3)
@@ -530,7 +589,7 @@ class PySCFDiracBackend:
     def solve(self, element: str, basis: object, *, charge: int = 0,
               configuration=None, interaction: str = "coulomb",
               uncontract: bool = True, conv_tol: float = 1e-10,
-              max_cycle: int = 100) -> AtomicDiracSolution:
+              max_cycle: int = 100, spherical: bool = True) -> AtomicDiracSolution:
         """Converge a four-component atomic calculation, average-of-configuration if open.
 
         Parameters
@@ -560,6 +619,14 @@ class PySCFDiracBackend:
             Solve in the fully decontracted basis and return the contraction matrix. The
             default, and the physically correct choice — X2C decoupling belongs in the
             primitive basis.
+        spherical : bool
+            Constrain the SCF to spherically symmetric solutions by projecting the Fock
+            operator onto its rank-zero part each cycle
+            (:func:`kuiva.amf.configuration.spherical_projector`). ⚠ **On by default and
+            never off in production**: without it the spherical solution is an *unstable*
+            fixed point for an open shell — the anisotropy grows about an order of magnitude
+            per cycle from roundoff until the density guard below refuses the result, or,
+            worse, stops just under it. ``False`` exists to measure exactly that and warns.
 
         Notes
         -----
@@ -632,6 +699,26 @@ class PySCFDiracBackend:
                 # 0.30-0.47 Eh above four-component DIRAC's. A closed shell installs
                 # nothing and takes the identical path it always did.
                 install_configuration_average(mf, xmol, state)
+            if spherical:
+                # ⚠ **And the occupations are not sphericity either**, which is the third
+                # thing this SCF needs and the one that was missing. Occupying a whole ``l``
+                # shell equally makes the density spherical *given* spherical orbitals; it
+                # does not stop the iteration from finding the lower, symmetry-broken
+                # solutions a fractionally occupied Hartree-Fock functional has. Projecting
+                # the Fock onto its rank-zero part each cycle imposes the symmetry that
+                # defines the state instead. Wrapped **outside** the effective Fock above, so
+                # what the eigensolver sees — after the coupling operator, after DIIS — is
+                # spherical.
+                project = spherical_projector(spinor_symmetry_groups(xmol),
+                                              2 * int(xmol.nao_2c()), blocks=2)
+                inner_get_fock = mf.get_fock
+                mf.get_fock = lambda *a, **k: project(inner_get_fock(*a, **k))
+            else:
+                log.warning(
+                    "the four-component atomic SCF for %s is running WITHOUT the spherical "
+                    "constraint. An open shell then converges to a symmetry-broken solution "
+                    "whose mean field carries an arbitrary spatial orientation; this setting "
+                    "exists to measure that and is never a production one.", element)
             e_tot = float(mf.kernel())
 
         if not mf.converged:
@@ -659,10 +746,10 @@ class PySCFDiracBackend:
                   "veff": to_spin_orbital(mf.get_veff(xmol, dm))}
 
         # Point 3 of the module docstring, checked on the *converged density* rather than on
-        # the orbital energies — see _density_anisotropy for why the obvious frontier-gap test
+        # the orbital energies — see density_anisotropy for why the obvious frontier-gap test
         # lets an open shell straight through. Under average-of-configuration this is the
         # assertion that the averaging did its job, not a closed-shell restriction.
-        anisotropy = _density_anisotropy(xmol, blocks["density"].ll)
+        anisotropy = density_anisotropy(xmol, blocks["density"].ll)
         if anisotropy > SPHERICAL_DENSITY_TOLERANCE:
             raise RuntimeError(
                 "the converged four-component density for {}{:+d} in configuration {} is "
@@ -732,6 +819,6 @@ class PySCFDiracBackend:
 
 
 __all__ = ["PySCFDiracBackend", "light_speed", "current_light_speed",
-           "spinor_to_spin_orbital", "eigh_canonical",
-           "METRIC_LINDEP_THRESHOLD", "SPHERICAL_DENSITY_TOLERANCE",
-           "CLOSED_SHELL_ANISOTROPY", "CONTRACTION_TOL"]
+           "spinor_to_spin_orbital", "spinor_symmetry_groups", "eigh_canonical",
+           "density_anisotropy", "METRIC_LINDEP_THRESHOLD",
+           "SPHERICAL_DENSITY_TOLERANCE", "CLOSED_SHELL_ANISOTROPY", "CONTRACTION_TOL"]

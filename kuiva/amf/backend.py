@@ -323,8 +323,17 @@ class AtomicDiracBackend(Protocol):
     def solve(self, element: str, basis: object, *, charge: int = 0,
               configuration: Optional[str] = None, interaction: str = "coulomb",
               uncontract: bool = True, light_speed: Optional[float] = None,
-              conv_tol: float = 1e-11, max_cycle: int = 100) -> AtomicDiracSolution:
-        """Converge a four-component atomic calculation and return it as plain arrays."""
+              conv_tol: float = 1e-11, max_cycle: int = 100,
+              spherical: bool = True) -> AtomicDiracSolution:
+        """Converge a four-component atomic calculation and return it as plain arrays.
+
+        ``spherical`` asks the backend to constrain the solution to spherically symmetric
+        densities, which an atom's is. It is **on by default and every implementation is
+        expected to honour it**: for an open shell the symmetric solution is an unstable fixed
+        point of the SCF, so a backend that merely occupies the frontier shell fractionally
+        will drift into a symmetry-broken solution and return a mean field with an arbitrary
+        spatial orientation in it.
+        """
         ...
 
     def coulomb_mean_field(self, solution: AtomicDiracSolution,

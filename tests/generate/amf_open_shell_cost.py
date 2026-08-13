@@ -38,7 +38,7 @@ from kuiva.basis import registry                                            # no
 from kuiva.amf.backend import get_backend                                   # noqa: E402
 from kuiva.amf.correction import validate_correction                        # noqa: E402
 from kuiva.amf.decouple import amf_atomic_correction, x2c_decoupling        # noqa: E402
-from kuiva.amf.pyscf_dhf import _density_anisotropy                         # noqa: E402
+from kuiva.amf.pyscf_dhf import density_anisotropy                         # noqa: E402
 
 OUT = REPO / "temp/amf_open_shell_cost.json"
 BASIS = "x2c-SVPall-2c"
@@ -153,7 +153,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 validate_correction(amf.h_sf, amf.w,
                                     what="{} correction".format(symbol))
                 x, _ = x2c_decoupling(solution)
-            aniso = _density_anisotropy(solver_mole(symbol, uncontract),
+            aniso = density_anisotropy(solver_mole(symbol, uncontract),
                                         solution.density.ll)
             occ = np.asarray(solution.mo_occ)
             record = {

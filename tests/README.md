@@ -61,6 +61,7 @@ meaningful one.
 | `tests/reference/*.json` | Committed reference data — the authority for every number. Regenerate only when a method changes fundamentally. |
 | `tests/stages.py` | Disk-stored intermediate stage checkpoints for the heavy tests, and the CLI that lists/purges them. |
 | `tests/fockspace.py` | A brute-force second-quantization reference for SC-NEVPT2: dense ladder operators over a whole Fock space, sharing **no code** with `kuiva.pt`/`kuiva.rdm`/`kuiva.ci`. |
+| `tests/test_extras_*.py`, `tests/test_aoc_scf.py` | The `kuiva/extras/` special-purpose methods and the average-of-configuration reference they run on: configurations and shells, the radial extraction, the angular algebra, the spin–orbit constants, the driver and its stored file. Tier 0 throughout — closed-form angular identities, hydrogenic limits, and the configuration-average energy rebuilt from the extracted parameters as the mechanism test — plus negative controls that pin down what each diagnostic can and cannot fail on. |
 | `tests/test_*.py` | The suite. Each module's docstring states what it asserts, against what, and why that comparison can fail — read it before adding to the module. |
 
 ## The systems

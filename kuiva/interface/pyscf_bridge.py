@@ -395,6 +395,16 @@ class ScalarX2CData:
     **Restricted and unrestricted references.** RHF/ROHF give one set of MOs and
     ``mo_coeff`` has shape ``(nao, nmo)``; UHF gives two and it has shape ``(2, nao, nmo)``
     with ``unrestricted = True``. Use :meth:`mo_sets` rather than branching on the shape.
+
+    ⚠ **``reference = "aoc"`` (:func:`run_scalar_aoc`) is a restricted set with FRACTIONAL
+    occupations**, and two fields then say less than they appear to. ``mo_occ`` runs over
+    ``[0, 2]`` continuously rather than taking the values 0 and 2, so a consumer that counts
+    occupied orbitals with ``mo_occ > 0`` counts a whole partly filled shell. And ``nelec`` is
+    the formal ``(ceil(N/2), floor(N/2))`` split: a spin-restricted average of configuration
+    shares every open-shell electron over both spins, so there is no per-spin count to report
+    and only ``nelec_total`` means anything. ⚠ **Feeding an AOC container into the pipeline
+    stages is not validated and is not what the function is for** — it exists so that atomic
+    *shell* quantities have a spherical, single-radial-function reference to come from.
     """
     # dimensions / bookkeeping
     nao: int
@@ -1218,6 +1228,107 @@ def ingest_spin_orbit(mol, h_sfx2c1e: Optional[np.ndarray] = None,
                         picture_change_shift=shift)
 
 
+#: Smallest Mulliken weight of an occupied orbital on the ``l`` channel it was assigned to
+#: for :func:`run_scalar_aoc` to consider the assignment unambiguous. An atomic orbital has a
+#: definite ``l``, so a clean solution gives 1 to within the SCF's own noise; a value below
+#: this means two channels are genuinely mixed in one orbital, which no filling rule keyed on
+#: ``l`` can resolve. It is advisory (a ``WARNING``, never a refusal): the run may still be the
+#: one the user wanted, and stopping it would be a guess of the opposite kind.
+AOC_ASSIGNMENT_TOLERANCE = 0.9
+
+
+def _aoc_occupation(mol, configuration, ao_l: np.ndarray, state: Dict[str, object]):
+    """A scalar ``get_occ`` implementing **average-of-configuration** occupation.
+
+    The spin-restricted counterpart of
+    :func:`kuiva.amf.pyscf_dhf._average_of_configuration_occupation`, and deliberately the same
+    construction: assign every MO to an ``l`` channel by the **Mulliken weight** of its AO
+    coefficients, then fill each channel in energy order through the shared filling rule
+    :func:`kuiva.amf.configuration.average_occupations` — here with ``spatial=True``, so a
+    shell is ``2l+1`` orbitals, a full one carries 2 electrons and a frontier one carries
+    ``q / (2l+1)`` each.
+
+    ⚠ **Assignment by ``l`` rather than by index is what makes a cold start reproducible**, and
+    it is the reason this is not simply an aufbau fill: 4f, 5d and 6s lie within an eV of each
+    other in a lanthanide and change order during the SCF, while within one ``l`` the ordering
+    is never in doubt. It is also what lets the *configuration* rather than the current
+    spectrum decide which shells are occupied — a run that would have collapsed 4f into 5d
+    keeps its f electrons in f orbitals and reports a poor assignment weight instead.
+
+    ``state`` is filled on every cycle with the current orbitals, occupations and open-shell
+    partition, because :func:`kuiva.amf.configuration.install_configuration_average` needs all
+    three and ``get_occ`` is the only hook PySCF's SCF loop calls with the coefficients (it
+    keeps them in a local until convergence). It also records the assignment purity, which is
+    *reported after* the SCF rather than logged here: a diagnostic inside the loop would print
+    once per cycle.
+    """
+    from ..amf.configuration import SHELL_LETTERS, OpenShell, average_occupations
+
+    ao_l = np.asarray(ao_l, dtype=int)
+    channels = sorted(set(int(l) for l in ao_l))
+    overlap = np.asarray(mol.intor("int1e_ovlp"))
+    missing = [l for l, n in enumerate(configuration.occupations) if n and l not in channels]
+    if missing:
+        raise ValueError(
+            "the configuration {} needs {} functions, which this basis does not have".format(
+                configuration.canonical, "/".join(SHELL_LETTERS[l] for l in missing)))
+
+    def get_occ(mo_energy=None, mo_coeff=None):
+        if mo_coeff is None:
+            raise RuntimeError(
+                "average-of-configuration occupation needs the orbital coefficients to "
+                "resolve the angular momentum of each orbital; get_occ was called with "
+                "energies only")
+        e = np.asarray(mo_energy, dtype=float)
+        c = np.asarray(mo_coeff)
+        population = np.real(np.conj(c) * (overlap @ c))       # Mulliken weight per AO
+        weights = np.stack([population[ao_l == l].sum(axis=0) for l in channels])
+        assigned = np.asarray(channels)[np.argmax(weights, axis=0)]
+        occ = average_occupations(configuration, e, assigned, spatial=True)
+
+        state["mo_coeff"], state["mo_occ"] = c, occ
+        occupied = occ > 1e-12
+        state["assignment_weight"] = (float(np.min(weights.max(axis=0)[occupied]))
+                                      if occupied.any() else 1.0)
+        # ⚠ Resolved here and nowhere else: which orbitals form each open shell. Grouping by
+        # occupation *value* instead would merge two open shells that happen to share a
+        # fraction — possible, and silent when it happens.
+        shells = []
+        for l, n_electrons in enumerate(configuration.occupations):
+            degeneracy = 4 * l + 2
+            q = n_electrons % degeneracy
+            if not q:
+                continue
+            index = np.where((assigned == l) & occupied & (occ < 2.0 - 1e-12))[0]
+            if index.size != 2 * l + 1:
+                raise RuntimeError(
+                    "the {} open shell came back on {} orbitals where {} were filled "
+                    "fractionally".format(SHELL_LETTERS[l], index.size, 2 * l + 1))
+            # ``n`` is the number of SPINORS the shell holds, in every representation: the
+            # coupling coefficient is a pair average over spin orbitals and does not know
+            # that these orbitals are spatial ones.
+            shells.append(OpenShell(l, q, degeneracy, index))
+        state["shells"] = shells
+        return occ
+
+    return get_occ
+
+
+@dataclass(frozen=True)
+class _SingleAtom:
+    """The minimal ``Molecule``-shaped object :func:`build_mole` duck-types on.
+
+    An atomic calculation has no geometry to speak of, so building one of these locally is
+    cheaper than asking the caller for a container — and it keeps the basis registry, the
+    consistency checks and the provenance metadata on exactly the path a molecule takes.
+    """
+    atoms: List[Tuple[str, Tuple[float, float, float]]]
+    charge: int
+    spin: int
+    basis: object
+    unit: str = "Bohr"
+
+
 def _build_scf(mol, reference: str):
     """Instantiate the scalar-X2C SCF object for ``reference``. Returns ``(mf, name)``."""
     from pyscf import scf
@@ -1435,6 +1546,280 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     return data
 
 
+def run_scalar_aoc(element: str, configuration=None, *, basis,
+                   fitting: Optional[str] = None, auxbasis: Optional[object] = None,
+                   with_soc: bool = True, method: Optional[str] = None,
+                   x2c_approx: Optional[str] = None, screening: Optional[str] = None,
+                   screening_options: Optional[Dict[str, object]] = None,
+                   decoupling_options: Optional[Dict[str, object]] = None,
+                   conv_tol: float = 1e-10, max_cycle: int = 200,
+                   level_shift: float = 0.0, damp: float = 0.0,
+                   init_guess: Optional[str] = None,
+                   spherical: bool = True,
+                   memory_gb: Optional[float] = None, gauge_origin=None,
+                   verbose: int = 0) -> ScalarX2CData:
+    """Scalar X2C SCF on **one atom or ion, averaged over a configuration**.
+
+    The average-of-configuration counterpart of :func:`run_scalar_x2c`, returning the same
+    :class:`ScalarX2CData`. Where an ordinary SCF picks one determinant out of a partly filled
+    shell — breaking the spherical symmetry of an atom and baking an arbitrary spatial
+    orientation into the orbitals — this occupies the frontier shell of each ``l`` channel
+    **equally** and minimizes the true configuration-average energy, so the solution is
+    spherical and every orbital of a shell has one radial function. That is the reference an
+    atomic *shell* quantity has to come from.
+
+    ⚠ **It is spin-restricted and there is no spin-polarized variant**, by decision: the
+    average is over *all* microstates of the configuration (the grand average), which is the
+    only one that is exactly spherical and the one atomic-parameter conventions are defined
+    against. It is therefore not the ground state of the atom, and its total energy is above
+    the true one by the term energy the average discards — a well-defined choice, not an
+    approximation to a Hartree-Fock ground state.
+
+    ⚠ **What comes back is a valid ``ScalarX2CData`` whose occupations are fractional.** The
+    downstream pipeline stages have not been validated on one and are not the purpose of this
+    function; see :class:`ScalarX2CData`.
+
+    Parameters
+    ----------
+    element : str
+        Chemical symbol. The atom sits at the origin; the **charge is derived** from the
+        configuration's electron count, so the two can never disagree.
+    configuration
+        The reference configuration: a string (``"[Xe] 4f9 5d1 6s1"``), an
+        :class:`kuiva.amf.configuration.AtomicConfiguration`, an oxidation state, any object
+        with a ``to_atomic()`` method (a shell-resolved configuration), or ``None`` for
+        :func:`kuiva.amf.configuration.default_configuration`.
+    basis : str or dict
+        As :func:`run_scalar_x2c`, through the same registry.
+    level_shift, damp, init_guess
+        Convergence aids, passed to PySCF. ⚠ **An open-shell atom with several shells within
+        an eV of each other is where an SCF actually fails to converge** — the lanthanides
+        this function exists for are exactly that case — so these are exposed rather than
+        left to be rediscovered.
+    spherical : bool
+        Constrain the SCF to spherically symmetric solutions by projecting the Fock operator
+        onto its rank-zero part each cycle
+        (:func:`kuiva.amf.configuration.spherical_projector`). ⚠ **On by default, and it is a
+        statement about which state is being solved rather than a convergence aid**: the
+        spherical solution is an *unstable* fixed point for an open shell, so without it the
+        anisotropy grows from roundoff until the diagnostics below fire — or until the run
+        stops just under them, which is worse. ``False`` exists to measure that and warns.
+    with_soc, method, x2c_approx, screening, screening_options, decoupling_options, fitting,
+    auxbasis, conv_tol, max_cycle, memory_gb, gauge_origin, verbose
+        As :func:`run_scalar_x2c`.
+
+        ⚠ **The atomic mean field defaults to *this* configuration**, not to the element's
+        default reference, whenever screening is on and ``screening_options`` names none: a
+        parameter extracted from an AOC reference and screened by the mean field of a
+        different ion would be a mixture of two states. It costs one four-component atomic
+        solve per ``(element, basis, configuration)`` — tens of minutes for a lanthanide, once
+        ever — so pass ``screening="none"`` wherever spin-orbit coupling is not wanted.
+
+    Notes
+    -----
+    Two diagnostics run afterwards and both are advisory:
+
+    * the **density anisotropy** (:func:`kuiva.amf.pyscf_dhf.density_anisotropy`), which under
+      average of configuration is the assertion that the averaging *worked* — a solution that
+      comes back anisotropic occupied something that is not a shell;
+    * the **assignment purity**, the smallest Mulliken weight any occupied orbital has on the
+      channel it was assigned to. Below :data:`AOC_ASSIGNMENT_TOLERANCE` two channels are
+      genuinely mixed in one orbital and the per-``l`` filling is then not the rule the user
+      thinks it is.
+    """
+    from pyscf import gto
+    from pyscf.scf import hf as pyscf_hf
+
+    from ..amf.configuration import (SHELL_LETTERS, AtomicConfiguration,
+                                     angular_channel_groups,
+                                     install_configuration_average, spherical_projector)
+    from ..amf.pyscf_dhf import SPHERICAL_DENSITY_TOLERANCE, density_anisotropy
+    from ..x2c.methods import DEFAULT_METHOD, resolve
+
+    if method is None and x2c_approx is None and screening is None:
+        method = DEFAULT_METHOD
+    chosen = resolve(method, decoupling=x2c_approx, screening=screening)
+
+    # ⚠ Duck-typed, not imported: a shell-resolved configuration lives in a package the
+    # calculation path may not depend on, and ``to_atomic()`` is the whole of what is needed
+    # here. The per-l form is what an SCF and an atomic mean field are defined by.
+    if hasattr(configuration, "to_atomic"):
+        configuration = configuration.to_atomic()
+    config = AtomicConfiguration.coerce(configuration, element=element)
+    z = int(gto.charge(element))
+    n_elec = config.n_electrons
+    if not 1 <= n_elec <= z:
+        raise ValueError(
+            "the configuration {} has {} electrons, which is not a bound state of {} "
+            "(Z = {})".format(config.canonical, n_elec, element, z))
+    charge = z - n_elec
+
+    mol = build_mole(_SingleAtom(atoms=[(element, (0.0, 0.0, 0.0))], charge=charge,
+                                 spin=n_elec % 2, basis=basis), verbose=verbose)
+    atom_basis = mol.__dict__["_kuiva_atom_basis"]
+    meta = mol.__dict__["_kuiva_basis_meta"]
+    fit_route, aux = _choose_fit(atom_basis, fitting, auxbasis)
+
+    res.ensure_configured(memory_gb)
+    res.preflight(memory_plan(mol.nao, conventional=fit_route == "conventional",
+                              screening=with_soc and chosen.screening != "none"))
+    if fit_route == "conventional":
+        _reserve_eri_memory(mol.nao)
+    _set_pyscf_memory(mol)
+
+    layout = ao_layout(mol)
+    state: Dict[str, object] = {}
+    # ⚠ ``pyscf.scf.hf.RHF``, never ``pyscf.scf.RHF``: the latter is a dispatcher that hands
+    # back an ROHF for a molecule with spin > 0, and an odd-electron average of configuration
+    # would then silently run a different (aufbau, symmetry-broken) method. ``mol.spin`` here
+    # is a parity setting only — the occupations are supplied below and overrule it.
+    mf = pyscf_hf.RHF(mol).sfx2c1e()
+    if fit_route == "df":
+        aux_spec = aux
+        if isinstance(aux, str) and reg.has_family(aux) and \
+                reg.get_family(aux).provider is reg.Provider.BSE:
+            aux_spec = reg.resolve_for_pyscf(aux, list(atom_basis.keys()))
+        mf = mf.density_fit(auxbasis=aux_spec)
+    mf.conv_tol = conv_tol
+    mf.max_cycle = max_cycle
+    mf.level_shift = level_shift
+    mf.damp = damp
+    if init_guess is not None:
+        mf.init_guess = init_guess
+    mf.get_occ = _aoc_occupation(mol, config, layout.ao_l, state)
+    if not config.is_closed_shell:
+        # ⚠ **The occupations alone are not average of configuration.** Without this the
+        # two-electron energy is evaluated over the fractional *density*, whose open-open pair
+        # average factorizes into a product of one-particle averages — 0.3-0.5 Eh and up to
+        # 15% on a splitting. The same function drives the four-component backend; see its
+        # docstring for why one implementation covers both conventions.
+        install_configuration_average(mf, mol, state)
+    if spherical:
+        # ⚠ **And the occupations are not sphericity.** Filling a whole ``l`` shell equally
+        # makes the density spherical *given* spherical orbitals; it does nothing to stop the
+        # iteration from sliding into the lower, symmetry-broken solutions a fractionally
+        # occupied Hartree-Fock functional has, which it does — the anisotropy grows about an
+        # order of magnitude per cycle from roundoff. Projecting the Fock onto its rank-zero
+        # part each cycle imposes the symmetry that *defines* the average of configuration.
+        # Installed after the effective Fock above, so the projection is the last thing before
+        # the eigensolver.
+        project = spherical_projector(
+            angular_channel_groups(layout.ao_l, layout.ao_m, layout.ao_shell).values(),
+            int(mol.nao))
+        inner_get_fock = mf.get_fock
+        mf.get_fock = lambda *a, **k: project(inner_get_fock(*a, **k))
+    else:
+        log.warning(
+            "the average-of-configuration SCF for %s is running WITHOUT the spherical "
+            "constraint. An open-shell atom then converges to a symmetry-broken solution "
+            "whose shells no longer share one radial function; this setting exists to "
+            "measure that and is never a production one.", element)
+    with timer("scalar AOC X2C SCF") as t_scf:
+        e_scf = mf.kernel()
+    if not mf.converged:
+        log.error("scalar average-of-configuration SCF did not converge in %d cycles "
+                  "(E = %.8f Eh); everything downstream is built on these orbitals. An atom "
+                  "with several shells close in energy often needs level_shift= or damp=.",
+                  max_cycle, e_scf)
+
+    mo_coeff = np.ascontiguousarray(np.asarray(mf.mo_coeff))
+    mo_occ = np.ascontiguousarray(np.asarray(mf.mo_occ))
+    nmo = int(mo_coeff.shape[-1])
+    dm = np.asarray(mf.make_rdm1())
+
+    anisotropy = density_anisotropy(mol, dm)
+    if anisotropy > SPHERICAL_DENSITY_TOLERANCE:
+        log.warning("the converged average-of-configuration density is not spherical "
+                    "(anisotropy %.2e against a tolerance of %.0e). An atom is spherically "
+                    "symmetric, so the averaging did not do what it claims: the orbitals a "
+                    "channel was filled with are probably not one shell.",
+                    anisotropy, SPHERICAL_DENSITY_TOLERANCE)
+    purity = float(state.get("assignment_weight", 1.0))
+    if purity < AOC_ASSIGNMENT_TOLERANCE:
+        log.warning("an occupied orbital carries only %.2f of its Mulliken weight on the "
+                    "angular-momentum channel it was assigned to. The configuration was "
+                    "filled per channel, so a genuinely mixed orbital means the occupied "
+                    "shells are not the ones %s names.", purity, config.canonical)
+    if abs(float(mo_occ.sum()) - n_elec) > 1e-8:
+        raise RuntimeError(
+            "the converged occupations hold {:.6f} electrons where the configuration {} has "
+            "{}".format(float(mo_occ.sum()), config.canonical, n_elec))
+
+    with timer("AO integrals") as t_ints:
+        s_ao = mol.intor("int1e_ovlp")
+        h_x2c = np.asarray(mf.get_hcore())
+        props = ingest_property_integrals(mol, gauge_origin)
+        eri = None
+        df_cderi = None
+        if fit_route == "df":
+            df_cderi = np.asarray(mf.with_df._cderi)
+        else:
+            eri = mol.intor("int2e", aosym="s8")
+
+    screen_opts = dict(screening_options or {})
+    screen_opts.setdefault("configuration", config)
+    soc = (ingest_spin_orbit(mol, h_x2c, chosen.decoupling, screening=chosen.screening,
+                             decoupling_options=decoupling_options,
+                             **screen_opts) if with_soc else None)
+
+    open_shells = ", ".join("{}^{}".format(SHELL_LETTERS[l], q)
+                            for l, q in config.open_shells()) or "none (closed shell)"
+    rows = [
+        ("SCF reference", "average of configuration (spin-restricted)"),
+        ("atom", "{} ({:+d})".format(element, charge) if charge else element),
+        ("configuration", config.label, "", config.canonical),
+        ("open shells", open_shells),
+        ("electrons", n_elec),
+        ("SCF one-electron Hamiltonian", "X2C (sfx2c1e, spin-free)"),
+        ("AO basis functions", int(mol.nao)),
+        ("molecular orbitals", nmo),
+        ("two-electron route", fit_route + (" [{}]".format(aux) if aux else "")),
+        ("nuclear repulsion", float(mol.energy_nuc()), "Eh", "", out.E_FMT),
+        ("scalar AOC X2C SCF energy", float(e_scf), "Eh", "", out.E_FMT),
+        ("SCF converged", bool(mf.converged)),
+        ("density anisotropy", anisotropy, "", "spherical below {:.0e}".format(
+            SPHERICAL_DENSITY_TOLERANCE), out.SCI_FMT),
+        ("angular-momentum assignment", purity, "", "min Mulliken weight, occupied",
+         "{:.4f}"),
+        ("SCF time", t_scf.wall, "s wall", "{:.2f} s cpu".format(t_scf.cpu), out.TIME_FMT),
+        ("AO integral time", t_ints.wall, "s wall",
+         "{:.2f} s cpu".format(t_ints.cpu), out.TIME_FMT),
+    ]
+    out.entries(log, rows)
+    shells = state.get("shells") or []
+    if shells:
+        tab = out.Table(log, [out.Column("shell", "{:s}", 6),
+                              out.col_count("electrons", 10),
+                              out.col_count("orbitals", 9),
+                              out.Column("occupation", "{:.6f}", 11),
+                              out.Column("coupling a", "{:.6f}", 11)])
+        tab.start("open shells, average of configuration")
+        for shell in shells:
+            tab.row(SHELL_LETTERS[shell.l], shell.q, int(shell.index.size),
+                    float(shell.q) / (2 * shell.l + 1), shell.coupling)
+        tab.end()
+    if soc is not None:
+        out.subsection(log, "Two-component X2C spin-orbit Hamiltonian")
+        soc.report()
+
+    # ⚠ A spin-restricted average of configuration has **no meaningful per-spin split**: the
+    # electrons are shared over whole shells and both spins carry half of each occupation.
+    # The pair is the formal ``(ceil, floor)`` division so that ``nelec_total`` is right, and
+    # anything reading the two halves separately is reading something that is not there.
+    na = (n_elec + 1) // 2
+    return ScalarX2CData(
+        nao=mol.nao, nmo=nmo, nelec=(int(na), int(n_elec - na)),
+        e_scf=float(e_scf), converged=bool(mf.converged),
+        s_ao=np.ascontiguousarray(s_ao), h_x2c=np.ascontiguousarray(h_x2c),
+        mo_coeff=mo_coeff, mo_energy=np.ascontiguousarray(np.asarray(mf.mo_energy)),
+        mo_occ=mo_occ, fit_route=fit_route, eri=eri, df_cderi=df_cderi,
+        aux_name=aux if isinstance(aux, str) else ("custom" if aux is not None else None),
+        soc=soc, reference="aoc", unrestricted=False, s2_deviation=None,
+        basis_meta=meta, e_nuc=float(mol.energy_nuc()), ao_layout=layout,
+        properties=props,
+    )
+
+
 __all__ = ["ScalarX2CData", "SpinOrbitX2C", "PropertyIntegrals", "build_mole",
-           "run_scalar_x2c", "ingest_spin_orbit", "ingest_property_integrals",
-           "gauge_origin_for", "eri_memory_gb", "ao_layout"]
+           "run_scalar_x2c", "run_scalar_aoc", "ingest_spin_orbit",
+           "ingest_property_integrals", "gauge_origin_for", "eri_memory_gb", "ao_layout"]

@@ -779,6 +779,37 @@ built) or `compiled kernels: native ...` (with one), and in the latter case quan
 | 5 | `05_nevpt2` | dynamic correlation: SC-NEVPT2 on the oxygen atom, its eight-class decomposition, term energies moving towards experiment while the degeneracies survive | ~3 s |
 | 6 | `06_property_export` | the two products: the property-matrix dump and the OuluSpin pseudospin export, reaching the same g values by two independent routes | ~4 min |
 | 7 | `07_checkpoint_restart` | a CASSCF checkpointed every macro-iteration, interrupted, and resumed from disk to the same energy | ~3 min |
+| 8 | `08_slater_condon` | the extras: Slater–Condon parameters `F^k`, `G^k`, `R^k` and spin–orbit constants `ζ` of a free scandium atom, from an average-of-configuration reference | ~1 min |
+
+## Extras
+
+`kuiva.extras` holds self-contained special-purpose methods that ship with the code and are
+usable, but are **not** part of the multireference pipeline above and are not maintained at the
+same level. They reach the core through its ordinary public interfaces, and nothing in a
+calculation depends on them.
+
+There is currently one: **atomic Slater–Condon parameters**. Given an element and a
+configuration you state, it converges an average-of-configuration scalar X2C SCF — spherical, one
+radial function per shell — and returns the radial parameters `F^k(a,b)`, `G^k(a,b)` and
+`R^k(ab;cd)` among the shells you name, together with the one-electron spin–orbit constants
+`ζ_nl`, in a log table and in a versioned plain-text file.
+
+```python
+from kuiva.extras import slater_condon_parameters
+
+result = slater_condon_parameters("Dy", "[Xe] 4f9 5d1 6s1", basis="x2c-TZVPall-2c",
+                                  shells=("4f", "5d", "6s"), file="dy_i.scp")
+```
+
+⚠ The parameters are **frozen average-of-configuration** values of one fixed configuration in
+one basis set: they are not self-consistent values for any particular term, they contain no
+correlation, and they may not be compared against a value obtained in a different basis. A
+parameter set fitted to experiment is a different object and Hartree–Fock-level values are known
+to sit above one. Every file the feature writes states this, along with the `R^k` ordering
+convention and the record saying whether the two-electron screening is inside `ζ`. `ζ=True`
+(the default) needs the two-component operator and therefore a four-component atomic solve per
+element — sub-second for a light atom, tens of minutes for a lanthanide, paid once and cached;
+`zeta=False` keeps the run to the SCF. Example 8 is the worked demonstration.
 
 ## Tests
 
@@ -855,7 +886,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.4.3.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.5.1.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -871,7 +902,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.4.3'
+import kuiva; kuiva.__version__          # '0.5.1'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
@@ -1285,6 +1316,24 @@ generate validation reference data live with that code, in `tests/`.
   place of a hash table). D. E. Knuth, _The Art of Computer Programming_, Vol. 4A, sec. 7.2.1.3,
   Addison-Wesley (2011); T. Helgaker, P. Jørgensen, J. Olsen, _Molecular Electronic-Structure
   Theory_, Wiley (2000), ch. 11.
+
+### Extras: atomic Slater–Condon parameters
+
+- **The radial parameters `F^k`, `G^k`, `R^k` and the `c^k` coefficients**, in the ordering and
+  phase conventions used throughout the feature. E. U. Condon, G. H. Shortley, _The Theory of
+  Atomic Spectra_, Cambridge University Press (1935), ch. VI and XI; J. C. Slater, "The Theory
+  of Complex Spectra", _Phys. Rev._ **34**, 1293 (1929), DOI:10.1103/PhysRev.34.1293.
+- **Configuration-average energies, average-of-configuration practice, and the parameter
+  conventions the output follows.** R. D. Cowan, _The Theory of Atomic Structure and Spectra_,
+  University of California Press (1981), ch. 6, 10 and 14.
+- **The 3j symbols**, evaluated in exact rational arithmetic from the single-sum formula.
+  G. Racah, "Theory of Complex Spectra. II", _Phys. Rev._ **62**, 438 (1942),
+  DOI:10.1103/PhysRev.62.438.
+- **Hydrogenic spin–orbit constants**, the closed form the fit is validated against.
+  H. A. Bethe, E. E. Salpeter, _Quantum Mechanics of One- and Two-Electron Atoms_, Springer
+  (1957), sec. 12.
+- The average-of-configuration mean field and the real solid-harmonic convention are cited above,
+  under **Relativistic Hamiltonian (X2C)** and **Basis sets** respectively.
 
 ### Numerical methods
 

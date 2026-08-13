@@ -127,6 +127,67 @@ def _shells(occupations: Sequence[int]) -> Dict[Tuple[int, int], int]:
     return out
 
 
+def parse_shell_terms(text: str) -> Tuple[Tuple[int, int, int], ...]:
+    """``"[Xe] 4f9 5d1 6s1"`` -> ``((1, 0, 2), ..., (4, 3, 9), (5, 2, 1), (6, 0, 1))``.
+
+    **The one grammar for a spectroscopic configuration string in this project.** It is
+    shared deliberately: :meth:`AtomicConfiguration.parse` throws the principal quantum
+    numbers away afterwards (its per-``l`` form is all an atomic mean field needs) while
+    :class:`kuiva.extras.shells.ShellConfiguration` keeps them, and a second grammar for the
+    same notation would be two spellings of ``"[Xe]4f9"`` that could disagree about what the
+    user wrote. Terms are returned shell-resolved and **unvalidated beyond the grammar** —
+    which occupations are physically admissible is the consuming class's rule, not the
+    reader's.
+
+    Accepts an optional leading noble-gas core, then ``nl^q`` terms separated by spaces or
+    commas, in any order. Repeated shells are summed; a term with ``q = 0`` is kept, since it
+    is how a caller writes "this shell is empty" (``"[Xe]4f0"``) and dropping it would be a
+    silent edit of a provenance string.
+
+    ⚠ **The principal quantum numbers of a noble-gas core are derived, and that is exact
+    here for the reason it is not in general** (:func:`_shells`): a noble gas is aufbau-filled
+    with no hole in any channel, so ``n = l + k`` for the ``k``-th shell of angular momentum
+    ``l`` reproduces 1s 2s 2p 3s 3p 3d 4s ... exactly. The derivation would *not* be safe for
+    an arbitrary per-``l`` count, which is why it is confined to the core here.
+
+    Raises
+    ------
+    ValueError
+        on an unreadable term, a core that is not a noble gas, an empty string, or ``n <= l``
+        (there is no ``1p`` shell, so such a term can only be a typo).
+    """
+    text = text.strip()
+    shells: Dict[Tuple[int, int], int] = {}
+    core = _CORE.match(text)
+    if core:
+        symbol = core.group(1).capitalize()
+        if symbol not in NOBLE_GASES:
+            raise ValueError(
+                "{!r} is not a noble gas, so [{}] is not a closed core. Known cores: "
+                "{}.".format(core.group(1), core.group(1), ", ".join(sorted(NOBLE_GASES))))
+        for key, q in sorted(_shells(_neutral_occupations(NOBLE_GASES[symbol])).items()):
+            shells[key] = q
+        text = text[core.end():]
+    terms = text.replace(",", " ").split()
+    if not terms and not core:
+        raise ValueError("empty configuration {!r}".format(text))
+    for term in terms:
+        m = _TERM.match(term)
+        if not m:
+            raise ValueError(
+                "cannot read {!r} as a shell occupation. Expected `nl^q` with the "
+                "principal quantum number, e.g. '4f9' or '3d1', optionally after a "
+                "noble-gas core such as '[Xe]'.".format(term))
+        n, l, q = int(m.group(1)), SHELL_LETTERS.index(m.group(2)), int(m.group(3))
+        if n <= l:
+            raise ValueError(
+                "there is no {}{} shell: the lowest shell of angular momentum {} is "
+                "{}{}.".format(n, SHELL_LETTERS[l], SHELL_LETTERS[l], l + 1,
+                               SHELL_LETTERS[l]))
+        shells[(n, l)] = shells.get((n, l), 0) + q
+    return tuple((n, l, q) for (n, l), q in sorted(shells.items()))
+
+
 def _neutral_occupations(z: int) -> Tuple[int, ...]:
     """Electrons per ``l`` channel for the neutral ground configuration of element ``z``.
 
@@ -193,7 +254,7 @@ class AtomicConfiguration:
 
         Empty for a closed shell, which is what makes ``is_closed_shell`` a statement about
         the configuration rather than about the converged density (the two are checked
-        independently — see :func:`kuiva.amf.pyscf_dhf._density_anisotropy`, which catches the
+        independently — see :func:`kuiva.amf.pyscf_dhf.density_anisotropy`, which catches the
         case where a *correct* configuration was solved *incorrectly*).
         """
         return tuple((l, n % (4 * l + 2))
@@ -202,6 +263,18 @@ class AtomicConfiguration:
     @property
     def is_closed_shell(self) -> bool:
         return not self.open_shells()
+
+    def shells(self) -> Tuple[Tuple[int, int, int], ...]:
+        """``((n, l, q), ...)`` — the per-``l`` counts resolved back into shells.
+
+        ⚠ **A derivation under the aufbau assumption, not stored information** (:func:`_shells`
+        and the module docstring): the ``n`` were discarded at construction, and putting them
+        back presumes no hole below an occupied shell of the same ``l``. For a configuration
+        that *was* built from shells this inverts :meth:`parse` exactly, which is what
+        :class:`kuiva.extras.shells.ShellConfiguration` checks itself against to know that its
+        per-``l`` form loses nothing.
+        """
+        return tuple((n, l, q) for (n, l), q in sorted(_shells(self.occupations).items()))
 
     def spinors_needed(self, l: int) -> int:
         """Spinors of angular momentum ``l`` the occupation requires the basis to supply.
@@ -243,34 +316,16 @@ class AtomicConfiguration:
         discarded, because the occupation only depends on the per-``l`` total (class
         docstring) — but writing ``f9`` instead of ``4f9`` is refused anyway, since a
         configuration a reader cannot check is not provenance.
+
+        The reading itself is :func:`parse_shell_terms`, shared with the shell-resolved
+        configuration of :mod:`kuiva.extras.shells`, which keeps the ``n`` this discards.
         """
-        text = text.strip()
-        occ = [0, 0, 0, 0]
-        core = _CORE.match(text)
-        if core:
-            symbol = core.group(1).capitalize()
-            if symbol not in NOBLE_GASES:
-                raise ValueError(
-                    "{!r} is not a noble gas, so [{}] is not a closed core. Known cores: "
-                    "{}.".format(core.group(1), core.group(1),
-                                 ", ".join(sorted(NOBLE_GASES))))
-            occ = list(_neutral_occupations(NOBLE_GASES[symbol]))
-            text = text[core.end():]
-        terms = text.replace(",", " ").split()
-        if not terms and not core:
-            raise ValueError("empty configuration {!r}".format(text))
-        for term in terms:
-            m = _TERM.match(term)
-            if not m:
-                raise ValueError(
-                    "cannot read {!r} as a shell occupation. Expected `nl^q` with the "
-                    "principal quantum number, e.g. '4f9' or '3d1', optionally after a "
-                    "noble-gas core such as '[Xe]'.".format(term))
-            l = SHELL_LETTERS.index(m.group(2))
+        occ = []
+        for _, l, q in parse_shell_terms(text):
             while len(occ) <= l:
                 occ.append(0)
-            occ[l] += int(m.group(3))
-        return cls(occ, label=text.strip() or "closed core")
+            occ[l] += q
+        return cls(occ, label=_CORE.sub("", text.strip(), count=1).strip() or "closed core")
 
     @classmethod
     def trivalent(cls, element: Union[str, int]) -> "AtomicConfiguration":
@@ -454,16 +509,128 @@ def default_configuration(element: Union[str, int]) -> AtomicConfiguration:
     return AtomicConfiguration.ground(element)
 
 
+# --- Sphericity: the constraint that DEFINES an average of configuration --------------------
+
+def angular_channel_groups(ao_l, ao_m, ao_shell) -> Dict[int, np.ndarray]:
+    """Group the real-harmonic AO functions of **one atom** by angular momentum.
+
+    Returns ``{l: (n_radial, 2l+1) index array}``: entry ``[r, i]`` is the
+    AO index of the ``r``-th radial function in the ``m = i - l`` channel, so a row is one
+    radial function across all its ``m`` and a column is one ``m`` channel across all radial
+    functions. The columns are ordered by **ascending m**, which is not the integral library's
+    within-shell order (a ``p`` shell is stored ``px, py, pz`` = ``m = +1, -1, 0``); ordering
+    them here is what lets everything downstream ignore that.
+
+    Every ``m`` channel of one ``l`` must offer the same radial functions in the same order,
+    which a spherical basis does by construction — a shortfall is refused rather than padded,
+    because a channel with a function missing would make an atom's operator anisotropic for a
+    reason that has nothing to do with physics.
+    """
+    ao_l = np.asarray(ao_l, dtype=int)
+    ao_m = np.asarray(ao_m, dtype=int)
+    ao_shell = np.asarray(ao_shell, dtype=int)
+    groups: Dict[int, np.ndarray] = {}
+    for l in sorted(set(ao_l.tolist())):
+        columns = []
+        for m in range(-l, l + 1):
+            index = np.where((ao_l == l) & (ao_m == m))[0]
+            columns.append(index[np.argsort(ao_shell[index], kind="stable")])
+        sizes = sorted({int(c.size) for c in columns})
+        if len(sizes) != 1 or sizes[0] == 0:
+            raise ValueError(
+                "the {} channel offers {} functions across its m values; a spherical basis "
+                "offers the same radial functions in every m channel".format(
+                    SHELL_LETTERS[l] if l < len(SHELL_LETTERS) else "l={}".format(l),
+                    sorted(int(c.size) for c in columns)))
+        groups[l] = np.stack(columns, axis=1)
+    return groups
+
+
+def spherical_projector(groups, dimension: int, *, blocks: int = 1):
+    """Return ``P(A)``: the projection of an **atomic** matrix onto its spherical part.
+
+    A rank-zero (scalar) operator on a spherically symmetric atom is diagonal in the angular
+    label and **independent of the magnetic component** — that is the Wigner-Eckart theorem
+    and it is exact, not an approximation. So the projection is: average each block over the
+    magnetic components of its multiplet, and zero everything else. ``groups`` is any iterable
+    of ``(n_radial, multiplicity)`` index arrays, one per symmetry class, as
+    :func:`angular_channel_groups` builds for a real-harmonic scalar basis (pass its
+    ``.values()``) and :func:`kuiva.amf.pyscf_dhf.spinor_symmetry_groups` for the ``(l, j)``
+    classes of a j-adapted spinor basis.
+
+    ``blocks`` divides the matrix into that many equal super-blocks whose functions carry the
+    *same* labels — ``2`` for a four-component matrix ``[[LL, LS], [SL, SS]]``, whose small
+    component is kinetically balanced and therefore shares the large component's ``(l, j,
+    m_j)`` labels. Every super-block, on and off the diagonal, is projected.
+
+    ⚠ **This is a constraint on the state, not a convergence aid, and the difference is
+    load-bearing.** The spherical solution is an **unstable** fixed point of an
+    average-of-configuration SCF: measured on Ti(+1) ``s7 p12 d2``, the quadrupole anisotropy
+    of the density grows by about one order of magnitude per cycle from roundoff — 2e-12 to
+    4e-4 over nine cycles — while the total energy falls by 1.2e-5 Eh. A fractionally occupied
+    Hartree-Fock functional has broken-symmetry solutions *below* the spherical one, so the
+    iteration slides into one whenever numerical noise gives it a direction, and damping,
+    level shifts or a tighter threshold cannot recover what the functional does not want. The
+    spherical ensemble is the state the average of configuration *names*, so it is imposed.
+
+    ⚠ At a spherical fixed point the projection is the **identity**, which is why applying it
+    does not move a solution that was already clean: it changes the trajectory, not the answer.
+
+    The index arrays must be an **exact cover** of one super-block. A function left out of
+    every group would have its rows and columns zeroed — a basis function silently deleted
+    from the calculation — so the cover is checked here rather than trusted.
+    """
+    if dimension % max(int(blocks), 1):
+        raise ValueError("a {}-dimensional matrix does not divide into {} equal blocks"
+                         .format(dimension, blocks))
+    block = int(dimension) // int(blocks)
+    groups = [np.asarray(g, dtype=int) for g in groups]
+    covered = (np.concatenate([g.ravel() for g in groups])
+               if groups else np.zeros(0, dtype=int))
+    if covered.size != block or sorted(covered.tolist()) != list(range(block)):
+        raise ValueError(
+            "the symmetry classes cover {} of the {} functions of a block, and not exactly "
+            "once each; a function in no class would be projected away entirely".format(
+                covered.size, block))
+
+    offsets = tuple(range(0, int(dimension), block))
+    plans = []
+    for index in groups:
+        for a in offsets:
+            for b in offsets:
+                plans.append(((index + a).T[:, :, None], (index + b).T[:, None, :]))
+
+    def project(a):
+        """Project one matrix. Allocates its own output; the input is not touched."""
+        a = np.asarray(a)
+        out = np.zeros_like(a)
+        for rows, columns in plans:
+            # (multiplicity, n_radial, n_radial) gathered, averaged over m, written back to
+            # every m: one fancy-index pair per class and super-block, nothing per element.
+            out[rows, columns] = a[rows, columns].mean(axis=0)
+        return out
+
+    return project
 
 
 def average_occupations(configuration: AtomicConfiguration, energies: Sequence[float],
-                        angular_momenta: Sequence[int]):
+                        angular_momenta: Sequence[int], spatial: bool = False):
     """Average-of-configuration occupations for a set of orbitals, as a plain array.
 
     This is the whole of the AOC rule, isolated from any SCF: given each orbital's energy and
     its angular momentum, fill each ``l`` channel in energy order — ``N_l // (4l+2)`` shells
     fully, then ``q = N_l mod (4l+2)`` electrons spread **equally over all ``4l+2`` spinors**
     of the frontier shell.
+
+    ``spatial=True`` states the same rule for a **spin-restricted scalar** orbital set, where
+    one orbital of angular momentum ``l`` holds two electrons and a shell is ``2l+1`` orbitals
+    rather than ``4l+2`` spinors: a full shell is occupation 2.0 and the frontier one carries
+    ``q / (2l+1)`` on each of its orbitals. It is the *same state* — the same ``q`` electrons
+    spread equally over the same shell, so the electron count, the radial density and the
+    open-shell coupling coefficient of :attr:`OpenShell.coupling` (which counts **electrons in
+    spinors**, ``n = 4l+2``, whichever basis the orbitals are written in) are unchanged. Only
+    the container differs. Generalizing the rule in place rather than beside it is what keeps
+    the spinor and scalar average-of-configuration SCFs occupying one configuration one way.
 
     It is shared deliberately. The four-component backend
     (:mod:`kuiva.amf.pyscf_dhf`) uses it to occupy Dirac spinors, and the two-component
@@ -482,10 +649,14 @@ def average_occupations(configuration: AtomicConfiguration, energies: Sequence[f
         The ``l`` each orbital belongs to, same length as ``energies``. Orbitals of an ``l``
         the configuration does not occupy are simply left empty, so the caller may pass the
         whole electronic branch without filtering it.
+    spatial : bool
+        ``False`` (the default) for spinors — ``4l+2`` per shell, a filled one at occupation
+        1. ``True`` for spin-restricted scalar orbitals — ``2l+1`` per shell, a filled one at
+        occupation 2.
 
     Returns
     -------
-    ndarray of occupations, summing to ``configuration.n_electrons``.
+    ndarray of occupations, summing to ``configuration.n_electrons`` either way.
     """
     import numpy as np
 
@@ -497,21 +668,31 @@ def average_occupations(configuration: AtomicConfiguration, energies: Sequence[f
     for l, n_electrons in enumerate(configuration.occupations):
         if not n_electrons:
             continue
+        # ``degeneracy`` counts the *electrons* a shell holds and is what the configuration is
+        # divided by; ``per_shell`` counts the orbitals they are written on, and ``filled`` is
+        # what one of those orbitals carries when the shell is full. The two representations
+        # differ only in these three numbers.
         degeneracy = 4 * l + 2
+        per_shell = (2 * l + 1) if spatial else degeneracy
+        filled = 2.0 if spatial else 1.0
         index = np.where(l_of == l)[0]
         index = index[np.argsort(e[index], kind="stable")]
         full, remainder = divmod(n_electrons, degeneracy)
-        needed = full * degeneracy + (degeneracy if remainder else 0)
+        needed = full * per_shell + (per_shell if remainder else 0)
         if index.size < needed:
             raise RuntimeError(
                 "the {} channel offers {} orbitals but the configuration {} needs {} of them "
                 "({} electrons, and a partially filled shell needs all {} orbitals of it "
                 "present, not only the occupied part). Use a larger basis for this "
                 "element.".format(SHELL_LETTERS[l], index.size, configuration.canonical,
-                                  needed, n_electrons, degeneracy))
-        occ[index[:full * degeneracy]] = 1.0
+                                  needed, n_electrons, per_shell))
+        occ[index[:full * per_shell]] = filled
         if remainder:
-            occ[index[full * degeneracy:needed]] = remainder / degeneracy
+            # ⚠ ``q / per_shell``, and the ``filled`` factor deliberately does **not** appear:
+            # the electrons are shared out over the orbitals of the shell, so the sum over a
+            # frontier shell is ``q`` in either representation. Multiplying by 2 here gives a
+            # spherical density with the wrong number of electrons in it.
+            occ[index[full * per_shell:needed]] = remainder / per_shell
     return occ
 
 
@@ -601,6 +782,23 @@ def install_configuration_average(mf, mol, state) -> None:
     the same way", and two implementations of it that agreed today would be a comparison
     waiting to become meaningless.
 
+    ⚠ **It is convention-agnostic, and that is a property worth stating rather than
+    rediscovering.** The same function drives a four-component spinor SCF, the two-component
+    validation GHF and the spin-restricted **scalar** average-of-configuration SCF of the
+    front-end, whose orbitals hold *two* electrons each. Three things make that work and each
+    is exact rather than approximate:
+
+    * ``alpha`` is a ratio of pair averages over **spin orbitals** and does not know how the
+      orbitals are written, so ``n = 4l+2`` and ``q`` electrons give one number in every
+      representation.
+    * ``G[D_s]`` is whatever ``mf.get_veff`` is — ``J - K`` on a spin-orbital density, ``J -
+      K/2`` on a spin-restricted total density — and ``1/2 Tr[D_s G[D_s]]`` is the open-open
+      two-electron energy either way.
+    * the block rule is invariant under scaling **every** occupation by a common factor, so
+      the fractional fillings (1 for closed, ``q/(4l+2)`` for open) may be used in place of
+      electron counts. What is *not* invariant is deciding which orbitals are closed by
+      comparing an occupation against 1 — see the comment where the partition is built.
+
     ⚠ **Scope (user decision):** this changes the *SCF* — the orbitals, the density
     and ``e_tot``. It deliberately does **not** change the mean fields the correction is built
     from: :mod:`kuiva.amf.decouple` keeps plain ``G[D]`` on both sides of
@@ -681,7 +879,17 @@ def install_configuration_average(mf, mol, state) -> None:
         # ⚠ Note it is *not* Janak's theorem, which gives dE/dn_t = F_o for the open shell;
         # both are defensible and the comparison merely has to be consistent. For a closed
         # shell the two coincide identically, which is why this never arose for a closed shell.
-        groups = [(np.where(occ > 1.0 - 1e-12)[0], 1.0, f_closed, f_closed)]
+        #
+        # ⚠ **A closed shell is "occupied and in no open shell", never "occupation above a
+        # threshold".** A spinor carries at most 1 and a spin-restricted *spatial* orbital
+        # carries 2, so a threshold written for one convention silently reclassifies the other:
+        # an f^9 shell holds 9/7 = 1.29 electrons per spatial orbital, which is above 1, and
+        # the open shell would then be treated as closed *and* as open at once. Reading the
+        # partition off ``shells`` is convention-free, and it gives the identical index set in
+        # the spinor case, where it was a threshold.
+        open_index = ([s.index for s in shells] or [np.zeros(0, dtype=int)])
+        closed = np.setdiff1d(np.where(occ > 1e-12)[0], np.concatenate(open_index))
+        groups = [(closed, 1.0, f_closed, f_closed)]
         for shell, (_, g_s, alpha) in zip(shells, fields):
             f_shell = f_closed + (alpha - 1.0) * g_s
             groups.append((shell.index, shell.occupation, f_shell,
@@ -693,7 +901,12 @@ def install_configuration_average(mf, mol, state) -> None:
         # Assemble in the MO basis, then push back with F_ao = (S C) F_mo (S C)^dag, which
         # inverts C^dag F_ao C = F_mo because C^dag S C = 1.
         sc = np.asarray(s1e) @ mo
-        f_mo = np.zeros((mo.shape[1], mo.shape[1]), dtype=np.complex128)
+        # ⚠ The dtype follows the inputs rather than being complex unconditionally: a
+        # spin-restricted *scalar* SCF has a real symmetric Fock, and handing PySCF a complex
+        # one whose imaginary part happens to be zero makes every orbital it returns complex —
+        # with an arbitrary phase per column, which no consumer of a real MO set expects. The
+        # spinor paths are complex either way and are bitwise unchanged.
+        f_mo = np.zeros((mo.shape[1], mo.shape[1]), dtype=np.result_type(mo, f_closed))
         transformed = [mo.conj().T @ f @ mo for _, _, f, _ in groups]
         diagonal = [mo.conj().T @ f @ mo for _, _, _, f in groups]
         for a, (ia, fa, _, _) in enumerate(groups):
@@ -738,5 +951,6 @@ def install_configuration_average(mf, mol, state) -> None:
 
 
 __all__ = ["AtomicConfiguration", "F_BLOCKS", "NOBLE_GASES", "OpenShell", "SHELL_LETTERS",
-           "average_occupations", "default_configuration", "install_configuration_average",
-           "is_f_block"]
+           "angular_channel_groups", "average_occupations", "default_configuration",
+           "install_configuration_average", "is_f_block", "parse_shell_terms",
+           "spherical_projector"]

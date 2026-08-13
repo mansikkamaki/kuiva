@@ -2,14 +2,14 @@
                                    K U I V A                                    
                  relativistic multireference quantum chemistry                  
                     example 3: two-component CASSCF on TiCl3                    
-                                 version 0.3.0                                  
+                                 version 0.5.1                                  
                 compiled kernels: disabled (KUIVA_KERNELS=numpy)                
            threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
 ================================================================================
    output file                                   output/casscf_ligand_field.out
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.20 s
+ Scalar-relativistic X2C reference                                    t = 0.12 s
 ================================================================================
    atoms                                                          4   (Cl Ti)
    charge                                                         0
@@ -31,7 +31,7 @@
      three-index MO integrals B^P_pq                          0.552  GB   (210 spinors)
    memory limit                                               6.000  GB   (set for this calculation)
    planned peak                                               1.048  GB
-   machine available                                         10.861  GB
+   machine available                                         11.265  GB
    SCF reference                                               ROHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                           105
@@ -40,10 +40,10 @@
    two-electron route                                  conventional
    gauge origin (property operators)             (-0.0000, 0.0000, 0.0000) bohr   (centre of mass)
    nuclear repulsion                               381.610309039030  Eh
-   scalar X2C SCF energy                         -2235.138328803092  Eh
+   scalar X2C SCF energy                         -2235.138328803090  Eh
    SCF converged                                                yes
-   SCF time                                                    2.34  s wall   (9.09 s cpu)
-   AO integral time                                            1.38  s wall   (5.34 s cpu)
+   SCF time                                                    1.33  s wall   (5.33 s cpu)
+   AO integral time                                            0.77  s wall   (3.08 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
    two-component Hamiltonian                                X2C-AMF
@@ -58,10 +58,10 @@
    reference configurations                      Cl: s6 p11, Ti: s8 p12 d2
    spin-free correction, max |dh_sf|                   7.592974e-02  Eh
    spin-orbit correction, max |dw|                     8.384170e-03  Eh
-   discarded time-reversal-odd part                       6.740e-10  Eh   (7.3e-12 relative)
+   discarded time-reversal-odd part                       9.949e-10  Eh   (1.1e-11 relative)
 
 ================================================================================
- Orthonormal working basis                                          t = 112.84 s
+ Orthonormal working basis                                           t = 69.30 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                           105
@@ -72,17 +72,17 @@
    condition number of S (retained)                       2.203e+05
 
 ================================================================================
- Spinor expansion                                                   t = 112.84 s
+ Spinor expansion                                                    t = 69.31 s
 ================================================================================
    scalar basis functions                                       105   (working basis)
    spinors                                                      210
    Kramers pairs                                                105
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    2.92e-11
+   orthonormality error                                    2.96e-11
 
 ================================================================================
- Two-electron integrals                                             t = 112.84 s
+ Two-electron integrals                                              t = 69.31 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -93,10 +93,10 @@
    pivot selection                               complete symmetry orbits   (spherical symmetry exact by construction, not to the threshold)
    largest neglected diagonal                             9.968e-09  Eh
    factor storage                                             0.047  GB
-   decomposition time                                          1.72  s wall
+   decomposition time                                          1.27  s wall
 
 ================================================================================
- Problem                                                            t = 114.56 s
+ Problem                                                             t = 70.58 s
 ================================================================================
    system                                                     TiCl3   (planar D3h, Ti-Cl = 2.25 A)
    physics                                       Ti(III) d^1 in a ligand field
@@ -107,7 +107,7 @@
    CASCI roots at the converged orbitals                         10   (5 Kramers doublets)
 
 ================================================================================
- CASSCF                                                             t = 114.58 s
+ CASSCF                                                              t = 70.60 s
 ================================================================================
    active space                                          CAS(1, 10)   (5 lowest Kramers pairs of l=2 character on 0 Ti)
    inactive / active / virtual spinors                72 / 10 / 128
@@ -122,26 +122,26 @@
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      1     -2235.582958076738   -6.242e-03   1.938e+00    0.0020  qn           4.22
-      2     -2235.583056367005   -9.829e-05   7.817e-02    0.0004  qn           4.62
-      3     -2235.583075699364   -1.933e-05   1.090e-02    0.0003  qn           4.75
-      4     -2235.583099222546   -2.352e-05   1.485e-02    0.0009  qn           4.89
-      5     -2235.583106589802   -7.367e-06   1.203e-02    0.0012  qn           4.63
-      6     -2235.583113939584   -7.350e-06   4.350e-02    0.0005  qn           4.49
-      7     -2235.583116027225   -2.088e-06   5.745e-03    0.0003  qn           4.41
-      8     -2235.583119661604   -3.634e-06   5.594e-03    0.0011  qn           4.11
-      9     -2235.583122830033   -3.168e-06   4.923e-03    0.0019  qn           4.07
-     10     -2235.583125768434   -2.938e-06   2.707e-02    0.0012  qn           4.28
-     11     -2235.583127120395   -1.352e-06   8.036e-03    0.0006  qn           4.27
-     12     -2235.583127748605   -6.282e-07   3.355e-03    0.0004  qn           4.34
-     13     -2235.583127765589   -1.698e-08   6.235e-03    0.0002  qn           4.24
-     14     -2235.583128002089   -2.365e-07   1.388e-02    0.0001  qn           4.14
-     15     -2235.583128011444   -9.355e-09   1.101e-03    0.0000  qn           4.18
-     16     -2235.583128018236   -6.792e-09   1.278e-04    0.0000  qn           4.13
-     17     -2235.583128020670   -2.434e-09   3.891e-04    0.0000  qn           4.43
-     18     -2235.583128022767   -2.097e-09   5.815e-04    0.0000  qn           4.19
-     19     -2235.583128023031   -2.647e-10   1.388e-04    0.0000  qn           4.03
-     20     -2235.583128023031    0.000e+00   3.208e-05    0.0000  qn           0.86
+      1     -2235.582958076735   -6.242e-03   1.938e+00    0.0020  qn           2.44
+      2     -2235.583056367003   -9.829e-05   7.817e-02    0.0004  qn           2.54
+      3     -2235.583075699359   -1.933e-05   1.090e-02    0.0003  qn           2.47
+      4     -2235.583099222539   -2.352e-05   1.485e-02    0.0009  qn           2.46
+      5     -2235.583106589797   -7.367e-06   1.203e-02    0.0012  qn           2.51
+      6     -2235.583113939578   -7.350e-06   4.350e-02    0.0005  qn           2.41
+      7     -2235.583116027220   -2.088e-06   5.745e-03    0.0003  qn           2.45
+      8     -2235.583119661598   -3.634e-06   5.594e-03    0.0011  qn           2.49
+      9     -2235.583122830026   -3.168e-06   4.923e-03    0.0019  qn           2.43
+     10     -2235.583125768429   -2.938e-06   2.707e-02    0.0012  qn           2.47
+     11     -2235.583127120389   -1.352e-06   8.036e-03    0.0006  qn           2.63
+     12     -2235.583127748599   -6.282e-07   3.355e-03    0.0004  qn           2.54
+     13     -2235.583127765583   -1.698e-08   6.235e-03    0.0002  qn           2.46
+     14     -2235.583128002083   -2.365e-07   1.388e-02    0.0001  qn           2.44
+     15     -2235.583128011440   -9.358e-09   1.101e-03    0.0000  qn           2.43
+     16     -2235.583128018232   -6.792e-09   1.278e-04    0.0000  qn           2.45
+     17     -2235.583128020668   -2.436e-09   3.891e-04    0.0000  qn           2.42
+     18     -2235.583128022766   -2.098e-09   5.815e-04    0.0000  qn           2.49
+     19     -2235.583128023033   -2.674e-10   1.388e-04    0.0000  qn           2.44
+     20     -2235.583128023033    0.000e+00   3.208e-05    0.0000  qn           0.57
    ----  ---------------------  -----------  ----------  --------  ------  ---------
    converged
    second-order steps taken                                       0
@@ -149,19 +149,19 @@
    rejected steps                                                 0
      state                 E [Eh]     rel [cm^-1]     weight
    -------  ---------------------  --------------  ---------
-         0     -2235.583128023031            0.00     0.5000
-         1     -2235.583128023031            0.00     0.5000
+         0     -2235.583128023033            0.00     0.5000
+         1     -2235.583128023033            0.00     0.5000
    -------  ---------------------  --------------  ---------
    10 applications of H in 0 iterations
    state-average boundary gap                              15442.34  cm^-1   (to root 3 of 10, at the converged orbitals)
 
 ================================================================================
- The finished CASSCF stage                                          t = 202.87 s
+ The finished CASSCF stage                                          t = 121.19 s
 ================================================================================
 CASSCF
   active space     : CAS(1, 10)  5 lowest Kramers pairs of l=2 character on 0 Ti
   solver           : ci
-  E(CASSCF) [Eh]   : -2235.583128023031
+  E(CASSCF) [Eh]   : -2235.583128023033
   converged        : True
   macro-iterations : 20
   |grad|           : 3.21e-05
@@ -172,11 +172,11 @@ CASSCF
    boundary unambiguous                                         yes
 
 ================================================================================
- The spin-orbit spectrum at the converged orbitals                  t = 202.87 s
+ The spin-orbit spectrum at the converged orbitals                  t = 121.19 s
 ================================================================================
 
 ================================================================================
- CASCI                                                              t = 202.87 s
+ CASCI                                                              t = 121.19 s
 ================================================================================
    active space                                          CAS(1, 10)   (10 explicit spinors)
    inactive / active / virtual spinors                72 / 10 / 128
@@ -188,32 +188,32 @@ CASSCF
    states                                                        10
      state                 E [Eh]     rel [cm^-1]     weight
    -------  ---------------------  --------------  ---------
-         0     -2235.583128023031            0.00     0.1000
-         1     -2235.583128023031            0.00     0.1000
-         2     -2235.512767554565        15442.34     0.1000
-         3     -2235.512767554565        15442.34     0.1000
-         4     -2235.512408101029        15521.23     0.1000
-         5     -2235.512408101029        15521.23     0.1000
-         6     -2235.474314449436        23881.82     0.1000
-         7     -2235.474314449436        23881.82     0.1000
-         8     -2235.473967026295        23958.07     0.1000
-         9     -2235.473967026295        23958.07     0.1000
+         0     -2235.583128023033            0.00     0.1000
+         1     -2235.583128023033            0.00     0.1000
+         2     -2235.512767554567        15442.34     0.1000
+         3     -2235.512767554567        15442.34     0.1000
+         4     -2235.512408101030        15521.23     0.1000
+         5     -2235.512408101030        15521.23     0.1000
+         6     -2235.474314449438        23881.82     0.1000
+         7     -2235.474314449438        23881.82     0.1000
+         8     -2235.473967026297        23958.07     0.1000
+         9     -2235.473967026297        23958.07     0.1000
    -------  ---------------------  --------------  ---------
    10 applications of H in 0 iterations
 
  -- TiCl3 d^1 in D3h -----------------------------------------------------------
      state                 E [Eh]     rel [cm^-1]    pair split [Eh]
    -------  ---------------------  --------------  -----------------
-         0     -2235.583128023031            0.00                   
-         1     -2235.583128023031            0.00          0.000e+00
-         2     -2235.512767554565        15442.34                   
-         3     -2235.512767554565        15442.34          0.000e+00
-         4     -2235.512408101029        15521.23                   
-         5     -2235.512408101029        15521.23          0.000e+00
-         6     -2235.474314449436        23881.82                   
-         7     -2235.474314449436        23881.82          0.000e+00
-         8     -2235.473967026295        23958.07                   
-         9     -2235.473967026295        23958.07          0.000e+00
+         0     -2235.583128023033            0.00                   
+         1     -2235.583128023033            0.00          0.000e+00
+         2     -2235.512767554567        15442.34                   
+         3     -2235.512767554567        15442.34          0.000e+00
+         4     -2235.512408101030        15521.23                   
+         5     -2235.512408101030        15521.23          0.000e+00
+         6     -2235.474314449438        23881.82                   
+         7     -2235.474314449438        23881.82          0.000e+00
+         8     -2235.473967026297        23958.07                   
+         9     -2235.473967026297        23958.07          0.000e+00
    -------  ---------------------  --------------  -----------------
    5 Kramers doublets; the split column is the numerical degeneracy
    Kramers doublets                                               5
@@ -225,7 +225,7 @@ CASSCF
    Ti d character of the converged active pairs       74.7% - 94.0%
 
 ================================================================================
- Result                                                             t = 205.15 s
+ Result                                                             t = 122.51 s
 ================================================================================
    check                                                           verdict   
    --------------------------------------------------------------  ----------
@@ -240,49 +240,49 @@ CASSCF
    checks                                              all 7 passed
 
 ================================================================================
- Timings                                                            t = 205.15 s
+ Timings                                                            t = 122.51 s
 ================================================================================
    region                           calls     wall [s]       cpu [s]   cpu/wall   % wall
    ------------------------------  ------  -----------  ------------  ---------  -------
-   scalar X2C SCF                       1         2.34          9.09       3.89      1.1
-   AO integrals                         1         1.38          5.34       3.86      0.7
-     angular-momentum integrals         1         0.00          0.00       4.00      0.0
-   X2C spin-orbit integrals             1         0.69          2.72       3.95      0.3
-   atomic mean-field correction         1       107.85        428.09       3.97     52.7
-     atomic 4c solve                    2       107.28        425.85       3.97     52.5
-       atomic 4c DHF                    2        98.37        390.43       3.97     48.1
-     atomic mean-field decoupling       2         0.55          2.18       3.97      0.3
-   orthogonalization (canonical)        1         0.00          0.01       3.98      0.0
-   Cholesky decomposition               1         1.72          6.68       3.90      0.8
-   CAS determinant addressing           2         0.00          0.00       3.91      0.0
-   CAS excitation map                   2         0.00          0.00       3.99      0.0
-   CAS integrals                        4         7.23         23.03       3.19      3.5
-     J/K build                          4         4.89         16.11       3.30      2.4
-     3-index transform                  4         2.10          5.97       2.84      1.0
-   dense CI diagonalization             4         0.01          0.04       3.91      0.0
-     sigma step 1: gather F            40         0.00          0.01       3.99      0.0
+   scalar X2C SCF                       1         1.33          5.33       4.00      1.1
+   AO integrals                         1         0.77          3.08       4.00      0.6
+     angular-momentum integrals         1         0.00          0.00       4.01      0.0
+   X2C spin-orbit integrals             1         0.39          1.57       4.00      0.3
+   atomic mean-field correction         1        66.45        264.22       3.98     54.4
+     atomic 4c solve                    2        65.95        262.25       3.98     54.0
+       atomic 4c DHF                    2        57.52        229.52       3.99     47.1
+     atomic mean-field decoupling       2         0.49          1.93       3.91      0.4
+   orthogonalization (canonical)        1         0.00          0.00       4.00      0.0
+   Cholesky decomposition               1         1.27          5.09       4.00      1.0
+   CAS determinant addressing           2         0.00          0.00       3.98      0.0
+   CAS excitation map                   2         0.00          0.00       4.01      0.0
+   CAS integrals                        4         4.34         14.24       3.28      3.6
+     J/K build                          4         2.66          8.99       3.38      2.2
+     3-index transform                  4         1.62          5.02       3.10      1.3
+   dense CI diagonalization             4         0.01          0.03       4.00      0.0
+     sigma step 1: gather F            40         0.00          0.01       4.04      0.0
      sigma step 2: GEMM                40         0.00          0.00       2.51      0.0
-     sigma step 3: gather sigma        40         0.00          0.01       4.32      0.0
-     sigma one-electron term           40         0.00          0.00       4.10      0.0
-   full CI: diagonal                    2         0.00          0.00       3.91      0.0
-   RDM gather F                        12         0.00          0.00       4.05      0.0
-   RDM accumulation F^H F              12         0.00          0.01       4.04      0.0
-   macro-iteration                     20        83.28        265.75       3.19     40.7
-     J/K build                         39        33.23        102.66       3.09     16.2
-     CAS integrals                     19        46.83        150.92       3.22     22.9
-       J/K build                       19        33.91        110.25       3.25     16.6
-       3-index transform               19        11.45         34.88       3.05      5.6
-     full CI: diagonal                 19         0.00          0.01       3.72      0.0
-     dense CI diagonalization          19         0.04          0.16       3.88      0.0
-       sigma step 1: gather F         190         0.01          0.05       3.93      0.0
-       sigma step 2: GEMM             190         0.01          0.01       2.34      0.0
-       sigma step 3: gather sigma     190         0.01          0.06       4.31      0.0
-       sigma one-electron term        190         0.00          0.01       3.94      0.0
-     RDM gather F                      38         0.00          0.01       3.86      0.0
-     RDM accumulation F^H F            38         0.01          0.02       3.78      0.0
+     sigma step 3: gather sigma        40         0.00          0.01       4.09      0.0
+     sigma one-electron term           40         0.00          0.00       4.01      0.0
+   full CI: diagonal                    2         0.00          0.00       3.90      0.0
+   RDM gather F                        12         0.00          0.00       4.02      0.0
+   RDM accumulation F^H F              12         0.00          0.00       4.02      0.0
+   macro-iteration                     20        47.55        160.69       3.38     38.9
+     J/K build                         39        21.30         71.12       3.34     17.4
+     CAS integrals                     19        24.93         84.28       3.38     20.4
+       J/K build                       19        16.20         56.22       3.47     13.3
+       3-index transform               19         8.42         26.81       3.19      6.9
+     full CI: diagonal                 19         0.00          0.00       3.85      0.0
+     dense CI diagonalization          19         0.03          0.12       4.00      0.0
+       sigma step 1: gather F         190         0.01          0.03       4.02      0.0
+       sigma step 2: GEMM             190         0.00          0.01       2.30      0.0
+       sigma step 3: gather sigma     190         0.01          0.04       4.07      0.0
+       sigma one-electron term        190         0.00          0.01       4.00      0.0
+     RDM gather F                      38         0.00          0.01       4.02      0.0
+     RDM accumulation F^H F            38         0.00          0.01       4.04      0.0
    ------------------------------  ------  -----------  ------------  ---------  -------
-   total (top-level regions)                                 204.49  s wall
-   total CPU                                                 740.75  s cpu
+   total (top-level regions)                                 122.12  s wall
+   total CPU                                                 454.27  s cpu
    cost is cpu [s]; wall [s] also reflects thread count and, on a
    thermally clamped machine, time the CPU was forced to stay idle.
 
@@ -290,4 +290,4 @@ CASSCF
    limit                                                      6.000  GB   (set for this calculation)
    pre-flight estimate                                        1.048  GB
    declared peak (Kuiva arrays)                               0.237  GB
-   peak resident set (VmHWM)                                  1.228  GB
+   peak resident set (VmHWM)                                  1.247  GB
