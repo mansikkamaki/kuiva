@@ -28,7 +28,8 @@ import numpy as np
 import pytest
 
 from kuiva.extras.shells import (SHELL_ANISOTROPY_TOLERANCE, ShellConfiguration,
-                                 extract_shells, parse_shell_label)
+                                 _channel_blocks, extract_shells, parse_shell_label,
+                                 radial_phase)
 from kuiva.interface.pyscf_bridge import run_scalar_aoc, run_scalar_x2c
 
 BASIS = "x2c-SVPall-2c"
@@ -222,3 +223,83 @@ def test_what_extraction_refuses_outright(oxygen):
     two_atoms = replace(data.ao_layout, atom_symbols=("O", "O"))
     with pytest.raises(ValueError, match="single atom"):
         extract_shells(replace(data, ao_layout=two_atoms), config, shells=("1s",))
+
+
+# --- 6. The phase of a radial function ------------------------------------------------------
+
+def test_the_radial_functions_come_out_positive_in_their_outer_region(oxygen, titanium):
+    """⚠ **The convention that gives a cross parameter's sign a meaning.**
+
+    A radial function is an eigenvector, so its overall sign is whatever LAPACK returned:
+    reproducible for one matrix and unrelated between two. ``F^k``, ``G^k`` and ``zeta`` are
+    quadratic in every radial function they involve and cannot see it, but a genuine
+    ``R^k(ab;cd)`` is linear in two of them and flips with either — so an unfixed phase makes
+    the sign of every cross parameter incomparable between two ions, silently.
+
+    :func:`kuiva.extras.shells.radial_phase` fixes it to ``P_nl(r) > 0`` as ``r -> infinity``.
+    After extraction the convention must therefore be a *fixed point*: asking for the phase of
+    what came out returns ``+1``.
+    """
+    for data, config in (oxygen, titanium):
+        shells = extract_shells(data, config)
+        layout = data.ao_layout
+        for shell in shells:
+            blocks = _channel_blocks(layout, shell.l)
+            assert radial_phase(layout, blocks, shell.radial) == pytest.approx(1.0)
+
+
+def test_the_phase_convention_detects_a_flipped_radial_function(oxygen):
+    """The other half: the function must actually *see* a sign, not return +1 regardless."""
+    data, config = oxygen
+    shells = extract_shells(data, config)
+    layout = data.ao_layout
+    for shell in shells:
+        blocks = _channel_blocks(layout, shell.l)
+        assert radial_phase(layout, blocks, -np.asarray(shell.radial)) == pytest.approx(-1.0)
+
+
+def test_a_parameter_follows_the_phase_of_the_shells_it_names_an_odd_number_of_times(oxygen):
+    """⚠ **Which parameters the convention protects, and which never needed it.**
+
+    ``R^k(ab;cd)`` carries the product of the phases of ``a``, ``b``, ``c`` and ``d``, so
+    flipping one shell's radial function flips exactly those parameters that name it an **odd**
+    number of times. That rule covers the special cases without needing them stated:
+    ``F^k(a,b) = R^k(ab;ab)`` and ``G^k(a,b) = R^k(ab;ba)`` each name both shells twice and are
+    therefore phase-independent, which is why the defect this convention fixes was invisible in
+    everything except the genuine cross parameters.
+
+    This is the mechanism rather than the observable, and it is what makes an unfixed phase a
+    defect rather than a cosmetic detail.
+    """
+    from kuiva.extras.shells import AtomicShells
+    from kuiva.extras.slater_condon import extract_parameters
+
+    data, config = oxygen
+    shells = extract_shells(data, config)
+    parameters = list(extract_parameters(shells, data))
+    reference = {p.label: p.value for p in parameters}
+
+    # ⚠ F and G store two labels, not four: F^k(a,b) is R^k(ab;ab) and G^k(a,b) is
+    # R^k(ab;ba), so each names both shells twice. Expanding to the four labels the phase
+    # actually multiplies is what makes one rule cover all three kinds.
+    def four(parameter):
+        a, b = parameter.shells[:2]
+        return {"F": (a, b, a, b), "G": (a, b, b, a)}.get(parameter.kind, parameter.shells)
+
+    sensitive = 0
+    for target in shells.labels:
+        flipped = AtomicShells(
+            shells=tuple(replace(s, coefficients=-s.coefficients, radial=-s.radial)
+                         if s.label == target else s for s in shells),
+            anisotropy=shells.anisotropy, configuration=shells.configuration)
+        after = {p.label: p.value for p in extract_parameters(flipped, data)}
+        assert set(after) == set(reference)
+        for parameter in parameters:
+            odd = four(parameter).count(target) % 2
+            sensitive += odd
+            expected = -reference[parameter.label] if odd else reference[parameter.label]
+            assert after[parameter.label] == pytest.approx(
+                expected, abs=1e-12, rel=1e-10), (parameter.label, target)
+
+    assert sensitive, "no parameter here depends on a phase, so this proves nothing"
+    assert sensitive < len(parameters) * len(shells.labels), "and none is independent of one"

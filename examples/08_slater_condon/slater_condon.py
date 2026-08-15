@@ -52,10 +52,13 @@ WHAT TO LOOK FOR IN THE OUTPUT
 * the spin-orbit constants: 3p and 3d have one, and the 4s shell is *absent from the table
   rather than listed as zero*, because l.s vanishes identically for an s shell and there is
   nothing to fit;
-* the two diagnostics printed beside the numbers, and they answer different questions. The
-  **shell anisotropy** says whether the converged solution was actually spherical; the
-  **residual** says whether the expansion the parameters are defined by reproduces the
-  integrals. Neither implies the other, so both are printed and both are checked below;
+* the diagnostics printed beside the numbers, which answer different questions. The **shell
+  anisotropy** says whether the converged solution was actually spherical; the **class
+  residual** says whether the expansion the radial parameters are defined by reproduces the
+  integrals. Neither implies the other, so both are printed and both are checked below. The
+  spin-orbit fit carries a residual of its own, and it is checked against a *looser* bound
+  on purpose: its floor is the X2C decoupling's rounding rather than the fit's, so it sits
+  several orders higher and it moves with the linear-algebra library the machine has;
 * the effect of the two-electron screening on zeta, computed twice here: the one-electron X2C
   operator alone makes spin-orbit splittings 5-30 per cent too large, and the atomic mean
   field supplies what it is missing.
@@ -127,9 +130,16 @@ EXPERIMENT_CM = 168.34
 #: between them, far from both.
 ANISOTROPY_BOUND = 1e-6
 
-#: The expansion the parameters are defined by is exact, so its residual is roundoff. Measured
-#: here: 1e-13 and below.
+#: The expansion the radial parameters are defined by is exact, so its residual is roundoff.
+#: Measured here: 1e-13 and below, on any machine.
 RESIDUAL_BOUND = 1e-8
+
+#: ⚠ The spin-orbit fit is a *different* diagnostic with a *different* floor, and it may not
+#: share the bound above. Its floor is the X2C decoupling's own rounding rather than the fit,
+#: so it sits far higher and it moves with the linear-algebra library: this scandium 3d shell
+#: measures 5.5e-09 against Intel MKL and 1.5e-08 against a stock BLAS. A bound of 1e-8 across
+#: both is a coin toss, which is exactly what an example may not assert.
+ZETA_RESIDUAL_BOUND = 1e-6
 
 
 def prepare_output() -> Path:
@@ -255,8 +265,10 @@ def main() -> int:
 
     checks["the SCF converged and the solution is spherical"] = (
         result.data.converged and result.anisotropy < ANISOTROPY_BOUND)
-    checks["every class is reproduced by its parameters to roundoff"] = (
-        result.max_relative_residual < RESIDUAL_BOUND)
+    checks["every class is reproduced by its radial parameters to roundoff"] = (
+        result.parameters.max_relative_residual < RESIDUAL_BOUND)
+    checks["the spin-orbit fits sit at their own floor"] = (
+        result.spin_orbit.max_relative_residual < ZETA_RESIDUAL_BOUND)
     checks["the file round-trips at full precision"] = all(
         abs(stored["parameters"][label]["value"] - value) < 1e-12
         for label, value in values.items())

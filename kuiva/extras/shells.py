@@ -456,6 +456,63 @@ def _channel_blocks(layout, l: int) -> "List[Tuple[int, np.ndarray]]":
             for m, column in zip(range(-l, l + 1), groups[l].T)]
 
 
+#: Relative size, against the largest such contribution in the channel, below which a
+#: primitive's weighted coefficient is treated as accidental cancellation rather than as the
+#: function's asymptotic behaviour. See :func:`radial_phase`.
+_PHASE_FLOOR = 1e-10
+
+
+def radial_phase(layout, blocks, v) -> float:
+    """``+1.0`` or ``-1.0``: the sign making a radial function positive in its outer region.
+
+    ⚠ **A radial function comes out of an eigensolver, so its overall sign is arbitrary, and
+    that arbitrariness reaches the output.** ``F^k`` and ``G^k`` are quadratic in every radial
+    function they involve and so cannot see it; a genuine cross parameter is *linear* in two of
+    them and flips sign with either. Left unfixed, the sign of every ``R^k(ab;cd)`` in a stored
+    file is whatever LAPACK returned for that particular matrix — reproducible for one input
+    and unrelated between two, which makes the signs incomparable across a series of ions and
+    silently so.
+
+    **The convention imposed here: ``P_nl(r) > 0`` as ``r -> infinity``**, i.e. the outermost
+    lobe of the radial function is positive. It is chosen because it needs no normalization
+    constant and is therefore immune to a convention mismatch with the integral library: as
+    ``r`` grows, the smallest Gaussian exponent present dominates every other term, and the
+    primitive normalization is a positive factor that cannot change a sign. So the asymptotic
+    sign is that of the most diffuse primitive's coefficient, weighted by the radial vector,
+    summed over the contracted functions that contain it.
+
+    Exponents are tried from the most diffuse inwards, and one whose weighted contribution is
+    below :data:`_PHASE_FLOOR` of the largest is skipped as an accidental cancellation rather
+    than trusted as the asymptotic behaviour.
+
+    ⚠ The relation to the other common convention --- ``P_nl(r) > 0`` as ``r -> 0``, which is
+    the one hydrogenic radial functions are tabulated in --- is fixed and known: the two differ
+    by ``(-1)^(n-l-1)``, the number of radial nodes. Either is defensible; what is not
+    defensible is leaving it to the eigensolver.
+    """
+    shell_ids = [int(layout.ao_shell[index]) for index in blocks[0][1]]
+    channel = [layout.shells[i] for i in shell_ids]
+    weights = np.asarray(v, dtype=float)
+    exponents = sorted({float(a) for shell in channel for a in shell.exponents})
+
+    totals = []
+    for exponent in exponents:
+        total = 0.0
+        for weight, shell in zip(weights, channel):
+            e = np.asarray(shell.exponents, dtype=float)
+            hit = np.flatnonzero(np.abs(e - exponent) <= 1e-12 * max(exponent, 1e-300))
+            if hit.size:
+                total += float(weight) * float(np.asarray(shell.coefficients,
+                                                          dtype=float)[hit[0]])
+        totals.append(total)
+
+    largest = max((abs(t) for t in totals), default=0.0)
+    for total in totals:
+        if abs(total) > _PHASE_FLOOR * largest:
+            return -1.0 if total < 0.0 else 1.0
+    return 1.0                                     # a zero vector has no phase to fix
+
+
 def extract_shells(data, configuration, *, shells: Optional[Sequence[str]] = None,
                    group_rtol: float = DEFAULT_GROUP_RTOL,
                    anisotropy_tol: float = SHELL_ANISOTROPY_TOLERANCE,
@@ -495,6 +552,12 @@ def extract_shells(data, configuration, *, shells: Optional[Sequence[str]] = Non
       configuration describes — the classic silent failure of an atomic average, where an SCF
       settles into a neighbouring configuration and every number after it is for another
       state.
+
+    ⚠ **Each radial function's overall sign is fixed here** (:func:`radial_phase`), to
+    ``P_nl(r) > 0`` in the outer region. Without it the sign comes from the eigensolver and is
+    unrelated between two calculations, which does not touch ``F^k``, ``G^k`` or ``zeta`` --
+    all quadratic in every radial function they involve -- but makes the sign of every genuine
+    cross parameter ``R^k(ab;cd)`` meaningless across systems.
     """
     configuration = ShellConfiguration.coerce(configuration)
     if getattr(data, "unrestricted", False):
@@ -560,7 +623,9 @@ def extract_shells(data, configuration, *, shells: Optional[Sequence[str]] = Non
             raise ValueError(
                 "{} is the {} radial function of the {} channel and this basis offers only "
                 "{}".format(shell_label(n, l), k + 1, SHELL_LETTERS[l], eps.size))
-        v = vectors[:, k]
+        # ⚠ The eigensolver's sign is arbitrary and it reaches the cross parameters, which are
+        # linear in two radial functions each. Fix it here, once, for every consumer.
+        v = vectors[:, k] * radial_phase(layout, blocks, vectors[:, k])
         coefficients = np.zeros((s.shape[0], 2 * l + 1))
         for column, (_, index) in enumerate(blocks):
             coefficients[index, column] = v

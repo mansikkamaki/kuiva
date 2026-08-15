@@ -801,6 +801,14 @@ result = slater_condon_parameters("Dy", "[Xe] 4f9 5d1 6s1", basis="x2c-TZVPall-2
                                   shells=("4f", "5d", "6s"), file="dy_i.scp")
 ```
 
+⚠ The genuine cross parameters `R^k(ab;cd)` — the ones that are neither an `F^k` nor a `G^k` —
+carry the **phase** of the radial functions they name an odd number of times, so their sign is
+only meaningful against a stated convention. `kuiva` fixes each radial function positive in its
+outer region (`P_nl(r) > 0` as `r → ∞`) and states this in every file it writes; `F^k`, `G^k`
+and `ζ` are quadratic in every radial function they involve and never depended on it. Files
+written before `format_version` 2 carry `R^k` signs that came from the eigensolver and may not
+be compared across calculations.
+
 ⚠ The parameters are **frozen average-of-configuration** values of one fixed configuration in
 one basis set: they are not self-consistent values for any particular term, they contain no
 correlation, and they may not be compared against a value obtained in a different basis. A
@@ -886,7 +894,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.5.1.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.6.4.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -902,7 +910,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.5.1'
+import kuiva; kuiva.__version__          # '0.6.4'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

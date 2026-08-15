@@ -95,7 +95,13 @@ log = get_logger(__name__)
 #: refuse the file rather than guess; :func:`read_parameters` does.
 #:
 #: ⚠ Independent of the code version and of every other format version in the project.
-FORMAT_VERSION = 1
+#:
+#: **2** — the radial functions carry a stated phase convention (positive in the outer region),
+#: which gives the sign of every genuine cross parameter ``R^k`` a defined meaning. In version 1
+#: those signs were whatever the eigensolver returned: reproducible for one calculation and
+#: unrelated between two. ``F^k``, ``G^k`` and ``zeta`` are unaffected, being quadratic in every
+#: radial function they involve.
+FORMAT_VERSION = 2
 
 #: Largest relative least-squares residual a parameter class may show before extraction warns,
 #: scaled by the largest two-electron integral of the class.
@@ -444,6 +450,13 @@ Condon-Shortley ordering: the FIRST and THIRD labels sit on electron 1 and the s
 fourth on electron 2, with P_nl(r) = r R_nl(r) the radial functions of the average-of-
 configuration solution described in the header. In the chemists' notation of a two-electron
 integral, (p q | r s) = sum_k A^k R^k(p r; q s) -- note the reindexing.
+
+PHASE CONVENTION, which fixes the SIGN of every R^k that is not an F^k or a G^k: each radial
+function is taken POSITIVE IN ITS OUTER REGION, P_nl(r) > 0 as r -> infinity. F^k, G^k and
+zeta are quadratic in every radial function they involve and do not depend on it; a genuine
+cross parameter R^k(ab;cd) is linear in two of them and changes sign with either, so without a
+stated convention its sign would be an artifact of the eigensolver and could not be compared
+between two ions. The other common convention, P_nl(r) > 0 as r -> 0, differs by (-1)^(n-l-1).
 
 The two-electron parameters are the bare Coulomb integrals over the X2C radial functions: the
 scalar-relativistic contraction of the radial functions is in them and no two-electron
