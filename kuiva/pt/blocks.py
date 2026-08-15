@@ -45,6 +45,34 @@ log = get_logger(__name__)
 #: some classes need on one side (the general index of a generalized Fock contraction).
 SPACE_NAMES = ("inactive", "active", "virtual", "all")
 
+#: The space pairs the eight SC-NEVPT2 classes actually ask for, in ``(bra, ket)`` order.
+#: ⚠ No class requests ``"all"`` on either side: the whole point of the decomposition by
+#: excitation class is that each one has a *pattern*, and the union of the eight patterns is
+#: these four blocks and no more. They are all cached at once, so their **sum** is what a
+#: memory plan must budget — see :func:`nevpt2_blocks_memory_gb`. A new class that needs a
+#: fifth pair belongs in this tuple in the same change, or the pre-flight stops describing the
+#: calculation.
+SC_NEVPT2_BLOCK_PAIRS = (("virtual", "inactive"), ("virtual", "active"),
+                         ("active", "inactive"), ("active", "active"))
+
+
+def nevpt2_blocks_memory_gb(naux: int, n_inactive: int, n_active: int,
+                            n_virtual: int) -> float:
+    """Total size [GB] of the three-index blocks SC-NEVPT2 holds at once (exact sizing).
+
+    The sum over :data:`SC_NEVPT2_BLOCK_PAIRS`, which factorizes to
+    ``naux * (n_virtual + n_active) * (n_inactive + n_active)`` — worth knowing, because it
+    says the cost is set by the *split* rather than by any one block, and it is the form a
+    pre-flight that does not yet know the split has to bound.
+
+    ⚠ ``n_inactive`` and ``n_virtual`` are the **correlated** counts: a frozen core or a
+    deleted-virtual selection removes spinors from these label ranges and from nothing else,
+    so it lowers this number and is the first knob to reach for when it is too large.
+    """
+    sizes = {"inactive": int(n_inactive), "active": int(n_active), "virtual": int(n_virtual)}
+    return sum(mo_block_memory_gb(naux, sizes[bra], sizes[ket], np.complex128)
+               for bra, ket in SC_NEVPT2_BLOCK_PAIRS)
+
 
 class IntegralBlocks:
     """Three-index MO factors over pairs of orbital spaces, cached and budgeted.
@@ -209,4 +237,5 @@ def batch_gb(shape: Sequence[int], count: int = 1) -> float:
     return count * res.array_gb(tuple(int(s) for s in shape), np.complex128)
 
 
-__all__ = ["IntegralBlocks", "SPACE_NAMES", "batch_gb", "batch_slices"]
+__all__ = ["IntegralBlocks", "SPACE_NAMES", "SC_NEVPT2_BLOCK_PAIRS",
+           "nevpt2_blocks_memory_gb", "batch_gb", "batch_slices"]

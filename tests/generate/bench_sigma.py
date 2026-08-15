@@ -120,7 +120,7 @@ def profile_space(n: int, k: int, repeat: int, memory_gb: float) -> Dict:
                             rec["workspace_gb"], memory_gb)
         return rec
 
-    res.BUDGET.clear()
+    res.clear()
     timing.reset()
     h, eri = realistic_integrals(n)
     space = CASSpace(n, k)

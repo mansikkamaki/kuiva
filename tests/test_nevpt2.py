@@ -1637,6 +1637,46 @@ def test_three_index_block_sizing_is_exact(lih):
         blocks.release()
 
 
+def test_the_planned_block_pairs_are_the_ones_a_real_run_asks_for(lih, monkeypatch):
+    """⚠ The memory pre-flight is only as good as this list.
+
+    It budgets the **sum** of the blocks SC-NEVPT2 holds at once, taken from
+    ``SC_NEVPT2_BLOCK_PAIRS``. A class that starts asking for a fifth pair without extending
+    that tuple would leave the pre-flight describing a calculation that is no longer the one
+    running — and an under-estimating plan is worse than a pessimistic one, because the whole
+    mechanism is refuse-before-allocate. So the list is checked against what a run of every
+    implemented class actually requests, not against a reading of the sources.
+    """
+    requested = set()
+    original = ptblocks.IntegralBlocks.three_index
+
+    def recording(self, bra, ket):
+        requested.add((bra, ket))
+        return original(self, bra, ket)
+
+    monkeypatch.setattr(ptblocks.IntegralBlocks, "three_index", recording)
+    result = kuiva_casci(lih)
+    sc_nevpt2(lih["factors"], lih["h_ao"], lih["coeff"], lih["spaces"], result.vectors,
+              lih["nelecas"], energies=result.energies, e_nuc=lih["e_nuc"], report=False)
+    assert requested == set(ptblocks.SC_NEVPT2_BLOCK_PAIRS)
+
+
+def test_the_planned_block_total_matches_the_blocks_actually_held(lih):
+    """The sum over the four pairs, two-sided against the arrays the cache ends up holding."""
+    spaces = lih["spaces"]
+    blocks = ptblocks.IntegralBlocks(lih["factors"], lih["coeff"], spaces)
+    try:
+        for bra, ket in ptblocks.SC_NEVPT2_BLOCK_PAIRS:
+            blocks.three_index(bra, ket)
+        held = sum(b.nbytes for b in blocks._cache.values()) / 1024.0 ** 3
+        estimate = ptblocks.nevpt2_blocks_memory_gb(
+            blocks.naux, spaces.n_inactive, spaces.n_active, spaces.n_virtual)
+        assert estimate == pytest.approx(held, rel=0, abs=0)
+        assert estimate <= held                # ⚠ never padded, exactly as the sizing rule says
+    finally:
+        blocks.release()
+
+
 def test_batch_slices_cover_everything_exactly_once():
     slices = ptblocks.batch_slices(10, 1.0, budget_gb=3.0)
     covered = [i for s in slices for i in range(s.start, s.stop)]

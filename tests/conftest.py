@@ -59,9 +59,9 @@ def _fresh_memory_budget():
     """
     from kuiva.util import resources
 
-    resources.BUDGET.clear()
+    resources.clear()
     yield
-    resources.BUDGET.clear()
+    resources.clear()
 
 
 @pytest.fixture(scope="session", autouse=True)

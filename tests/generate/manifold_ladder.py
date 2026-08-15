@@ -346,7 +346,7 @@ def run_system(system: sysdef.System, *, memory_gb: float, heartbeat, deadline) 
                             one_electron_product_terms, solve_adaptive)
     from kuiva.mcscf.preopt import cheap_ci
 
-    res.BUDGET.clear()
+    res.clear()
     plan = PLAN[system.key]
     key = system.key
     t_sys = time.time()

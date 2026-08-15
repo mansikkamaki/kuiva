@@ -141,7 +141,7 @@ def measure_factorization(key: str, tols, *, memory_gb: float) -> List[Dict]:
     from kuiva.integrals.transform import assemble_4c, transform_3c
 
     system = _system(key)
-    res.BUDGET.clear()
+    res.clear()
     data = _reference(system, memory_gb=memory_gb, screening="none")
     orbits = shell_pair_orbits(data.ao_layout.ao_shell, data.ao_layout.ao_atom)
 
@@ -153,7 +153,7 @@ def measure_factorization(key: str, tols, *, memory_gb: float) -> List[Dict]:
     rows = []
     for tol in list(tols) + [REFERENCE_TOL]:
         for pivots in (True, False):
-            res.BUDGET.clear()
+            res.clear()
             t0 = time.time()
             factors = ThreeIndexAO.from_eri(data.eri, data.nao, float(tol),
                                             orbits=orbits if pivots else None, report=False)
@@ -192,13 +192,13 @@ def measure_casci(key: str, tols, *, memory_gb: float) -> List[Dict]:
     thresholds is the integral error expressed as a correlated energy.
     """
     system = _system(key)
-    res.BUDGET.clear()
+    res.clear()
     data = _reference(system, memory_gb=memory_gb, screening="none")
     n_states = system.soc_states
     rows = []
     for tol in list(tols) + [REFERENCE_TOL]:
         for pivots in (True, False):
-            res.BUDGET.clear()
+            res.clear()
             reference = api.spinor_reference(data, cholesky_tol=float(tol),
                                              orbit_pivots=pivots, memory_gb=memory_gb)
             out = api.casci(reference, n_states=n_states, report=False,
@@ -228,7 +228,7 @@ def measure_casscf(key: str, tol: float, *, pivots: bool, memory_gb: float, max_
                    screening: str) -> Dict:
     """One state-averaged CASSCF record: manifold spreads, which symmetry makes exactly zero."""
     system = _system(key)
-    res.BUDGET.clear()
+    res.clear()
     t0 = time.time()
     molecule = api.Molecule(atoms=system.atoms, basis=system.basis, charge=system.charge,
                             spin=system.spin)

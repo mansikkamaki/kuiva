@@ -88,6 +88,7 @@ References
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
@@ -133,6 +134,23 @@ log = get_logger(__name__)
 #: splitting — so a factorization artifact would land exactly where a real effect is expected
 #: to live.
 DEFAULT_CHOLESKY_TOL = 1.0e-8
+
+#: Cholesky vectors per AO function, used for **estimating** — the pre-flight's prediction of
+#: the factors, and the capacity :func:`pivoted_cholesky` starts its output array at. It is
+#: replaced by the true count as soon as the decomposition has run.
+#:
+#: ⚠ This is one of the few numbers that must err **high**: it multiplies the three-index
+#: factors and every transformed block, so a pre-flight that under-estimates it lets a
+#: calculation start that cannot finish — the one failure the whole budget exists to prevent.
+#: Erring high costs a wider pre-flight table and, since the decomposition grows its array
+#: when the estimate is exceeded, nothing at all beyond that.
+#:
+#: 12 rather than 8, because **the count is a function of the decomposition threshold and the
+#: threshold was tightened after this constant was first set**: 8 was measured at 1e-6, where
+#: 5.6 (Ne) and 7.4 (TiCl3) were the counts, while the default is now 1e-8 and the whole
+#: committed cross-check suite lands at 8.6-11.5 vectors per AO. A stale estimate here is
+#: silent: it makes every plan look 30% cheaper than the calculation is.
+CHOLESKY_VECTORS_PER_AO = 12.0
 
 #: Fallback working-buffer budget for the blocked transform [GB], used when no memory limit
 #: is configured. With a limit in force the buffer comes from
@@ -256,6 +274,34 @@ ORBIT_DEGENERACY_RTOL = 1.0e-6
 ORBIT_STABILITY_RTOL = 1.0e-13
 
 
+def _initial_capacity(n: int, initial_vectors: Optional[int], limit: int) -> int:
+    """Rows to allocate the factor array with before the decomposition has run.
+
+    ⚠ **Not a limit and not an accuracy setting**: the array grows when the decomposition
+    needs more, so an estimate that is too low costs one copy and nothing else. What it is
+    for is the opposite failure — allocating for the worst case. The worst case is one vector
+    per column, i.e. ``npair`` of them, and that array is *larger than the two-electron
+    integrals themselves* (27.5 GB against 13.7 GB at nao = 348), which is what used to be
+    allocated here on every route whether or not it was ever going to be filled.
+    """
+    if initial_vectors is None:
+        # From the pair count, which is what this function is given: nao is its inverse.
+        nao = int((math.sqrt(8.0 * n + 1.0) - 1.0) / 2.0)
+        initial_vectors = int(CHOLESKY_VECTORS_PER_AO * max(nao, 1))
+    return int(max(1, min(limit, initial_vectors)))
+
+
+def _grow_factors(lvec: np.ndarray, needed: int, limit: int) -> np.ndarray:
+    """Double the factor array's capacity, up to ``limit``. Copies once; the peak is the two
+    arrays together, which is why the capacity starts from an estimate rather than at one."""
+    capacity = int(min(limit, max(needed, 2 * lvec.shape[0], 1)))
+    grown = np.zeros((capacity, lvec.shape[1]), dtype=lvec.dtype)
+    grown[:lvec.shape[0]] = lvec
+    log.debug("Cholesky factor array grown to %d vectors (%.3f GB)", capacity,
+              grown.nbytes / res.BYTES_PER_GB)
+    return grown
+
+
 def _degenerate_groups(s: np.ndarray, rtol: float):
     """Split a **descending** eigenvalue array into degenerate groups (index arrays)."""
     if s.size == 0:
@@ -269,7 +315,8 @@ def pivoted_cholesky(diagonal: np.ndarray,
                      tol: float = DEFAULT_CHOLESKY_TOL,
                      max_vectors: Optional[int] = None,
                      orbits: Optional[np.ndarray] = None,
-                     degeneracy_rtol: float = ORBIT_DEGENERACY_RTOL
+                     degeneracy_rtol: float = ORBIT_DEGENERACY_RTOL,
+                     initial_vectors: Optional[int] = None
                      ) -> Tuple[np.ndarray, np.ndarray, float]:
     """Pivoted Cholesky decomposition of a symmetric positive-semidefinite matrix ``M``.
 
@@ -337,6 +384,13 @@ def pivoted_cholesky(diagonal: np.ndarray,
     entirely is not started, and the decomposition stops short of the limit rather than
     splitting one.
 
+    ⚠ ``initial_vectors`` is a **capacity**, not a limit: the output array starts at that many
+    rows and is grown when the decomposition needs more, so an under-estimate costs one copy
+    and never accuracy. It exists because the alternative — allocating for the worst case of
+    one vector per column — is an array *larger than the two-electron integrals themselves*
+    (27.5 GB against 13.7 GB at nao = 348) that is never more than a few per cent filled, and
+    it was the real ceiling on system size long before the integrals were.
+
     References
     ----------
     The orbit-complete idea is the atomic / one-centre Cholesky decomposition of
@@ -353,10 +407,11 @@ def pivoted_cholesky(diagonal: np.ndarray,
                   "meaningless", float(diag.min()))
 
     if orbits is not None:
-        return _blocked_cholesky(diag, column, tol, max_vectors, orbits, degeneracy_rtol)
+        return _blocked_cholesky(diag, column, tol, max_vectors, orbits, degeneracy_rtol,
+                                 initial_vectors)
 
     limit = int(max_vectors) if max_vectors else n
-    lvec = np.zeros((limit, n), dtype=np.float64)
+    lvec = np.zeros((_initial_capacity(n, initial_vectors, limit), n), dtype=np.float64)
     pivots = np.zeros(limit, dtype=np.int64)
 
     nvec = 0
@@ -365,6 +420,8 @@ def pivoted_cholesky(diagonal: np.ndarray,
         dmax = float(diag[q])
         if dmax <= tol:
             break
+        if nvec == lvec.shape[0]:
+            lvec = _grow_factors(lvec, nvec + 1, limit)
         col = np.asarray(column(q), dtype=np.float64)
         if nvec:
             # M_iq - sum_{P<nvec} L_P,i L_P,q : one GEMV, the whole cost of the step.
@@ -389,7 +446,8 @@ def _blocked_cholesky(diag: np.ndarray,
                       tol: float,
                       max_vectors: Optional[int],
                       orbits: np.ndarray,
-                      degeneracy_rtol: float
+                      degeneracy_rtol: float,
+                      initial_vectors: Optional[int] = None
                       ) -> Tuple[np.ndarray, np.ndarray, float]:
     """The orbit-complete block path of :func:`pivoted_cholesky`; see its docstring."""
     n = diag.size
@@ -400,7 +458,7 @@ def _blocked_cholesky(diag: np.ndarray,
     members = {label: np.nonzero(orbits == label)[0] for label in np.unique(orbits)}
 
     limit = int(max_vectors) if max_vectors else n
-    lvec = np.zeros((limit, n), dtype=np.float64)
+    lvec = np.zeros((_initial_capacity(n, initial_vectors, limit), n), dtype=np.float64)
     pivots = np.zeros(limit, dtype=np.int64)
     nvec = 0
     # ⚠ an orbit is exhausted by the block that processes it: the projection removes the whole
@@ -438,6 +496,8 @@ def _blocked_cholesky(diag: np.ndarray,
             keep = int(group[-1]) + 1
         if keep:
             v = (cols @ u[:, :keep]) / np.sqrt(s[:keep])
+            if nvec + keep > lvec.shape[0]:
+                lvec = _grow_factors(lvec, nvec + keep, limit)
             lvec[nvec:nvec + keep] = v.T
             pivots[nvec:nvec + keep] = idx[:keep]
             nvec += keep
@@ -568,19 +628,57 @@ class ThreeIndexAO:
         return obj
 
     @classmethod
+    def from_matrix(cls, diagonal: np.ndarray, column: Callable[[int], np.ndarray],
+                    nao: int, tol: float = DEFAULT_CHOLESKY_TOL, *,
+                    max_vectors: Optional[int] = None, orbits: Optional[np.ndarray] = None,
+                    report: bool = True, note: str = "") -> "ThreeIndexAO":
+        """Cholesky-decompose the two-electron matrix reached through ``diagonal``/``column``.
+
+        The engine both Cholesky constructors run on, and the reason
+        :func:`pivoted_cholesky`'s contract never requires the matrix to exist: an in-memory
+        ERI array and an integral-direct evaluator differ only in what these two callables do.
+        ⚠ Feed it callables that are **consistent with each other** — ``diagonal()[q]`` must be
+        the same number as ``column(q)[q]``, bit for bit. The plain path divides a column by
+        the square root of a diagonal element, so two sources that disagree in the last bits
+        make a factorization that is *nearly* the one asked for, which is the hardest kind of
+        difference to trace back here from downstream.
+
+        ``orbits`` — from :func:`shell_pair_orbits` — selects the orbit-complete path, which
+        makes the factorization's spherical symmetry exact rather than threshold-dependent.
+        ``note`` is a line for the report, saying where the matrix elements came from.
+        """
+        with timer("Cholesky decomposition") as t:
+            # The capacity to start the factor array at — a prediction, grown if it is short.
+            # Given here rather than left to be inferred, because this is the one caller that
+            # knows the AO count exactly instead of having to invert the pair count for it.
+            lvec, _, residual = pivoted_cholesky(
+                diagonal, column, tol, max_vectors, orbits=orbits,
+                initial_vectors=int(CHOLESKY_VECTORS_PER_AO * max(int(nao), 1)))
+        obj = cls(l_packed=lvec, nao=nao, origin="cholesky", tol=tol, residual=residual,
+                  orbit_complete=orbits is not None)
+        if report:
+            out.subsection(log, "Cholesky decomposition of the AO two-electron integrals")
+            obj.report()
+            if note:
+                out.entry(log, "matrix elements", note)
+            out.entry(log, "decomposition time", t.wall, "s wall", fmt=out.TIME_FMT)
+        return obj
+
+    @classmethod
     def from_eri(cls, eri: np.ndarray, nao: int, tol: float = DEFAULT_CHOLESKY_TOL,
                  *, max_vectors: Optional[int] = None, orbits: Optional[np.ndarray] = None,
                  report: bool = True) -> "ThreeIndexAO":
-        """Cholesky-decompose conventional AO ERIs.
+        """Cholesky-decompose conventional AO ERIs that are already in memory.
 
         ``eri`` may be 8-fold packed (1-D, as the bridge provides), 4-fold packed
         (``(npair, npair)``) or full (``(nao,)*4``). The 8-fold form is decomposed **without**
         ever forming the square matrix: columns are gathered from the packed array on demand,
         which halves the peak memory of the whole route.
 
-        ``orbits`` — from :func:`shell_pair_orbits` — selects the orbit-complete path, which
-        makes the factorization's spherical symmetry exact rather than threshold-dependent.
-        See :func:`pivoted_cholesky`.
+        ⚠ **The array still has to exist**, which is the memory bound this route carries and
+        the integral-direct route does not: it grows as the fourth power of the basis. Both
+        routes run the same decomposition through :meth:`from_matrix` and produce the same
+        object, so nothing downstream can tell them apart.
         """
         eri = np.asarray(eri)
         np_ = npair_of(nao)
@@ -597,17 +695,9 @@ class ThreeIndexAO:
             column = lambda q: mat[:, q]                        # noqa: E731
         else:
             raise ValueError("unrecognised ERI array of shape {}".format(eri.shape))
-
-        with timer("Cholesky decomposition") as t:
-            lvec, _, residual = pivoted_cholesky(diag, column, tol, max_vectors,
-                                                 orbits=orbits)
-        obj = cls(l_packed=lvec, nao=nao, origin="cholesky", tol=tol, residual=residual,
-                  orbit_complete=orbits is not None)
-        if report:
-            out.subsection(log, "Cholesky decomposition of the AO two-electron integrals")
-            obj.report()
-            out.entry(log, "decomposition time", t.wall, "s wall", fmt=out.TIME_FMT)
-        return obj
+        return cls.from_matrix(diag, column, nao, tol, max_vectors=max_vectors,
+                               orbits=orbits, report=report,
+                               note="stored AO integral array")
 
     @classmethod
     def from_scalar_data(cls, data, tol: float = DEFAULT_CHOLESKY_TOL, *,
@@ -627,7 +717,30 @@ class ThreeIndexAO:
         faster (2–3× on the decomposition) and costs ~3% more vectors, but ⚠ an orbit spanning
         two atoms is **not** an invariant subspace of anything, so it buys no symmetry beyond
         the one-centre grouping; it is a speed knob, not a stronger statement.
+
+        ⚠ **On the integral-direct route the decomposition has already run**, in the front end
+        while the integral evaluator was still alive, and the finished factors are what the
+        container carries. This function then hands them back unchanged and ``tol``,
+        ``orbit_pivots`` and ``one_centre`` here can no longer be applied — they belong to the
+        front-end call on that route. A ``tol`` that disagrees with the one the factors were
+        built at is reported rather than silently ignored.
         """
+        prebuilt = getattr(data, "factors", None)
+        if prebuilt is not None:
+            if report:
+                # The decomposition reported itself where it ran; this restates what the
+                # calculation is now holding, so the section is not silent on this route.
+                out.subsection(log, "Two-electron factors from the front end "
+                                    "(integral-direct)")
+                prebuilt.report()
+            if prebuilt.tol is not None and float(prebuilt.tol) != float(tol):
+                log.warning("the three-index factors were built in the front end at a "
+                            "Cholesky threshold of %.2e and cannot be rebuilt here at the "
+                            "%.2e asked for: the integral-direct route decomposes while the "
+                            "integrals can still be evaluated, so the threshold is an "
+                            "argument of the front-end call on that route.",
+                            prebuilt.tol, tol)
+            return prebuilt
         if getattr(data, "df_cderi", None) is not None:
             obj = cls.from_df(data.df_cderi, data.nao, aux_name=getattr(data, "aux_name", None))
             if report:
@@ -828,8 +941,9 @@ def transform_3c(factors: ThreeIndexAO, c_bra: np.ndarray, c_ket: np.ndarray, *,
                     advice=["transform a smaller orbital block (one active index rather "
                             "than all spinors) — see mcscf.orbopt, which needs only B^P_pt",
                             "reduce the auxiliary/Cholesky dimension: a looser Cholesky "
-                            "threshold trades integral accuracy for naux (a Cholesky threshold is an error bound, a "
-                            "11.1 before doing this)",
+                            "threshold trades integral accuracy for naux, and it is an "
+                            "error bound rather than a knob - loosening it is a physics "
+                            "decision, so read what the default is set from first",
                             "use a smaller basis set"])
 
     if out_array is None:
@@ -1026,6 +1140,23 @@ class SpinorMOIntegrals:
     blocks and the NEVPT2 classes over the full orbital space, where it cannot — so the
     factored form is the interface everywhere, and nothing downstream is written against a
     stored four-index array.
+
+    ⚠ **This is the deliberately *unblocked* reference implementation, and it is not on any
+    production path — a decision, not an oversight.** ``b`` is square, ``naux * n * n`` over
+    whichever spinors it was handed, and both :meth:`eri` (which slices it in both indices)
+    and :meth:`hermiticity_error` (which compares it against its own transpose) are written
+    against that squareness. That is what makes the object worth having: it is the form in
+    which the permutational and time-reversal invariants of a whole spinor set can be checked
+    in one line, and those checks are what license every blocked path below it.
+
+    What it is **not** is the way to hold the integrals of a real calculation. The cost is
+    quadratic in the spinor count, so ``n`` here is a *chosen subset* — pass a block of
+    orbitals, never the whole set of a heavy-element system, where the array reaches hundreds
+    of gigabytes and the memory check will refuse it. Production holds the blocks it needs and
+    nothing more: the orbital optimizer and the CI drivers hold ``B^P_{p,active}``
+    (``mcscf.orbopt.CASIntegrals``), and the perturbation holds one block per space pair its
+    classes ask for (``pt.blocks.IntegralBlocks``). Both are built by the same
+    :func:`transform_3c` this class calls, with a narrower ket.
     """
 
     h: np.ndarray                                  # (n, n) complex, one-electron

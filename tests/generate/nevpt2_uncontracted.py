@@ -124,7 +124,7 @@ def build(system_key: str = "hi", *, memory_gb: float = MEMORY_GB) -> Dict:
     from kuiva.pt.nevpt2 import pseudo_canonicalize, sc_nevpt2
     from kuiva.util import resources as res
 
-    res.BUDGET.clear()
+    res.clear()
     system = sysdef.get(system_key)
     t0, c0 = time.time(), time.process_time()
 

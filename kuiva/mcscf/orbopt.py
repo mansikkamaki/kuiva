@@ -107,7 +107,8 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from ..integrals.transform import ThreeIndexAO, assemble_4c, coulomb_exchange, transform_3c
+from ..integrals.transform import (ThreeIndexAO, assemble_4c, coulomb_exchange,
+                                   mo_block_memory_gb, transform_3c)
 from ..util import output as out
 from ..util import threads
 from ..util.logging import get_logger
@@ -225,6 +226,38 @@ class OrbitalSpaces:
 
 
 # --- Integrals in the form the gradient needs ------------------------------------------
+
+def cas_integrals_memory_gb(naux: int, n_orb: int, n_active: int) -> float:
+    """Size [GB] of the three-index block :class:`CASIntegrals` holds (exact sizing function).
+
+    ``b_act`` is ``B^P_{p,t}`` — every spinor against the **active** ones — and it is the only
+    large array the orbital optimizer and the CI drivers own. The square ``B^P_{pq}`` is never
+    built on any production path, so a memory plan that budgets one refuses calculations that
+    would have run; this is the function such a plan must use instead. The one- and
+    two-electron matrices beside it are ``O(n^2)`` and negligible against it.
+    """
+    return mo_block_memory_gb(naux, n_orb, n_active, np.complex128)
+
+
+#: Copies of ``b_act`` that a second-order Hessian-vector product holds **on top of** the
+#: resident one, at its peak: the bra-side response ``kappa^dag B``, the ket-side transform,
+#: and the sum of the two, all of the same shape and all live at the moment of the addition
+#: (:meth:`OrbitalHessian.matvec`). ⚠ It is a property of that expression, not a safety
+#: factor — change how the response is accumulated and this number changes with it.
+HESSIAN_RESPONSE_COPIES = 3
+
+
+def hessian_response_memory_gb(naux: int, n_orb: int, n_active: int) -> float:
+    """Transient [GB] a second-order step adds to the resident ``b_act`` (exact sizing).
+
+    Transient rather than resident: the copies live inside one matrix-vector product and are
+    gone before the next. A memory plan still has to carry them, because they are the peak of
+    the second-order path and they are three times the array the plan already names — an
+    optimizer that escalates (``mode="auto"`` does, on the gradient trajectory) would otherwise
+    allocate four times what was budgeted for it.
+    """
+    return HESSIAN_RESPONSE_COPIES * cas_integrals_memory_gb(naux, n_orb, n_active)
+
 
 @dataclass
 class CASIntegrals:
@@ -524,6 +557,10 @@ class OrbitalHessian:
             # will not dispatch to BLAS, and it dominated the Hessian-vector product
             # (measured at 16 s per product on a real system before this was written as
             # matmul). Same trap as the J/K build; coefficients and densities transform oppositely.
+            # ⚠ Three arrays of b_act's shape are live at the addition below — this one, the
+            # transform's result, and the sum. That peak is what
+            # ``hessian_response_memory_gb`` states and what a memory plan carries for the
+            # second-order path; keep the two in step if this expression changes.
             bx = np.matmul(kappa.conj().T, self.b_act)
             bx = bx + transform_3c(self.factors, self.c, x_t)
 
@@ -1389,7 +1426,9 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                         n_rejected=opt.n_rejected)
 
 
-__all__ = ["OrbitalSpaces", "CASIntegrals", "OrbitalOptimizer", "OrbitalStep", "CASSCFResult",
+__all__ = ["OrbitalSpaces", "CASIntegrals", "cas_integrals_memory_gb",
+           "hessian_response_memory_gb", "HESSIAN_RESPONSE_COPIES",
+           "OrbitalOptimizer", "OrbitalStep", "CASSCFResult",
            "OrbitalHessian", "augmented_hessian_step", "AHResult",
            "cas_energy", "generalized_fock", "averaged_fock", "fock_diagonal",
            "orbital_gradient",

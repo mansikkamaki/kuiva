@@ -227,7 +227,7 @@ def build_reference(system: sysdef.System, *, basis: Optional[str] = None,
 
     # ⚠ `resources.BUDGET` is process-global by design, so in a batch driver it
     # accumulates and a later system is refused against a limit its predecessors filled.
-    res.BUDGET.clear()
+    res.clear()
     basis_name = basis or system.basis
     molecule = api.Molecule(atoms=system.atoms, basis=basis_name, charge=system.charge,
                             spin=system.spin)

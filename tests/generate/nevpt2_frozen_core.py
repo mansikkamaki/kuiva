@@ -192,7 +192,7 @@ def run_system(system: sysdef.System, *, basis: Optional[str] = None,
     # ⚠ Release the previous system's reservations: `resources.BUDGET` is process-global by
     # design, so in a batch driver it accumulates and a later, larger system is refused
     # against a limit its predecessors filled. Same idiom as `tier2_kuiva.run_system`.
-    res.BUDGET.clear()
+    res.clear()
     basis_name = basis or system.basis
     if side not in ("core", "virtual"):
         raise SystemExit("side must be 'core' or 'virtual', got {!r}".format(side))

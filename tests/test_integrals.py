@@ -161,6 +161,27 @@ def test_plain_path_is_bitwise_unchanged_when_no_orbits_are_given():
     assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1]) and a[2] == b[2]
 
 
+@pytest.mark.parametrize("orbits", [None, "blocks"])
+def test_growing_the_factor_array_changes_nothing_but_the_allocation(orbits):
+    """⚠ The factor array is grown as the decomposition fills it, and that must be invisible.
+
+    Allocating for the worst case instead — one vector per column — is an array *larger than
+    the two-electron integrals it factorizes* (27.5 GB against 13.7 GB at nao = 348), and it
+    was the real ceiling on system size. Growing it is only safe if the result does not depend
+    on the capacity it started from, so this asserts **bitwise** equality across starting
+    capacities from one row to the full worst case.
+    """
+    n = 48
+    m = _synthetic_psd(n, 20, seed=15)
+    orb = None if orbits is None else np.arange(n) // 6
+    args = (np.diag(m).copy(), lambda q: m[:, q], 1e-10)
+    reference = pivoted_cholesky(*args, orbits=orb, initial_vectors=n)
+    for capacity in (1, 2, 7, 13, None):
+        got = pivoted_cholesky(*args, orbits=orb, initial_vectors=capacity)
+        assert np.array_equal(got[0], reference[0]), "capacity {}".format(capacity)
+        assert np.array_equal(got[1], reference[1]) and got[2] == reference[2]
+
+
 @pytest.mark.parametrize("tol", [1e-2, 1e-6, 1e-10])
 def test_block_path_reconstructs_a_psd_matrix(tol):
     """The block path is a decomposition of the same quality as the plain one: the residual
@@ -539,6 +560,196 @@ def test_s8_packing_convention_matches_pyscf(hf_conv):
     f = ThreeIndexAO.from_eri(hf_conv.eri, nao, tol=1e-10, report=False)
     approx = assemble_4c(f.unpack(slice(None)).reshape(f.naux, nao, nao))
     assert np.max(np.abs(approx - full)) < 1e-8
+
+
+# --- the integral-direct route ------------------------------------------------------------
+# ⚠ The acceptance criterion for this route was fixed before it was written and is **bitwise**,
+# not a tolerance: it evaluates the same matrix elements the stored route reads, so the same
+# pivots in the same order must come out of the same arithmetic. A threshold comparison here
+# would hide exactly the failure that matters — an evaluator that serves the right numbers in
+# the wrong order, which changes which columns are selected while every norm stays plausible.
+
+
+@pytest.fixture(scope="module")
+def hf_mole():
+    from kuiva.interface.pyscf_bridge import build_mole
+    return build_mole(Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917",
+                                               basis="x2c-SVPall-2c"))
+
+
+def _direct_source(mol):
+    from kuiva.interface.pyscf_bridge import DirectERIMatrix
+    return DirectERIMatrix(mol)
+
+
+def _stored_matrix(mol):
+    """The same matrix the direct evaluator serves, materialized: ``(mu nu | la ka)``."""
+    i, j = np.tril_indices(mol.nao)
+    full = mol.intor("int2e")
+    return full[i[:, None], j[:, None], i[None, :], j[None, :]]
+
+
+def test_the_direct_evaluator_serves_the_matrix_element_for_element(hf_mole):
+    """Every column and the diagonal, against the stored matrix — bitwise.
+
+    ⚠ Including the diagonal *as a separate check*: the plain path divides a column by the
+    square root of a diagonal element, so a diagonal that came from a different evaluation
+    than its column would make a factorization that is nearly, but not exactly, the one
+    asked for.
+    """
+    src = _direct_source(hf_mole)
+    m = _stored_matrix(hf_mole)
+    assert np.array_equal(src.diagonal(), np.diag(m))
+    for q in range(m.shape[1]):
+        assert np.array_equal(src.column(q), m[:, q]), "column {} differs".format(q)
+    assert src.diagonal()[3] == src.column(3)[3]
+
+
+def test_the_direct_route_reproduces_the_stored_route_bitwise(hf_mole):
+    """The acceptance criterion: same factors, bit for bit, on both pivot rules."""
+    from kuiva.interface.pyscf_bridge import ao_layout
+
+    nao = hf_mole.nao
+    m = _stored_matrix(hf_mole)
+    layout = ao_layout(hf_mole)
+    orbits = shell_pair_orbits(layout.ao_shell, layout.ao_atom)
+    for label, orb in (("orbit-complete", orbits), ("plain pivoting", None)):
+        src = _direct_source(hf_mole)
+        direct = ThreeIndexAO.from_matrix(src.diagonal(), src.column, nao, CD_TOL,
+                                          orbits=orb, report=False)
+        stored = ThreeIndexAO.from_eri(m, nao, CD_TOL, orbits=orb, report=False)
+        assert direct.naux == stored.naux, label
+        assert np.array_equal(direct.l_packed, stored.l_packed), label
+        assert direct.residual == stored.residual, label
+
+
+def test_the_direct_route_never_forms_the_integral_array(hf_mole, monkeypatch):
+    """The point of the route. Asserted by refusing the call that would build the array.
+
+    ⚠ Not by checking a container field afterwards: the array is what bounds the size of
+    system that fits, so what has to be true is that it is never *requested*, and only the
+    call itself can say that.
+    """
+    from kuiva.interface import pyscf_bridge as br
+
+    real_intor = type(hf_mole).intor
+
+    def guarded(self, name, *args, **kwargs):
+        if name.startswith("int2e") and kwargs.get("aosym") in ("s8", "s4"):
+            raise AssertionError("the direct route asked for a packed ERI array ({})"
+                                 .format(kwargs.get("aosym")))
+        return real_intor(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(type(hf_mole), "intor", guarded)
+    factors = br._direct_cholesky(hf_mole, tol=CD_TOL, report=False)
+    assert factors.origin == "cholesky" and factors.orbit_complete
+
+
+def test_the_direct_route_agrees_with_the_shipped_stored_route_on_the_integrals(hf_conv,
+                                                                                hf_mole):
+    """⚠ Bitwise against the *8-fold packed* array is unattainable, and not for our reasons.
+
+    PySCF's ``aosym="s8"`` fill and its sliced ``s2ij`` fill traverse the same integrals
+    differently and disagree in the last bits for a sixth of the elements, so the two
+    decompositions can pick different — equally valid — pivots inside a degenerate orbit.
+    What must agree is the object the rest of the program consumes, and it agrees to machine
+    precision: ``L`` is a basis of the factorization, not an observable, and any orthogonal
+    mixing of its vectors reproduces the same integrals.
+    """
+    from kuiva.interface.pyscf_bridge import ao_layout
+
+    nao = hf_mole.nao
+    layout = ao_layout(hf_mole)
+    orbits = shell_pair_orbits(layout.ao_shell, layout.ao_atom)
+    src = _direct_source(hf_mole)
+    direct = ThreeIndexAO.from_matrix(src.diagonal(), src.column, nao, CD_TOL,
+                                      orbits=orbits, report=False)
+    stored = ThreeIndexAO.from_eri(hf_conv.eri, nao, CD_TOL, orbits=orbits, report=False)
+    assert direct.naux == stored.naux
+    g_direct = direct.l_packed.T @ direct.l_packed
+    g_stored = stored.l_packed.T @ stored.l_packed
+    assert np.max(np.abs(g_direct - g_stored)) < 1e-13
+    assert abs(direct.residual - stored.residual) < 1e-15
+
+
+def test_the_direct_batch_serves_a_whole_orbit_from_one_evaluation(hf_mole):
+    """The cost argument: one integral batch serves many columns, and with room to cache them
+    the decomposition never evaluates a shell pair twice.
+
+    ⚠ The second half is stated *for a cache that can hold them all*, because the cache is
+    bounded and a smaller one re-evaluates — that is the time-for-memory trade the route is
+    built on, not a defect. What must hold at any cache size is that the factors come out the
+    same, which is the next test.
+    """
+    from kuiva.interface.pyscf_bridge import DirectERIMatrix, ao_layout
+
+    layout = ao_layout(hf_mole)
+    orbits = shell_pair_orbits(layout.ao_shell, layout.ao_atom)
+    src = DirectERIMatrix(hf_mole, cache_gb=1.0)          # room for every batch
+    ThreeIndexAO.from_matrix(src.diagonal(), src.column, hf_mole.nao, CD_TOL,
+                             orbits=orbits, report=False)
+    assert src.n_columns > src.n_batches
+    assert src.n_batches <= hf_mole.nbas * (hf_mole.nbas + 1) // 2
+
+
+def test_the_direct_factors_do_not_depend_on_the_batch_cache(hf_mole):
+    """⚠ A cache may change what a run costs and may not change what it produces.
+
+    The cache is sized from the transient budget, so the same calculation on two machines —
+    or the same machine at two memory limits — takes different numbers of integral batch
+    evaluations. If that moved the factors, every result would carry a dependence on the free
+    memory of the box it ran on, which is the least reproducible input there is.
+    """
+    from kuiva.interface.pyscf_bridge import DirectERIMatrix, ao_layout
+
+    layout = ao_layout(hf_mole)
+    orbits = shell_pair_orbits(layout.ao_shell, layout.ao_atom)
+    runs = []
+    for cache_gb in (1e-9, 1e-4, 1.0):                    # none, a few batches, all of them
+        src = DirectERIMatrix(hf_mole, cache_gb=cache_gb)
+        runs.append((src, ThreeIndexAO.from_matrix(src.diagonal(), src.column, hf_mole.nao,
+                                                   CD_TOL, orbits=orbits, report=False)))
+    assert runs[0][0].n_batches > runs[-1][0].n_batches   # the cost did change
+    for src, factors in runs[1:]:
+        assert np.array_equal(factors.l_packed, runs[0][1].l_packed)
+
+
+def test_the_direct_cache_holds_what_the_plan_says_and_no_more(hf_mole):
+    """⚠ The evaluator may not hold more than the memory plan carries for it.
+
+    Sized from the free budget and left unstated, the cache was measured holding gigabytes of
+    integral batches under a plan that claimed one batch. A buffer nobody can predict the size
+    of is not a transient, it is an unaccounted array — so the plan states
+    ``min(what it wants, what it is allowed)`` and this asserts the evaluator obeys it.
+    """
+    from kuiva.interface import pyscf_bridge as br
+    from kuiva.util import resources as res
+
+    src = _direct_source(hf_mole)
+    for k in range(hf_mole.nbas):
+        for l in range(k + 1):
+            src._batch(k, l)
+    held = sum(b.nbytes for b in src._cache.values()) / 1024.0 ** 3
+    planned = [a for a in br.memory_plan(
+        hf_mole.nao, conventional=False, direct=True, shell_ao_max=src.shell_ao_max,
+        n_shells=hf_mole.nbas)[1].allocations if "shell-pair batch" in a.label][0]
+    assert held <= planned.gb + 1e-12
+    assert held <= res.transient_gb() + 1e-12
+
+
+def test_the_direct_route_carries_its_factors_through_the_front_end(kuiva_caplog):
+    """End to end: the container carries factors instead of integrals, and the threshold
+    that built them is the front end's, which is reported if a later call disagrees."""
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    data = run_scalar_x2c(mol, fitting="cholesky-direct", screening="none",
+                          cholesky_tol=1e-6)
+    assert data.fit_route == "direct"
+    assert data.eri is None and data.df_cderi is None
+    assert data.factors is not None and data.factors.tol == 1e-6
+    assert ThreeIndexAO.from_scalar_data(data, 1e-6, report=False) is data.factors
+    with kuiva_caplog.at_level("WARNING"):
+        ThreeIndexAO.from_scalar_data(data, 1e-10, report=False)
+    assert any("integral-direct" in r.message for r in kuiva_caplog.records)
 
 
 def test_df_and_cholesky_routes_agree(hf_conv, hf_df, kuiva_caplog):

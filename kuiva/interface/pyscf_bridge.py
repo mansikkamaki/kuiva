@@ -75,6 +75,7 @@ References:
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -83,6 +84,10 @@ import numpy as np
 from ..amf.correction import ScreeningRecord
 from ..basis import registry as reg
 from ..basis.layout import AOLayout, Shell, build_layout
+# One threshold, defined where the decomposition is. The integral layer imports nothing from
+# here, so this direction is the safe one and it keeps the front end from carrying a second
+# copy of a number that is a physics decision.
+from ..integrals.transform import CHOLESKY_VECTORS_PER_AO, DEFAULT_CHOLESKY_TOL
 from ..util import output as out
 from ..util import resources as res
 from ..util.logging import get_logger
@@ -676,8 +681,8 @@ class ScalarX2CData:
 
     The scalar quantities are real (the scalar guess carries no SOC); spin-orbit coupling
     arrives separately in :attr:`soc` and is applied at the multireference level.
-    ``eri`` and ``df_cderi`` are mutually exclusive: exactly one is populated per
-    ``fit_route``.
+    ``eri``, ``df_cderi`` and ``factors`` are mutually exclusive: exactly one is populated
+    per ``fit_route`` (``"conventional"``, ``"df"``, ``"direct"``).
 
     **Restricted and unrestricted references.** RHF/ROHF give one set of MOs and
     ``mo_coeff`` has shape ``(nao, nmo)``; UHF gives two and it has shape ``(2, nao, nmo)``
@@ -707,10 +712,17 @@ class ScalarX2CData:
     mo_energy: np.ndarray                  # (nmo,) or (2, nmo)
     mo_occ: np.ndarray                     # (nmo,) or (2, nmo)
     # two-electron integrals: one of the following, per fit_route
-    fit_route: str                         # "conventional" | "df"
+    fit_route: str                         # "conventional" | "direct" | "df"
     eri: Optional[np.ndarray] = None       # 8-fold packed (nao_pair_pair,) if conventional
     df_cderi: Optional[np.ndarray] = None  # (naux, nao_pair) DF factors if df
     aux_name: Optional[str] = None
+    #: Finished three-index factors, on the **integral-direct** route only. That route
+    #: decomposes in the front end, while the integrals can still be evaluated and without
+    #: ever storing them, so what it can hand on is the factorization rather than its input.
+    #: ⚠ The Cholesky threshold and the pivot choice are therefore arguments of the front-end
+    #: call on that route; :meth:`kuiva.integrals.transform.ThreeIndexAO.from_scalar_data`
+    #: hands these back unchanged and says so if it is asked for a different threshold.
+    factors: Optional[object] = None
     # spin-orbit coupling (None if ingestion was disabled)
     soc: Optional[SpinOrbitX2C] = None
     # reference type
@@ -761,7 +773,8 @@ class ScalarX2CData:
 
     def __repr__(self) -> str:
         two_e = f"eri{self.eri.shape}" if self.eri is not None else (
-            f"df_cderi{self.df_cderi.shape}" if self.df_cderi is not None else "none")
+            f"df_cderi{self.df_cderi.shape}" if self.df_cderi is not None else (
+                f"factors(naux={self.factors.naux})" if self.factors is not None else "none"))
         return (f"ScalarX2CData(nao={self.nao}, nmo={self.nmo}, nelec={self.nelec}, "
                 f"E={self.e_scf:.8f} Eh, conv={self.converged}, ref={self.reference}, "
                 f"route={self.fit_route}, {two_e}, soc={self.has_soc})")
@@ -829,6 +842,13 @@ def _choose_fit(atom_basis: Dict[str, str], fitting: Optional[str],
     by supplying ``auxbasis``. That is deliberate: with a user-chosen auxiliary the accuracy
     of the fit is the user's decision, and the code's job is to apply it faithfully and say
     what it did — not to make that choice on their behalf.
+
+    ``fitting="cholesky-direct"`` is the same Cholesky factorization with the integrals
+    evaluated as the decomposition asks for them (:class:`DirectERIMatrix`) instead of stored
+    first. Same threshold, same error bound, same object downstream; it removes the
+    ``O(nao^4/8)`` array, which is what bounds the size of system that fits. It is a value on
+    *this* axis and not a separate switch, so it cannot be combined with density fitting and
+    there is no contradiction to refuse.
     """
     if auxbasis is not None and fitting in (None, "df"):
         return "df", auxbasis
@@ -843,23 +863,46 @@ def _choose_fit(atom_basis: Dict[str, str], fitting: Optional[str],
                     "correlated work - a Coulomb-fitting set is not accurate enough for "
                     "individual transformed integrals.", aux)
         return "df", aux
+    if fitting in ("cholesky-direct", "direct"):
+        return "direct", None
     if fitting in (None, "conventional", "cholesky"):
         return "conventional", None
-    raise ValueError("unknown fitting route {!r}; expected 'conventional', 'cholesky', 'df' "
-                     "or None".format(fitting))
+    raise ValueError("unknown fitting route {!r}; expected 'conventional', 'cholesky', "
+                     "'cholesky-direct', 'df' or None".format(fitting))
 
 
-#: Cholesky vectors per AO function, for **pre-flight estimation only**. Measured at
-#: the default 1e-6 threshold: 5.6 for Ne and 7.4 for TiCl3, both in x2c-SVPall-2c. Set to 8
-#: because this is one of the few numbers that must err *high*: it multiplies the three-index
-#: MO array, and a pre-flight that under-estimates lets a calculation start that cannot
-#: finish. It is replaced by the true count as soon as the decomposition has run, so the
-#: pessimism lasts only until then.
-CHOLESKY_VECTORS_PER_AO = 8.0
+# The vectors-per-AO estimate is defined where the decomposition is (it seeds that array's
+# capacity as well as this plan) and re-exported here, because this is where the pre-flight
+# reads it and where every caller has always imported it from.
+CHOLESKY_VECTORS_PER_AO = CHOLESKY_VECTORS_PER_AO
 
 
-def memory_plan(nao: int, *, conventional: bool = True, naux: Optional[int] = None,
+def _nevpt2_block_split(n: int, n_occ: int, n_active: int) -> Tuple[int, int, int]:
+    """``(inactive, active, virtual)`` spinor counts a memory plan must assume.
+
+    The perturbation holds four three-index blocks at once, totalling
+    ``naux * (n_virtual + n_active) * (n_inactive + n_active)``, and with ``n_virtual =
+    n - n_inactive - n_active`` the only unknown left at pre-flight is the inactive count:
+    it is the electron count minus however many electrons the active space takes, and the
+    active electron count is not part of the plan's input.
+
+    That product is **concave** in ``n_inactive``, with its maximum at ``(n - n_active)/2``.
+    The plan therefore assumes the admissible split closest to that maximum — ``n_inactive``
+    can never exceed the number of occupied spinors, which is the electron count — so the
+    estimate bounds every split the calculation could turn out to have, without the safety
+    factor that a padded sizing function would be. On any real system the occupied count is
+    far below ``n/2`` and the bound is simply "every occupied spinor is inactive".
+    """
+    hi = max(0, min(int(n_occ), n - int(n_active)))
+    n_inactive = min(hi, max(0, (n - int(n_active)) // 2))
+    return n_inactive, int(n_active), n - n_inactive - int(n_active)
+
+
+def memory_plan(nao: int, *, conventional: bool = True, direct: bool = False,
+                shell_ao_max: Optional[int] = None, n_shells: Optional[int] = None,
+                naux: Optional[int] = None,
                 nspinor: Optional[int] = None, n_active: Optional[int] = None,
+                nelec: Optional[int] = None,
                 nevpt2: bool = False, screening: bool = False) -> list:
     """Phase-by-phase memory estimate for a calculation on ``nao`` AO functions.
 
@@ -871,23 +914,48 @@ def memory_plan(nao: int, *, conventional: bool = True, naux: Optional[int] = No
     ``nevpt2`` adds the 4-RDM, which is ``n_active^8`` and is by a wide margin the largest
     array in the program (direct contraction was chosen over a cumulant approximation, so
     there is no cheaper route to it). ``screening`` adds the two-electron picture change
-    (one four-component atomic solve per unique element).
+    (one four-component atomic solve per unique element). ``nelec`` is the electron count,
+    which is what bounds the transformed three-index blocks (see below) and is known as soon
+    as the molecule is built.
+
+    ``conventional`` is whether the ``O(nao^4/8)`` AO integral array is materialized;
+    ``direct`` is the integral-direct Cholesky route, which does not materialize it and holds
+    shell-pair batches of integrals instead, sized from ``shell_ao_max`` (AO functions of the
+    largest shell) and ``n_shells`` (how many batches there are to cache). The two are
+    alternatives, and both are false for density fitting.
+
+    ⚠ **The three-index MO phase is planned as the orbital *blocks* the pipeline builds, never
+    as the square** ``B^P_{pq}``. Nothing on any production path transforms every spinor
+    against every spinor: the orbital optimizer and the CI drivers hold ``B^P_{p,active}``,
+    and the perturbation holds four blocks over its space pairs. Budgeting the square refuses
+    calculations that would have run — and a refusal on an array nobody allocates teaches the
+    user to raise the limit blindly, which is the one response that also defeats the next
+    refusal, the real one. The bound is stated in the plan's own notes so that a user who does
+    hit it knows which block grew.
     """
     from ..amf.correction import correction_memory_gb
     from ..integrals.transform import (factor_memory_gb, mo_block_memory_gb,
                                        transform_buffer_gb)
+    from ..mcscf.orbopt import cas_integrals_memory_gb, hessian_response_memory_gb
 
     estimated_naux = naux is None
     naux = int(naux if naux is not None else CHOLESKY_VECTORS_PER_AO * nao)
     n = int(nspinor if nspinor is not None else 2 * nao)
+    # Without an electron count nothing bounds the occupied space but the whole spinor set,
+    # which is what the block bound below then falls back on. Both callers in this file supply
+    # it; the fallback exists so that ``memory_plan`` remains usable as a bare estimate.
+    n_occ = int(nelec) if nelec is not None else n
     phases = [res.PhaseEstimate(
         name="scalar X2C SCF", governed=False,
         external_note="allocated by PySCF, not accounted for here; it is given "
                       "mol.max_memory = the rest of the limit")]
 
     ints = res.PhaseEstimate(name="two-electron integrals", advice=[
-        "the Cholesky route needs the conventional ERI array; density fitting with an "
-        "explicit auxiliary basis does not "])
+        "fitting=\"cholesky-direct\" evaluates the integrals as the decomposition asks for "
+        "them and never forms the conventional array, at the same threshold and the same "
+        "error bound",
+        "density fitting with an explicit auxiliary basis does not form it either, at the "
+        "cost of an error the auxiliary sets rather than one the user does"])
     if conventional:
         ints.allocations.append(res.PlannedAllocation(
             "conventional AO ERI array", eri_memory_gb(nao),
@@ -895,6 +963,22 @@ def memory_plan(nao: int, *, conventional: bool = True, naux: Optional[int] = No
     ints.allocations.append(res.PlannedAllocation(
         "three-index AO factors", factor_memory_gb(nao, naux),
         note="naux {} {}".format("~" if estimated_naux else "=", naux)))
+    if direct:
+        # ⚠ What replaces the array above, and the whole of what the direct route holds at
+        # once: shell-pair batches of integrals. Transient — each is re-used across the
+        # columns of a symmetry orbit and then dropped — and stated here as the same
+        # ``min(what it wants, what it is allowed)`` the kernel itself computes, so the plan
+        # is what the evaluator holds rather than what it could get away with. Sizing it from
+        # the free budget alone, unstated, was measured holding gigabytes of batches under a
+        # plan that claimed one.
+        batch = direct_block_memory_gb(nao, shell_ao_max if shell_ao_max else 1)
+        want = (direct_cache_memory_gb(nao, shell_ao_max, n_shells)
+                if shell_ao_max and n_shells else batch)
+        ints.allocations.append(res.PlannedAllocation(
+            "integral-direct shell-pair batches",
+            min(want, res.BUDGET.transient_gb()), resident=False,
+            note="{:.3f} GB a batch; a smaller share only costs re-evaluations".format(
+                batch)))
     phases.append(ints)
 
     if screening:
@@ -914,17 +998,37 @@ def memory_plan(nao: int, *, conventional: bool = True, naux: Optional[int] = No
                     "solve behind it, at the cost of j-splittings 5-30% too large "
                     ""]))
 
+    mo_advice = ["reduce the auxiliary/Cholesky dimension, which this block is linear in",
+                 "use a smaller basis set"]
+    if n_active:
+        # Exactly what ``CASIntegrals`` owns, and what every CI driver is handed.
+        mo_label = "three-index MO block B^P_pt"
+        mo_ket = int(n_active)
+        mo_gb = cas_integrals_memory_gb(naux, n, mo_ket)
+        mo_note = "{} spinors x {} active".format(n, mo_ket)
+        mo_advice.insert(0, "reduce the active space: this block carries one index over it")
+    else:
+        # No active space yet, so the plan bounds it by the largest block anything downstream
+        # asks for: every spinor against the occupied ones. An active space wider than the
+        # occupied space would exceed it, which is why the advice below says to pass
+        # ``n_active`` rather than leaving the planner to guess.
+        mo_label = "three-index MO block B^P_p,occ"
+        mo_ket = n_occ
+        mo_gb = mo_block_memory_gb(naux, n, mo_ket)
+        mo_note = "{} spinors x {} occupied{}".format(
+            n, mo_ket, "" if nelec is not None else " (no electron count given)")
+        mo_advice.insert(0, "state the active space (n_active=): the plan then budgets the "
+                            "block the multireference stage really holds, which is normally "
+                            "far narrower than this bound")
     phases.append(res.PhaseEstimate(name="spinor MO transform", allocations=[
-        res.PlannedAllocation("three-index MO integrals B^P_pq",
-                              mo_block_memory_gb(naux, n, n),
-                              note="{} spinors".format(n)),
+        res.PlannedAllocation(mo_label, mo_gb, note=mo_note),
         # What the kernel would use unblocked, capped by what it is allowed: blocking means
         # it never needs more than either. Planning for the cap alone is how a memory plan
         # becomes pessimistic enough to refuse calculations that would have run.
         res.PlannedAllocation("transform buffers",
-                              min(transform_buffer_gb(nao, n, naux),
+                              min(transform_buffer_gb(nao, mo_ket, naux),
                                   res.BUDGET.transient_gb()), resident=False),
-    ], advice=["transform only the orbital blocks that are needed rather than all spinors"]))
+    ], advice=mo_advice))
 
     if n_active:
         phases.append(res.PhaseEstimate(name="active-space integrals", allocations=[
@@ -932,13 +1036,39 @@ def memory_plan(nao: int, *, conventional: bool = True, naux: Optional[int] = No
                                   res.array_gb((n_active,) * 4),
                                   note="{} active spinors".format(n_active)),
             res.PlannedAllocation("2-RDM", res.rdm_gb(n_active, 2)),
-        ], advice=["reduce the active space"]))
+            # ⚠ The second-order step's peak, and it is three times the block above rather
+            # than a fraction of it. "auto" escalates to that step on the gradient
+            # trajectory, so this is planned whenever an active space is, not only when
+            # second order was asked for by name.
+            res.PlannedAllocation("second-order Hessian response blocks",
+                                  hessian_response_memory_gb(naux, n, int(n_active)),
+                                  resident=False,
+                                  note="3 x B^P_pt, live together in one Hessian-vector "
+                                       "product"),
+        ], advice=["reduce the active space",
+                   "mode=\"quasi-newton\" never forms the Hessian response blocks, at the "
+                   "cost of the robustness the second-order step exists for"]))
     if nevpt2 and n_active:
+        n_i, n_a, n_v = _nevpt2_block_split(n, n_occ, int(n_active))
         phases.append(res.PhaseEstimate(name="SC-NEVPT2", allocations=[
             res.PlannedAllocation("4-RDM", res.rdm_gb(n_active, 4),
                                   note="n_active^8; 6.4 GB at 12 spinors, 382 GB at 20"),
             res.PlannedAllocation("3-RDM", res.rdm_gb(n_active, 3)),
-        ], advice=["reduce the active space: the 4-RDM grows as its eighth power"]))
+            # The space-pair blocks the perturbation caches, all live at once and all live
+            # beside the RDMs. ⚠ Summed by the identity
+            # ``sum over the four pairs = naux (n_v + n_a) (n_i + n_a)`` rather than by asking
+            # the perturbation for the list, because **nothing on the calculation path may
+            # import the perturbation layer** and the front-end is on it. The pair list stays
+            # the perturbation's own; the suite cross-checks this forecast against it, so a
+            # class that starts requesting a fifth pair fails a test rather than quietly
+            # leaving the plan describing a different calculation.
+            res.PlannedAllocation("three-index MO blocks B^P_(bra|ket)",
+                                  mo_block_memory_gb(naux, n_v + n_a, n_i + n_a),
+                                  note="{} inactive / {} active / {} virtual".format(
+                                      n_i, n_a, n_v)),
+        ], advice=["reduce the active space: the 4-RDM grows as its eighth power",
+                   "freeze core spinors or delete high virtuals, which shortens the label "
+                   "ranges of the three-index blocks"]))
     return phases
 
 
@@ -1047,6 +1177,223 @@ class MolecularFourComponent:
         from ..spinor.expand import spin_block_diagonal
         c = spin_block_diagonal(self.contraction)
         return np.ascontiguousarray(c.conj().T @ a @ c)
+
+
+def _shell_ao_max(mol) -> int:
+    """AO functions of the largest **libcint** shell — what sizes an integral-direct batch."""
+    return int(np.diff(np.asarray(mol.ao_loc_nr())).max()) if mol.nbas else 1
+
+
+def _npair_of(nao: int) -> int:
+    """Packed AO pair count. Local, so the front end needs no import from the integral layer
+    for a formula that is one line and is the same everywhere it appears."""
+    return nao * (nao + 1) // 2
+
+
+def direct_cache_memory_gb(nao: int, shell_ao_max: int, n_shells: int) -> float:
+    """Size [GB] :class:`DirectERIMatrix`'s batch cache would like (exact sizing function).
+
+    One batch per shell pair in the basis, i.e. every batch the decomposition could ever
+    re-use. ⚠ **It is a want, not a need**, and the caller caps it with what the transient
+    budget allows: the cache is what turns re-evaluations into re-use, and both ends of that
+    trade are measured. Ti2Cl6 (351 shell pairs, 118 of them ever selected, 37 MB a batch)
+    costs 731 integral batch evaluations with 8 cached, 380 with 16, 146 with 32 and 118 —
+    the floor — with 64 or more; the CPU cost runs 243 s down to 102 s across that range.
+
+    So on a machine with room the cache spends memory to go fast, and on the machine this
+    route exists for — where the transient share is small because the limit is what binds —
+    it shrinks and the decomposition pays up to ~6x more integral evaluations while still
+    being the only route that runs at all. That self-adjustment is the point: this is a
+    transient buffer, and the array it replaces was resident.
+
+    ⚠ **Never more than the whole integral array would have cost.** Caching more integrals
+    than storing all of them takes is absurd on a route whose reason to exist is not storing
+    them — and it is not academic: without this cap a small molecule *planned worse* on the
+    direct route than on the conventional one, i.e. the route could be refused exactly where
+    the one it replaces would run.
+    """
+    pairs = int(n_shells) * (int(n_shells) + 1) // 2
+    return min(pairs * direct_block_memory_gb(nao, shell_ao_max), eri_memory_gb(nao))
+
+
+def direct_block_memory_gb(nao: int, shell_ao_max: int) -> float:
+    """Size [GB] of one shell-pair batch of :class:`DirectERIMatrix` (exact sizing function).
+
+    The evaluator's working set: ``(npair, d_K, d_L)`` doubles, where ``d`` is the number of
+    AO functions of a shell. ⚠ It is **the integral library's granularity, not a blocking
+    choice** — one call evaluates every ket component of a shell pair whether or not the
+    caller wants them, so this array cannot be made smaller by asking for less. Sized with the
+    largest shell in the basis on both sides, which is the worst pair that can occur.
+    """
+    return res.array_gb((_npair_of(nao), int(shell_ao_max), int(shell_ao_max)), np.float64)
+
+
+class DirectERIMatrix:
+    """The two-electron matrix ``(mu nu | la ka)``, evaluated on demand and never stored.
+
+    The integral-direct half of the Cholesky route. It presents exactly the interface
+    :meth:`kuiva.integrals.transform.ThreeIndexAO.from_matrix` asks for — a ``diagonal`` and a
+    ``column(q)`` over the packed AO pair index — so the decomposition itself is unchanged and
+    cannot tell the two routes apart. What changes is the memory: the conventional route must
+    materialize ``O(nao^4/8)`` doubles first, and this one holds one shell-pair batch at a
+    time.
+
+    **Batching.** A column is one AO pair ``(la, ka)`` against every AO pair ``(mu, nu)``, and
+    the integral library's smallest unit is a *shell* quartet — so one evaluation yields every
+    ket component of the shell pair that ``(la, ka)`` belongs to, ``(npair, d_K, d_L)`` of
+    them. Those are exactly the columns of one symmetry orbit, which is what the orbit-complete
+    path asks for next, so the batch is cached and an orbit costs **one** evaluation. The cache
+    is a bounded LRU: the plain path hops between shell pairs by descending diagonal and would
+    otherwise re-evaluate the same batch several times (measured 2.3 evaluations per shell pair
+    with a single-entry cache).
+
+    ⚠ **Bit-level agreement is a property of this class, not a hope.** Two rules hold it up.
+    (1) The diagonal is taken from the shell quartet ``(K,L|K,L)``, which is the same library
+    call, with the same arguments, that the column batch for ``(K, L)`` makes for its own
+    bra pair — so ``diagonal()[q]`` equals ``column(q)[q]`` bit for bit, which the plain path
+    depends on. (2) Columns are packed by the library itself (``s2ij``), in the same
+    lower-triangular order the rest of this module uses, so no repacking step exists to get
+    wrong. Fed the same matrix elements, this route and the in-memory one produce **bitwise
+    identical** factors.
+
+    ⚠ **What it does not agree with bitwise is the 8-fold packed array** the conventional
+    route ingests. That array is filled by a different traversal of the same integrals, and the
+    library's two fills differ in the last bits for a sixth of the elements — a property of the
+    integral library, not of the decomposition. The consequence is measured rather than
+    assumed, and it is nothing a result is read from: the reconstructed integrals agree to
+    3e-15 and a spin-orbit spectrum to 0.0 cm^-1.
+
+    References
+    ----------
+    Evaluating only the columns the pivoting selects, rather than the whole matrix, is the
+    formulation of H. Koch, A. Sanchez de Meras, T. B. Pedersen, "Reduced scaling in electronic
+    structure calculations using Cholesky decompositions", J. Chem. Phys. 118, 9481 (2003),
+    doi:10.1063/1.1578621; see also F. Aquilante et al., "Cholesky Decomposition Techniques in
+    Electronic Structure Theory", in "Linear-Scaling Techniques in Computational Chemistry and
+    Physics", Springer (2011), pp. 301-343, doi:10.1007/978-90-481-2853-2_13, for the
+    integral-direct practice this follows.
+    """
+
+    def __init__(self, mol, *, cache_gb: Optional[float] = None) -> None:
+        self.mol = mol
+        self.nao = int(mol.nao)
+        self.nbas = int(mol.nbas)
+        self.npair = _npair_of(self.nao)
+        self._ao_loc = np.asarray(mol.ao_loc_nr(), dtype=np.int64)
+        # ⚠ libcint shells, NOT AOLayout shells: a general contraction is one shell to the
+        # integral library and several to the layout, and shls_slice speaks the library's
+        # language. Deriving this from the layout would slice the wrong ranges on exactly the
+        # bases the actinide work uses.
+        self._shell_of = np.repeat(np.arange(self.nbas, dtype=np.int64),
+                                   np.diff(self._ao_loc))
+        self._rows, self._cols = np.tril_indices(self.nao)
+        # One budget question, asked once and outside every loop — and the cache is bounded by
+        # a **batch count** as well, so that what it holds is the number the memory plan
+        # carries rather than however much of the limit happens to be free. Sizing it from the
+        # budget alone was measured holding gigabytes of integral batches for no gain.
+        limit = (min(direct_cache_memory_gb(self.nao, self.shell_ao_max, self.nbas),
+                     res.transient_gb())
+                 if cache_gb is None else float(cache_gb))
+        self._cache_limit_bytes = limit * res.BYTES_PER_GB
+        self._cache: "OrderedDict[Tuple[int, int], np.ndarray]" = OrderedDict()
+        self._cache_bytes = 0
+        #: Shell-pair batches evaluated, and columns served from them: the cost of the route.
+        self.n_batches = 0
+        self.n_columns = 0
+
+    @property
+    def shell_ao_max(self) -> int:
+        """AO functions of the largest shell — what sizes one batch."""
+        return int(np.diff(self._ao_loc).max()) if self.nbas else 1
+
+    def batch_memory_gb(self) -> float:
+        """Size [GB] of the largest shell-pair batch this basis can produce."""
+        return direct_block_memory_gb(self.nao, self.shell_ao_max)
+
+    def diagonal(self) -> np.ndarray:
+        """``(mu nu | mu nu)`` for every packed AO pair, from one quartet per shell pair."""
+        diag = np.zeros(self.npair, dtype=np.float64)
+        loc = self._ao_loc
+        with timer("direct ERI diagonal"):
+            for k in range(self.nbas):
+                for l in range(k + 1):
+                    quartet = self.mol.intor(
+                        "int2e", shls_slice=(k, k + 1, l, l + 1, k, k + 1, l, l + 1))
+                    block = np.einsum("abab->ab", quartet)      # (d_K, d_L), tiny
+                    a = np.arange(loc[k], loc[k + 1])[:, None]
+                    b = np.arange(loc[l], loc[l + 1])[None, :]
+                    keep = a >= b
+                    diag[(a * (a + 1) // 2 + b)[keep]] = block[keep]
+        return diag
+
+    def column(self, q: int) -> np.ndarray:
+        """Column ``q`` of the matrix: ``(mu nu | la ka)`` with ``(la, ka)`` the pair ``q``."""
+        a = int(self._rows[q])
+        b = int(self._cols[q])
+        k = int(self._shell_of[a])
+        l = int(self._shell_of[b])
+        self.n_columns += 1
+        return self._batch(k, l)[:, a - self._ao_loc[k], b - self._ao_loc[l]]
+
+    def _batch(self, k: int, l: int) -> np.ndarray:
+        """The ``(npair, d_K, d_L)`` batch for shell pair ``(k, l)``, evaluated or cached."""
+        key = (k, l)
+        cached = self._cache.get(key)
+        if cached is not None:
+            self._cache.move_to_end(key)
+            return cached
+        block = self.mol.intor(
+            "int2e", shls_slice=(0, self.nbas, 0, self.nbas, k, k + 1, l, l + 1),
+            aosym="s2ij")
+        self.n_batches += 1
+        nbytes = block.nbytes
+        # Evict oldest first; a batch larger than the whole budget is used and not kept
+        # rather than refused, because the library cannot produce a smaller one.
+        while self._cache and self._cache_bytes + nbytes > self._cache_limit_bytes:
+            _, dropped = self._cache.popitem(last=False)
+            self._cache_bytes -= dropped.nbytes
+        if nbytes <= self._cache_limit_bytes:
+            self._cache[key] = block
+            self._cache_bytes += nbytes
+        return block
+
+    def report(self, logger=None) -> None:
+        logger = logger or log
+        out.entry(logger or log, "integral batches evaluated", self.n_batches,
+                  note="{} shell pairs in the basis; a pair is re-evaluated when the "
+                       "cache cannot hold it".format(self.nbas * (self.nbas + 1) // 2))
+        out.entry(logger or log, "columns served", self.n_columns)
+        out.entry(logger or log, "largest batch", self.batch_memory_gb(), "GB", fmt="{:.3f}")
+
+    def __repr__(self) -> str:
+        return "DirectERIMatrix(nao={}, batches={}, columns={})".format(
+            self.nao, self.n_batches, self.n_columns)
+
+
+def _direct_cholesky(mol, *, tol: float, orbit_pivots: bool = True,
+                     one_centre: bool = True, report: bool = True):
+    """Cholesky-decompose the two-electron integrals without ever storing them.
+
+    The front-end half of the integral-direct route: it pairs :class:`DirectERIMatrix` with
+    the decomposition every other route runs, and returns the same
+    :class:`~kuiva.integrals.transform.ThreeIndexAO` those produce. Pivoting on complete
+    symmetry orbits is the default here exactly as it is elsewhere, and the labelling comes
+    from the same AO layout, so the two routes select the same orbits in the same order.
+    """
+    from ..integrals.transform import ThreeIndexAO, shell_pair_orbits
+
+    orbits = None
+    if orbit_pivots:
+        layout = ao_layout(mol)
+        orbits = shell_pair_orbits(layout.ao_shell, layout.ao_atom, one_centre=one_centre)
+    source = DirectERIMatrix(mol)
+    with timer("integral-direct two-electron integrals"):
+        factors = ThreeIndexAO.from_matrix(
+            source.diagonal(), source.column, int(mol.nao), tol, orbits=orbits,
+            report=report, note="evaluated on demand (integral-direct)")
+    if report:
+        source.report()
+    return factors
 
 
 def ao_layout(mol) -> AOLayout:
@@ -1641,6 +1988,8 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                    decoupling_options: Optional[Dict[str, object]] = None,
                    conv_tol: float = 1e-10, max_cycle: int = 200,
                    memory_gb: Optional[float] = None, n_active: Optional[int] = None,
+                   cholesky_tol: float = DEFAULT_CHOLESKY_TOL, orbit_pivots: bool = True,
+                   one_centre: bool = True,
                    gauge_origin=None, property_picture_change: bool = False,
                    anomaly_picture_change: bool = False,
                    verbose: int = 0) -> ScalarX2CData:
@@ -1658,7 +2007,15 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     fitting : str, optional
         ``None`` / ``"conventional"`` / ``"cholesky"`` — ingest conventional ERIs, which
         :mod:`kuiva.integrals.transform` Cholesky-decomposes. **This is the default in every
-        case.** ``"df"`` — density fitting; see ``auxbasis``.
+        case.** ``"cholesky-direct"`` — the same decomposition with the integrals evaluated
+        as it asks for them and never stored, which removes the ``O(nao^4/8)`` array that
+        otherwise bounds the size of system that fits; the factors come back on
+        :attr:`ScalarX2CData.factors`. ``"df"`` — density fitting; see ``auxbasis``.
+    cholesky_tol, orbit_pivots, one_centre :
+        The decomposition's own settings, used by ``fitting="cholesky-direct"`` **only**,
+        because that route decomposes here rather than downstream. They mean exactly what
+        they mean in :meth:`kuiva.integrals.transform.ThreeIndexAO.from_scalar_data`, which
+        is where the other routes take them from.
     auxbasis : optional
         Auxiliary basis for density fitting: a registry family name, a PySCF basis name, or
         any PySCF ``auxbasis`` specification. Supplying it selects the DF route. **The
@@ -1709,9 +2066,11 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         Working-memory limit for this calculation, overriding the configured default.
         Without a default *and* without this, the calculation refuses to start.
     n_active : int, optional
-        Active-space size, if it is already known. Only used to extend the memory pre-flight
-        to the multireference phases — the earlier a size is known, the earlier a calculation
-        that cannot fit is stopped.
+        Active-space size, if it is already known. Only used to sharpen the memory pre-flight
+        — the earlier a size is known, the earlier a calculation that cannot fit is stopped.
+        It adds the multireference phases, and it makes the three-index MO block exact rather
+        than bounded by the occupied space, so it is worth passing whenever the active space
+        is narrower than the occupied one, which is the usual case.
     gauge_origin : optional
         Gauge origin for the orbital angular momentum of the property dump: ``"mass"``
         (the default centre of mass), ``"charge"``, ``"origin"``, or three coordinates in
@@ -1736,7 +2095,9 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     # the front-end, so the whole plan is printed and judged here, before the SCF.
     res.ensure_configured(memory_gb)
     res.preflight(memory_plan(mol.nao, conventional=fit_route == "conventional",
-                              n_active=n_active,
+                              direct=fit_route == "direct",
+                              shell_ao_max=_shell_ao_max(mol), n_shells=int(mol.nbas),
+                              n_active=n_active, nelec=mol.nelectron,
                               screening=with_soc and chosen.screening != "none"))
     if fit_route == "conventional":
         _reserve_eri_memory(mol.nao)
@@ -1798,8 +2159,18 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         if fit_route == "df":
             # DF factors, packed over the lower-triangular AO pair index.
             df_cderi = np.asarray(mf.with_df._cderi)
-        else:
+        elif fit_route == "conventional":
             eri = mol.intor("int2e", aosym="s8")
+
+    # ⚠ **The integral-direct decomposition runs here, and it has to.** It is the one step
+    # that needs the integrals without needing them stored, so it belongs where the evaluator
+    # is still alive — nothing downstream may call PySCF, and no Mole crosses this boundary.
+    # The container then carries finished factors instead of an array, and everything after
+    # this point sees the same object it would have seen on either other route.
+    factors = None
+    if fit_route == "direct":
+        factors = _direct_cholesky(mol, tol=cholesky_tol, orbit_pivots=orbit_pivots,
+                                   one_centre=one_centre)
 
     soc = (ingest_spin_orbit(mol, h_x2c, chosen.decoupling, screening=chosen.screening,
                              decoupling_options=decoupling_options,
@@ -1842,7 +2213,7 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         mo_coeff=np.ascontiguousarray(mo_coeff),
         mo_energy=np.ascontiguousarray(mf.mo_energy),
         mo_occ=np.ascontiguousarray(mf.mo_occ),
-        fit_route=fit_route, eri=eri, df_cderi=df_cderi,
+        fit_route=fit_route, eri=eri, df_cderi=df_cderi, factors=factors,
         aux_name=aux if isinstance(aux, str) else ("custom" if aux is not None else None),
         soc=soc, reference=ref_name, unrestricted=unrestricted, s2_deviation=s2_dev,
         basis_meta=meta, e_nuc=float(mol.energy_nuc()), ao_layout=ao_layout(mol),
@@ -1861,7 +2232,9 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
                    level_shift: float = 0.0, damp: float = 0.0,
                    init_guess: Optional[str] = None,
                    spherical: bool = True,
-                   memory_gb: Optional[float] = None, gauge_origin=None,
+                   memory_gb: Optional[float] = None,
+                   cholesky_tol: float = DEFAULT_CHOLESKY_TOL, orbit_pivots: bool = True,
+                   one_centre: bool = True, gauge_origin=None,
                    verbose: int = 0) -> ScalarX2CData:
     """Scalar X2C SCF on **one atom or ion, averaged over a configuration**.
 
@@ -1967,6 +2340,9 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
 
     res.ensure_configured(memory_gb)
     res.preflight(memory_plan(mol.nao, conventional=fit_route == "conventional",
+                              direct=fit_route == "direct",
+                              shell_ao_max=_shell_ao_max(mol), n_shells=int(mol.nbas),
+                              nelec=mol.nelectron,
                               screening=with_soc and chosen.screening != "none"))
     if fit_route == "conventional":
         _reserve_eri_memory(mol.nao)
@@ -2058,8 +2434,13 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
         df_cderi = None
         if fit_route == "df":
             df_cderi = np.asarray(mf.with_df._cderi)
-        else:
+        elif fit_route == "conventional":
             eri = mol.intor("int2e", aosym="s8")
+
+    # Same reason as in the molecular driver: the direct route decomposes here, where the
+    # integrals can still be evaluated, and hands on the factors rather than their input.
+    factors = (_direct_cholesky(mol, tol=cholesky_tol, orbit_pivots=orbit_pivots,
+                                one_centre=one_centre) if fit_route == "direct" else None)
 
     screen_opts = dict(screening_options or {})
     screen_opts.setdefault("configuration", config)
@@ -2117,7 +2498,7 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
         e_scf=float(e_scf), converged=bool(mf.converged),
         s_ao=np.ascontiguousarray(s_ao), h_x2c=np.ascontiguousarray(h_x2c),
         mo_coeff=mo_coeff, mo_energy=np.ascontiguousarray(np.asarray(mf.mo_energy)),
-        mo_occ=mo_occ, fit_route=fit_route, eri=eri, df_cderi=df_cderi,
+        mo_occ=mo_occ, fit_route=fit_route, eri=eri, df_cderi=df_cderi, factors=factors,
         aux_name=aux if isinstance(aux, str) else ("custom" if aux is not None else None),
         soc=soc, reference="aoc", unrestricted=False, s2_deviation=None,
         basis_meta=meta, e_nuc=float(mol.energy_nuc()), ao_layout=layout,

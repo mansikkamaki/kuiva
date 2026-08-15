@@ -87,7 +87,7 @@ def run_system(system: sysdef.System) -> Dict:
     from kuiva.util import resources as res
     from kuiva.util import timing
 
-    res.BUDGET.clear()
+    res.clear()
     molecule = api.Molecule(atoms=system.atoms, basis=system.basis, charge=system.charge,
                             spin=system.spin)
     # screening="none": a cost measurement; the two-electron picture change costs a

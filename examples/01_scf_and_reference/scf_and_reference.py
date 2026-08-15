@@ -35,6 +35,9 @@ WHAT TO LOOK FOR IN THE OUTPUT
 * the orthonormal working basis and how many directions (if any) it dropped;
 * the spinor expansion: two spinors per orbital, with a Kramers pairing deviation of zero;
 * the Cholesky decomposition of the two-electron integrals and its error bound;
+* the same front end run a second time with ``fitting="cholesky-direct"``, which evaluates
+  the integrals as the decomposition asks for them and never builds the array -- compare the
+  two pre-flight tables, and note that the answers are identical;
 * a table of checks, all of which must pass, and the timing and memory summaries.
 """
 from __future__ import annotations
@@ -207,6 +210,41 @@ def main() -> int:
          "over all {n}^4 AO integrals".format(n=data.nao), out.SCI_FMT),
     ])
 
+    # (c2) The same factorization without ever storing the integrals. `fitting=
+    #      "cholesky-direct"` evaluates each column of two-electron integrals when the
+    #      pivoting asks for it, instead of building the whole array first. That array grows
+    #      as the fourth power of the basis, so on a large system it is what decides whether
+    #      the calculation starts at all -- the pre-flight table printed by this second SCF
+    #      no longer has a line for it. The threshold, the error bound and the pivot rule are
+    #      the same, and so is the answer; what changes is only how the numbers are obtained.
+    #
+    #      One consequence to know about: this route decomposes inside the SCF stage, because
+    #      that is the only point where the integrals can still be evaluated. `cholesky_tol`
+    #      and `orbit_pivots` therefore belong to ScalarSCF here rather than to Reference.
+    out.section(log, "The same integrals, never stored (fitting='cholesky-direct')")
+    scf_direct = kuiva.ScalarSCF(neon, memory_gb=2.0, fitting="cholesky-direct").run()
+    ref_direct = kuiva.Reference(scf_direct).run()
+    direct = ref_direct.reference.factors
+
+    l_direct = direct.unpack(slice(None))
+    eri_direct = np.einsum("Pmn,Pkl->mnkl", l_direct, l_direct, optimize=True)
+    direct_vs_exact = float(np.max(np.abs(eri_direct - eri_exact)))
+    direct_vs_stored = float(np.max(np.abs(eri_direct - eri_fit)))
+
+    out.subsection(log, "Integral-direct route against the stored one")
+    out.entries(log, [
+        ("integral array stored", "no" if scf_direct.data.eri is None else "yes", "",
+         "the O(nao^4) array the other route holds"),
+        ("Cholesky vectors", direct.naux, "",
+         "same count as the stored route" if direct.naux == factors.naux else "DIFFERENT"),
+        ("max |(pq|rs) rebuilt - exact|", direct_vs_exact, "Eh", "", out.SCI_FMT),
+        ("max |(pq|rs) direct - stored|", direct_vs_stored, "Eh",
+         "the two routes agree to machine precision", out.SCI_FMT),
+    ])
+    out.note(log, "the vectors themselves need not match element for element: any orthogonal")
+    out.note(log, "mixing of them reproduces the same integrals, and the integrals are what")
+    out.note(log, "every later stage contracts.")
+
     # (d) The one-electron Hamiltonian the multireference layer will use. With spin-orbit
     #     coupling ingested this is the full two-component X2C operator in the spin-blocked
     #     AO basis: complex, Hermitian, and not block diagonal in spin -- that off-diagonal
@@ -252,6 +290,10 @@ def main() -> int:
         "the spinor guess is exactly Kramers paired": spinors.partner_deviation() < 1e-14,
         "time reversal squares to -1": t2_err < 1e-14,
         "the Cholesky error respects its threshold": cholesky_err < 10.0 * factors.tol,
+        "the integral-direct route stores no integral array": scf_direct.data.eri is None,
+        "the integral-direct route keeps the same error bound":
+            direct_vs_exact < 10.0 * direct.tol,
+        "the two factorization routes give the same integrals": direct_vs_stored < 1e-12,
         "the two-component Hamiltonian is Hermitian": herm_err < 1e-10,
         "spin-orbit coupling was ingested": bool(data.has_soc),
     }

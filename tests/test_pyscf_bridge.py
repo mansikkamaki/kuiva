@@ -105,6 +105,23 @@ def test_df_is_used_when_the_user_supplies_an_auxiliary():
     assert d.df_cderi is not None and d.eri is None
 
 
+def test_the_direct_route_is_a_value_on_the_same_axis_and_carries_factors():
+    """Three routes, one axis, one thing populated by each.
+
+    ⚠ It is a *value* on ``fitting`` rather than a separate switch on purpose: a route that
+    does not store the integrals and a route that fits them are alternatives, so pairing them
+    is not a combination to refuse — it cannot be expressed.
+    """
+    mol = Molecule([("Ne", (0.0, 0.0, 0.0))], basis="x2c-TZVPall-2c")
+    d = run_scalar_x2c(mol, fitting="cholesky-direct", screening="none")
+    assert d.fit_route == "direct"
+    assert d.eri is None and d.df_cderi is None
+    assert d.factors is not None and d.factors.origin == "cholesky"
+    assert d.factors.orbit_complete and d.factors.residual <= d.factors.tol
+    with pytest.raises(ValueError, match="unknown fitting route"):
+        run_scalar_x2c(mol, fitting="direct-cholesky", screening="none")
+
+
 def test_open_shell_rohf_doublet():
     # Li atom, doublet (spin=1) -> ROHF path; 3 electrons.
     mol = Molecule([("Li", (0.0, 0.0, 0.0))], basis="x2c-SVPall-2c", spin=1)

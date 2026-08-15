@@ -34,6 +34,35 @@ coverage is partial and honest about it: the SCF is PySCF's, its allocation patt
 dynamic, and all Kuiva can do is hand PySCF the same budget through ``mol.max_memory``. Such
 phases are listed in the pre-flight table as **not governed** rather than silently omitted.
 
+⚠ A reservation lives as long as the process, so a loop needs a scope
+---------------------------------------------------------------------
+Nothing here observes the Python object it accounts for, so nothing can notice that the array
+has been freed: a reservation stays on the ledger until it is given back. That is right for
+the one-calculation-per-process case this design assumes, and it fails in a way worth knowing
+about for a script that loops over systems — the reservations accumulate, and the *n*-th
+calculation is refused against a limit its predecessors filled, with a message that reads as
+though the machine were too small. It was met in production on a thirteen-element atomic
+series at ``memory_gb = 6``: the sixth element was refused after paying for its
+four-component atomic solve, and every element after it was refused in zero seconds.
+
+Two public entry points, and the first is the one to reach for:
+
+* ``with resources.calculation():`` around one calculation — everything reserved inside is
+  released at the end, so a loop over systems accounts each one on its own.
+* :func:`clear` forgets every reservation while keeping the limits, for a driver whose
+  structure does not suit a scope.
+
+⚠ Neither weakens the check itself: a calculation is still refused *before* it allocates, and
+the accounted total is still a lower bound on RSS. What is scoped is the **lifetime of a
+reservation**, not whether it is checked.
+
+To keep the failure from being silent when neither is used, the ledger stamps each reservation
+with the calculation that made it (:meth:`MemoryBudget.begin_calculation`, which
+:func:`preflight` calls). A calculation that starts on leftovers **which put it at risk** says
+so at the pre-flight rather than several phases later; a refusal itemizes them, sums them, and
+where releasing them would be enough it ⚠ **withholds the suggestion to raise the limit** —
+a limit raised on a wrong diagnosis swallows the next refusal too, the real one.
+
 ⚠ The estimate is a lower bound on RSS
 --------------------------------------
 MKL allocates working buffers Kuiva never sees, and glibc does not promptly return freed
@@ -431,11 +460,18 @@ def _no_limit_message(cfg_path: Optional[Path]) -> str:
 
 @dataclass
 class Allocation:
-    """One declared array: what it is, how big, and which phase owns it."""
+    """One declared array: what it is, how big, and which phase owns it.
+
+    ``generation`` is the calculation that reserved it (:meth:`MemoryBudget.begin_calculation`
+    advances the counter). It is what lets a refusal distinguish "this calculation is too
+    big" from "the previous one never gave its memory back" — two situations with the same
+    arithmetic and opposite remedies.
+    """
     label: str
     gb: float
     phase: str
     note: str = ""
+    generation: int = 0
 
     def __str__(self) -> str:
         return "{} ({:.3f} GB)".format(self.label, self.gb)
@@ -486,6 +522,7 @@ class MemoryBudget:
         self._peak_gb = 0.0
         self._peak_where = ""
         self._plan_peak_gb = 0.0
+        self._generation = 0
 
     # -- configuration --
     @property
@@ -507,6 +544,7 @@ class MemoryBudget:
         self._peak_gb = 0.0
         self._peak_where = ""
         self._plan_peak_gb = 0.0
+        self._generation = 0
 
     def reset(self) -> None:
         """:meth:`clear`, and forget the limits too."""
@@ -561,6 +599,68 @@ class MemoryBudget:
             # everything reserved inside the phase goes out of scope with it.
             self._resident = [a for a in self._resident if a in keep]
 
+    # -- calculation scope --
+    def stale_allocations(self) -> List[Allocation]:
+        """Reservations made before the current calculation began.
+
+        They are not necessarily wrong — a caller may legitimately hold one calculation's
+        arrays while setting up the next — but they are what a refusal has to point at
+        before the user concludes that the machine is too small.
+        """
+        return [a for a in self._resident if a.generation < self._generation]
+
+    def begin_calculation(self, name: str = "", *, warn: bool = True) -> List[Allocation]:
+        """Mark the start of a calculation, and report what the last one left behind.
+
+        Called by :func:`preflight`, which is the earliest point of every calculation, and by
+        :meth:`calculation`. It only advances the generation counter and reports; releasing
+        is the caller's decision, because this cannot see whether the arrays are still live.
+
+        ⚠ A script that holds one small calculation's arrays while starting the next is doing
+        nothing wrong, and a warning that fires on every second calculation is one the user
+        learns to skip — including the time it is the reason the run stops. So the warning is
+        gated on the leftovers being large enough to threaten this calculation: here on what
+        can be seen without a plan (they are already past ``warn_fraction`` of the limit on
+        their own), and in :func:`preflight`, which passes ``warn=False`` and applies the
+        sharper test it can make once the planned peak is known.
+        """
+        self._generation += 1
+        stale = self.stale_allocations()
+        if stale and warn and self._limits is not None and \
+                sum(a.gb for a in stale) > self._limits.warn_fraction * self._limits.memory_gb:
+            self._warn_stale(stale, name)
+        return stale
+
+    def _warn_stale(self, stale: Sequence[Allocation], name: str = "") -> None:
+        """The one wording of the leftover-ledger warning, wherever it is decided to say it."""
+        log.warning(
+            "the memory budget still holds %d reservation(s) totalling %.3f GB made before "
+            "this calculation%s began, and they count against it. If those arrays are still "
+            "live this is the right accounting; if the calculation that made them has "
+            "finished, release them with kuiva.util.resources.clear(), or scope each "
+            "calculation with 'with kuiva.util.resources.calculation():'.",
+            len(stale), sum(a.gb for a in stale), " ({})".format(name) if name else "")
+
+    @contextmanager
+    def calculation(self, name: str = "") -> Iterator["MemoryBudget"]:
+        """Scope one whole calculation: everything reserved inside is released at its end.
+
+        The remedy for a driver that runs several calculations in one interpreter. Unlike
+        :meth:`in_phase` — which scopes one phase *within* a calculation, and whose peak
+        model depends on phases being sequential — this makes no statement about the peak; it
+        says only that the calculation is over and its arrays are gone.
+
+        Reservations that were already live on entry are kept, so a nested or overlapping
+        scope cannot release someone else's array. Identity, not equality, decides: two
+        arrays of the same size with the same label are two arrays.
+        """
+        self.begin_calculation(name)
+        held = {id(a) for a in self._resident}
+        try:
+            yield self
+        finally:
+            self._resident = [a for a in self._resident if id(a) in held]
+
     # -- the two verbs --
     def reserve(self, label: str, gb: float, *, note: str = "",
                 advice: Sequence[str] = ()) -> Allocation:
@@ -571,7 +671,8 @@ class MemoryBudget:
         act on is only half an error.
         """
         self._check(label, gb, note=note, advice=advice, kind="resident")
-        alloc = Allocation(label=label, gb=gb, phase=self.phase, note=note)
+        alloc = Allocation(label=label, gb=gb, phase=self.phase, note=note,
+                           generation=self._generation)
         if self.configured:
             self._resident.append(alloc)
         return alloc
@@ -648,17 +749,50 @@ class MemoryBudget:
                 gb, "   ({})".format(note) if note else ""),
             "  shortfall                   {:12.3f} GB".format(resident + gb - lim),
         ]
+        stale = self.stale_allocations()
         if self._resident:
             lines += ["", "  committed so far:"]
             width = max(len(a.label) for a in self._resident)
             for a in self._resident:
+                marks = "[{}]".format(a.phase) if a.phase else ""
+                if a in stale:
+                    marks = (marks + "  " if marks else "") + "<- earlier calculation"
                 lines.append("    {:<{w}}  {:10.3f} GB  {}".format(
-                    a.label, a.gb, "[{}]".format(a.phase) if a.phase else "", w=width))
+                    a.label, a.gb, marks, w=width))
+        # ⚠ The two situations have identical arithmetic and opposite remedies: "this
+        # calculation is too big for the limit" and "the previous one never gave its memory
+        # back". Saying only the first is what makes a user raise the limit blindly — and a
+        # limit raised on a wrong diagnosis then swallows the next refusal too.
+        stale_gb = sum(a.gb for a in stale)
+        stale_suffices = bool(stale) and (resident - stale_gb + gb <= lim)
+        if stale:
+            lines += [
+                "",
+                "  {} of these reservations ({:.3f} GB) were made before this calculation "
+                "began.".format(len(stale), stale_gb),
+                "  A reservation lives as long as the process, so a script running several "
+                "calculations",
+                "  in one interpreter accumulates them until one is refused against a limit "
+                "its",
+                "  predecessors filled. If those arrays are no longer live, release them "
+                "with",
+                "  kuiva.util.resources.clear(), or scope each calculation with",
+                "  'with kuiva.util.resources.calculation():'.",
+            ]
+            if stale_suffices:
+                lines.append("  Without them this calculation needs {:.3f} GB and fits in the "
+                             "limit as it stands.".format(resident - stale_gb + gb))
         avail = machine_available_gb()
         lines.append("")
         if avail is not None:
             need = resident + gb
-            if avail > need:
+            if stale_suffices:
+                # Deliberately *not* a suggestion to raise the limit: the ledger, not the
+                # machine and not the limit, is what stopped this one.
+                lines.append("  This machine reports {:.1f} GB available; releasing the "
+                             "reservations above is".format(avail))
+                lines.append("  what this needs, not a larger limit.")
+            elif avail > need:
                 lines.append("  This machine reports {:.1f} GB available: memory_gb = {:.1f} "
                              "would run this".format(avail, _round_up(need)))
                 lines.append("  calculation as set up. The limit, not the machine, is what "
@@ -745,6 +879,31 @@ def limits(budget: MemoryBudget = BUDGET) -> Optional[ResourceLimits]:
 def reset(budget: MemoryBudget = BUDGET) -> None:
     """Clear reservations *and* limits (tests)."""
     budget.reset()
+
+
+def clear(budget: MemoryBudget = BUDGET) -> None:
+    """Forget every reservation, keeping the limits — one finished calculation's arrays.
+
+    For a driver that runs several independent calculations in one interpreter: a
+    reservation lives as long as the process, so without this the *n*-th calculation is
+    refused against a limit its predecessors filled. Prefer :func:`calculation`, which
+    cannot be forgotten halfway through a loop.
+    """
+    budget.clear()
+
+
+def calculation(name: str = "", *, budget: MemoryBudget = BUDGET):
+    """Scope one calculation's reservations; they are released when the block ends.
+
+    The supported way to run a series of calculations in one process::
+
+        for system in systems:
+            with resources.calculation(system.label):
+                run(system)
+
+    See :meth:`MemoryBudget.calculation`.
+    """
+    return budget.calculation(name)
 
 
 def reserve(label: str, gb: float, **kwargs) -> Allocation:
@@ -913,6 +1072,11 @@ def preflight(phases: Sequence[PhaseEstimate], *, budget: MemoryBudget = BUDGET,
 
     The table is printed **before** any verdict is raised, so a refusal always comes with the
     full plan above it in the output file.
+
+    This is also where a calculation *begins* as far as the ledger is concerned
+    (:meth:`MemoryBudget.begin_calculation`): it is the earliest point of every calculation
+    and nothing has been reserved for this one yet, so anything already committed came from
+    an earlier one and is warned about here rather than in a refusal several phases later.
     """
     logger = logger or log
     lims = budget.limits
@@ -959,6 +1123,20 @@ def preflight(phases: Sequence[PhaseEstimate], *, budget: MemoryBudget = BUDGET,
                                       width=out.WIDTH - len(out.INDENT) - 2,
                                       subsequent_indent="  "):
                 out.note(logger, line)
+    # After the table, so a warning about a stale ledger sits under the numbers that show it:
+    # 'carried' in the first row is exactly what an earlier calculation left behind.
+    #
+    # ⚠ It warns only when those leftovers are what puts this calculation at risk. Holding
+    # one finished calculation's arrays while starting the next is common and harmless when
+    # both are small, and a warning that fires on every second calculation in a script is one
+    # the user learns to skip — including the time it is the reason the run stops.
+    stale = budget.begin_calculation(warn=False)
+    if stale:
+        if lims is not None and peak > lims.warn_fraction * limit:
+            budget._warn_stale(stale)
+        else:
+            log.debug("%d reservation(s) totalling %.3f GB carried in from an earlier "
+                      "calculation", len(stale), sum(a.gb for a in stale))
     budget._plan_peak_gb = max(budget._plan_peak_gb, peak)
     if lims is not None:
         out.entry(logger, "memory limit", limit, "GB", note=lims.source, fmt="{:.3f}")
@@ -1032,6 +1210,7 @@ __all__ = [
     "array_gb", "rdm_gb", "machine_available_gb", "machine_total_gb", "peak_rss_gb",
     "config_search_path", "read_config", "ResourceLimits",
     "Allocation", "PlannedAllocation", "PhaseEstimate", "MemoryBudget", "BUDGET",
-    "configure", "ensure_configured", "limits", "reset", "reserve", "require",
+    "configure", "ensure_configured", "limits", "reset", "clear", "calculation",
+    "reserve", "require",
     "transient_gb", "in_phase", "scratch_free_gb", "require_scratch", "preflight", "summary",
 ]

@@ -2,14 +2,14 @@
                                    K U I V A                                    
                  relativistic multireference quantum chemistry                  
                        example 7: checkpoint and restart                        
-                                 version 0.5.1                                  
+                                 version 0.9.0                                  
                 compiled kernels: disabled (KUIVA_KERNELS=numpy)                
            threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
 ================================================================================
    output file                                   output/checkpoint_restart.out
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.19 s
+ Scalar-relativistic X2C reference                                    t = 0.14 s
 ================================================================================
    atoms                                                          4   (Cl Ti)
    charge                                                         0
@@ -19,19 +19,19 @@
    phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF                                                       external 
-   two-electron integrals            0.150           0.000       0.150  ok       
-   two-electron SOC picture change          0.151           0.000       0.151  ok       
-   spinor MO transform               0.703           0.345       1.048  ok       
+   two-electron integrals            0.168           0.000       0.168  ok       
+   two-electron SOC picture change          0.168           0.000       0.168  ok       
+   spinor MO transform               0.456           0.247       0.703  ok       
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
      mol.max_memory = the rest of the limit
      conventional AO ERI array                                0.115  GB   (nao = 105; grows as nao^4)
-     three-index AO factors                                   0.035  GB   (naux ~ 840)
+     three-index AO factors                                   0.052  GB   (naux ~ 1260)
      assembled AMF correction                                 0.000  GB   (h_sf and the three w_k over nao = 105)
-     three-index MO integrals B^P_pq                          0.552  GB   (210 spinors)
+     three-index MO block B^P_p,occ                           0.288  GB   (210 spinors x 73 occupied)
    memory limit                                               6.000  GB   (set for this calculation)
-   planned peak                                               1.048  GB
-   machine available                                         10.743  GB
+   planned peak                                               0.703  GB
+   machine available                                         10.894  GB
    SCF reference                                               ROHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                           105
@@ -40,10 +40,10 @@
    two-electron route                                  conventional
    gauge origin (property operators)             (-0.0000, 0.0000, 0.0000) bohr   (centre of mass)
    nuclear repulsion                               381.610309039030  Eh
-   scalar X2C SCF energy                         -2235.138328803091  Eh
+   scalar X2C SCF energy                         -2235.138328803092  Eh
    SCF converged                                                yes
-   SCF time                                                    2.41  s wall   (9.23 s cpu)
-   AO integral time                                            1.42  s wall   (5.55 s cpu)
+   SCF time                                                    1.35  s wall   (5.38 s cpu)
+   AO integral time                                            0.77  s wall   (3.09 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
    two-component Hamiltonian                                X2C-AMF
@@ -58,10 +58,10 @@
    reference configurations                      Cl: s6 p11, Ti: s8 p12 d2
    spin-free correction, max |dh_sf|                   7.592974e-02  Eh
    spin-orbit correction, max |dw|                     8.384170e-03  Eh
-   discarded time-reversal-odd part                       8.261e-10  Eh   (9.0e-12 relative)
+   discarded time-reversal-odd part                       1.044e-09  Eh   (1.1e-11 relative)
 
 ================================================================================
- Orthonormal working basis                                           t = 99.55 s
+ Orthonormal working basis                                           t = 62.26 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                           105
@@ -72,17 +72,17 @@
    condition number of S (retained)                       2.203e+05
 
 ================================================================================
- Spinor expansion                                                    t = 99.55 s
+ Spinor expansion                                                    t = 62.26 s
 ================================================================================
    scalar basis functions                                       105   (working basis)
    spinors                                                      210
    Kramers pairs                                                105
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    2.93e-11
+   orthonormality error                                    2.94e-11
 
 ================================================================================
- Two-electron integrals                                              t = 99.55 s
+ Two-electron integrals                                              t = 62.26 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -93,10 +93,11 @@
    pivot selection                               complete symmetry orbits   (spherical symmetry exact by construction, not to the threshold)
    largest neglected diagonal                             9.968e-09  Eh
    factor storage                                             0.047  GB
-   decomposition time                                          1.26  s wall
+   matrix elements                               stored AO integral array
+   decomposition time                                          1.28  s wall
 
 ================================================================================
- Problem                                                            t = 100.81 s
+ Problem                                                             t = 63.54 s
 ================================================================================
    system                                                     TiCl3   (planar D3h, Ti-Cl = 2.25 A)
    active space                                          CAS(1, 10)   (the Ti 3d shell, by orbital character)
@@ -105,11 +106,11 @@
    interrupt after                                                6  iterations
 
 ================================================================================
- CASSCF, uninterrupted                                              t = 100.81 s
+ CASSCF, uninterrupted                                               t = 63.54 s
 ================================================================================
 
 ================================================================================
- CASSCF                                                             t = 100.82 s
+ CASSCF                                                              t = 63.56 s
 ================================================================================
    active space                                          CAS(1, 10)   (5 lowest Kramers pairs of l=2 character on 0 Ti)
    inactive / active / virtual spinors                72 / 10 / 128
@@ -124,26 +125,26 @@
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      1     -2235.582958076735   -6.242e-03   1.938e+00    0.0020  qn           2.41
-      2     -2235.583056367004   -9.829e-05   7.817e-02    0.0004  qn           2.49
+      1     -2235.582958076734   -6.242e-03   1.938e+00    0.0020  qn           2.46
+      2     -2235.583056367003   -9.829e-05   7.817e-02    0.0004  qn           2.46
       3     -2235.583075699362   -1.933e-05   1.090e-02    0.0003  qn           2.48
-      4     -2235.583099222541   -2.352e-05   1.485e-02    0.0009  qn           2.49
-      5     -2235.583106589801   -7.367e-06   1.203e-02    0.0012  qn           2.48
-      6     -2235.583113939582   -7.350e-06   4.350e-02    0.0005  qn           2.46
-      7     -2235.583116027224   -2.088e-06   5.745e-03    0.0003  qn           2.46
-      8     -2235.583119661603   -3.634e-06   5.594e-03    0.0011  qn           2.47
-      9     -2235.583122830030   -3.168e-06   4.923e-03    0.0019  qn           2.47
-     10     -2235.583125768433   -2.938e-06   2.707e-02    0.0012  qn           2.48
-     11     -2235.583127120395   -1.352e-06   8.036e-03    0.0006  qn           2.46
-     12     -2235.583127748604   -6.282e-07   3.355e-03    0.0004  qn           2.48
-     13     -2235.583127765589   -1.698e-08   6.235e-03    0.0002  qn           2.45
-     14     -2235.583128002088   -2.365e-07   1.388e-02    0.0001  qn           2.46
-     15     -2235.583128011444   -9.356e-09   1.101e-03    0.0000  qn           2.46
-     16     -2235.583128018234   -6.790e-09   1.278e-04    0.0000  qn           2.48
-     17     -2235.583128020669   -2.435e-09   3.891e-04    0.0000  qn           2.49
-     18     -2235.583128022765   -2.096e-09   5.815e-04    0.0000  qn           2.45
-     19     -2235.583128023029   -2.638e-10   1.388e-04    0.0000  qn           2.46
-     20     -2235.583128023029    0.000e+00   3.208e-05    0.0000  qn           0.57
+      4     -2235.583099222540   -2.352e-05   1.485e-02    0.0009  qn           2.49
+      5     -2235.583106589797   -7.367e-06   1.203e-02    0.0012  qn           2.49
+      6     -2235.583113939581   -7.350e-06   4.350e-02    0.0005  qn           2.46
+      7     -2235.583116027222   -2.088e-06   5.745e-03    0.0003  qn           2.51
+      8     -2235.583119661599   -3.634e-06   5.594e-03    0.0011  qn           2.46
+      9     -2235.583122830028   -3.168e-06   4.923e-03    0.0019  qn           2.49
+     10     -2235.583125768429   -2.938e-06   2.707e-02    0.0012  qn           2.47
+     11     -2235.583127120390   -1.352e-06   8.036e-03    0.0006  qn           2.50
+     12     -2235.583127748599   -6.282e-07   3.355e-03    0.0004  qn           2.49
+     13     -2235.583127765582   -1.698e-08   6.235e-03    0.0002  qn           2.50
+     14     -2235.583128002084   -2.365e-07   1.388e-02    0.0001  qn           2.46
+     15     -2235.583128011440   -9.356e-09   1.101e-03    0.0000  qn           2.51
+     16     -2235.583128018233   -6.793e-09   1.278e-04    0.0000  qn           2.47
+     17     -2235.583128020668   -2.434e-09   3.891e-04    0.0000  qn           2.52
+     18     -2235.583128022764   -2.096e-09   5.815e-04    0.0000  qn           2.47
+     19     -2235.583128023026   -2.628e-10   1.388e-04    0.0000  qn           2.50
+     20     -2235.583128023026    0.000e+00   3.208e-05    0.0000  qn           0.58
    ----  ---------------------  -----------  ----------  --------  ------  ---------
    converged
    second-order steps taken                                       0
@@ -151,30 +152,30 @@
    rejected steps                                                 0
      state                 E [Eh]     rel [cm^-1]     weight
    -------  ---------------------  --------------  ---------
-         0     -2235.583128023029            0.00     0.5000
-         1     -2235.583128023029            0.00     0.5000
+         0     -2235.583128023026            0.00     0.5000
+         1     -2235.583128023026            0.00     0.5000
    -------  ---------------------  --------------  ---------
    10 applications of H in 0 iterations
    state-average boundary gap                              15442.34  cm^-1   (to root 3 of 10, at the converged orbitals)
    checkpoint file                               /home/akseli/Programs/kuiva/examples/07_checkpoint_restart/output/ticl3_straight.chk
    checkpoints written                                           20   (0 thinned, 0 skipped)
    checkpoint volume                                         0.0750  GB
-   time spent checkpointing                                    0.17  s
+   time spent checkpointing                                    0.16  s
 CASSCF
   active space     : CAS(1, 10)  5 lowest Kramers pairs of l=2 character on 0 Ti
   solver           : ci
-  E(CASSCF) [Eh]   : -2235.583128023029
+  E(CASSCF) [Eh]   : -2235.583128023026
   converged        : True
   macro-iterations : 20
   |grad|           : 3.21e-05
   states           : 2
 
 ================================================================================
- CASSCF, interrupted at iteration 6                                 t = 151.47 s
+ CASSCF, interrupted at iteration 6                                 t = 114.56 s
 ================================================================================
 
 ================================================================================
- CASSCF                                                             t = 151.47 s
+ CASSCF                                                             t = 114.57 s
 ================================================================================
    active space                                          CAS(1, 10)   (5 lowest Kramers pairs of l=2 character on 0 Ti)
    inactive / active / virtual spinors                72 / 10 / 128
@@ -189,12 +190,12 @@ CASSCF
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      1     -2235.582958076735   -6.242e-03   1.938e+00    0.0020  qn           2.42
-      2     -2235.583056367004   -9.829e-05   7.817e-02    0.0004  qn           2.48
-      3     -2235.583075699362   -1.933e-05   1.090e-02    0.0003  qn           2.46
-      4     -2235.583099222541   -2.352e-05   1.485e-02    0.0009  qn           2.46
-      5     -2235.583106589801   -7.367e-06   1.203e-02    0.0012  qn           2.45
-      6     -2235.583113939582   -7.350e-06   4.350e-02    0.0005  qn           2.46
+      1     -2235.582958076734   -6.242e-03   1.938e+00    0.0020  qn           2.45
+      2     -2235.583056367003   -9.829e-05   7.817e-02    0.0004  qn           2.46
+      3     -2235.583075699362   -1.933e-05   1.090e-02    0.0003  qn           2.48
+      4     -2235.583099222540   -2.352e-05   1.485e-02    0.0009  qn           2.47
+      5     -2235.583106589797   -7.367e-06   1.203e-02    0.0012  qn           2.51
+      6     -2235.583113939581   -7.350e-06   4.350e-02    0.0005  qn           2.51
  *** WARNING [examples.checkpoint_restart] stopping at iteration 6 to demonstrate the restart; the checkpoint written at this iteration is what the second leg resumes from
  *** WARNING [mcscf.orbopt] orbital optimization stopped by callback at iteration 6 (|g| = 4.350e-02); the result is the last iterate, not a converged one
    ----  ---------------------  -----------  ----------  --------  ------  ---------
@@ -205,8 +206,8 @@ CASSCF
  *** WARNING [mcscf.orbopt] orbital optimization did not converge in 40 macro-iterations (|g| = 4.350e-02, target 1.0e-04); the orbitals are the last iterate and may not be stationary
      state                 E [Eh]     rel [cm^-1]     weight
    -------  ---------------------  --------------  ---------
-         0     -2235.583113939582            0.00     0.5000
-         1     -2235.583113939582            0.00     0.5000
+         0     -2235.583113939581            0.00     0.5000
+         1     -2235.583113939581            0.00     0.5000
    -------  ---------------------  --------------  ---------
    10 applications of H in 0 iterations
    state-average boundary gap                              15428.69  cm^-1   (to root 3 of 10, at the converged orbitals)
@@ -217,7 +218,7 @@ CASSCF
 
  -- What is on disk ------------------------------------------------------------
    checkpoint iteration                                           6
-   energy                                        -2235.583113939582  Eh
+   energy                                        -2235.583113939581  Eh
    gradient norm                                          4.350e-02
    converged                                                     no
    states                                                         2
@@ -229,17 +230,17 @@ CASSCF
    Hamiltonian provenance stored                                yes
 
 ================================================================================
- CASSCF, resumed from the checkpoint                                t = 169.27 s
+ CASSCF, resumed from the checkpoint                                t = 132.57 s
 ================================================================================
 
 ================================================================================
- CASSCF                                                             t = 169.28 s
+ CASSCF                                                             t = 132.58 s
 ================================================================================
    active space                                          CAS(1, 10)   (restored from /home/akseli/Programs/kuiva/examples/07_checkpoint_restart/output/ticl3_interrupted.chk)
    inactive / active / virtual spinors                72 / 10 / 128
    determinants                                                  10
    checkpoint iteration                                           6
-   energy                                        -2235.583113939582  Eh
+   energy                                        -2235.583113939581  Eh
    gradient norm                                          4.350e-02
    converged                                                     no
    states                                                         2
@@ -255,20 +256,20 @@ CASSCF
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      7     -2235.583116027224   -2.088e-06   5.745e-03    0.0003  qn           2.49
-      8     -2235.583119661603   -3.634e-06   5.594e-03    0.0011  qn           2.47
-      9     -2235.583122830030   -3.168e-06   4.923e-03    0.0019  qn           2.46
-     10     -2235.583125768433   -2.938e-06   2.707e-02    0.0012  qn           2.47
-     11     -2235.583127120395   -1.352e-06   8.036e-03    0.0006  qn           2.46
-     12     -2235.583127748604   -6.282e-07   3.355e-03    0.0004  qn           2.49
-     13     -2235.583127765589   -1.698e-08   6.235e-03    0.0002  qn           2.48
-     14     -2235.583128002088   -2.365e-07   1.388e-02    0.0001  qn           2.47
-     15     -2235.583128011444   -9.356e-09   1.101e-03    0.0000  qn           2.46
-     16     -2235.583128018234   -6.790e-09   1.278e-04    0.0000  qn           2.48
-     17     -2235.583128020669   -2.435e-09   3.891e-04    0.0000  qn           2.46
-     18     -2235.583128022765   -2.096e-09   5.815e-04    0.0000  qn           2.49
-     19     -2235.583128023029   -2.638e-10   1.388e-04    0.0000  qn           2.48
-     20     -2235.583128023029    0.000e+00   3.208e-05    0.0000  qn           0.57
+      7     -2235.583116027222   -2.088e-06   5.745e-03    0.0003  qn           2.49
+      8     -2235.583119661599   -3.634e-06   5.594e-03    0.0011  qn           2.54
+      9     -2235.583122830028   -3.168e-06   4.923e-03    0.0019  qn           2.45
+     10     -2235.583125768429   -2.938e-06   2.707e-02    0.0012  qn           2.47
+     11     -2235.583127120390   -1.352e-06   8.036e-03    0.0006  qn           2.47
+     12     -2235.583127748599   -6.282e-07   3.355e-03    0.0004  qn           2.47
+     13     -2235.583127765582   -1.698e-08   6.235e-03    0.0002  qn           2.49
+     14     -2235.583128002084   -2.365e-07   1.388e-02    0.0001  qn           2.47
+     15     -2235.583128011440   -9.356e-09   1.101e-03    0.0000  qn           2.51
+     16     -2235.583128018233   -6.793e-09   1.278e-04    0.0000  qn           2.48
+     17     -2235.583128020668   -2.434e-09   3.891e-04    0.0000  qn           2.54
+     18     -2235.583128022764   -2.096e-09   5.815e-04    0.0000  qn           2.47
+     19     -2235.583128023026   -2.628e-10   1.388e-04    0.0000  qn           2.51
+     20     -2235.583128023026    0.000e+00   3.208e-05    0.0000  qn           0.58
    ----  ---------------------  -----------  ----------  --------  ------  ---------
    converged
    second-order steps taken                                       0
@@ -276,15 +277,15 @@ CASSCF
    rejected steps                                                 0
      state                 E [Eh]     rel [cm^-1]     weight
    -------  ---------------------  --------------  ---------
-         0     -2235.583128023029            0.00     0.5000
-         1     -2235.583128023029            0.00     0.5000
+         0     -2235.583128023026            0.00     0.5000
+         1     -2235.583128023026            0.00     0.5000
    -------  ---------------------  --------------  ---------
    10 applications of H in 0 iterations
    state-average boundary gap                              15442.34  cm^-1   (to root 3 of 10, at the converged orbitals)
 CASSCF
   active space     : CAS(1, 10)  restored from /home/akseli/Programs/kuiva/examples/07_checkpoint_restart/output/ticl3_interrupted.chk
   solver           : ci
-  E(CASSCF) [Eh]   : -2235.583128023029
+  E(CASSCF) [Eh]   : -2235.583128023026
   converged        : True
   macro-iterations : 20
   |grad|           : 3.21e-05
@@ -295,17 +296,17 @@ CASSCF
    difference from the uninterrupted energy               0.000e+00  Eh
 
 ================================================================================
- Summary                                                            t = 205.96 s
+ Summary                                                            t = 169.50 s
 ================================================================================
    run                             iter                 E [Eh]      |grad|    conv   wall [s]
    ------------------------------  ----  ---------------------  ----------  ------  ---------
-   uninterrupted                     20     -2235.583128023029   3.208e-05     yes      50.65
-   interrupted + resumed             20     -2235.583128023029   3.208e-05     yes      54.49
+   uninterrupted                     20     -2235.583128023026   3.208e-05     yes      51.02
+   interrupted + resumed             20     -2235.583128023026   3.208e-05     yes      54.93
    ------------------------------  ----  ---------------------  ----------  ------  ---------
    wall times differ between the two rows by whatever the machine was doing; read cpu [s] in the timing table for cost
 
 ================================================================================
- Result                                                             t = 205.96 s
+ Result                                                             t = 169.50 s
 ================================================================================
    check                                                           verdict   
    --------------------------------------------------------------  ----------
@@ -321,103 +322,103 @@ CASSCF
    checks                                              all 8 passed
 
 ================================================================================
- Timings                                                            t = 205.96 s
+ Timings                                                            t = 169.50 s
 ================================================================================
    region                             calls     wall [s]       cpu [s]   cpu/wall   % wall
    --------------------------------  ------  -----------  ------------  ---------  -------
-   scalar X2C SCF                         1         2.41          9.23       3.83      1.2
-   AO integrals                           1         1.42          5.55       3.91      0.7
-     angular-momentum integrals           1         0.00          0.00       3.99      0.0
-   X2C spin-orbit integrals               1         0.69          2.70       3.89      0.3
-   atomic mean-field correction           1        94.52        371.98       3.94     46.0
-     atomic 4c solve                      2        94.18        370.61       3.94     45.8
-       atomic 4c DHF                      2        89.09        350.25       3.93     43.4
-     atomic mean-field decoupling         2         0.33          1.32       4.00      0.2
+   scalar X2C SCF                         1         1.35          5.38       4.00      0.8
+   AO integrals                           1         0.77          3.09       4.00      0.5
+     angular-momentum integrals           1         0.00          0.00       4.00      0.0
+   X2C spin-orbit integrals               1         0.42          1.66       3.99      0.2
+   atomic mean-field correction           1        59.35        237.33       4.00     35.1
+     atomic 4c solve                      2        59.02        236.01       4.00     34.9
+       atomic 4c DHF                      2        54.03        216.06       4.00     32.0
+     atomic mean-field decoupling         2         0.32          1.28       3.99      0.2
    orthogonalization (canonical)          1         0.00          0.00       4.00      0.0
-   Cholesky decomposition                 1         1.26          5.04       4.00      0.6
-   CASSCF (uninterrupted)                 1        50.65        171.06       3.38     24.7
-     CAS determinant addressing           1         0.00          0.00       3.93      0.0
-     CAS excitation map                   1         0.00          0.00       3.99      0.0
-     CAS integrals                        3         2.99          9.71       3.24      1.5
-       J/K build                          3         1.79          5.96       3.34      0.9
-       3-index transform                  3         1.17          3.58       3.07      0.6
-     dense CI diagonalization             3         0.00          0.02       3.99      0.0
-       sigma step 1: gather F            30         0.00          0.01       4.04      0.0
-       sigma step 2: GEMM                30         0.00          0.00       2.59      0.0
-       sigma step 3: gather sigma        30         0.00          0.01       4.16      0.0
-       sigma one-electron term           30         0.00          0.00       3.96      0.0
-     full CI: diagonal                    1         0.00          0.00       3.81      0.0
-     RDM gather F                         2         0.00          0.00       3.94      0.0
-     RDM accumulation F^H F               2         0.00          0.00       4.01      0.0
-     macro-iteration                     20        47.43        160.47       3.38     23.1
-       J/K build                         39        21.21         70.90       3.34     10.3
-       CAS integrals                     19        24.89         84.23       3.38     12.1
-         J/K build                       19        16.18         56.13       3.47      7.9
-         3-index transform               19         8.41         26.88       3.19      4.1
-       full CI: diagonal                 19         0.00          0.00       3.87      0.0
+   Cholesky decomposition                 1         1.28          5.11       4.00      0.8
+   CASSCF (uninterrupted)                 1        51.02        171.83       3.37     30.2
+     CAS determinant addressing           1         0.00          0.00       2.92      0.0
+     CAS excitation map                   1         0.00          0.00       3.01      0.0
+     CAS integrals                        3         3.03          9.81       3.24      1.8
+       J/K build                          3         1.80          6.02       3.34      1.1
+       3-index transform                  3         1.18          3.60       3.06      0.7
+     dense CI diagonalization             3         0.00          0.02       4.00      0.0
+       sigma step 1: gather F            30         0.00          0.01       4.07      0.0
+       sigma step 2: GEMM                30         0.00          0.00       2.15      0.0
+       sigma step 3: gather sigma        30         0.00          0.01       4.04      0.0
+       sigma one-electron term           30         0.00          0.00       4.10      0.0
+     full CI: diagonal                    1         0.00          0.00       3.85      0.0
+     RDM gather F                         2         0.00          0.00       4.07      0.0
+     RDM accumulation F^H F               2         0.00          0.00       3.98      0.0
+     macro-iteration                     20        47.76        161.15       3.37     28.2
+       J/K build                         39        21.37         71.27       3.34     12.6
+       CAS integrals                     19        25.00         84.29       3.37     14.8
+         J/K build                       19        16.31         56.52       3.47      9.6
+         3-index transform               19         8.35         26.40       3.16      4.9
+       full CI: diagonal                 19         0.00          0.00       3.84      0.0
        dense CI diagonalization          19         0.03          0.11       4.00      0.0
          sigma step 1: gather F         190         0.01          0.03       4.03      0.0
-         sigma step 2: GEMM             190         0.00          0.01       2.17      0.0
-         sigma step 3: gather sigma     190         0.01          0.04       4.10      0.0
-         sigma one-electron term        190         0.00          0.01       4.02      0.0
-       RDM gather F                      38         0.00          0.01       4.01      0.0
-       RDM accumulation F^H F            38         0.00          0.01       4.03      0.0
-   CASSCF (first leg)                     1        17.80         59.71       3.36      8.7
-     CAS determinant addressing           1         0.00          0.00       4.02      0.0
-     CAS excitation map                   1         0.00          0.00       4.00      0.0
-     CAS integrals                        3         3.01          9.76       3.25      1.5
-       J/K build                          3         1.80          6.04       3.35      0.9
-       3-index transform                  3         1.17          3.57       3.06      0.6
+         sigma step 2: GEMM             190         0.00          0.01       2.31      0.0
+         sigma step 3: gather sigma     190         0.01          0.04       4.06      0.0
+         sigma one-electron term        190         0.00          0.01       4.08      0.0
+       RDM gather F                      38         0.00          0.01       4.00      0.0
+       RDM accumulation F^H F            38         0.00          0.01       4.02      0.0
+   CASSCF (first leg)                     1        18.00         60.19       3.34     10.6
+     CAS determinant addressing           1         0.00          0.00       3.86      0.0
+     CAS excitation map                   1         0.00          0.00       3.99      0.0
+     CAS integrals                        3         3.04          9.83       3.23      1.8
+       J/K build                          3         1.82          6.05       3.32      1.1
+       3-index transform                  3         1.18          3.60       3.06      0.7
      dense CI diagonalization             3         0.00          0.02       4.00      0.0
-       sigma step 1: gather F            30         0.00          0.01       4.03      0.0
-       sigma step 2: GEMM                30         0.00          0.00       2.41      0.0
-       sigma step 3: gather sigma        30         0.00          0.01       4.18      0.0
-       sigma one-electron term           30         0.00          0.00       4.05      0.0
-     full CI: diagonal                    1         0.00          0.00       3.92      0.0
-     RDM gather F                         2         0.00          0.00       4.10      0.0
-     RDM accumulation F^H F               2         0.00          0.00       4.01      0.0
-     macro-iteration                      6        14.73         49.69       3.37      7.2
-       J/K build                         12         6.48         21.59       3.33      3.2
-       CAS integrals                      6         7.86         26.55       3.38      3.8
-         J/K build                        6         5.11         17.69       3.46      2.5
-         3-index transform                6         2.65          8.45       3.19      1.3
-       full CI: diagonal                  6         0.00          0.00       3.86      0.0
-       dense CI diagonalization           6         0.01          0.04       3.99      0.0
-         sigma step 1: gather F          60         0.00          0.01       4.02      0.0
-         sigma step 2: GEMM              60         0.00          0.00       2.15      0.0
-         sigma step 3: gather sigma      60         0.00          0.01       4.08      0.0
-         sigma one-electron term         60         0.00          0.00       4.02      0.0
-       RDM gather F                      12         0.00          0.00       4.03      0.0
-       RDM accumulation F^H F            12         0.00          0.00       4.05      0.0
-   CASSCF (resumed)                       1        36.69        124.23       3.39     17.9
-     CAS determinant addressing           1         0.00          0.00       3.81      0.0
-     CAS excitation map                   1         0.00          0.00       4.00      0.0
-     CAS integrals                        3         3.94         13.34       3.39      1.9
-       J/K build                          3         2.54          8.85       3.48      1.2
-       3-index transform                  3         1.34          4.29       3.19      0.7
-     dense CI diagonalization             3         0.00          0.02       4.00      0.0
-       sigma step 1: gather F            30         0.00          0.01       4.03      0.0
+       sigma step 1: gather F            30         0.00          0.01       4.04      0.0
        sigma step 2: GEMM                30         0.00          0.00       2.18      0.0
-       sigma step 3: gather sigma        30         0.00          0.01       4.02      0.0
-       sigma one-electron term           30         0.00          0.00       3.95      0.0
-     full CI: diagonal                    1         0.00          0.00       3.96      0.0
-     RDM gather F                         2         0.00          0.00       4.05      0.0
-     RDM accumulation F^H F               2         0.00          0.00       4.05      0.0
-     macro-iteration                     14        32.73        110.79       3.39     15.9
-       J/K build                         27        14.72         49.26       3.35      7.2
-       CAS integrals                     13        17.08         57.82       3.38      8.3
-         J/K build                       13        11.11         38.57       3.47      5.4
-         3-index transform               13         5.76         18.39       3.20      2.8
-       full CI: diagonal                 13         0.00          0.00       3.87      0.0
+       sigma step 3: gather sigma        30         0.00          0.01       4.10      0.0
+       sigma one-electron term           30         0.00          0.00       4.11      0.0
+     full CI: diagonal                    1         0.00          0.00       3.82      0.0
+     RDM gather F                         2         0.00          0.00       4.03      0.0
+     RDM accumulation F^H F               2         0.00          0.00       4.01      0.0
+     macro-iteration                      6        14.89         50.10       3.36      8.8
+       J/K build                         12         6.57         21.80       3.32      3.9
+       CAS integrals                      6         7.91         26.64       3.37      4.7
+         J/K build                        6         5.14         17.78       3.46      3.0
+         3-index transform                6         2.66          8.43       3.16      1.6
+       full CI: diagonal                  6         0.00          0.00       3.88      0.0
+       dense CI diagonalization           6         0.01          0.04       4.00      0.0
+         sigma step 1: gather F          60         0.00          0.01       4.05      0.0
+         sigma step 2: GEMM              60         0.00          0.00       2.84      0.0
+         sigma step 3: gather sigma      60         0.00          0.01       4.13      0.0
+         sigma one-electron term         60         0.00          0.00       4.14      0.0
+       RDM gather F                      12         0.00          0.00       4.01      0.0
+       RDM accumulation F^H F            12         0.00          0.00       4.03      0.0
+   CASSCF (resumed)                       1        36.93        124.50       3.37     21.8
+     CAS determinant addressing           1         0.00          0.00       3.85      0.0
+     CAS excitation map                   1         0.00          0.00       4.01      0.0
+     CAS integrals                        3         3.97         13.24       3.34      2.3
+       J/K build                          3         2.59          8.83       3.41      1.5
+       3-index transform                  3         1.32          4.17       3.16      0.8
+     dense CI diagonalization             3         0.01          0.02       4.00      0.0
+       sigma step 1: gather F            30         0.00          0.01       4.03      0.0
+       sigma step 2: GEMM                30         0.00          0.00       2.84      0.0
+       sigma step 3: gather sigma        30         0.00          0.01       4.01      0.0
+       sigma one-electron term           30         0.00          0.00       4.18      0.0
+     full CI: diagonal                    1         0.00          0.00       3.94      0.0
+     RDM gather F                         2         0.00          0.00       3.97      0.0
+     RDM accumulation F^H F               2         0.00          0.00       4.02      0.0
+     macro-iteration                     14        32.93        111.15       3.38     19.5
+       J/K build                         27        14.84         49.46       3.33      8.8
+       CAS integrals                     13        17.12         57.83       3.38     10.1
+         J/K build                       13        11.16         38.66       3.47      6.6
+         3-index transform               13         5.74         18.24       3.18      3.4
+       full CI: diagonal                 13         0.00          0.00       3.85      0.0
        dense CI diagonalization          13         0.02          0.08       4.00      0.0
-         sigma step 1: gather F         130         0.01          0.02       4.03      0.0
-         sigma step 2: GEMM             130         0.00          0.00       2.34      0.0
-         sigma step 3: gather sigma     130         0.01          0.02       4.01      0.0
-         sigma one-electron term        130         0.00          0.01       4.00      0.0
-       RDM gather F                      26         0.00          0.01       4.00      0.0
-       RDM accumulation F^H F            26         0.00          0.01       4.03      0.0
+         sigma step 1: gather F         130         0.01          0.02       4.06      0.0
+         sigma step 2: GEMM             130         0.00          0.00       2.22      0.0
+         sigma step 3: gather sigma     130         0.01          0.02       4.06      0.0
+         sigma one-electron term        130         0.00          0.01       4.15      0.0
+       RDM gather F                      26         0.00          0.01       4.01      0.0
+       RDM accumulation F^H F            26         0.00          0.01       4.05      0.0
    --------------------------------  ------  -----------  ------------  ---------  -------
-   total (top-level regions)                                 205.45  s wall
-   total CPU                                                 749.50  s cpu
+   total (top-level regions)                                 169.11  s wall
+   total CPU                                                 609.09  s cpu
    cost is cpu [s]; wall [s] also reflects thread count and, on a
    thermally clamped machine, time the CPU was forced to stay idle.

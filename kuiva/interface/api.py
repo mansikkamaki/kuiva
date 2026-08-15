@@ -92,6 +92,8 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                          decoupling_options: Optional[Dict[str, object]] = None,
                          conv_tol: float = 1e-10, max_cycle: int = 200,
                          memory_gb: Optional[float] = None, n_active: Optional[int] = None,
+                         cholesky_tol: float = DEFAULT_CHOLESKY_TOL,
+                         orbit_pivots: bool = True, one_centre: bool = True,
                          gauge_origin=None, property_picture_change: bool = False,
                          anomaly_picture_change: bool = False,
                          verbose: int = 0) -> ScalarX2CData:
@@ -128,7 +130,8 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                           screening=screening, screening_options=screening_options,
                           decoupling_options=decoupling_options, conv_tol=conv_tol,
                           max_cycle=max_cycle, memory_gb=memory_gb, n_active=n_active,
-                          gauge_origin=gauge_origin,
+                          cholesky_tol=cholesky_tol, orbit_pivots=orbit_pivots,
+                          one_centre=one_centre, gauge_origin=gauge_origin,
                           property_picture_change=property_picture_change,
                           anomaly_picture_change=anomaly_picture_change, verbose=verbose)
 
@@ -232,6 +235,13 @@ def spinor_reference(molecule_or_data, *, threshold: float = DEFAULT_THRESHOLD,
     rather than accurate to ``cholesky_tol``. Turning it off restores plain column
     pivoting, which splits free-ion degeneracies at the size of the threshold; it exists for
     measuring that, not for production.
+
+    ⚠ ``cholesky_tol`` and ``orbit_pivots`` are **passed on to the front end** when this is
+    given a :class:`Molecule`, because ``fitting="cholesky-direct"`` decomposes there — while
+    the integrals can still be evaluated and without ever storing them. Given an
+    already-ingested container that came off that route, the decomposition has happened and
+    these two can no longer be applied; a threshold that disagrees with the one it ran at is
+    reported rather than silently ignored.
     """
     from ..integrals.transform import ThreeIndexAO
     from ..orth.canonical import orthogonalize, project_orbitals
@@ -241,7 +251,9 @@ def spinor_reference(molecule_or_data, *, threshold: float = DEFAULT_THRESHOLD,
         res.ensure_configured(memory_gb)
         data = molecule_or_data
     else:
-        data = scalar_x2c_reference(molecule_or_data, memory_gb=memory_gb, **scf_kwargs)
+        data = scalar_x2c_reference(molecule_or_data, memory_gb=memory_gb,
+                                    cholesky_tol=cholesky_tol, orbit_pivots=orbit_pivots,
+                                    **scf_kwargs)
 
     out.section(log, "Orthonormal working basis")
     orth = orthogonalize(data.s_ao, scheme, threshold, report=True)

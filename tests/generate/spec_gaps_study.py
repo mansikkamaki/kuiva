@@ -75,6 +75,18 @@ def _refusal_dimension(size_fn, limit_gb: float, hi: int = 4096) -> int:
     return lo
 
 
+#: Electrons per AO function, for the blocked MO rows below. An abstract AO ladder does not
+#: carry an electron count, and the transformed block's ket dimension is one — so the
+#: assumption is made once, here, and reported in the record beside every number that uses it.
+#: 0.35 is what the heavy-element target classes of ``part_targets`` come out at (triple zeta);
+#: the committed double-zeta cross-check suite runs near 0.70, which is the pessimistic end and
+#: is the value used, since this table exists to say when a calculation is refused.
+ELECTRONS_PER_AO = 0.70
+
+#: A generous active space, for the row that shows what a CASSCF actually holds.
+ACTIVE_SPINORS = 20
+
+
 def part_sizes(limits: Sequence[float]) -> dict:
     from kuiva.interface.pyscf_bridge import CHOLESKY_VECTORS_PER_AO, eri_memory_gb
     from kuiva.integrals.transform import factor_memory_gb, mo_block_memory_gb
@@ -91,16 +103,33 @@ def part_sizes(limits: Sequence[float]) -> dict:
         return factor_memory_gb(nao, naux_of(nao))
 
     def factors_mo(nao):
+        """The square block, over every spinor pair. Nothing builds this."""
         return mo_block_memory_gb(naux_of(nao), 2 * nao, 2 * nao)
 
-    rec: dict = {"limits_gb": list(limits)}
+    def factors_mo_occ(nao, per_ao=ELECTRONS_PER_AO):
+        """``B^P_{p,occ}``, the widest block the pipeline asks for before an active space."""
+        return mo_block_memory_gb(naux_of(nao), 2 * nao, max(1, int(round(per_ao * nao))))
+
+    def factors_mo_act(nao, n_active=ACTIVE_SPINORS):
+        """``B^P_{p,t}``, what a CASSCF actually holds."""
+        return mo_block_memory_gb(naux_of(nao), 2 * nao, n_active)
+
+    rec: dict = {"limits_gb": list(limits),
+                 "electrons_per_ao": ELECTRONS_PER_AO,
+                 "active_spinors": ACTIVE_SPINORS,
+                 "cholesky_vectors_per_ao": CHOLESKY_VECTORS_PER_AO}
 
     # -- item 4: which array binds, and at what nao ---------------------------------------
+    # ⚠ Three MO rows, and only the last two are calculations that exist. The square block is
+    # kept because it is what the pre-flight used to budget, and the difference between it and
+    # the occupied-blocked row is the whole of what correcting the plan bought.
     rec["nao_ladder"] = [
         {"nao": nao,
          "eri_gb": eri_memory_gb(nao),
          "ao_factors_gb": factors_ao(nao),
          "mo_factors_gb": factors_mo(nao),
+         "mo_factors_occ_gb": factors_mo_occ(nao),
+         "mo_factors_active_gb": factors_mo_act(nao),
          "naux_estimated": naux_of(nao)}
         for nao in (100, 150, 200, 250, 300, 350, 400, 500, 600, 800, 1000)
     ]
@@ -109,10 +138,23 @@ def part_sizes(limits: Sequence[float]) -> dict:
          "eri": _refusal_dimension(eri_memory_gb, lim),
          "ao_factors": _refusal_dimension(factors_ao, lim),
          "mo_factors": _refusal_dimension(factors_mo, lim),
+         "mo_factors_occ": _refusal_dimension(factors_mo_occ, lim),
+         "mo_factors_active": _refusal_dimension(factors_mo_act, lim),
          "eri_plus_ao_factors": _refusal_dimension(
-             lambda n: eri_memory_gb(n) + factors_ao(n), lim)}
+             lambda n: eri_memory_gb(n) + factors_ao(n), lim),
+         # The two phase peaks the plan actually compares, and which of them binds: the ERI
+         # array and the AO factors are live together while the decomposition runs, then the
+         # AO factors and the transformed block are.
+         "peak_integrals": _refusal_dimension(
+             lambda n: eri_memory_gb(n) + factors_ao(n), lim),
+         "peak_transform": _refusal_dimension(
+             lambda n: factors_ao(n) + factors_mo_occ(n), lim)}
         for lim in limits
     ]
+    for row in rec["refusal_nao"]:
+        # Whichever refuses at the smaller AO count is the array that stops the calculation.
+        row["binding"] = ("ERI" if row["peak_integrals"] <= row["peak_transform"]
+                          else "MO block")
 
     # -- item 5: the conventional-CI ceiling, from the sizing function ---------------------
     ceiling = []
@@ -265,23 +307,30 @@ def part_targets(bases: Sequence[str]) -> dict:
             # filling the second), then the AO factors and the MO block. "direct" is the
             # same plan with the ERI array removed — i.e. exactly what an integral-direct
             # Cholesky decomposition would buy, and nothing else.
-            # ⚠ The MO term is a *soft* bound and the ERI term is a hard one: the pre-flight
-            # already advises "transform only the orbital blocks that are needed", and the
-            # cheapest useful block is ``B^P_{p,occ}`` (every spinor against the occupied
-            # ones). That column is what the ordering of the two future work items turns on.
+            # ⚠ The MO term is a *soft* bound and the ERI term is a hard one: the MO block can
+            # always be made narrower by transforming a narrower one, and the pre-flight now
+            # plans for the narrowest the pipeline ever asks for — ``B^P_{p,occ}`` without an
+            # active space, ``B^P_{p,t}`` with one. The ERI array is all or nothing until the
+            # decomposition goes integral-direct. That asymmetry is what the ordering of the
+            # two work items turns on, so all three columns stay in the record.
             nelec = sum(_z_of(sym) * count for sym, count in comp)
             mo_occ = mo_block_memory_gb(naux, 2 * nao, nelec)
+            mo_act = mo_block_memory_gb(naux, 2 * nao, ACTIVE_SPINORS)
             row[basis] = {
                 "nao": nao, "n_electrons": nelec,
-                "eri_gb": eri, "ao_factors_gb": ao, "mo_factors_gb": mo,
+                "electrons_per_ao": nelec / float(nao),
+                "eri_gb": eri, "ao_factors_gb": ao,
+                # What the plan budgeted before it was corrected, kept as the comparison.
+                "mo_factors_square_gb": mo,
                 "mo_factors_occ_blocked_gb": mo_occ,
-                "peak_current_gb": max(eri + ao, ao + mo),
-                "peak_direct_gb": ao + mo,
-                "peak_blocked_gb": max(eri + ao, ao + mo_occ),
-                "peak_blocked_direct_gb": ao + mo_occ,
-                "binding_array": "ERI" if eri + ao > ao + mo else "MO factors",
-                "binding_array_blocked": ("ERI" if eri + ao > ao + mo_occ
-                                          else "MO factors"),
+                "mo_factors_active_gb": mo_act,
+                "peak_square_plan_gb": max(eri + ao, ao + mo),
+                "peak_now_gb": max(eri + ao, ao + mo_occ),
+                "peak_now_with_active_space_gb": max(eri + ao, ao + mo_act),
+                "peak_direct_gb": ao + mo_occ,
+                "peak_direct_with_active_space_gb": ao + mo_act,
+                "binding_array_square_plan": "ERI" if eri + ao > ao + mo else "MO factors",
+                "binding_array": "ERI" if eri + ao > ao + mo_occ else "MO factors",
             }
         rows.append(row)
     return {"targets": rows, "bases": list(bases)}
@@ -507,8 +556,12 @@ def main(argv=None) -> int:
     ap.add_argument("--budget", type=float, default=540.0,
                     help="hard wall budget in seconds (the ten-minute rule)")
     ap.add_argument("--systems", default="ne,ticl3,bi,tlh,ce3p,dy3p,yb3p,cecl3,hi,zn2p,tif3")
+    # ⚠ The mixed entry is not decoration: Peterson covers no light element, so an actinide
+    # complex in cc-pVnZ-X2C is *necessarily* mixed, and it is the only column in which the
+    # actinide targets have an AO count at all. Dropping it silently blanks those rows, and
+    # the recorded target table cannot then be reproduced from this script's own defaults.
     ap.add_argument("--bases", default="x2c-SVPall-2c,x2c-TZVPall-2c,ANO-RCC-VTZP,"
-                                       "cc-pVTZ-X2C,dyallv3z")
+                                       "cc-pVTZ-X2C|x2c-TZVPall-2c,dyallv3z")
     ap.add_argument("--no-4c", action="store_true")
     ap.add_argument("--limits", default="8,16,64,256")
     args = ap.parse_args(argv)
@@ -567,19 +620,19 @@ def _print_sizes(rec: dict) -> None:
 def _print_targets(rec: dict) -> None:
     for b in rec["bases"]:
         print("\n== %s ==" % b)
-        print("%-34s %6s %8s %8s %8s %8s %9s %9s %9s %-11s"
-              % ("target", "nao", "ERI", "AOfact", "MOfull", "MOocc", "peak now",
-                 "pk direct", "pk blk+dir", "binds(blk)"))
+        print("%-30s %6s %8s %8s %8s %8s %9s %9s %9s %-7s"
+              % ("target", "nao", "ERI", "AOfact", "MOsquare", "MOocc", "pk square",
+                 "peak now", "pk direct", "binds"))
         for row in rec["targets"]:
             v = row.get(b)
             if not v:
-                print("%-34s %6s" % (row["label"][:34], "-"))
+                print("%-30s %6s" % (row["label"][:30], "-"))
                 continue
-            print("%-34s %6d %8.1f %8.1f %8.1f %8.1f %9.1f %9.1f %9.1f %-11s"
-                  % (row["label"][:34], v["nao"], v["eri_gb"], v["ao_factors_gb"],
-                     v["mo_factors_gb"], v["mo_factors_occ_blocked_gb"],
-                     v["peak_current_gb"], v["peak_direct_gb"],
-                     v["peak_blocked_direct_gb"], v["binding_array_blocked"]))
+            print("%-30s %6d %8.1f %8.1f %8.1f %8.1f %9.1f %9.1f %9.1f %-7s"
+                  % (row["label"][:30], v["nao"], v["eri_gb"], v["ao_factors_gb"],
+                     v["mo_factors_square_gb"], v["mo_factors_occ_blocked_gb"],
+                     v["peak_square_plan_gb"], v["peak_now_gb"], v["peak_direct_gb"],
+                     v["binding_array"]))
 
 
 if __name__ == "__main__":

@@ -95,12 +95,15 @@ MAX_ITER = 60
 
 #: Working-memory limit for the generator [GB]. Overridden by ``--memory-gb``.
 #:
-#: ⚠ **10, not 8, and the two dimers are why.** ``ti2cl6``/``ti2cl6_far`` peak at **8.523 GB**
-#: in the spinor MO transform (420 spinors; the ``B^P_pq`` array alone is 4.416 GB), so an
-#: 8 GB limit refuses them before the SCF — correctly, and with a refusal that names the array
-#: and the knob, which is the budget working exactly as designed. A generator whose own default
-#: cannot run its own systems is a trap, so the default is the number that runs the sweep.
-MEMORY_GB = 10.0
+#: ⚠ **Back to 8, and the two dimers are the reason it was ever 10.** ``ti2cl6``/``ti2cl6_far``
+#: used to be refused before the SCF at 8 GB, on a planned peak of 8.523 GB whose largest term
+#: was a **square** ``B^P_pq`` of 4.416 GB — an array the pipeline does not build. Every
+#: production path transforms a block: the largest one this sweep builds is 0.301 GB. The
+#: pre-flight now plans for the block, ``ti2cl6`` plans at 6.528 GB and peaks at 4.259 GB of
+#: real resident set, and the generator no longer needs a limit its own systems taught it to
+#: raise. ⚠ Raising a limit is the wrong first response to a refusal — read which array the
+#: refusal names first, because a plan can be describing a calculation nobody asked for.
+MEMORY_GB = 8.0
 
 #: Order the sweep runs in: cheapest first, so a structural failure surfaces in minutes.
 ORDER = ("ticl3", "bi", "tlh", "ce3p", "yb3p", "cecl3", "ti2cl6_far", "ti2cl6", "dy3p")
@@ -165,7 +168,7 @@ def run_system(system: sysdef.System, basis_name: str, *, screening: str,
     # Ti2Cl6 records were refused with "already committed 2.105 GB", itemizing arrays from Bi,
     # Tl and Ce — a diagnosis that looks like a genuine memory ceiling and is not. Same reason
     # ``tests/conftest.py`` clears it between tests, and the same idiom.
-    res.BUDGET.clear()
+    res.clear()
 
     t0 = time.time()
     rec: Dict = {"key": system.key, "label": system.label, "basis": basis_name,

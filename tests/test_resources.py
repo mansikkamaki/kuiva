@@ -13,6 +13,7 @@ usability property, and it is there because the limit is a hard error: an estima
 upward would refuse calculations that would have run, which is the failure mode the user
 called out when this was designed. A sizing function that grows a "safety factor" fails here.
 """
+import json
 import os
 from pathlib import Path
 
@@ -152,6 +153,114 @@ def test_transient_budget_scales_with_what_is_left(budget):
     assert budget.transient_gb() < big
 
 
+# --- The lifetime of a reservation --------------------------------------------------------
+# A reservation lives as long as the process, because nothing here watches the array it
+# accounts for. That is right for one calculation per process and wrong for a loop over
+# systems, where the reservations accumulate until one member is refused against a limit its
+# predecessors filled — a refusal that reads as though the machine were too small. Both the
+# mechanism (the ledger fills) and the fix (a scope) are tested, not only the observable.
+
+
+def _one_calculation(budget):
+    """A calculation that fits comfortably on its own: 0.8 GB of a 1.0 GB limit."""
+    budget.reserve("integral factors", 0.5)
+    budget.reserve("MO block", 0.3)
+
+
+def test_a_series_of_calculations_in_one_process_does_not_fill_the_ledger(budget):
+    """The point of the whole section: a scripted series runs to the end."""
+    for i in range(20):
+        with res.calculation("system {}".format(i), budget=budget):
+            _one_calculation(budget)
+        assert budget.resident_gb() == pytest.approx(0.0)
+
+
+def test_without_a_scope_the_series_is_refused_and_that_is_the_mechanism(budget):
+    """The defect itself: the second member is refused although it fits on its own."""
+    _one_calculation(budget)
+    with pytest.raises(res.MemoryLimitError):
+        _one_calculation(budget)
+
+
+def test_a_scope_keeps_what_was_live_when_it_started(budget):
+    """Identity, not equality: a scope releases its own arrays and nobody else's."""
+    outer = budget.reserve("held across calculations", 0.2)
+    with res.calculation(budget=budget):
+        budget.reserve("held across calculations", 0.2)     # same label, different array
+        assert budget.resident_gb() == pytest.approx(0.4)
+    assert budget.resident_gb() == pytest.approx(0.2)
+    assert [a is outer for a in budget._resident] == [True]
+
+
+def test_a_scope_does_not_weaken_the_refusal(budget):
+    """Scoping changes when a reservation ends, never whether it is checked."""
+    with pytest.raises(res.MemoryLimitError):
+        with res.calculation("far too big", budget=budget):
+            budget.reserve("4-RDM", 400.0)
+
+
+def test_clear_forgets_reservations_and_keeps_the_limit(budget):
+    budget.reserve("previous calculation", 0.6)
+    res.clear(budget=budget)
+    assert budget.resident_gb() == pytest.approx(0.0)
+    assert budget.configured                    # unlike reset(), the limit survives
+    _one_calculation(budget)                    # and the next calculation runs
+
+
+def test_a_refusal_names_the_previous_calculation_rather_than_the_machine(budget, monkeypatch):
+    """⚠ The two situations have the same arithmetic and opposite remedies.
+
+    "this calculation is too big" and "the last one never gave its memory back" both read as
+    a shortfall against the limit. Reporting only the first is what teaches a user to raise
+    the limit blindly — which then defeats the next refusal, the real one.
+    """
+    monkeypatch.setattr(res, "machine_available_gb", lambda: 64.0)
+    budget.begin_calculation("first")
+    _one_calculation(budget)
+    budget.begin_calculation("second")
+    with pytest.raises(res.MemoryLimitError) as excinfo:
+        _one_calculation(budget)
+    message = str(excinfo.value)
+    assert "earlier calculation" in message                     # itemized
+    assert "before this calculation began" in message           # and summed
+    assert "resources.clear()" in message and "resources.calculation()" in message
+    assert "fits in the limit as it stands" in message
+    # The machine has 64 GB free, so the old message would have suggested a bigger limit.
+    assert "would run this" not in message
+
+
+def test_a_calculation_that_starts_on_a_full_ledger_warns(kuiva_caplog, budget):
+    """The warning fires at the pre-flight, not several phases later in a refusal."""
+    _one_calculation(budget)
+    res.preflight([res.PhaseEstimate("scf", [res.PlannedAllocation("small", 0.05)])],
+                  budget=budget)
+    warnings = [r.getMessage() for r in kuiva_caplog.records if r.levelname == "WARNING"]
+    assert any("resources.clear()" in w and "0.800 GB" in w for w in warnings)
+
+
+def test_leftovers_that_threaten_nothing_stay_quiet(kuiva_caplog):
+    """⚠ A warning on every second calculation is one the user learns to skip.
+
+    Two small calculations in a roomy limit is the common, harmless case; the warning is
+    reserved for the ledger being what puts a run at risk.
+    """
+    roomy = res.MemoryBudget(res.ResourceLimits(memory_gb=100.0, source="test"))
+    _one_calculation(roomy)
+    res.preflight([res.PhaseEstimate("scf", [res.PlannedAllocation("small", 0.05)])],
+                  budget=roomy)
+    assert not [r for r in kuiva_caplog.records
+                if r.levelname == "WARNING" and "before this calculation" in r.getMessage()]
+
+
+def test_a_first_calculation_is_quiet(kuiva_caplog, budget):
+    """A fresh process says nothing: the warning is about leftovers, not about reserving."""
+    res.preflight([res.PhaseEstimate("scf", [res.PlannedAllocation("small", 0.05)])],
+                  budget=budget)
+    _one_calculation(budget)
+    assert not [r for r in kuiva_caplog.records
+                if r.levelname == "WARNING" and "before this calculation" in r.getMessage()]
+
+
 # --- Sizing functions: accurate in *both* directions --------------------------------------
 
 
@@ -204,6 +313,107 @@ def test_factor_and_mo_block_sizing_match_the_arrays():
     _assert_predicts(tf.factor_memory_gb(nao, naux), factors.l_packed.nbytes, tol=0.0)
     b = np.zeros((naux, n, n), dtype=np.complex128)
     _assert_predicts(tf.mo_block_memory_gb(naux, n, n), b.nbytes, tol=0.0)
+
+
+def _cas_setup(nao=6, naux=20, n_inactive=2, n_active=4):
+    """A CASIntegrals over random-but-consistent arrays — dimensions are all that is tested."""
+    from kuiva.mcscf.orbopt import CASIntegrals, OrbitalSpaces
+
+    rng = np.random.default_rng(0)
+    factors = tf.ThreeIndexAO(
+        l_packed=rng.standard_normal((naux, tf.npair_of(nao))), nao=nao, origin="cholesky")
+    n = 2 * nao
+    c = np.linalg.qr(rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n)))[0]
+    h_ao = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
+    h_ao = h_ao + h_ao.conj().T
+    spaces = OrbitalSpaces.from_counts(n_inactive, n_active, n)
+    return factors, CASIntegrals.build(factors, h_ao, c, spaces), c, spaces
+
+
+def test_cas_integrals_sizing_matches_the_block_the_optimizer_holds():
+    """The array that decides whether a multireference calculation fits is ``b_act``.
+
+    ⚠ It carries one index over the **active** space, not over every spinor: the square
+    ``B^P_pq`` is not built on any production path, and a plan that budgets one refuses
+    calculations that would have run.
+    """
+    from kuiva.mcscf.orbopt import cas_integrals_memory_gb
+
+    _, ints, _, spaces = _cas_setup()
+    _assert_predicts(cas_integrals_memory_gb(ints.b_act.shape[0], ints.n_orb,
+                                             spaces.n_active),
+                     ints.b_act.nbytes, tol=0.0)
+
+
+def test_the_second_order_transient_matches_what_a_hessian_product_holds():
+    """⚠ The second-order step's peak is *three* copies of ``b_act``, not a fraction of it.
+
+    Counted from the arrays a real Hessian-vector product allocates rather than from the
+    constant: the bra-side response, the ket-side transform and their sum are all of ``b_act``'s
+    shape and all live at the addition. An optimizer that escalates would otherwise allocate
+    four times what the plan budgeted for it — and ``mode="auto"`` escalates on its own.
+    """
+    from kuiva.mcscf.orbopt import (HESSIAN_RESPONSE_COPIES, cas_integrals_memory_gb,
+                                    hessian_response_memory_gb)
+
+    factors, ints, coeff, spaces = _cas_setup()
+    naux, n, n_act = ints.b_act.shape[0], ints.n_orb, spaces.n_active
+    held = np.stack([np.zeros_like(ints.b_act) for _ in range(HESSIAN_RESPONSE_COPIES)])
+    _assert_predicts(hessian_response_memory_gb(naux, n, n_act), held.nbytes, tol=0.0)
+    assert hessian_response_memory_gb(naux, n, n_act) == pytest.approx(
+        HESSIAN_RESPONSE_COPIES * cas_integrals_memory_gb(naux, n, n_act))
+
+    # And the plan carries it, as a transient rather than as a resident array.
+    phase = [p for p in br.memory_plan(nao=100, nelec=60, n_active=n_act)
+             if p.name == "active-space integrals"][0]
+    hess = [a for a in phase.allocations if "Hessian" in a.label][0]
+    assert not hess.resident
+    naux_planned = int(br.CHOLESKY_VECTORS_PER_AO * 100)
+    assert hess.gb == pytest.approx(hessian_response_memory_gb(naux_planned, 200, n_act))
+
+
+def test_direct_batch_sizing_matches_the_array_the_evaluator_holds():
+    """The integral-direct route's working set, against a real shell-pair batch.
+
+    ⚠ Sized with the **largest** shell on both sides, which is the worst pair that can occur
+    and is what the pre-flight has to plan for; the batch actually evaluated for a given pair
+    is that or smaller, so the test asserts the bound rather than an equality for one pair.
+    """
+    pytest.importorskip("pyscf")
+    from kuiva.interface.pyscf_bridge import DirectERIMatrix, build_mole
+    from kuiva.interface import Molecule
+
+    mol = build_mole(Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917",
+                                              basis="x2c-SVPall-2c"))
+    src = DirectERIMatrix(mol)
+    biggest = 0
+    for k in range(mol.nbas):
+        for l in range(k + 1):
+            biggest = max(biggest, src._batch(k, l).nbytes)
+    _assert_predicts(br.direct_block_memory_gb(mol.nao, src.shell_ao_max), biggest, tol=0.0)
+
+
+def test_the_plan_drops_the_integral_array_on_the_direct_route():
+    """What the route is for: the ``O(nao^4/8)`` line is gone, and what replaces it is a
+    transient batch rather than a resident array."""
+    conventional = [p for p in br.memory_plan(nao=200, nelec=100)
+                    if p.name == "two-electron integrals"][0]
+    direct = [p for p in br.memory_plan(nao=200, nelec=100, conventional=False,
+                                        direct=True, shell_ao_max=7, n_shells=40)
+              if p.name == "two-electron integrals"][0]
+    assert any("ERI array" in a.label for a in conventional.allocations)
+    assert not any("ERI array" in a.label for a in direct.allocations)
+    batch = [a for a in direct.allocations if "shell-pair batch" in a.label][0]
+    assert not batch.resident
+    # ⚠ The plan states the *same* min(want, allowed) the evaluator computes. Sized from the
+    # free budget alone and left unstated, the cache was measured holding gigabytes of
+    # batches under a plan that claimed one.
+    assert batch.gb == pytest.approx(min(br.direct_cache_memory_gb(200, 7, 40),
+                                         res.BUDGET.transient_gb()))
+    assert direct.resident_gb() < conventional.resident_gb()
+    # The advice on the phase has to name the route that removes the array, or a user
+    # refused there cannot act on it.
+    assert any("cholesky-direct" in a for a in conventional.advice)
 
 
 def test_amf_correction_sizing_matches_the_assembled_arrays():
@@ -337,8 +547,83 @@ def test_memory_plan_is_ordered_and_flags_the_ungoverned_scf():
 
 
 def test_memory_plan_errs_high_on_the_cholesky_dimension():
-    """Measured 5.6 (Ne) and 7.4 (TiCl3) vectors per AO; the estimate must not sit below."""
-    assert br.CHOLESKY_VECTORS_PER_AO >= 7.4
+    """The pre-flight's vectors-per-AO must not sit below what the decomposition produces.
+
+    ⚠ Read from the committed cross-check data rather than written down here, because the
+    count is a function of the **decomposition threshold** and the constant was once left
+    behind when that threshold was tightened — an estimate silently 30% low, which is the
+    direction that lets a calculation start and then fail. Tying the two together is what
+    stops it happening again: tighten the threshold, regenerate, and this test fails.
+    """
+    records = json.loads((REPO / "tests/reference/tier2_kuiva.json").read_text())["records"]
+    measured = {k: r["cholesky_naux"] / r["nao"] for k, r in records.items()}
+    assert measured, "the cross-check data carries no Cholesky dimensions"
+    worst = max(measured.values())
+    assert br.CHOLESKY_VECTORS_PER_AO >= worst, \
+        "the pre-flight estimates {} vectors per AO, below the {:.2f} measured for {}".format(
+            br.CHOLESKY_VECTORS_PER_AO, worst,
+            max(measured, key=lambda k: measured[k]))
+
+
+def test_the_plan_budgets_the_block_the_pipeline_builds_not_the_square():
+    """⚠ The regression this whole mechanism's credibility rests on.
+
+    The pre-flight used to budget ``B^P_pq`` over every spinor against every spinor — an array
+    no production path allocates — and refused calculations that would have run. A refusal on
+    an array nobody builds teaches the user to raise the limit blindly, and then the next
+    refusal, the real one, gets the same treatment.
+    """
+    from kuiva.mcscf.orbopt import cas_integrals_memory_gb
+
+    nao, n_active, nelec = 100, 12, 60
+    naux = int(br.CHOLESKY_VECTORS_PER_AO * nao)
+    plan = br.memory_plan(nao=nao, n_active=n_active, nelec=nelec)
+    mo = [p for p in plan if p.name == "spinor MO transform"][0]
+    block = [a for a in mo.allocations if a.resident][0]
+    assert block.gb == pytest.approx(cas_integrals_memory_gb(naux, 2 * nao, n_active))
+    assert block.gb < 0.1 * tf.mo_block_memory_gb(naux, 2 * nao, 2 * nao)
+    # The advice has to name the block that grew, or the user cannot act on the refusal.
+    assert any("active space" in a for a in mo.advice)
+
+
+def test_the_plan_falls_back_on_the_occupied_block_when_no_active_space_is_given():
+    """Without an active space the largest block anything downstream asks for is B^P_p,occ."""
+    nao, nelec = 100, 60
+    naux = int(br.CHOLESKY_VECTORS_PER_AO * nao)
+    mo = [p for p in br.memory_plan(nao=nao, nelec=nelec)
+          if p.name == "spinor MO transform"][0]
+    block = [a for a in mo.allocations if a.resident][0]
+    assert block.gb == pytest.approx(tf.mo_block_memory_gb(naux, 2 * nao, nelec))
+    assert "occupied" in block.note
+
+
+def test_the_planned_nevpt2_blocks_bound_every_split_they_could_turn_out_to_be():
+    """The inactive/virtual split is the one thing the pre-flight cannot know.
+
+    ⚠ The failure mode of this correction is the *inverse* of the one it fixes: a plan that now
+    under-estimates lets through a calculation the transform cannot allocate, and the whole
+    design is refuse-before-allocate. So the assumed split is checked against every split the
+    calculation could actually have, not merely against a plausible one.
+    """
+    from kuiva.pt.blocks import nevpt2_blocks_memory_gb
+
+    nao, n_active, nelec = 40, 10, 24
+    n, naux = 2 * nao, int(br.CHOLESKY_VECTORS_PER_AO * nao)
+    phase = [p for p in br.memory_plan(nao=nao, n_active=n_active, nelec=nelec, nevpt2=True)
+             if p.name == "SC-NEVPT2"][0]
+    alloc = [a for a in phase.allocations if "B^P" in a.label][0]
+    planned = alloc.gb
+
+    # ⚠ The planner may not import the perturbation layer (nothing on the calculation path
+    # may), so it sums the four blocks by a factorized identity instead of by asking for the
+    # pair list. This is where the two are tied together: extend the pair list and this fails.
+    n_i, n_a, n_v = br._nevpt2_block_split(n, nelec, n_active)
+    assert planned == pytest.approx(nevpt2_blocks_memory_gb(naux, n_i, n_a, n_v))
+    assert alloc.note == "{} inactive / {} active / {} virtual".format(n_i, n_a, n_v)
+    # n_inactive = nelec - n_active_elec, so every admissible split is reachable this way.
+    for n_active_elec in range(0, n_active + 1):
+        n_i = nelec - n_active_elec
+        assert planned >= nevpt2_blocks_memory_gb(naux, n_i, n_active, n - n_i - n_active)
 
 
 # --- Scratch disk -------------------------------------------------------------------------
