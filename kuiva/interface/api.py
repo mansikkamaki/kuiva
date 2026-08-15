@@ -92,7 +92,9 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                          decoupling_options: Optional[Dict[str, object]] = None,
                          conv_tol: float = 1e-10, max_cycle: int = 200,
                          memory_gb: Optional[float] = None, n_active: Optional[int] = None,
-                         gauge_origin=None, verbose: int = 0) -> ScalarX2CData:
+                         gauge_origin=None, property_picture_change: bool = False,
+                         anomaly_picture_change: bool = False,
+                         verbose: int = 0) -> ScalarX2CData:
     """Run the scalar-X2C front-end for ``molecule`` and return the ingested reference.
 
     This is the front-end boundary: the returned :class:`ScalarX2CData` is PySCF-free and
@@ -126,7 +128,9 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                           screening=screening, screening_options=screening_options,
                           decoupling_options=decoupling_options, conv_tol=conv_tol,
                           max_cycle=max_cycle, memory_gb=memory_gb, n_active=n_active,
-                          gauge_origin=gauge_origin, verbose=verbose)
+                          gauge_origin=gauge_origin,
+                          property_picture_change=property_picture_change,
+                          anomaly_picture_change=anomaly_picture_change, verbose=verbose)
 
 
 @dataclass

@@ -298,10 +298,24 @@ class PropertyIntegrals:
     irxp: np.ndarray
     gauge_origin: np.ndarray
     origin_label: str = "explicit"
+    picture_change: Optional["PictureChangedMoment"] = None
 
     @property
     def nao(self) -> int:
         return int(self.irxp.shape[-1])
+
+    def moment_operator(self) -> Optional[np.ndarray]:
+        """``(L + 2 S)`` picture-changed, or ``None`` when the bare operators are in use.
+
+        ⚠ A consumer that gets a non-``None`` here must build ``mu`` from it **instead of**
+        from ``L + g_e S``, adding only the anomaly ``(g_e - 2) S`` — the picture change does
+        not separate into an ``L`` part and an ``S`` part (see :class:`PictureChangedMoment`).
+        """
+        return None if self.picture_change is None else self.picture_change.moment
+
+    def anomaly_spin(self) -> Optional[np.ndarray]:
+        """The picture-changed spin operator for the ``g_e - 2`` term, if one was built."""
+        return None if self.picture_change is None else self.picture_change.spin
 
     def angular_momentum(self) -> np.ndarray:
         """``L_k`` as ``(3, nao, nao)`` **complex Hermitian**, in units of hbar."""
@@ -317,10 +331,13 @@ class PropertyIntegrals:
         return np.stack([spin_block_diagonal(lk) for lk in self.angular_momentum()])
 
     def provenance(self) -> Dict[str, object]:
+        pc = "none (bare AO operators, used unchanged in the 2c basis)"
+        if self.picture_change is not None:
+            pc = self.picture_change.label()
         return {
             "gauge_origin_bohr": [float(x) for x in np.asarray(self.gauge_origin).ravel()],
             "gauge_origin_choice": self.origin_label,
-            "picture_change": "none (bare AO operators, used unchanged in the 2c basis)",
+            "picture_change": pc,
         }
 
     def __repr__(self) -> str:
@@ -356,7 +373,10 @@ def gauge_origin_for(mol, origin=None) -> Tuple[np.ndarray, str]:
     return r, "explicit"
 
 
-def ingest_property_integrals(mol, gauge_origin=None) -> PropertyIntegrals:
+def ingest_property_integrals(mol, gauge_origin=None, *, picture_change: bool = False,
+                              approx: str = "1e",
+                              decoupling_options: Optional[Dict[str, object]] = None,
+                              anomaly_picture_change: bool = False) -> PropertyIntegrals:
     """Orbital angular momentum about a gauge origin, as plain arrays.
 
     ⚠ **The gauge origin is a real choice and it changes the answer.** ``L`` is defined
@@ -364,6 +384,11 @@ def ingest_property_integrals(mol, gauge_origin=None) -> PropertyIntegrals:
     default is the centre of mass; it is recorded in :class:`PropertyIntegrals` and written
     into the dump header, because a stored moment matrix that does not say where its origin
     was is not interpretable.
+
+    ``picture_change`` additionally builds the picture-changed moment operator
+    (:func:`picture_changed_moment`). ⚠ **It is off by default and it is not free**: it costs
+    a second four-component one-electron problem and its decoupling, and it changes the meaning
+    of every moment matrix built from the result.
     """
     r_g, label = gauge_origin_for(mol, gauge_origin)
     with timer("angular-momentum integrals"):
@@ -379,8 +404,270 @@ def ingest_property_integrals(mol, gauge_origin=None) -> PropertyIntegrals:
             "the angular-momentum integrals are not antisymmetric (max |A + A^T| = {:.2e}, "
             "{:.1e} relative); L = -i (r x nabla) would not be Hermitian and every moment "
             "matrix built from it would be meaningless".format(asym, asym / scale))
+    if anomaly_picture_change and not picture_change:
+        raise ValueError(
+            "anomaly_picture_change=True asks for the g_e-2 term to be picture-changed while "
+            "picture_change=False leaves the moment operator itself bare. That combination is "
+            "a 2e-06 correction applied on top of an uncorrected operator, which is not a "
+            "meaningful Hamiltonian; set picture_change=True as well or neither.")
+    pc = None
+    if picture_change:
+        pc = picture_changed_moment(mol, r_g, approx=approx,
+                                    decoupling_options=decoupling_options,
+                                    anomaly_picture_change=anomaly_picture_change)
     return PropertyIntegrals(irxp=np.ascontiguousarray(irxp),
-                             gauge_origin=np.ascontiguousarray(r_g), origin_label=label)
+                             gauge_origin=np.ascontiguousarray(r_g), origin_label=label,
+                             picture_change=pc)
+
+
+# --- the picture change of the magnetic moment operator ------------------------------------
+
+#: Relative tolerance on the non-relativistic-limit identity below. ⚠ It is a **refusal**, not
+#: a warning: the identity is exact algebra and holds to ~1e-16 in practice, so a violation
+#: means the spin structure or the gauge origin is wrong, and every moment matrix built from
+#: the result would be Hermitian, plausible and wrong.
+MOMENT_IDENTITY_TOL = 1e-10
+
+
+def moment_memory_gb(nao: int) -> float:
+    """Resident cost of a picture-changed ``(3, 2*nao, 2*nao)`` complex operator."""
+    return res.array_gb((3, 2 * nao, 2 * nao), np.complex128)
+
+
+@dataclass(frozen=True)
+class PictureChangedMoment:
+    """The magnetic moment operator with the X2C picture change applied to it.
+
+    ⚠ **The picture-changed moment does not separate into an ``L`` part and an ``S`` part.**
+    In the four-component theory the magnetic interaction is the *odd* operator ``c alpha.A``,
+    so what is transformed is the whole moment; ``L`` and ``S`` remain perfectly good operators
+    but their sum is no longer what ``mu`` is built from. Consumers therefore use
+    :attr:`moment` in place of ``L + 2 S``, and add the ``g_e - 2`` anomaly separately.
+
+    Attributes
+    ----------
+    moment : ndarray (3, 2*nao, 2*nao) complex
+        ``(L + 2 S)`` picture-changed, in units of hbar and in the molecule's own AO basis.
+        The ``2`` is Dirac's g factor, **not** ``g_e``: the QED anomaly is not part of
+        ``c alpha.A`` and is added by the consumer as ``(g_e - 2) * S``.
+    spin : ndarray (3, 2*nao, 2*nao) complex or None
+        The picture-changed spin operator, when it was asked for. ⚠ Used for the anomaly term
+        it changes the moment by ``O((g_e - 2)/c^2)``; ``None`` means the bare ``S`` is used
+        there, which is the default and the measured-negligible choice.
+    decoupling : str
+        Which decoupling produced it (``"1e"``, ``"1e-dlu"``), for the stored provenance.
+    identity_residual : float
+        Relative residual of the non-relativistic-limit identity, measured on every build.
+    """
+
+    moment: np.ndarray
+    spin: Optional[np.ndarray]
+    decoupling: str
+    identity_residual: float
+
+    @property
+    def nao(self) -> int:
+        return int(self.moment.shape[-1] // 2)
+
+    def label(self) -> str:
+        anomaly = "picture-changed" if self.spin is not None else "bare S"
+        return ("Peng-Reiher X2C picture change on the magnetic moment operator "
+                "(decoupling={}, g_e-2 anomaly on {})".format(self.decoupling, anomaly))
+
+
+def _odd_moment_blocks(xmol, r_g) -> np.ndarray:
+    """``LS_k = <chi| c (r_g x sigma)_k |chi^S> = 1/2 <chi| (r_g x sigma)_k (sigma.p) |chi>``.
+
+    The four-component magnetic moment operator is the derivative of the Dirac minimal-coupling
+    term ``c alpha.A`` with ``A = 1/2 B x r_g``, i.e. ``mu = -c (r_g x alpha) mu_B``, which is
+    **purely odd**: its ``LL`` and ``SS`` blocks vanish and only ``LS``/``SL`` survive.
+
+    ⚠ **No factor of ``c`` appears here.** In the restricted-kinetic-balance normalization
+    :func:`four_component_one_electron` fixes, the small-component basis carries ``1/(2c)``,
+    which cancels the operator's explicit ``c`` exactly. A stray ``c`` or ``1/2c`` is the
+    easiest way to produce a plausible wrong answer in this whole construction, and the
+    identity checked by :func:`picture_changed_moment` is what catches it.
+
+    ⚠ **The ``_spinor`` form of the integral is used deliberately.** ``libcint`` returns
+    ``int1e_cg_sa10sp`` in the spherical basis as twelve components that are *not* in the
+    ``int1e_spnucsp`` convention of three spin factors plus a spin-free part, so
+    :func:`kuiva.spinor.expand.two_component_operator` cannot assemble it: an exhaustive search
+    over both groupings, all four choices of spin-free component, all six permutations and both
+    signs gets no closer than 1.08 relative. The spinor form is documented by the integral
+    library as ``.5 rc cross sigma | sigma dot p`` — so the factor of one half is already inside
+    it and no further scaling is applied — and it is mapped into this project's spin-blocked
+    ``[alpha; beta]`` row layout by the unitary ``sph2spinor_coeff``. That mapping is
+    *validated*, not assumed: it is exactly what the non-relativistic-limit identity tests.
+    """
+    xmol.set_common_orig(np.asarray(r_g, dtype=float).ravel())
+    ua, ub = xmol.sph2spinor_coeff()
+    u = np.vstack([np.asarray(ua), np.asarray(ub)])          # (2 nao, n2c), unitary
+    raw = xmol.intor("int1e_cg_sa10sp_spinor", comp=3)
+    return np.stack([u @ np.asarray(a) @ u.conj().T for a in raw])
+
+
+def _anomaly_small_block(xmol) -> np.ndarray:
+    """The ``SS`` block of the anomalous moment operator ``beta Sigma_k``, without the
+    ``-1/(4 c^2)`` prefactor: ``<chi| (sigma.p) sigma_k (sigma.p) |chi>``.
+
+    There is no integral for this one, so it is reduced to integrals that exist by the operator
+    identity (``p_a`` commute with each other, and ``sigma_a sigma_k sigma_b`` is expanded with
+    ``sigma_a sigma_b = delta_ab + i eps_abc sigma_c``)::
+
+        (sigma.p) sigma_k (sigma.p) = 2 (sigma.p) p_k - sigma_k p^2
+
+    with ``<p_a p_k> = <grad_a chi | grad_k chi>`` (one integration by parts) and
+    ``<p^2> = 2 T``. ⚠ The ``W`` this expands over is **real and not antisymmetric**, unlike
+    every spin-orbit integral in this front end, which is why it is assembled through
+    :func:`kuiva.spinor.expand.sigma_dot` rather than ``two_component_operator`` — the latter
+    would project it onto the antisymmetric part and silently return something smaller.
+    """
+    from ..spinor.expand import sigma_dot, spin_operator
+
+    nao = xmol.nao
+    # <grad_a chi | grad_k chi>, (3, 3, nao, nao) -- equals <p_a p_k> after one by-parts.
+    d = np.asarray(xmol.intor("int1e_ipovlpip", comp=9)).reshape(3, 3, nao, nao)
+    t = np.asarray(xmol.intor_symmetric("int1e_kin"))
+    # sigma_k (x) p^2 = sigma_k (x) 2T = 4 * spin_operator(T), since spin_operator is sigma/2.
+    sig_p2 = 4.0 * spin_operator(t)
+    return np.stack([2.0 * sigma_dot(d[:, k]) - sig_p2[k] for k in range(3)])
+
+
+def picture_changed_moment(mol, gauge_origin=None, *, approx: str = "1e",
+                           decoupling_options: Optional[Dict[str, object]] = None,
+                           light_speed: Optional[float] = None,
+                           anomaly_picture_change: bool = False) -> PictureChangedMoment:
+    """Apply the X2C picture change to the magnetic moment operator.
+
+    The property operators this project normally uses are the **bare** non-relativistic ``L``
+    and ``S``, used unchanged in the two-component basis — the same choice OpenMolcas RASSI
+    makes, which is what keeps a cross-code comparison like-for-like. This function is the
+    alternative: it transforms the four-component moment operator with the same ``X`` and ``R``
+    that decouple the Hamiltonian, which is the picture change that choice omits.
+
+    ⚠ **It is not the default and it changes the meaning of a stored moment matrix.** A file
+    whose ``mu`` was built this way is not comparable element-for-element with one that was
+    not, and its header must say so.
+
+    The construction, and the test that it is right
+    -----------------------------------------------
+    In units of ``-mu_B``, the four-component operator has ``LL = SS = 0`` and
+    ``LS_k = 1/2 <chi| (r_g x sigma)_k (sigma.p) |chi>`` (see :func:`_odd_moment_blocks`), and
+    the transformation is the *same* ``R^dag (A_LL + A_LS X + X^dag A_SL + X^dag A_SS X) R``
+    the Hamiltonian goes through. The non-relativistic limit is then exact algebra::
+
+        (r_g x sigma)_k (sigma.p) + (sigma.p) (r_g x sigma)_k = 2 L_k + 2 sigma_k = 2 (L + 2S)_k
+
+    so ``LS + LS^dag = L + 2 S`` identically, and since ``X -> 1`` and ``R -> 1`` as ``c -> inf``
+    the transformed operator returns the bare one. **That identity is checked on every build and
+    a violation raises**, because it is the one thing that fails loudly if the spin mapping, the
+    gauge origin or the normalization is wrong.
+
+    Parameters
+    ----------
+    approx : str
+        The decoupling, which must be the one the Hamiltonian uses: ``"1e"`` (exact molecular)
+        or ``"1e-dlu"`` (local). ⚠ **No statement about the accuracy of a moment operator
+        transformed through a DLU decoupling exists**, so a ``"1e-dlu"`` moment is a research
+        quantity and nothing computed from it may be quoted as a spectroscopic accuracy.
+    anomaly_picture_change : bool
+        Also return the picture-changed **spin** operator, for the ``g_e - 2`` anomaly term.
+        Off by default: the anomaly is an even operator whose small-component block enters at
+        ``O((g_e - 2)/c^2)``, and using the bare ``S`` there is the measured-negligible choice.
+
+    References
+    ----------
+    * Picture change of property operators under X2C: D. Peng, M. Reiher, J. Chem. Phys. 136,
+      244108 (2012), doi:10.1063/1.4729788.
+    * The restricted-kinetic-balance four-component setup and the decoupling: W. Kutzelnigg,
+      W. Liu, J. Chem. Phys. 123, 241102 (2005), doi:10.1063/1.2137315.
+    """
+    from pyscf.x2c import x2c
+
+    from ..spinor.expand import spin_block_diagonal, spin_operator
+    from ..x2c.decouple import FourComponentBlocks, decoupling_matrices, picture_change
+
+    if approx not in ("1e", "1e-dlu"):
+        raise NotImplementedError(
+            "the property picture change is implemented for the exact molecular decoupling "
+            "(approx='1e') and the local one (approx='1e-dlu'), not for {!r}. The decoupling "
+            "used for the moment operator must be the one the Hamiltonian uses, so this is a "
+            "refusal rather than a silent substitution.".format(approx))
+
+    r_g, _ = gauge_origin_for(mol, gauge_origin)
+    fc = four_component_one_electron(mol, uncontract=True, light_speed=light_speed)
+
+    helper = x2c.SpinOrbitalX2CHelper(mol)
+    helper.xuncontract = True
+    xmol, _ = helper.get_xmol(mol)
+    if int(xmol.nao) != int(fc.nao):
+        raise RuntimeError(
+            "the working basis of the four-component blocks ({} functions) and of the property "
+            "integrals ({}) differ; they must be the same decontracted basis or the picture "
+            "change would transform one operator in another's basis"
+            .format(fc.nao, xmol.nao))
+
+    res.require("picture-changed moment operator", 2.0 * moment_memory_gb(int(fc.nao)),
+                note="3 x (2 nao)^2 complex, working basis nao = {}".format(fc.nao))
+
+    with timer("property picture change"):
+        ls = _odd_moment_blocks(xmol, r_g)
+
+        # ⚠ The load-bearing check: the non-relativistic-limit identity. It fails loudly on a
+        # wrong spin mapping, a gauge origin applied to the wrong Mole, or a stray factor of c.
+        irxp = np.asarray(xmol.intor("int1e_cg_irxp", comp=3), dtype=float)
+        bare = np.stack([spin_block_diagonal(-1j * lk) for lk in irxp]) \
+            + 2.0 * spin_operator(np.asarray(xmol.intor_symmetric("int1e_ovlp")))
+        resid = max(float(np.max(np.abs(ls[k] + ls[k].conj().T - bare[k])))
+                    / (float(np.max(np.abs(bare[k]))) or 1.0) for k in range(3))
+        if resid > MOMENT_IDENTITY_TOL:
+            raise RuntimeError(
+                "the four-component moment operator fails its non-relativistic-limit identity "
+                "by {:.2e} relative (tolerance {:.0e}): <(r x sigma)(sigma.p)> + h.c. must "
+                "equal L + 2S exactly. The spin mapping, the gauge origin or the "
+                "small-component normalization is wrong, and every moment matrix built from "
+                "this operator would be Hermitian, plausible and wrong."
+                .format(resid, MOMENT_IDENTITY_TOL))
+
+        if approx == "1e-dlu":
+            from ..x2c.local import local_decoupling_matrices
+            opts = dict(decoupling_options or {})
+            opts.pop("report", None)
+            x, r = local_decoupling_matrices(fc.hcore, fc.overlap, fc.light_speed,
+                                             molecular_partition(mol, fc), **opts)
+        else:
+            if decoupling_options:
+                raise ValueError(
+                    "decoupling_options={} apply only to the local (DLU) decoupling, and this "
+                    "moment operator is being built with approx={!r}"
+                    .format(sorted(decoupling_options), approx))
+            x, r = decoupling_matrices(fc.hcore, fc.overlap, fc.light_speed)
+
+        zero = np.zeros_like(ls[0])
+        moment = np.stack([
+            fc.contract(picture_change(
+                FourComponentBlocks(ll=zero, ls=ls[k], sl=ls[k].conj().T, ss=zero), x, r))
+            for k in range(3)])
+
+        spin = None
+        if anomaly_picture_change:
+            c = float(fc.light_speed)
+            small = _anomaly_small_block(xmol)
+            s_big = spin_operator(np.asarray(xmol.intor_symmetric("int1e_ovlp")))
+            # beta Sigma_k has LL = sigma_k and SS = -sigma_k; in units of S = sigma/2 the
+            # blocks below carry the factor of one half, so the result is a spin operator.
+            spin = np.stack([
+                fc.contract(picture_change(
+                    FourComponentBlocks(ll=2.0 * s_big[k], ls=zero, sl=zero,
+                                        ss=-small[k] * (0.25 / c ** 2)), x, r)) * 0.5
+                for k in range(3)])
+
+    worst = max(float(np.max(np.abs(m - m.conj().T))) for m in moment)
+    if worst > 1e-10 * max(float(np.max(np.abs(moment))), 1.0):
+        log.warning("the picture-changed moment operator is not Hermitian (max |A - A^dag| = "
+                    "%.2e); the decoupling matrices are suspect", worst)
+    return PictureChangedMoment(moment=np.ascontiguousarray(moment), spin=spin,
+                                decoupling=approx, identity_residual=float(resid))
 
 
 @dataclass(frozen=True)
@@ -1354,7 +1641,9 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                    decoupling_options: Optional[Dict[str, object]] = None,
                    conv_tol: float = 1e-10, max_cycle: int = 200,
                    memory_gb: Optional[float] = None, n_active: Optional[int] = None,
-                   gauge_origin=None, verbose: int = 0) -> ScalarX2CData:
+                   gauge_origin=None, property_picture_change: bool = False,
+                   anomaly_picture_change: bool = False,
+                   verbose: int = 0) -> ScalarX2CData:
     """Run a scalar X2C (``sfx2c1e``) SCF and ingest it into :class:`ScalarX2CData`.
 
     Parameters
@@ -1385,6 +1674,16 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         axes below, which may be set directly instead. ⚠ Setting both a name and an axis that
         **contradicts** it raises rather than picking a winner, so no
         calculation runs with a Hamiltonian nobody asked for. See :mod:`kuiva.x2c.methods`.
+    property_picture_change : bool
+        Apply the X2C picture change to the magnetic moment operator
+        (:func:`picture_changed_moment`) instead of using the bare non-relativistic ``L`` and
+        ``S``. ⚠ **Off by default, deliberately**: the bare operators are what OpenMolcas RASSI
+        uses, which is what makes a cross-code comparison of a property dump like-for-like, and
+        turning this on changes the meaning of every moment matrix and of any file they are
+        written to.
+    anomaly_picture_change : bool
+        Also picture-change the spin operator used for the ``g_e - 2`` anomaly. Requires
+        ``property_picture_change``; the effect is ``O((g_e - 2)/c^2)``.
     x2c_approx : str, optional
         The one-electron decoupling axis: ``"1e"`` (exact molecular, the default),
         ``"1e-dlu"`` (the local DLU approximation) or ``"atom1e"`` (PySCF's
@@ -1485,8 +1784,14 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                 h_x2c = h_x2c[0]
 
         # the dump's property operators. One cheap intor, ingested here because nothing downstream
-        # may call PySCF — and the gauge origin has to be fixed before the Mole is gone.
-        props = ingest_property_integrals(mol, gauge_origin)
+        # may call PySCF — and the gauge origin has to be fixed before the Mole is gone. The
+        # optional picture change is built here for the same reason and no other: it needs the
+        # four-component problem, the gauge origin and the Mole all at once, and this is the
+        # only place all three exist.
+        props = ingest_property_integrals(
+            mol, gauge_origin, picture_change=bool(property_picture_change),
+            approx=chosen.decoupling, decoupling_options=decoupling_options,
+            anomaly_picture_change=bool(anomaly_picture_change))
 
         eri = None
         df_cderi = None

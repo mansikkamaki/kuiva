@@ -33,13 +33,33 @@ Four things about this file that are decisions, not details
    so its roots *are* the spin-orbit eigenstates: there is no separate spin-orbit mixing step
    to leave off-diagonal elements behind. A reader coming from a two-step (scalar CASSCF +
    RASSI) workflow will expect otherwise, so the header says it.
-2. ⚠ **No picture change is applied to the property operators** (an explicit standing decision). ``L`` and
-   ``S`` are the bare non-relativistic AO operators used unchanged in the two-component
-   basis. This matches RASSI, which is what makes the Tier-2 comparison like-for-like, and it
-   is an approximation of **unmeasured size**. :func:`write_dump` emits a ``WARNING`` at the
-   point of writing and records the omission in the header, in the same way the mean field records its
-   own standing obligations. Removing it means transforming ``L`` and ``S`` with the ``R``
-   matrix of :mod:`kuiva.x2c.decouple` (Peng & Reiher 2012).
+2. ⚠ **No picture change is applied to the property operators by default** (an explicit
+   standing decision). ``L`` and ``S`` are the bare non-relativistic AO operators used
+   unchanged in the two-component basis. This matches RASSI, which is what makes the
+   cross-code comparison like-for-like. :func:`write_dump` emits a ``WARNING`` at the point of
+   writing and records the treatment in the header, in the same way the mean field records its
+   own standing obligations.
+
+   **The size of the approximation has been measured** and the correction is available as a
+   non-default option (``property_picture_change=True`` on the front end, which transforms the
+   four-component moment operator with the same ``X`` and ``R`` that decouple the Hamiltonian;
+   Peng & Reiher 2012). On free-ion multiplets it moves a g factor by **1e-04 relative at
+   Z = 5, rising smoothly to 1e-03 at Z = 81**, reaching 2.6e-03 on Yb(3+) ``2F5/2``; on a 3d
+   complex's ground doublet by 1.9e-04; and it splits **no** degeneracy anywhere (exactly
+   zero). ⚠ **Two things that bound reads of those numbers.** They *grow with Z*, so they are a
+   bound for the elements measured and not for a heavier one. And on a level whose ``g``
+   approaches zero the *relative* shift is inflated by its own denominator — the largest seen,
+   8e-03, is such a case, whose absolute shift is only ~5x the median — so quote an absolute
+   shift alongside a relative one whenever ``g`` is small.
+
+   ⚠ **Turning the correction on changes what a stored ``mu`` means**, while ``format_version``
+   stays the same: the header field ``picture_change_on_properties`` is what distinguishes the
+   two, and a reader that ignores the header will misread the moment matrices. That field is
+   the reason the format version does not move — it exists precisely to carry this — but it
+   makes reading the header obligatory rather than optional. ⚠ **The picture-changed moment
+   does not separate into an ``L`` part and an ``S`` part**, so in such a file the ``L`` and
+   ``S`` blocks are the bare operators that ``mu`` was *not* built from, and are written for
+   reference only.
 3. ⚠ **Phases are arbitrary and are not canonicalized**. Within a degenerate block the
    eigenvectors are defined only up to a unitary mixing, so an element-by-element comparison
    of these matrices — against another program, or against another run of this one — is
@@ -129,9 +149,26 @@ def spinor_operators(coeff_ao: np.ndarray, l_ao_2c: np.ndarray,
     if l.shape[1] != c.shape[0]:
         raise ValueError("the operators span {} two-component AO rows and the spinors {}"
                          .format(l.shape[1], c.shape[0]))
+    return spinor_operator(c, l), spinor_operator(c, s)
+
+
+def spinor_operator(coeff_ao: np.ndarray, op_ao_2c: np.ndarray) -> np.ndarray:
+    """One two-component AO operator in the spinor MO basis: ``C^dag A C`` per component.
+
+    ``(3, 2*nao, 2*nao)`` in, ``(3, n_orb, n_orb)`` out. :func:`spinor_operators` is the
+    two-operator case of this; the picture-changed moment operator
+    (:meth:`kuiva.interface.pyscf_bridge.PropertyIntegrals.moment_operator`) is a third
+    operator that goes through the same congruence and must not grow its own.
+    """
+    c = np.ascontiguousarray(coeff_ao, dtype=np.complex128)
+    a = np.asarray(op_ao_2c)
+    if a.ndim != 3 or a.shape[0] != 3:
+        raise ValueError("the operator must be (3, 2*nao, 2*nao), got {}".format(a.shape))
+    if a.shape[1] != c.shape[0]:
+        raise ValueError("the operator spans {} two-component AO rows and the spinors {}"
+                         .format(a.shape[1], c.shape[0]))
     ct = c.conj().T
-    return (np.stack([ct @ lk @ c for lk in l]),
-            np.stack([ct @ sk @ c for sk in s]))
+    return np.stack([ct @ ak @ c for ak in a])
 
 
 def inactive_moment(op_mo: np.ndarray, inactive: Sequence[int], *,
@@ -209,6 +246,11 @@ class PropertyMatrices:
     inactive_l, inactive_s : ``(3,)`` — the measured inactive contributions, which are zero
         for a Kramers-paired inactive space (see :func:`inactive_moment`). Reported so that
         "it was checked" is visible in the file rather than only in the code.
+    picture_change : str — what was done to the property operators. Empty or a string starting
+        ``"none"`` means the bare non-relativistic ``L`` and ``S`` were used unchanged in the
+        two-component basis, which is the default. ⚠ Anything else means ``mu`` was **not**
+        built from :attr:`l` and :attr:`s`, and the two files are not comparable element for
+        element.
     """
 
     energies: np.ndarray
@@ -223,6 +265,12 @@ class PropertyMatrices:
     inactive_l: np.ndarray = field(default_factory=lambda: np.zeros(3))
     inactive_s: np.ndarray = field(default_factory=lambda: np.zeros(3))
     comments: Tuple[str, ...] = ()
+    picture_change: str = ""
+
+    @property
+    def picture_changed(self) -> bool:
+        """True when ``mu`` carries the X2C picture change on the property operators."""
+        return bool(self.picture_change) and not self.picture_change.startswith("none")
 
     @property
     def n_states(self) -> int:
@@ -316,8 +364,33 @@ def property_matrices(coeff_ao: np.ndarray, spaces, tdm: np.ndarray, energies,
     ix = np.ix_(act, act)
     l_states = state_operator_matrices(np.stack([lk[ix] for lk in l_mo]), tdm, inact_l)
     s_states = state_operator_matrices(np.stack([sk[ix] for sk in s_mo]), tdm, inact_s)
-    from .multiplet import magnetic_moment_matrices
-    mu = magnetic_moment_matrices(l_states, s_states, g_e=g_electron)
+
+    moment_ao = properties.moment_operator()
+    if moment_ao is None:
+        from .multiplet import magnetic_moment_matrices
+        mu = magnetic_moment_matrices(l_states, s_states, g_e=g_electron)
+    else:
+        # ⚠ The picture-changed moment does NOT separate into an L part and an S part: the
+        # four-component magnetic interaction is the odd operator c alpha.A, so what is
+        # transformed is the whole of (L + 2S). The 2 is Dirac's g factor; the QED anomaly is
+        # not part of that operator and is added here as (g_e - 2) S, on the picture-changed
+        # spin operator when one was built and on the bare S otherwise.
+        m_mo = spinor_operator(coeff_ao, moment_ao)
+        inact_m = inactive_moment(m_mo, inactive, name="L+2S", tol=inactive_tol)
+        m_states = state_operator_matrices(np.stack([mk[ix] for mk in m_mo]), tdm, inact_m)
+        anomaly_ao = properties.anomaly_spin()
+        if anomaly_ao is None:
+            anomaly_states = s_states
+        else:
+            a_mo = spinor_operator(coeff_ao, anomaly_ao)
+            inact_a = inactive_moment(a_mo, inactive, name="S (picture-changed)",
+                                      tol=inactive_tol)
+            anomaly_states = state_operator_matrices(
+                np.stack([ak[ix] for ak in a_mo]), tdm, inact_a)
+        mu = -(m_states + (float(g_electron) - 2.0) * anomaly_states)
+        # L and S below stay the BARE operators. They remain perfectly good operators and the
+        # file still reports them; what changed is that mu is no longer built from them, which
+        # is what the header has to say.
 
     return PropertyMatrices(
         energies=np.asarray(energies, dtype=float).ravel(), mu=mu, l=l_states, s=s_states,
@@ -325,7 +398,13 @@ def property_matrices(coeff_ao: np.ndarray, spaces, tdm: np.ndarray, energies,
         origin_label=properties.origin_label, g_electron=float(g_electron),
         active_space=active_space,
         provenance=dict(provenance or {}, properties=properties.provenance()),
-        inactive_l=inact_l, inactive_s=inact_s, comments=tuple(comments))
+        inactive_l=inact_l, inactive_s=inact_s, comments=tuple(comments),
+        # ⚠ Left EMPTY when there is no picture change, so the header keeps writing the bare
+        # "none" it always has: this field feeds a stored file that committed references and
+        # external consumers already parse, and widening its default value would move every
+        # one of them for no gain.
+        picture_change=("" if moment_ao is None
+                        else str(properties.provenance().get("picture_change", ""))))
 
 
 # --- the file ------------------------------------------------------------------------------
@@ -347,18 +426,29 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
         Skip matrix elements smaller than this in modulus. ``0.0`` (the default) writes every
         element, which keeps the file's row count predictable from ``n_states`` alone.
 
-    ⚠ Emits the standing ``WARNING`` about the missing picture change on the property
-    operators every time it is called. That is deliberate and it is not configurable: the file
-    it produces will outlive this conversation, and the one thing worse than the approximation
-    is a file that does not say it was made.
+    ⚠ Emits a standing ``WARNING`` about the treatment of the property operators every time it
+    is called — whichever treatment was used. That is deliberate and it is not configurable:
+    the file it produces will outlive this conversation, and the one thing worse than an
+    approximation is a file that does not say it was made. A **non-default** treatment warns
+    the more loudly of the two, because it is the one a reader will not be expecting.
     """
     path = Path(path)
     n = matrices.n_states
-    log.warning("the property operators L and S carry NO picture-change transformation "
-                ": they are the bare non-relativistic AO operators used "
-                "unchanged in the two-component basis. This matches OpenMolcas RASSI, so a "
-                "cross-code comparison is like-for-like, but the size of the approximation "
-                "has not been measured. It is recorded in the header of %s", path.name)
+    if matrices.picture_changed:
+        log.warning("the property operators in %s carry the X2C PICTURE CHANGE (%s). This is "
+                    "NOT the default and it is not what OpenMolcas RASSI does, so mu in this "
+                    "file is not comparable element for element with a file written without "
+                    "it, and L and S are written as the bare operators mu was NOT built from. "
+                    "The treatment is recorded in the header", path.name,
+                    matrices.picture_change)
+    else:
+        log.warning("the property operators L and S carry NO picture-change transformation "
+                    ": they are the bare non-relativistic AO operators used "
+                    "unchanged in the two-component basis. This matches OpenMolcas RASSI, so a "
+                    "cross-code comparison is like-for-like. The approximation has been "
+                    "measured and is small: below 0.3%% on every free-ion multiplet g factor "
+                    "from Z=5 to Z=81, 0.02%% on a 3d complex's ground doublet, and it splits "
+                    "no degeneracy at all. It is recorded in the header of %s", path.name)
 
     blocks: List[Tuple[str, np.ndarray, str, str]] = [
         ("H", matrices.hamiltonian, "Eh",
@@ -390,7 +480,7 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
         ("gauge_origin_choice", matrices.origin_label),
         ("active_space", matrices.active_space or "unspecified"),
         ("hamiltonian_is_diagonal", "yes"),
-        ("picture_change_on_properties", "none"),
+        ("picture_change_on_properties", matrices.picture_change or "none"),
         ("phase_convention", "arbitrary (not canonicalized)"),
     ]
 
@@ -404,9 +494,19 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
       "# eigenstates and there is no separate spin-orbit mixing step. A reader coming from a\n"
       "# two-step (scalar CASSCF + RASSI) workflow should expect otherwise.\n")
     w("#\n")
-    w("# WARNING: no picture-change transformation is applied to L and S. They are the bare\n"
-      "# non-relativistic AO operators used unchanged in the two-component basis, which is\n"
-      "# what OpenMolcas RASSI does; the size of the approximation is unmeasured.\n")
+    if matrices.picture_changed:
+        w("# WARNING: the X2C picture change IS applied to the moment operator, which is NOT\n"
+          "# the default and NOT what OpenMolcas RASSI does. mu below is therefore not\n"
+          "# comparable with a file written without it. mu was built from the transformed\n"
+          "# (L + 2S) plus (g_e - 2) S, NOT from the L and S blocks of this file, which are\n"
+          "# the bare operators and are written for reference only. See the header.\n")
+    else:
+        w("# WARNING: no picture-change transformation is applied to L and S. They are the bare\n"
+          "# non-relativistic AO operators used unchanged in the two-component basis, which is\n"
+          "# what OpenMolcas RASSI does. The approximation has been measured: it is below 0.3%\n"
+          "# on every free-ion multiplet g factor from Z=5 to Z=81, 0.02% on the ground doublet\n"
+          "# of a 3d complex, and it splits no degeneracy. It grows with Z, so treat it as a\n"
+          "# bound for the elements measured and not as one for a heavier system.\n")
     w("#\n")
     w("# WARNING: state phases are arbitrary and degenerate states mix arbitrarily. Compare\n"
       "# these matrices only through invariants: degeneracy patterns, relative energies, and\n"
@@ -547,5 +647,5 @@ def read_dump(path) -> Dict[str, object]:
 
 
 __all__ = ["FORMAT_VERSION", "DEFAULT_INACTIVE_TOL", "PropertyMatrices",
-           "property_matrices", "spinor_operators", "inactive_moment",
+           "property_matrices", "spinor_operators", "spinor_operator", "inactive_moment",
            "state_operator_matrices", "write_dump", "read_dump"]

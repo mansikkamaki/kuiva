@@ -807,7 +807,7 @@ class PseudospinExport(_Stage):
         from ..dmrg.manifold import solve_manifold
         from ..dmrg.ttno import one_electron_product_terms
         from ..mcscf.orbopt import CASIntegrals
-        from ..props.dump import inactive_moment, spinor_operators
+        from ..props.dump import inactive_moment, spinor_operator, spinor_operators
         from ..props.multiplet import G_ELECTRON
         from ..props.pseudospin import pseudospin_from_model, write_pseudospin
         from ..spinor.expand import spin_operator
@@ -828,10 +828,25 @@ class PseudospinExport(_Stage):
                                       spin_operator(ref.data.s_ao))
         ix = np.ix_(spaces.active, spaces.active)
         names = ("mu_x", "mu_y", "mu_z")
-        mu_act = -(np.stack([lk[ix] for lk in l_mo])
-                   + g_e * np.stack([sk[ix] for sk in s_mo]))
-        mu_inactive = -(inactive_moment(l_mo, spaces.inactive, name="L")
-                        + g_e * inactive_moment(s_mo, spaces.inactive, name="S"))
+        moment_ao = ref.data.properties.moment_operator()
+        if moment_ao is None:
+            mu_act = -(np.stack([lk[ix] for lk in l_mo])
+                       + g_e * np.stack([sk[ix] for sk in s_mo]))
+            mu_inactive = -(inactive_moment(l_mo, spaces.inactive, name="L")
+                            + g_e * inactive_moment(s_mo, spaces.inactive, name="S"))
+        else:
+            # ⚠ The picture-changed moment does not separate into an L part and an S part, so
+            # mu is built from the transformed (L + 2S) plus the (g_e - 2) anomaly. This branch
+            # must stay in step with the one in kuiva.props.dump.property_matrices — the two
+            # are held together by a test that runs both routes on one reference, not by
+            # structure, because the branch above is kept byte-identical on purpose.
+            m_mo = spinor_operator(cas.coeff, moment_ao)
+            anomaly_ao = ref.data.properties.anomaly_spin()
+            a_mo = s_mo if anomaly_ao is None else spinor_operator(cas.coeff, anomaly_ao)
+            mu_act = -(np.stack([mk[ix] for mk in m_mo])
+                       + (g_e - 2.0) * np.stack([ak[ix] for ak in a_mo]))
+            mu_inactive = -(inactive_moment(m_mo, spaces.inactive, name="L+2S")
+                            + (g_e - 2.0) * inactive_moment(a_mo, spaces.inactive, name="S"))
         operators = {name: one_electron_product_terms(np.ascontiguousarray(mu_act[k]))
                      for k, name in enumerate(names)}
 

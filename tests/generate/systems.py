@@ -341,6 +341,45 @@ SYSTEMS: Tuple[System, ...] = (
                      "4S3/2 0, 2D3/2 11419, 2D5/2 15438, 2P1/2 21661, 2P3/2 33165 cm-1 "
                      "(NIST ASD)",
     ),
+    # --- the np^1 isoelectronic series -----------------------------------------------------
+    # ⚠ **One valence p electron all the way down group 13**, so the g factor of each level is
+    # purely angular and the analytic Lande values 2/3 and 4/3 hold exactly for every member.
+    # That makes the series a controlled scan of a *relativistic* effect against Z with
+    # everything else held fixed - which is what a single atom can never establish, however
+    # precisely it is computed. All five are sub-second at CAS(1, 3 spatial) with six roots.
+    System(
+        key="b", label="B", atoms=_atom("B"), charge=0, spin=1,
+        basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
+        ncas=3, nelecas=1, active_l="p", nroots={2: 3}, tier1=False,
+        physics_note="2p^1, Z=5: the light end of the np^1 series. 2P1/2 (2) below 2P3/2 (4), "
+                     "analytic Lande g = 2/3 and 4/3, splitting ~33 cm-1",
+    ),
+    System(
+        key="al", label="Al", atoms=_atom("Al"), charge=0, spin=1,
+        basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
+        ncas=3, nelecas=1, active_l="p", nroots={2: 3}, tier1=False,
+        physics_note="3p^1, Z=13, np^1 series; experimental 2P splitting 112 cm-1 (NIST ASD)",
+    ),
+    System(
+        key="ga", label="Ga", atoms=_atom("Ga"), charge=0, spin=1,
+        basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
+        ncas=3, nelecas=1, active_l="p", nroots={2: 3}, tier1=False,
+        physics_note="4p^1, Z=31, np^1 series; experimental 2P splitting 826 cm-1 (NIST ASD)",
+    ),
+    System(
+        key="in", label="In", atoms=_atom("In"), charge=0, spin=1,
+        basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
+        ncas=3, nelecas=1, active_l="p", nroots={2: 3}, tier1=False,
+        physics_note="5p^1, Z=49, np^1 series; experimental 2P splitting 2213 cm-1 (NIST ASD)",
+    ),
+    System(
+        key="tl", label="Tl", atoms=_atom("Tl"), charge=0, spin=1,
+        basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
+        ncas=3, nelecas=1, active_l="p", nroots={2: 3}, tier1=False,
+        physics_note="6p^1, Z=81, the heavy end of the np^1 series and where a relativistic "
+                     "property correction should be largest; experimental 2P splitting "
+                     "7793 cm-1 (NIST ASD)",
+    ),
     System(
         key="tlh", label="TlH", atoms=_diatomic("Tl", "H", 1.872), charge=0, spin=0,
         basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",

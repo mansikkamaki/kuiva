@@ -295,12 +295,40 @@ def two_component_operator(a_sf: np.ndarray, w: Optional[np.ndarray] = None) -> 
         log.warning("spin-orbit factors w_k are not antisymmetric (max |w + w^T| = %.2e, "
                     "%.1e relative); the assembled operator will not be Hermitian",
                     asym, asym / (scale or 1.0))
-    n = a_sf.shape[0]
+    return h + sigma_dot(1j * w)
+
+
+def sigma_dot(w: np.ndarray) -> np.ndarray:
+    """``sigma . W`` for a **general** ``(3, n, n)`` complex ``W``, in the row layout of this
+    module (``[alpha; beta]``)::
+
+        sigma . W = [[  W_z       , W_x - i W_y ]
+                     [ W_x + i W_y,   -W_z      ]]
+
+    :func:`two_component_operator` is the common case of this — its ``W_k = i w_k`` with
+    ``w_k`` real antisymmetric, which is how spin-orbit integrals come out of an integral
+    library over real Gaussians, and which makes the result Hermitian and time-reversal even.
+    This function assumes **neither**, because not every spin-dependent operator is of that
+    form: the small-component block of the anomalous magnetic moment,
+    ``<(sigma.p) sigma_k (sigma.p)>``, expands over a ``W`` that is real rather than
+    imaginary and non-antisymmetric, and assembling it through the antisymmetric route would
+    silently drop it.
+
+    ⚠ **This is the single definition of the ``sigma . W`` layout** and
+    :func:`two_component_operator` is a caller of it, not a second copy — the conventions of
+    this module are defined here and nowhere else. A second spelling of these four blocks
+    passes every norm and hermiticity test and is still a different convention.
+    """
+    w = np.asarray(w)
+    if w.ndim != 3 or w.shape[0] != 3 or w.shape[1] != w.shape[2]:
+        raise ValueError("sigma . W needs W as (3, n, n), got {}".format(w.shape))
+    n = w.shape[1]
     wx, wy, wz = w
-    h[:n, :n] += 1j * wz
-    h[n:, n:] -= 1j * wz
-    h[:n, n:] += 1j * wx + wy
-    h[n:, :n] += 1j * wx - wy
+    h = np.zeros((2 * n, 2 * n), dtype=np.complex128)
+    h[:n, :n] = wz
+    h[n:, n:] = -wz
+    h[:n, n:] = wx - 1j * wy
+    h[n:, :n] = wx + 1j * wy
     return h
 
 
@@ -697,7 +725,7 @@ def expand_unrestricted_mos(mo_alpha: np.ndarray, mo_beta: np.ndarray,
 
 __all__ = ["SpinorBasis", "expand_scalar_mos", "expand_unrestricted_mos",
            "time_reverse", "spin_block_diagonal",
-           "two_component_operator", "spin_operator",
+           "two_component_operator", "sigma_dot", "spin_operator",
            "decompose_two_component", "time_reversal_residual",
            "is_time_reversal_even", "kramers_block_permutation",
            "spinor_indices", "spatial_index", "barred", "unbarred", "is_barred"]

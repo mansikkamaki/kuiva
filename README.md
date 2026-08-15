@@ -842,10 +842,32 @@ and never re-runs them.
 
 The release is usable for production work **with care**, and this is what the care is about.
 
-- ⚠ **No picture-change correction is applied to the property operators.** `L` and `S` are the
-  bare non-relativistic AO operators, used unchanged in the two-component basis. This matches
-  what OpenMolcas RASSI does — which is what makes a cross-code comparison like-for-like — and
-  the size of the approximation is **unmeasured**. Every property dump warns and records it.
+- **No picture-change correction is applied to the property operators by default, and the
+  approximation has been measured.** `L` and `S` are the bare non-relativistic AO operators,
+  used unchanged in the two-component basis — what OpenMolcas RASSI does, which is what makes a
+  cross-code comparison like-for-like. Every property dump warns and records which operators it
+  used.
+
+  The correction is available as a **non-default option**, `property_picture_change=True` on
+  `scalar_x2c_reference` / `spinor_reference`. What it is worth, measured on nine systems:
+
+  | | g shift, relative |
+  |---|---|
+  | `np¹` free ions, B (Z=5) → Tl (Z=81) | 1.0e-04 → 1.0e-03, smooth and monotone in Z |
+  | Ce(3+) 4f¹ / Yb(3+) 4f¹³ | 1.3e-03 / 2.6e-03 |
+  | Dy(3+) 4f⁹ ground multiplet | 5.1e-04 |
+  | TiCl₃ ground doublet | 1.9e-04 |
+  | any degeneracy, free ion or complex | **exactly zero** |
+
+  So it is a real, orderly effect that is an order of magnitude below the 1% band the test
+  suite asserts free-ion Landé factors at, which is why it is not the default. ⚠ **It grows
+  with Z**, so those figures bound the elements measured and not a heavier one. ⚠ On a level
+  whose `g` approaches zero the relative shift is inflated by its own denominator (the largest
+  seen, 8e-03, is such a case) — quote an absolute shift too when `g` is small. ⚠ Turning it on
+  changes what `mu` means in a stored file while `format_version` stays the same: the header
+  field `picture_change_on_properties` is what distinguishes them, so reading the header is
+  obligatory. The `g_e - 2` anomaly's own small-component term is a further three orders down
+  and is left off unless `anomaly_picture_change=True`.
 - ⚠ **DLU accuracy is unmeasured.** No statement about state energies or splittings through a
   `-DLU` Hamiltonian exists, so nothing computed with one may be quoted as a spectroscopic
   accuracy. It is the bottom rung of the cost ladder and warns when selected.
@@ -894,7 +916,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.6.4.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.7.1.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -910,7 +932,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.6.4'
+import kuiva; kuiva.__version__          # '0.7.1'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
