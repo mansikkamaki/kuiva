@@ -524,10 +524,13 @@ def atomic_reference_charges(c_ao: np.ndarray, s_ao: np.ndarray, layout: AOLayou
     for ia in range(layout.natm):
         idx = np.asarray(layout.atom_indices(ia))
         sym = str(layout.atom_symbols[ia]).capitalize()
-        if sym not in reference:
-            raise ValueError("the ingested atomic reference has no entry for {}; it was "
-                             "built for a different molecule".format(sym))
-        entry = reference[sym]
+        try:
+            entry = reference.entry_for_atom(ia, sym) \
+                if hasattr(reference, "entry_for_atom") else reference[sym]
+        except KeyError:
+            raise ValueError("the ingested atomic reference has no entry for atom {} "
+                             "({}); it was built for a different molecule".format(
+                                 ia + 1, sym))
         if entry.c.shape[0] != idx.size:
             raise ValueError(
                 "the atomic reference for {} spans {} functions but this molecule gives the "
@@ -541,7 +544,8 @@ def atomic_reference_charges(c_ao: np.ndarray, s_ao: np.ndarray, layout: AOLayou
         occupied[idx[:n_occ]] = True
         weight[idx[:n_occ]] = occ_sorted[:n_occ]
         owner[idx] = ia
-        configurations[sym] = entry.configuration
+        key = reference.atom_keys[ia] if getattr(reference, "atom_keys", None) else sym
+        configurations[key] = entry.configuration
         all_converged = all_converged and entry.converged
 
     # Tier 1: the occupied atomic orbitals, weighted by their atomic occupations.

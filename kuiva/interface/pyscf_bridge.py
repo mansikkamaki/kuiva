@@ -788,50 +788,110 @@ class ScalarX2CData:
                 f"route={self.fit_route}, {two_e}, soc={self.has_soc})")
 
 
-def _resolve_basis(atoms, basis) -> Tuple[object, Dict[str, str]]:
-    """Turn a basis spec (str, or {symbol: family}) into a PySCF ``basis`` and metadata.
+def _resolve_basis(atoms, basis) -> Tuple[list, list]:
+    """Resolve a basis spec into one family per atom. Returns ``(families, is_specific)``.
 
-    A single family name is applied to every atom; a dict assigns per-atom families. Both go
-    through the registry so coverage and (for BSE families) data fetching are handled there.
+    A string applies one family to every atom. A dict assigns per element, per atom label
+    (``"O3"``), or per 1-based atom number, with an optional ``"default"`` entry filling
+    every atom no more specific key covers (:mod:`kuiva.basis.atommap` — the same addressing
+    the reference configurations use). Without a ``"default"`` the assignment must be
+    complete, exactly as before. Registry coverage and compatibility run over the whole
+    per-atom assignment, so two families on one element are checked as the pair they are.
     """
-    symbols = sorted({a[0].capitalize() for a in atoms})
-    if isinstance(basis, str):
-        atom_basis = {s: basis for s in symbols}
-    else:
-        atom_basis = {s.capitalize(): b for s, b in basis.items()}
-        missing = [s for s in symbols if s not in atom_basis]
-        if missing:
-            raise ValueError(f"no basis assigned for atom(s) {missing}")
+    from ..basis.atommap import resolve_atom_assignments
 
-    report = reg.check_consistency(atom_basis)
+    symbols = [a[0].capitalize() for a in atoms]
+    if isinstance(basis, str):
+        families, specific = [basis] * len(symbols), [False] * len(symbols)
+    else:
+        families, specific = resolve_atom_assignments(basis, symbols, what="basis")
+        missing = sorted({s for s, f in zip(symbols, families) if f is None})
+        if missing:
+            raise ValueError("no basis assigned for atom(s) {} — add element entries or a "
+                             "\"default\" entry".format(missing))
+
+    report = reg.check_consistency(sorted({(s, f) for s, f in zip(symbols, families)}))
     if not report.ok:
         raise ValueError("basis consistency check failed:\n  " + "\n  ".join(report.errors))
-
-    pyscf_basis: Dict[str, object] = {}
-    meta: Dict[str, str] = {}
-    for sym, fam_name in atom_basis.items():
-        fam = reg.get_family(fam_name)
-        pyscf_basis[sym] = reg.resolve_for_pyscf(fam_name, [sym])[sym] \
-            if fam.provider is reg.Provider.BSE else fam.provider_name
-        meta[sym] = f"{fam.name} [{fam.rel_treatment.value}, {fam.contraction.value}, " \
-                    f"fit={fam.fit_route().value}]"
-    return pyscf_basis, (meta, atom_basis)
+    return families, specific
 
 
-def build_mole(molecule, verbose: int = 0):
+def build_mole(molecule, verbose: int = 0, configuration=None):
     """Build a PySCF ``Mole`` from a Kuiva ``Molecule`` (duck-typed), via the registry.
 
     ``molecule`` must expose ``atoms`` (list of ``(symbol, (x, y, z))``), ``charge``,
-    ``spin`` (2S), ``basis`` and ``unit``.
+    ``spin`` (2S), ``basis`` and ``unit``. ``configuration`` is the per-atom reference-state
+    spec (element / label / 1-based number keys, values an oxidation state or a
+    configuration), resolved here through the curated-table checks because the *labelling*
+    of the molecule depends on it: ⚠ **an atom whose basis or reference state differs from
+    another atom of the same element gets a decorated PySCF symbol** (``"Ti2"``, 1-based),
+    which is what lets every per-label consumer downstream — the atomic mean field's
+    assembly first among them — treat the two atoms differently. Atoms with nothing
+    atom-specific keep their plain element symbol, so outputs, caches and provenance are
+    unchanged wherever the feature is not used.
     """
     from pyscf import gto
-    pyscf_basis, (meta, atom_basis) = _resolve_basis(molecule.atoms, molecule.basis)
-    atom_str = [(a[0].capitalize(), tuple(a[1])) for a in molecule.atoms]
+
+    from ..amf.oxidation import resolve_reference_configuration
+    from ..basis.atommap import resolve_atom_assignments
+
+    symbols = [a[0].capitalize() for a in molecule.atoms]
+    families, _ = _resolve_basis(molecule.atoms, molecule.basis)
+
+    spec_values, _ = resolve_atom_assignments(configuration, symbols,
+                                              what="reference configuration",
+                                              allow_scalar=False)
+    resolved: Dict[tuple, tuple] = {}
+    atom_configs = []
+    for sym, value in zip(symbols, spec_values):
+        key = (sym, repr(value))
+        if key not in resolved:          # one resolution (and one warning) per unique spec
+            resolved[key] = resolve_reference_configuration(sym, value)
+        atom_configs.append(resolved[key])
+
+    # Decoration: every atom of an element whose atoms are not all alike gets its own label.
+    varies = {s for s in set(symbols)
+              if len({(f, c[0]) for s2, f, c in zip(symbols, families, atom_configs)
+                      if s2 == s}) > 1}
+    labels = [("{}{}".format(s, i + 1) if s in varies else s)
+              for i, s in enumerate(symbols)]
+
+    pyscf_basis: Dict[str, object] = {}
+    meta: Dict[str, str] = {}
+    atom_basis: Dict[str, str] = {}
+    for label, sym, fam_name in zip(labels, symbols, families):
+        if label in pyscf_basis:
+            continue
+        fam = reg.get_family(fam_name)
+        pyscf_basis[label] = reg.resolve_for_pyscf(fam_name, [sym])[sym] \
+            if fam.provider is reg.Provider.BSE else fam.provider_name
+        meta[label] = f"{fam.name} [{fam.rel_treatment.value}, {fam.contraction.value}, " \
+                      f"fit={fam.fit_route().value}]"
+        atom_basis[label] = fam_name
+
+    atom_str = [(label, tuple(a[1])) for label, a in zip(labels, molecule.atoms)]
     mol = gto.M(atom=atom_str, basis=pyscf_basis, charge=molecule.charge,
                 spin=molecule.spin, unit=molecule.unit, verbose=verbose)
     mol.__dict__["_kuiva_basis_meta"] = meta
     mol.__dict__["_kuiva_atom_basis"] = atom_basis
+    mol.__dict__["_kuiva_atom_labels"] = labels
+    mol.__dict__["_kuiva_atom_families"] = list(families)
+    # ⚠ Plain data only: PySCF's SCF checkpoint JSON-serializes ``mol.__dict__``, so the
+    # resolved configurations are stashed as (occupations, label, is_default) and rebuilt
+    # by _stashed_configs() — equality (and therefore every cache key) is by occupations.
+    mol.__dict__["_kuiva_atom_configs"] = [
+        (list(cfg.occupations), cfg.label, bool(d)) for cfg, d in atom_configs]
+    mol.__dict__["_kuiva_config_given"] = configuration is not None
     return mol
+
+
+def _stashed_configs(mol):
+    """Rebuild the per-atom ``(AtomicConfiguration, is_default)`` list off the JSON-safe
+    stash."""
+    from ..amf.configuration import AtomicConfiguration
+
+    return [(AtomicConfiguration(occ, label=label), bool(d))
+            for occ, label, d in mol.__dict__["_kuiva_atom_configs"]]
 
 
 def _choose_fit(atom_basis: Dict[str, str], fitting: Optional[str],
@@ -2040,6 +2100,7 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                    method: Optional[str] = None,
                    x2c_approx: Optional[str] = None, screening: Optional[str] = None,
                    screening_options: Optional[Dict[str, object]] = None,
+                   configuration=None,
                    decoupling_options: Optional[Dict[str, object]] = None,
                    conv_tol: float = 1e-10, max_cycle: int = 200,
                    memory_gb: Optional[float] = None, n_active: Optional[int] = None,
@@ -2123,9 +2184,24 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         (:mod:`kuiva.amf.cache`), so a potential-energy surface pays it once ever.
     screening_options : dict, optional
         Extra arguments for the correction — ``interaction`` (``"coulomb"`` / ``"gaunt"`` /
-        ``"breit"``), ``configuration`` (a ``{symbol: reference}`` mapping for a heteronuclear
-        molecule), ``backend``, ``uncontract``. See
-        :func:`kuiva.amf.correction.amf_correction`.
+        ``"breit"``), ``backend``, ``uncontract``. See
+        :func:`kuiva.amf.correction.amf_correction`. Its ``configuration`` entry still
+        works but ``configuration=`` below is the surface; giving both warns and the
+        explicit argument wins.
+    configuration : optional
+        **One reference-state statement per atom**, feeding both the atomic mean field and
+        the atomic-reference charges. Keys of a mapping are an element symbol (``"Ti"``),
+        an atom label (``"Ti2"``) or a 1-based atom number (``3``), most specific wins; a
+        scalar is allowed for a single-element molecule only. Each value is an oxidation
+        state (``"+3"``, ``2``) — resolved to **the one canonical configuration of the
+        curated common-states table**, warning outside it — or an explicit configuration
+        (``"[Xe]4f1"``), checked against the table's accepted set and warned about when it
+        is an excited or unusual reference (several configurations are accepted where the
+        literature genuinely admits more than one, e.g. the d/s occupations of the late
+        transition metals). ⚠ Atoms of one element with *different* reference states (or
+        bases) get decorated symbols (``"Ti2"``) throughout output and provenance, and the
+        charge report warns that non-default references are not comparable with default
+        ones.
     memory_gb : float, optional
         Working-memory limit for this calculation, overriding the configured default.
         Without a default *and* without this, the calculation refuses to start.
@@ -2161,7 +2237,18 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         method = DEFAULT_METHOD
     chosen = resolve(method, decoupling=x2c_approx, screening=screening)
 
-    mol = build_mole(molecule, verbose=verbose)
+    # One reference-state statement per atom, feeding BOTH consumers (the atomic mean field
+    # and the atomic-reference charges). The screening_options back door keeps working; when
+    # both are given the explicit argument wins, announced.
+    legacy_cfg = (screening_options or {}).get("configuration")
+    if configuration is not None and legacy_cfg is not None:
+        log.warning("both configuration= and screening_options['configuration'] were "
+                    "given; the explicit configuration= argument is used and the "
+                    "screening_options entry is ignored.")
+    elif configuration is None:
+        configuration = legacy_cfg
+
+    mol = build_mole(molecule, verbose=verbose, configuration=configuration)
     atom_basis = mol.__dict__["_kuiva_atom_basis"]
     meta = mol.__dict__["_kuiva_basis_meta"]
     fit_route, aux = _choose_fit(atom_basis, fitting, auxbasis)
@@ -2254,15 +2341,20 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         factors = _direct_cholesky(mol, tol=cholesky_tol, orbit_pivots=orbit_pivots,
                                    one_centre=one_centre)
 
+    # The mean field takes the SAME resolved per-label reference states the charges do —
+    # one statement per atom, everywhere — so the raw user spec never reaches it twice.
+    screen_opts = dict(screening_options or {})
+    if mol.__dict__["_kuiva_config_given"]:
+        screen_opts["configuration"] = {
+            lab: cfg for lab, (cfg, _d) in zip(mol.__dict__["_kuiva_atom_labels"],
+                                               _stashed_configs(mol))}
     soc = (ingest_spin_orbit(mol, h_x2c, chosen.decoupling, screening=chosen.screening,
                              decoupling_options=decoupling_options,
-                             **(screening_options or {})) if with_soc else None)
+                             **screen_opts) if with_soc else None)
 
     # ⚠ Must run here for the same reason the direct decomposition does: the reference is
     # per (element, basis) and needs the integral library, which nothing downstream has.
-    atomic_ref = (_atomic_reference_set(atom_basis,
-                                        (screening_options or {}).get("configuration"))
-                  if atomic_reference else None)
+    atomic_ref = _atomic_reference_set(mol) if atomic_reference else None
 
     # Standard output block: the front-end's contribution to the output file.
     rows = [
@@ -2366,47 +2458,41 @@ def _run_aoc_scf(mf, mol, config, layout, element: str, *, spherical: bool = Tru
 _ATOMIC_REFERENCE_CACHE: Dict[tuple, object] = {}
 
 
-def _atomic_reference_entry(element: str, basis, configuration=None):
-    """The free-atom reference orbitals of one element, in its own basis (cached).
+def _atomic_reference_entry(element: str, family, config, is_default: bool):
+    """The free-atom reference orbitals of one element, in one basis family (cached).
 
-    The reference state defaults to :func:`kuiva.amf.configuration.default_configuration` —
-    **the same default the atomic mean field uses** (neutral atom, trivalent ion on the f
-    block), a user decision so that each element has exactly one default reference across
-    the program. An explicit ``configuration`` overrides it; the entry then records
-    ``is_default=False`` (unless the override happens to equal the default), and the charge
-    report downstream warns that such charges are not comparable with default-reference
-    ones.
+    ``config`` is an already-resolved :class:`~kuiva.amf.configuration.AtomicConfiguration`
+    — resolution, the curated-table checks and their warnings happened exactly once, in
+    :func:`kuiva.amf.oxidation.resolve_reference_configuration`. The default is the atomic
+    mean field's (neutral atom, trivalent ion on the f block; a user decision so each
+    element has one default reference across the program), and a non-default entry is what
+    makes the charge report downstream warn about comparability.
 
     The SCF is the same spherically constrained average-of-configuration assembly the AOC
     driver runs (:func:`_run_aoc_scf`), in the *molecule's own basis for this element* — the
     same basis entry produces the same AO ordering for the free atom as for the atom inside
-    the molecule, which is what makes the downstream block-diagonal placement exact.
+    the molecule, which is what makes the downstream block-diagonal placement exact. An
+    anion reference (more electrons than ``Z``) is allowed — the resolver has already warned
+    that the finite basis acts as its confinement.
     """
     from pyscf import gto
     from pyscf.scf import hf as pyscf_hf
 
-    from ..amf.configuration import AtomicConfiguration, default_configuration
     from ..basis.reference import AtomicReferenceEntry
 
-    if hasattr(configuration, "to_atomic"):
-        configuration = configuration.to_atomic()
-    default = default_configuration(element)
-    config = (default if configuration is None
-              else AtomicConfiguration.coerce(configuration, element=element))
-    is_default = config == default
-    key = (element.capitalize(), repr(basis), config)
+    key = (element.capitalize(), str(family), config)
     hit = _ATOMIC_REFERENCE_CACHE.get(key)
     if hit is not None:
         return hit
 
     z = int(gto.charge(element))
     n_elec = config.n_electrons
-    if not 1 <= n_elec <= z:
+    if n_elec < 1:
         raise ValueError(
-            "the reference configuration {} has {} electrons, which is not a bound state "
-            "of {} (Z = {})".format(config.canonical, n_elec, element, z))
+            "the reference configuration {} has {} electrons; an atomic reference needs at "
+            "least one".format(config.canonical, n_elec))
     mol = build_mole(_SingleAtom(atoms=[(element, (0.0, 0.0, 0.0))], charge=z - n_elec,
-                                 spin=n_elec % 2, basis=basis), verbose=0)
+                                 spin=n_elec % 2, basis={element: family}), verbose=0)
     _set_pyscf_memory(mol)
     layout = ao_layout(mol)
     mf = pyscf_hf.RHF(mol).sfx2c1e()
@@ -2422,48 +2508,30 @@ def _atomic_reference_entry(element: str, basis, configuration=None):
     return entry
 
 
-def _atomic_reference_set(atom_basis: Dict[str, str], configuration=None):
-    """Free-atom reference orbitals for every element of the molecule.
+def _atomic_reference_set(mol):
+    """Free-atom reference orbitals for every label group of a built molecule.
 
-    ``configuration`` is the same axis the atomic mean field takes (a mapping element →
-    reference, or ``None`` for the per-element defaults). ⚠ Keys must be *element symbols*:
-    a per-atom label ("Ti1") would require two references for one element block, which the
-    charge partition has no way to honour — refused rather than silently collapsed.
+    One entry per unique atom label (plain element symbol, or the decorated ``"Ti2"`` of an
+    atom with its own basis or reference state — :func:`build_mole` decides which), plus the
+    per-atom key list the charge partition maps atoms through. Same element, same family,
+    same configuration share one cached atomic solve however many labels point at it.
     """
     from ..basis.reference import AtomicReferenceSet
 
-    try:
-        from collections.abc import Mapping
-    except ImportError:                                                   # pragma: no cover
-        from collections import Mapping                                   # type: ignore
-
-    elements = sorted(atom_basis)
-    config_of = {}
-    if isinstance(configuration, Mapping):
-        wanted = {str(k).capitalize(): v for k, v in configuration.items()}
-        unknown = sorted(set(wanted) - {e.capitalize() for e in elements})
-        if unknown:
-            raise ValueError(
-                "atomic-reference configurations name {} which is not an element of this "
-                "molecule ({}). Per-atom reference configurations are not implemented for "
-                "the atomic-reference charges: one element, one reference.".format(
-                    ", ".join(unknown), ", ".join(elements)))
-        config_of = wanted
-    elif configuration is not None:
-        if len(elements) > 1:
-            raise ValueError(
-                "a single reference configuration ({!r}) cannot be applied to every element "
-                "of a molecule containing {}; pass a mapping.".format(
-                    configuration, ", ".join(elements)))
-        config_of = {elements[0].capitalize(): configuration}
-
+    labels = mol.__dict__["_kuiva_atom_labels"]
+    families = mol.__dict__["_kuiva_atom_families"]
+    configs = _stashed_configs(mol)
     entries = {}
-    for sym in elements:
-        entries[sym.capitalize()] = _atomic_reference_entry(
-            sym, atom_basis[sym], config_of.get(sym.capitalize()))
-    return AtomicReferenceSet(entries=entries,
-                              basis_label=", ".join("{}: {}".format(s, atom_basis[s])
-                                                    for s in elements))
+    for ia, label in enumerate(labels):
+        if label in entries:
+            continue
+        cfg, is_default = configs[ia]
+        entries[label] = _atomic_reference_entry(
+            mol.atom_pure_symbol(ia), families[ia], cfg, is_default)
+    return AtomicReferenceSet(
+        entries=entries, atom_keys=list(labels),
+        basis_label=", ".join("{}: {}".format(lab, mol.__dict__["_kuiva_atom_basis"][lab])
+                              for lab in sorted(entries)))
 
 
 def run_scalar_aoc(element: str, configuration=None, *, basis,
@@ -2560,12 +2628,13 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
         method = DEFAULT_METHOD
     chosen = resolve(method, decoupling=x2c_approx, screening=screening)
 
-    # ⚠ Duck-typed, not imported: a shell-resolved configuration lives in a package the
-    # calculation path may not depend on, and ``to_atomic()`` is the whole of what is needed
-    # here. The per-l form is what an SCF and an atomic mean field are defined by.
-    if hasattr(configuration, "to_atomic"):
-        configuration = configuration.to_atomic()
-    config = AtomicConfiguration.coerce(configuration, element=element)
+    # ⚠ Through the curated-table resolver, not bare coerce: an oxidation state produces
+    # the table's one canonical configuration, and an unusual state or an excited explicit
+    # configuration warns here exactly as it does on the molecular path. (A shell-resolved
+    # configuration is duck-typed via ``to_atomic()`` inside the resolver — the per-l form
+    # is what an SCF and an atomic mean field are defined by.)
+    from ..amf.oxidation import resolve_reference_configuration
+    config, _config_is_default = resolve_reference_configuration(element, configuration)
     z = int(gto.charge(element))
     n_elec = config.n_electrons
     if not 1 <= n_elec <= z:

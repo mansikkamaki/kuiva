@@ -284,6 +284,30 @@ def main() -> int:
     out.note(log, "number a plain Loewdin partition gets qualitatively wrong here.")
 
     # ----------------------------------------------------------------------------------
+    # 3c. Per-atom control, demonstrated on the front end only. One extra cheap SCF with
+    #     (a) a bigger basis on ONE chlorine -- keys are element symbols, atom labels
+    #     ("Cl2") or 1-based atom numbers, most specific wins -- and (b) an explicit
+    #     Ti(III) reference state, which feeds the mean field and the charges alike. Atoms
+    #     of one element that differ get decorated labels, and charges against non-default
+    #     references announce that they are not comparable with default-reference ones
+    #     (the WARNING below is the feature working, not a problem with the run).
+    # ----------------------------------------------------------------------------------
+    out.section(log, "Per-atom basis and reference state (front end only)")
+    molecule_pa = kuiva.Molecule(atoms=planar_mx3("Ti", "Cl", R_TICL),
+                                 basis={"default": "x2c-SVPall-2c",
+                                        "Cl2": "x2c-TZVPall-2c"},
+                                 charge=0, spin=1)
+    scf_pa = kuiva.ScalarSCF(molecule_pa, memory_gb=6.0, screening="none",
+                             atomic_reference=True,
+                             configuration={"Ti": "+3"}).run()
+    ref_pa = kuiva.Reference(scf_pa).run()
+    q_pa = ref_pa.atomic_reference_charges(report=True)
+    out.entries(log, [
+        ("AO functions (uniform SVP was {})".format(scf.data.nao), scf_pa.data.nao),
+        ("q(Ti) against the Ti(3+) reference", float(q_pa.charge[0]), "", "", "{:+.4f}"),
+    ])
+
+    # ----------------------------------------------------------------------------------
     # 4. Assert.
     # ----------------------------------------------------------------------------------
     checks = {
@@ -301,6 +325,11 @@ def main() -> int:
         "the atomic-reference charge is Ti(III)-like positive": q_scf.charge[0] > 1.5,
         "the correlated density moves the charge smoothly, not qualitatively":
             abs(float(q_cas.charge[0] - q_scf.charge[0])) < 0.3,
+        "the per-atom basis upgraded exactly one chlorine":
+            scf_pa.data.nao - scf.data.nao == 19,   # TZVP - SVP for one Cl
+        "per-atom labels are decorated where atoms differ":
+            list(q_pa.configurations) != ["Cl", "Ti"],
+        "the overridden reference is announced as non-default": q_pa.any_non_default,
     }
     failures = report(checks)
 

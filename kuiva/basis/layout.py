@@ -202,8 +202,13 @@ class AOLayout:
         return np.nonzero(self.ao_atom == atom)[0]
 
     def atom_label(self, atom: int) -> str:
-        """``"2 Cl"`` — index first, so a table sorts in input order and two Cl are distinct."""
-        return "{} {}".format(atom, self.atom_symbols[atom])
+        """``"2 Cl"`` — index first, so a table sorts in input order and two Cl are distinct.
+
+        ⚠ **1-based in output** (user decision: the quantum-chemistry convention, matching
+        the ``"Cl2"`` / atom-number addressing of per-atom bases and configurations); the
+        ``atom`` argument stays the internal 0-based index.
+        """
+        return "{} {}".format(atom + 1, self.atom_symbols[atom])
 
     def ao_full_label(self, mu: int) -> str:
         """``"2 Cl 3px"`` — the atom and the AO label together."""

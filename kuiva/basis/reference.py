@@ -49,14 +49,28 @@ class AtomicReferenceEntry:
 
 @dataclass
 class AtomicReferenceSet:
-    """All elements of one molecule, keyed by capitalized symbol."""
+    """One entry per label group of a molecule, plus the per-atom key list.
+
+    A key is the atom's front-end label: the plain element symbol, or the decorated
+    ``"Ti2"`` (1-based) of an atom carrying its own basis or reference state.
+    ``atom_keys[i]`` maps atom ``i`` (0-based internally) to its entry; a set built by hand
+    without ``atom_keys`` falls back to element-symbol lookup, which is exact whenever
+    nothing per-atom was requested.
+    """
     entries: Dict[str, AtomicReferenceEntry] = field(default_factory=dict)
+    atom_keys: list = field(default_factory=list)
     basis_label: str = ""
 
-    def __contains__(self, element: str) -> bool:
-        return element.capitalize() in self.entries
+    def __contains__(self, key: str) -> bool:
+        return key.capitalize() in self.entries
 
-    def __getitem__(self, element: str) -> AtomicReferenceEntry:
+    def __getitem__(self, key: str) -> AtomicReferenceEntry:
+        return self.entries[key.capitalize()]
+
+    def entry_for_atom(self, ia: int, element: str) -> AtomicReferenceEntry:
+        """The reference for atom ``ia`` (0-based); ``element`` is the fallback lookup."""
+        if self.atom_keys:
+            return self.entries[self.atom_keys[ia]]
         return self.entries[element.capitalize()]
 
     @property

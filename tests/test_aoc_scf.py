@@ -259,10 +259,20 @@ def test_a_configuration_that_is_not_a_bound_state_is_refused():
         aoc("O", "[Ne]")                             # ten electrons on Z = 8
 
 
-def test_a_basis_without_the_functions_the_configuration_needs_is_refused():
+def test_a_basis_without_the_functions_the_configuration_needs_is_refused(kuiva_caplog):
     """The refusal names the missing channel, and it happens before any SCF cycle: a
-    split-valence basis for neon has no ``f`` functions to put an f electron in."""
-    with pytest.raises(ValueError, match="needs f functions"):
+    split-valence basis for lithium has no ``d`` functions to put a d electron in. (The
+    channel must be one the element's *period* admits — an impossible channel is caught
+    earlier, by the capacity refusal below.)"""
+    with pytest.raises(ValueError, match="needs d functions"):
+        aoc("Li", "1s2 3d1")
+
+
+def test_a_channel_the_period_cannot_hold_is_refused():
+    """The curated-table capacity check: an f electron on neon is not an unusual reference
+    but an impossible one (no shell up to n = period + 1 carries it), refused with the
+    channel named — before the basis is ever consulted."""
+    with pytest.raises(ValueError, match="f channel"):
         aoc("Ne", "1s2 2s2 2p5 4f1")
 
 

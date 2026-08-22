@@ -548,10 +548,34 @@ for anything that is not about spin–orbit coupling, where the correction is pu
 changes no scalar quantity.
 
 The reference configuration defaults to the neutral atom, except the f block, which defaults to
-M(3+), on chemistry. Any oxidation state is overridable, and configurations across a molecule
-are a **mapping**: a scalar `configuration` on a heteronuclear molecule raises, because "+3"
-almost always means "the metal is trivalent". Open shells are occupied by average of
-configuration, not aufbau.
+M(3+), on chemistry. Open shells are occupied by average of configuration, not aufbau.
+
+**Choosing reference states is a first-class argument, one statement per atom.**
+`ScalarSCF(mol, configuration=...)` takes a mapping whose keys are element symbols (`"Ti"`),
+atom labels (`"Ti2"`), or 1-based atom numbers (`3`) — most specific wins — and it feeds
+*both* consumers of a reference state at once: the atomic mean field and the atomic-reference
+charges. Each value is either an **oxidation state** (`"+3"`, `2`, `-1`) or an **explicit
+configuration** (`"[Xe]4f1"`, `"1s2 2s2 2p5"`). An oxidation state resolves through a curated
+table of each element's most common states to exactly **one canonical configuration** — a
+state outside the table warns and falls back to the standard derivation rule — while an
+explicit configuration is checked against the table's *accepted* set: where the literature
+genuinely admits more than one occupation (the d/s ambiguities of the late transition metals,
+say Ni's 3d⁸4s² against 3d⁹4s¹), every accepted one passes silently, and anything else warns
+as an excited or unusual reference. Impossible configurations (a channel no shell of the
+element's period can hold, an anion closing no shell when derived from an oxidation state) are
+refused outright. Two atoms of the same element may carry **different** states — they then get
+decorated labels (`"O1"`, `"O2"`) throughout output and provenance — and a scalar
+`configuration` on a heteronuclear molecule still raises, because "+3" almost always means
+"the metal is trivalent". The older `screening_options={"configuration": ...}` spelling keeps
+working and warns when both are given.
+
+**Different bases for different atoms use the same addressing.** `Molecule(...,
+basis={"default": "x2c-SVPall-2c", "O": "x2c-TZVPall-2c"})` upgrades every oxygen;
+`basis={"default": ..., 3: "x2c-TZVPall-2c", 15: ...}` upgrades atoms 3 and 15 only
+(1-based). The ingestion consistency checks — relativistic-treatment compatibility, no silent
+mixing of incompatible recontractions — run over the whole per-atom assignment, and atomic
+mean fields and reference orbitals are solved per `(element, basis, configuration)`, so an
+oxygen in TZVP and an oxygen in SVP each get the matching atomic reference.
 
 The correction is also usable on its own, one element at a time:
 
@@ -997,7 +1021,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.13.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.14.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1013,7 +1037,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.13.0'
+import kuiva; kuiva.__version__          # '0.14.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
@@ -1120,6 +1144,10 @@ generate validation reference data live with that code, in `tests/`.
   DOI:10.1103/PhysRevB.57.8743; M. Filatov, W. Zou, D. Cremer, _J. Chem. Phys._ **139**, 014106
   (2013), DOI:10.1063/1.4811776; B. de Souza, G. Farias, F. Neese, R. Izsák, _J. Chem. Theory
   Comput._ **15**, 1896 (2019), DOI:10.1021/acs.jctc.8b00841.
+- **Common oxidation states** (the curated table behind `configuration=`): N. N. Greenwood,
+  A. Earnshaw, _Chemistry of the Elements_, 2nd ed., Butterworth-Heinemann (1997). Atomic
+  ground-state configurations follow the NIST Atomic Spectra Database via PySCF's aufbau
+  tables.
 
 ### Basis sets
 

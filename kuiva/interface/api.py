@@ -35,7 +35,10 @@ class Molecule:
     ----------
     atoms : list of ``(symbol, (x, y, z))``
     basis : str or dict
-        Either one registry family name applied to all atoms, or a ``{symbol: family}`` map.
+        One registry family name applied to all atoms, or a mapping whose keys are element
+        symbols (``"O"``), atom labels (``"O3"``), or 1-based atom numbers (``3``), most
+        specific wins; an optional ``"default"`` entry fills every atom no other key
+        covers. Without a ``"default"`` the assignment must cover every element.
     charge : int
     spin : int
         ``2S`` (number of unpaired electrons), PySCF convention.
@@ -49,22 +52,12 @@ class Molecule:
     unit: str = "Angstrom"
 
     def __post_init__(self) -> None:
-        # Normalise symbols and validate the basis assignment eagerly (fail fast).
+        # Normalise symbols and validate the basis assignment eagerly (fail fast). The
+        # resolution is the front end's (one family per atom, same addressing as the
+        # reference configurations); this only runs it early so a typo fails here.
         self.atoms = [(s.capitalize(), tuple(float(x) for x in xyz)) for s, xyz in self.atoms]
-        atom_basis = self._atom_basis()
-        report = reg.check_consistency(atom_basis, emit=True)
-        if not report.ok:
-            raise ValueError("invalid basis assignment:\n  " + "\n  ".join(report.errors))
-
-    def _atom_basis(self) -> Dict[str, str]:
-        syms = sorted({s for s, _ in self.atoms})
-        if isinstance(self.basis, str):
-            return {s: self.basis for s in syms}
-        ab = {s.capitalize(): b for s, b in self.basis.items()}
-        missing = [s for s in syms if s not in ab]
-        if missing:
-            raise ValueError(f"no basis assigned for atom(s) {missing}")
-        return ab
+        from .pyscf_bridge import _resolve_basis
+        _resolve_basis(self.atoms, self.basis)
 
     @classmethod
     def from_xyz_string(cls, xyz: str, basis: BasisSpec, **kw) -> "Molecule":
@@ -89,6 +82,7 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                          x2c_approx: Optional[str] = None,
                          screening: Optional[str] = None,
                          screening_options: Optional[Dict[str, object]] = None,
+                         configuration=None,
                          decoupling_options: Optional[Dict[str, object]] = None,
                          conv_tol: float = 1e-10, max_cycle: int = 200,
                          memory_gb: Optional[float] = None, n_active: Optional[int] = None,
@@ -129,6 +123,7 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
     return run_scalar_x2c(molecule, reference=reference, fitting=fitting, auxbasis=auxbasis,
                           with_soc=with_soc, method=method, x2c_approx=x2c_approx,
                           screening=screening, screening_options=screening_options,
+                          configuration=configuration,
                           decoupling_options=decoupling_options, conv_tol=conv_tol,
                           max_cycle=max_cycle, memory_gb=memory_gb, n_active=n_active,
                           cholesky_tol=cholesky_tol, orbit_pivots=orbit_pivots,

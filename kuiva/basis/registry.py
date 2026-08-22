@@ -41,7 +41,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
-from typing import Dict, FrozenSet, Optional, Sequence, Tuple, Union
+from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple, Union
 
 from ..util.logging import get_logger
 
@@ -559,10 +559,12 @@ class ConsistencyReport:
     warnings: Tuple[str, ...] = ()
 
 
-def check_consistency(atom_basis: Dict[str, str], *, emit: bool = True) -> ConsistencyReport:
+def check_consistency(atom_basis, *, emit: bool = True) -> ConsistencyReport:
     """Validate a per-atom basis assignment before ingestion.
 
-    ``atom_basis`` maps element symbol -> basis family name. Checks:
+    ``atom_basis`` maps element symbol -> basis family name, or is an iterable of
+    ``(symbol, family)`` pairs — the form a per-atom assignment needs, where one element may
+    legitimately carry two families on different atoms and a dict could not say so. Checks:
       1. every family exists and covers its element (ERROR otherwise);
       2. relativistic-treatment compatibility across atoms — mixing a relativistic set with a
          non-relativistic set is an ERROR (a silent-error trap); mixing different
@@ -572,8 +574,9 @@ def check_consistency(atom_basis: Dict[str, str], *, emit: bool = True) -> Consi
     When ``emit`` is True, messages are logged at ERROR/WARNING.
     """
     errors, warnings = [], []
-    fams: Dict[str, BasisFamily] = {}
-    for sym, bname in atom_basis.items():
+    pairs = atom_basis.items() if isinstance(atom_basis, dict) else list(atom_basis)
+    fams: List[BasisFamily] = []
+    for sym, bname in pairs:
         try:
             fam = get_family(bname)
         except KeyError as exc:
@@ -581,10 +584,10 @@ def check_consistency(atom_basis: Dict[str, str], *, emit: bool = True) -> Consi
             continue
         if not fam.covers(sym):
             errors.append(f"{sym}: basis {fam.name!r} does not cover this element")
-        fams[sym] = fam
+        fams.append(fam)
 
     if fams:
-        groups = {f.rel_treatment.family for f in fams.values()}   # "x2c" / "dkh" / "nonrel"
+        groups = {f.rel_treatment.family for f in fams}   # "x2c" / "dkh" / "nonrel"
         if "nonrel" in groups and groups != {"nonrel"}:
             errors.append(
                 "relativistic-treatment mismatch: mixing relativistic and non-relativistic "
