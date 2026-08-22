@@ -393,13 +393,33 @@ def test_kramers_grouping_warns_on_unpaired_occupations(water_spinors, kuiva_cap
 # --- The driver and its report ------------------------------------------------------------
 
 def test_analysis_reports_without_an_active_space(water_spinors, kuiva_caplog):
-    """``level="active"`` with no active space gives the charges and no orbital table, rather
-    than raising: a caller with no active space yet still wants the charges."""
+    """``level="active"`` with no active space gives the atomic table and no orbital table,
+    rather than raising: a caller with no active space yet still wants the populations."""
     c, occ, s, lay = water_spinors
     atomic, orbital = lowdin_analysis(c, s, lay, occupation=occ, report=True)
     assert orbital is None
     assert atomic.n_electrons == pytest.approx(10.0, abs=SUM_TOL)
     assert any("Loewdin atomic populations" in r.getMessage() for r in kuiva_caplog.records)
+
+
+def test_no_atomic_charge_is_printed(water_spinors, kuiva_caplog):
+    """The atomic-charge column is withdrawn from the report, deliberately (measured
+    decision: the Loewdin charge carries the wrong sign on ionic textbook compounds — a
+    negative Ti in TiCl3, a zero Ce in CeCl3 — and a better basis does not rescue it; see
+    the module docstring). The accessor stays; the *printed surface* must not present a
+    per-atom charge, and this pins the mechanism so a cosmetic table edit cannot quietly
+    reintroduce it. The footer's "total charge" is the exact molecular charge — partition
+    independent — and is allowed."""
+    c, occ, s, lay = water_spinors
+    pops = atomic_populations(c, s, lay, occupation=occ)
+    pops.report()
+    text = "\n".join(r.getMessage() for r in kuiva_caplog.records)
+    header = next(line for line in text.splitlines() if "population" in line)
+    assert "charge" not in header
+    assert not any("charge" in line and "total charge" not in line
+                   for line in text.splitlines())
+    q = pops.atomic_charge()                       # the accessor remains, as a diagnostic
+    assert q.sum() == pytest.approx(0.0, abs=SUM_TOL)
 
 
 def test_reduced_populations_identify_the_oxygen_lone_pair(water_spinors):

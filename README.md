@@ -588,9 +588,11 @@ for.
 
 ⚠ **Two things not to misread.** The **spin density of a state-averaged Kramers pair is exactly
 zero** everywhere — that is time-reversal symmetry, not a lost moment; look at a single state
-if the spin distribution is the question. And the **atomic charges are a basis-dependent
-partition** that can disagree with a Mulliken charge on the same molecule not only in size but
-in sign. Use charges to compare like with like, never as an oxidation state. The reduced
+if the spin distribution is the question. And **no atomic charge is printed, deliberately**:
+the Löwdin charge was measured with the wrong *sign* on ionic textbook compounds (a negative
+titanium in TiCl₃, a zero cerium in CeCl₃) and a better basis does not rescue it, so it was
+withdrawn from every report rather than captioned. The `atomic_charge()` accessor remains for
+anyone who wants the arithmetic, as a diagnostic and never an oxidation state. The reduced
 *orbital* populations are the robust half and are what this is for.
 
 ### Molden files: what is actually in them
@@ -903,12 +905,20 @@ The release is usable for production work **with care**, and this is what the ca
   field `picture_change_on_properties` is what distinguishes them, so reading the header is
   obligatory. The `g_e - 2` anomaly's own small-component term is a further three orders down
   and is left off unless `anomaly_picture_change=True`.
-- ⚠ **DLU accuracy is unmeasured.** No statement about state energies or splittings through a
-  `-DLU` Hamiltonian exists, so nothing computed with one may be quoted as a spectroscopic
-  accuracy. It is the bottom rung of the cost ladder and warns when selected.
-- ⚠ **Löwdin charges are the weakest number the code produces** and can come out with the
-  opposite sign to a Mulliken charge on the same molecule. Reduced *orbital* populations are
-  robust and are what the feature is for; a charge is never an oxidation state.
+- ⚠ **DLU is measured at the state level, and it is safe for splittings but not for the
+  transverse g of an axial doublet.** Against the exact decoupling through the same code, on
+  d¹ and f¹ ligand fields at SA-CASSCF: splittings move by ≤0.6 cm⁻¹ and ≤0.1%, principal g
+  values by ≤2e-4 relative — but the near-zero transverse g of a strongly axial doublet moves
+  by ~6e-4 absolute (6% of itself), which is exactly the number a tunneling analysis reads.
+  The selection warning states these bounds; check a small transverse g against
+  `decoupling_options={"partition": "single"}` before quoting it. The DLU-transformed *moment
+  operator* (`property_picture_change=True` with `-DLU`) remains unmeasured.
+- ⚠ **Löwdin atomic charges are withdrawn from every printed report** (measured decision):
+  characterized across five systems in two basis sets, the charge carries the wrong *sign* on
+  three of them — a negative Ti in TiCl₃, a zero Ce in CeCl₃, a negative H in HI — and a
+  better basis does not rescue it. `atomic_charge()` remains as an accessor, a diagnostic and
+  never an oxidation state. Reduced *orbital* populations are robust and are what the feature
+  is for.
 - **The conventional CI ceiling is about 20 spinors at half filling.** It is a memory bound on
   the *determinant count*, not on the spinor count, so it moves with the memory limit and is
   enforced before the first allocation — dilute or nearly-full spaces well past 20 spinors run
@@ -958,7 +968,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.11.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.12.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -974,7 +984,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.11.0'
+import kuiva; kuiva.__version__          # '0.12.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

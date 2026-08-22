@@ -59,15 +59,32 @@ population is its own; the symmetric orthogonalization is also the one that keep
 orthogonalized functions as close as possible to the originals, which is what makes "Ti 3d"
 still mean Ti 3d — and *that* is the quantity this module exists to produce.
 
-⚠ **The atomic charges are a different matter, and they are the weakest number here.** Every
-population analysis is a basis-dependent partition of a quantity that has no unique
-partition, and Loewdin's is not immune: measured on TiCl3 in ``x2c-SVPall-2c``, Loewdin gives
-Ti **-0.33** where Mulliken gives Ti **+0.91** — the two disagree in *sign* on a compound
-whose chemistry is not in doubt. (Kuiva's spinor implementation reproduces an independent
-scalar Loewdin on the same density to 1e-13, so this is the partition, not the code.) Use
-charges for comparing like with like — one basis, one series of molecules — and never as a
-physical oxidation state. The **reduced orbital populations are far more robust**, because
-they ask which functions an orbital is built from rather than how to divide space.
+⚠ **The atomic charges are a different matter, and they are withdrawn from every printed
+report (measured decision, 2026-08-22).** Every population analysis is a basis-dependent
+partition of a quantity that has no unique partition, and the Loewdin charge fails
+*qualitatively*, not merely noisily — characterized across five systems in two basis sets
+(Mulliken on the same converged density as the cross-check):
+
+* **Wrong sign on three of five systems**: Ti in TiCl3 comes out −0.33 (SVP) / −0.26 (TZVP)
+  against Mulliken's +0.91/+1.36; Ce in CeCl3 −0.16 (SVP) and **exactly 0.00** (TZVP) for a
+  trivalent ion; H in HI comes out *negative* (−0.03/−0.05), the wrong side of the
+  H–I electronegativity difference. TiF3 and TlH keep the right sign.
+* **A better basis does not rescue it** — the sign failures survive SVP → TZVP unchanged —
+  and ⚠ **the usual diffuse-function explanation does not hold**: the smallest primitive
+  exponent on the metal barely moves between the two bases (it *rises* on Ti and Ce), while
+  the Loewdin–Mulliken gap tracks the **ligand** (chlorides ~1.1–1.6 e, fluoride ~0.9 e,
+  hydride ≤0.07 e). What drives it is how much ligand valence density the symmetric
+  orthogonalization hands to the metal, i.e. metal–ligand overlap, not diffuseness per se.
+* Kuiva's spinor implementation reproduces an independent scalar Loewdin on the same density
+  to 1e-13, so all of this is the partition, not the code.
+
+A number with the wrong sign on ionic textbook compounds misleads no matter what warning
+stands next to it, so :meth:`AtomicPopulations.report` prints populations and spins only.
+:meth:`AtomicPopulations.atomic_charge` remains as an accessor — the algebra is trivially
+``Z − population`` and sum-rule tests legitimately probe the density through it — but it is a
+diagnostic, never a chemical statement. The **reduced orbital populations are far more
+robust**, because they ask which functions an orbital is built from rather than how to divide
+space; they are what this module exists to produce.
 
 .. warning::
    ``S^{1/2}`` comes from :func:`kuiva.orth.canonical.sqrt_overlap`, **not** from
@@ -243,7 +260,14 @@ class AtomicPopulations:
         return self._by_atom(self.ao_population)
 
     def atomic_charge(self) -> np.ndarray:
-        """(natm,) ``Z_A - N_A``."""
+        """(natm,) ``Z_A - N_A`` — a diagnostic, never a chemical statement.
+
+        ⚠ Deliberately absent from :meth:`report` (measured decision, 2026-08-22): the
+        Loewdin charge comes out with the wrong *sign* on ionic textbook compounds (module
+        docstring). It stays as an accessor because the arithmetic is trivially implied by
+        ``atomic_population`` and because sum-rule and conjugation-trap tests legitimately
+        probe the density through it.
+        """
         return self.layout.atom_charges - self.atomic_population()
 
     def atomic_spin(self) -> np.ndarray:
@@ -263,20 +287,22 @@ class AtomicPopulations:
         """
         logger = logger or log
         out.subsection(logger, title)
+        # ⚠ No charge column, deliberately (measured decision, 2026-08-22, module docstring):
+        # the Loewdin charge carries the wrong sign on ionic textbook compounds, and a number
+        # that misleads is not repaired by a caption. atomic_charge() stays as an accessor.
         cols = [out.Column("atom", "{}", 10, "<"), out.Column("Z", "{:.0f}", 5),
                 out.Column("population", "{:.4f}", 11),
-                out.Column("charge", "{:+.4f}", 10),
                 out.Column("|s|", "{:.4f}", 8)]
         if spin_vector:
             cols += [out.Column("s_x", "{:+.4f}", 9), out.Column("s_y", "{:+.4f}", 9),
                      out.Column("s_z", "{:+.4f}", 9)]
         table = out.Table(logger, cols)
         table.start()
-        pop, chg = self.atomic_population(), self.atomic_charge()
+        pop = self.atomic_population()
         spin, mag = self.atomic_spin(), self.atomic_spin_magnitude()
         for ia in range(self.layout.natm):
             row = [self.layout.atom_label(ia), self.layout.atom_charges[ia],
-                   pop[ia], chg[ia], mag[ia]]
+                   pop[ia], mag[ia]]
             if spin_vector:
                 row += [spin[0, ia], spin[1, ia], spin[2, ia]]
             table.row(*row)

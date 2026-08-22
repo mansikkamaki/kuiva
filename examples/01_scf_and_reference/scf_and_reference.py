@@ -283,9 +283,9 @@ def main() -> int:
     #     per Kramers pair, because a single spinor's populations are basis dependent
     #     inside a degenerate manifold while the pair sum is not.
     ref.population_analysis(level="frontier", n_frontier=3)
-    out.note(log, "the reduced ORBITAL populations are the robust number here. The Loewdin")
-    out.note(log, "atomic CHARGES in the same table are the weakest quantity this code")
-    out.note(log, "produces -- do not read one as an oxidation state.")
+    out.note(log, "the reduced ORBITAL populations are the robust number here. No atomic")
+    out.note(log, "CHARGE is printed, deliberately: the Loewdin charge was measured with the")
+    out.note(log, "wrong sign on ionic textbook compounds, and was withdrawn from the report.")
 
     # ----------------------------------------------------------------------------------
     # 5. Assert. An example that only prints numbers cannot fail, and one that cannot fail

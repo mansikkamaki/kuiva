@@ -231,9 +231,14 @@ class DecouplingRecord:
             ("largest local max|X|", self.max_block_scale, "", "", "{:.3f}"),
         ])
         logger.warning("this Hamiltonian uses the LOCAL (DLU) decoupling, an approximation to "
-                       "the exact X2C transformation. It is the cheap end of the ladder and "
-                       "is intended for systems where the exact decoupling is prohibitive; "
-                       "X2C-AMF is the default for everything else.")
+                       "the exact X2C transformation, intended for systems where the exact "
+                       "decoupling is prohibitive. Measured at the state level (SA-CASSCF, "
+                       "x2c-SVPall-2c, d1 and f1 ligand fields): splittings move by <= 0.6 "
+                       "cm^-1 and <= 0.1%, principal g values by <= 2e-4 relative. The "
+                       "TRANSVERSE g of a strongly axial doublet is NOT protected - measured "
+                       "+6e-4 absolute (+6% of itself) on a g_perp of 0.01 - so check that "
+                       "number against decoupling_options={'partition': 'single'} before "
+                       "quoting it.")
 
 
 __all__ = ["DECOUPLINGS", "DEFAULT_METHOD", "METHODS", "PARTITIONS", "SCREENINGS",
