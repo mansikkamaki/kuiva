@@ -179,7 +179,10 @@ def main() -> int:
     # ----------------------------------------------------------------------------------
     molecule = kuiva.Molecule(atoms=planar_mx3("Ti", "Cl", R_TICL),
                               basis="x2c-SVPall-2c", charge=0, spin=1)
-    scf = kuiva.ScalarSCF(molecule, memory_gb=6.0).run()
+    # atomic_reference=True also computes each element's free-atom reference orbitals here,
+    # in this basis (cached per element) -- they are what the robust atomic-reference
+    # charges below are measured against, and only the front end can build them.
+    scf = kuiva.ScalarSCF(molecule, memory_gb=6.0, atomic_reference=True).run()
     reference = kuiva.Reference(scf).run()
 
     out.section(log, "Problem")
@@ -255,6 +258,32 @@ def main() -> int:
                                   cas.active.spaces.active)
 
     # ----------------------------------------------------------------------------------
+    # 3b. Atomic charges, the robust kind. Populations in the free-atom reference basis
+    #     the front end ingested (atomic_reference=True above): stable in sign and to
+    #     ~0.1 e across basis sets where a plain Loewdin charge flips sign on this very
+    #     molecule. Computed twice -- from the SCF guess density and from the converged
+    #     state-averaged CASSCF density -- to show a correlated density moves a charge
+    #     smoothly, not qualitatively.
+    # ----------------------------------------------------------------------------------
+    q_scf = reference.atomic_reference_charges(report=False)
+    spaces = cas.active.spaces
+    n_sp = cas.coeff.shape[1]
+    gamma = np.zeros((n_sp, n_sp), dtype=complex)
+    inact = np.asarray(spaces.inactive)
+    gamma[inact[:, None], inact] = np.eye(inact.size)
+    act = np.asarray(spaces.active)
+    gamma[act[:, None], act] = cas.ci.gamma
+    q_cas = reference.atomic_reference_charges(coeff=cas.coeff, dm=gamma, report=False)
+    out.subsection(log, "Atomic-reference charges (SCF guess vs converged CASSCF)")
+    out.entries(log, [
+        ("q(Ti), SCF guess density", float(q_scf.charge[0]), "", "", "{:+.4f}"),
+        ("q(Ti), CASSCF state-averaged density", float(q_cas.charge[0]), "", "", "{:+.4f}"),
+        ("q(Cl), CASSCF", float(q_cas.charge[1]), "", "", "{:+.4f}"),
+    ])
+    out.note(log, "the titanium is unambiguously positive, as Ti(III) must be -- the")
+    out.note(log, "number a plain Loewdin partition gets qualitatively wrong here.")
+
+    # ----------------------------------------------------------------------------------
     # 4. Assert.
     # ----------------------------------------------------------------------------------
     checks = {
@@ -269,6 +298,9 @@ def main() -> int:
         "the boundary gap exceeds {:.0e} cm^-1 at both ends".format(BOUNDARY_MIN_CM):
             min(cas.boundary.gap_cm, cas.boundary_initial.gap_cm) > BOUNDARY_MIN_CM,
         "the converged active space really is Ti d": ti_d_fraction > 0.5,
+        "the atomic-reference charge is Ti(III)-like positive": q_scf.charge[0] > 1.5,
+        "the correlated density moves the charge smoothly, not qualitatively":
+            abs(float(q_cas.charge[0] - q_scf.charge[0])) < 0.3,
     }
     failures = report(checks)
 

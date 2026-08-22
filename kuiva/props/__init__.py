@@ -27,8 +27,8 @@ from .multiplet import (
     multiplet_g_values,
 )
 from .population import (
-    AtomicPopulations, OrbitalPopulations, atomic_populations, lowdin_analysis,
-    orbital_populations,
+    AtomicPopulations, AtomicReferenceCharges, OrbitalPopulations, atomic_populations,
+    atomic_reference_charges, lowdin_analysis, orbital_populations,
 )
 from .pseudospin import (PseudospinModel, PseudospinSite, assign_pseudospin,
                          pseudospin_from_model, read_pseudospin, write_pseudospin)
@@ -39,7 +39,8 @@ __all__ = [
     "G_ELECTRON", "HARTREE_TO_CM", "Multiplet", "analyse_spectrum", "block_moment_tensor",
     "degeneracy_pattern", "degenerate_blocks", "lande_g", "magnetic_moment_matrices",
     "multiplet_g_values",
-    "AtomicPopulations", "OrbitalPopulations", "atomic_populations", "lowdin_analysis",
+    "AtomicPopulations", "AtomicReferenceCharges", "OrbitalPopulations",
+    "atomic_populations", "atomic_reference_charges", "lowdin_analysis",
     "orbital_populations",
     "MoldenOrbital", "SpinorMoldenReport", "write_molden", "write_spinor_molden",
     "PseudospinModel", "PseudospinSite", "assign_pseudospin", "pseudospin_from_model",

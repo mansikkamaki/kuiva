@@ -96,6 +96,7 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                          orbit_pivots: bool = True, one_centre: bool = True,
                          gauge_origin=None, property_picture_change: bool = False,
                          anomaly_picture_change: bool = False,
+                         atomic_reference: bool = False,
                          verbose: int = 0) -> ScalarX2CData:
     """Run the scalar-X2C front-end for ``molecule`` and return the ingested reference.
 
@@ -133,7 +134,8 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                           cholesky_tol=cholesky_tol, orbit_pivots=orbit_pivots,
                           one_centre=one_centre, gauge_origin=gauge_origin,
                           property_picture_change=property_picture_change,
-                          anomaly_picture_change=anomaly_picture_change, verbose=verbose)
+                          anomaly_picture_change=anomaly_picture_change,
+                          atomic_reference=atomic_reference, verbose=verbose)
 
 
 @dataclass
@@ -182,6 +184,25 @@ class SpinorReference:
             kwargs.setdefault("occupation", self.spinors.occ)
             kwargs.setdefault("energy", self.spinors.energy)
         return lowdin_analysis(coeff, self.data.s_ao, self.ao_layout, **kwargs)
+
+    def atomic_reference_charges(self, *, coeff: Optional[np.ndarray] = None,
+                                 report: bool = True, **kwargs):
+        """Atomic charges in the free-atom reference partition — the robust ones.
+
+        Defaults to the reference's own guess spinors and occupations; pass ``coeff`` (AO
+        basis) with ``dm=`` or ``occupation=`` to analyse an optimized or correlated
+        density. Needs the front end to have been run with ``atomic_reference=True``
+        (the per-element free-atom orbitals cannot be computed downstream); the error
+        message says so if it was not. See
+        :func:`kuiva.props.population.atomic_reference_charges`.
+        """
+        from ..props.population import atomic_reference_charges
+        if coeff is None:
+            coeff = self.spinors_in_ao()
+            kwargs.setdefault("occupation", self.spinors.occ)
+        return atomic_reference_charges(coeff, self.data.s_ao, self.ao_layout,
+                                        self.data.atomic_reference, report=report,
+                                        **kwargs)
 
     def write_molden(self, path, *, coeff: Optional[np.ndarray] = None, **kwargs):
         """Write spinor densities to a molden file.

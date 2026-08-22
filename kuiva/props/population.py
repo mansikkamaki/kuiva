@@ -389,6 +389,185 @@ def atomic_populations(c_ao: np.ndarray, s_ao: np.ndarray, layout: AOLayout, *,
                              ao_spin=np.ascontiguousarray(ao_spin))
 
 
+# --- Atomic-reference charges: the robust partition ----------------------------------------
+#
+# The charge partition that replaced the withdrawn Loewdin charge. Populations are taken in
+# an orthonormal basis built from FREE-ATOM reference orbitals (a spherically averaged
+# average-of-configuration sfx2c1e SCF per element, in the molecule's own basis, computed in
+# the front end and carried on ScalarX2CData.atomic_reference): the occupied atomic orbitals
+# are orthogonalized first, weighted by their atomic occupations, and the atomic virtuals
+# are projected behind them and Loewdin-orthogonalized among themselves. Ligand density in
+# the bonding region is then attributed by *atomic character* rather than by function label,
+# which is what the plain Loewdin charge got wrong.
+#
+# Chosen by measurement, not preference. The battery that killed the Loewdin charge was run
+# on this scheme (five systems, two to four bases, ghost-basis test, ROHF-vs-UHF, geometry
+# perturbation): signs correct everywhere, worst basis drift ~0.1 e where Mulliken drifts
+# 0.45 e and Loewdin flips sign, and a nucleus-free ghost basis over a pure chloride density
+# receives ~0.1 e against Loewdin's 2.4 e. The numbers are in the package validation record;
+# the two-tier structure is essential — a single occupancy-weighted orthogonalization
+# without the occupied/virtual split leaks 0.8 e onto a ghost centre and was rejected.
+#
+# References: P.-O. Loewdin, J. Chem. Phys. 18, 365 (1950) (symmetric orthogonalization);
+# B. C. Carlson, J. M. Keller, Phys. Rev. 105, 102 (1957) (weighted symmetric
+# orthogonalization); A. E. Reed, R. B. Weinstock, F. Weinhold, J. Chem. Phys. 83, 735
+# (1985) (natural population analysis — the occupancy-weighting and the occupied/virtual
+# separation this scheme borrows); Q. Sun, G. K.-L. Chan, J. Chem. Theory Comput. 10, 3784
+# (2014) (meta-Loewdin: populations in a minimal reference set orthogonalized first).
+
+#: Atomic occupations above this count as an occupied reference orbital. Average of
+#: configuration fills whole shells equally, so any threshold below the smallest fractional
+#: filling (1/7 for f^1) cuts between shells, never through one.
+REFERENCE_OCC_THRESHOLD = 1e-8
+
+
+def _weighted_lowdin(s: np.ndarray, weight: Optional[np.ndarray] = None) -> np.ndarray:
+    """``M`` with ``(TM)^dag S (TM) = 1``: Loewdin for equal weights, Carlson-Keller
+    weighted symmetric orthogonalization otherwise (``M = W (W s W)^{-1/2} ``, so functions
+    of small weight bend to preserve those of large weight)."""
+    if weight is not None:
+        w = np.asarray(weight, dtype=float)
+        s = w[:, None] * s * w[None, :]
+    e, v = np.linalg.eigh(s)
+    keep = e > 1e-14 * float(e.max())
+    m = (v[:, keep] / np.sqrt(e[keep])) @ v[:, keep].conj().T
+    if keep.size != int(keep.sum()):
+        log.warning("the atomic-reference orthogonalization dropped %d direction(s) as "
+                    "numerically null; the charge sum rule holds only over the retained "
+                    "space", keep.size - int(keep.sum()))
+    return (w[:, None] * m) if weight is not None else m
+
+
+@dataclass
+class AtomicReferenceCharges:
+    """Atomic charges in the free-atom reference partition, with their provenance."""
+    layout: AOLayout
+    charge: np.ndarray                     #: (natm,)
+    population: np.ndarray                 #: (natm,) electrons per atom
+    configurations: Dict[str, str]         #: element -> reference-state label
+    any_non_default: bool
+    all_converged: bool
+
+    def atomic_charge(self) -> np.ndarray:
+        return self.charge
+
+    def report(self, logger=None, *, title: str = "Atomic-reference charges") -> None:
+        logger = logger or log
+        out.subsection(logger, title)
+        table = out.Table(logger, [out.Column("atom", "{}", 10, "<"),
+                                   out.Column("Z", "{:.0f}", 5),
+                                   out.Column("population", "{:.4f}", 11),
+                                   out.Column("charge", "{:+.4f}", 10)])
+        table.start()
+        for ia in range(self.layout.natm):
+            table.row(self.layout.atom_label(ia), self.layout.atom_charges[ia],
+                      self.population[ia], self.charge[ia])
+        table.end("total charge {:+.4f}".format(float(self.charge.sum())))
+        for sym in sorted(self.configurations):
+            out.entry(logger, "reference state, " + sym, self.configurations[sym])
+        if self.any_non_default:
+            log.warning("one or more atomic-reference states differ from the per-element "
+                        "defaults (the atomic mean field's: neutral atom, trivalent ion on "
+                        "the f block). These charges are NOT comparable with charges "
+                        "computed against the default references.")
+        if not self.all_converged:
+            log.warning("an atomic reference SCF did not converge; the charges built on it "
+                        "are not trustworthy.")
+
+
+def atomic_reference_charges(c_ao: np.ndarray, s_ao: np.ndarray, layout: AOLayout,
+                             reference, *,
+                             dm: Optional[np.ndarray] = None,
+                             occupation: Optional[np.ndarray] = None,
+                             report: bool = False) -> AtomicReferenceCharges:
+    """Atomic charges of the density built from ``c_ao``, in the free-atom partition.
+
+    ``c_ao`` is either a scalar set (``nao`` rows) or a spin-blocked spinor set (``2*nao``
+    rows); with a spinor set the *spin-traced* density is analysed, which is the sector a
+    charge lives in. Exactly one of ``dm`` (a 1-RDM over the given orbitals; ⚠ the AO
+    density is ``C gamma^T C^dag`` — the conjugation-trap convention stated at
+    :func:`atomic_populations`) and ``occupation`` must be given. ``reference`` is the
+    :class:`kuiva.basis.reference.AtomicReferenceSet` the front end ingested
+    (``atomic_reference=True``); without one this raises and names that knob.
+    """
+    if reference is None:
+        raise ValueError(
+            "atomic-reference charges need the per-element free-atom orbitals, which only "
+            "the front end can compute: re-run the scalar SCF with atomic_reference=True "
+            "(they are cached per element, so the cost is one small atomic SCF per unique "
+            "element, once per process).")
+    if (dm is None) == (occupation is None):
+        raise ValueError("give exactly one of dm= (a 1-RDM) and occupation=")
+
+    c_ao = np.asarray(c_ao)
+    nao = int(s_ao.shape[0])
+    if occupation is not None:
+        w = np.asarray(occupation, dtype=float)
+        d_full = (c_ao * w) @ c_ao.conj().T
+    else:
+        gamma = np.asarray(dm)
+        d_full = c_ao @ gamma.T @ c_ao.conj().T          # ⚠ gamma.T: the stated convention
+    if d_full.shape[0] == 2 * nao:                       # spinor density: spin-trace
+        d = (d_full[:nao, :nao] + d_full[nao:, nao:]).real
+    elif d_full.shape[0] == nao:
+        d = d_full.real
+    else:
+        raise ValueError("orbitals with {} rows against {} AOs".format(c_ao.shape[0], nao))
+
+    # Block-diagonal placement of each atom's reference orbitals, occupied columns first.
+    t = np.zeros((nao, nao))
+    weight = np.zeros(nao)
+    occupied = np.zeros(nao, dtype=bool)
+    owner = np.zeros(nao, dtype=int)
+    configurations: Dict[str, str] = {}
+    all_converged = True
+    for ia in range(layout.natm):
+        idx = np.asarray(layout.atom_indices(ia))
+        sym = str(layout.atom_symbols[ia]).capitalize()
+        if sym not in reference:
+            raise ValueError("the ingested atomic reference has no entry for {}; it was "
+                             "built for a different molecule".format(sym))
+        entry = reference[sym]
+        if entry.c.shape[0] != idx.size:
+            raise ValueError(
+                "the atomic reference for {} spans {} functions but this molecule gives the "
+                "atom {}: the reference was built in a different basis".format(
+                    sym, entry.c.shape[0], idx.size))
+        order = np.argsort(-(entry.occ > REFERENCE_OCC_THRESHOLD).astype(int),
+                           kind="stable")
+        t[np.ix_(idx, idx)] = entry.c[:, order]
+        occ_sorted = entry.occ[order]
+        n_occ = int((occ_sorted > REFERENCE_OCC_THRESHOLD).sum())
+        occupied[idx[:n_occ]] = True
+        weight[idx[:n_occ]] = occ_sorted[:n_occ]
+        owner[idx] = ia
+        configurations[sym] = entry.configuration
+        all_converged = all_converged and entry.converged
+
+    # Tier 1: the occupied atomic orbitals, weighted by their atomic occupations.
+    c1 = t[:, occupied]
+    c1 = c1 @ _weighted_lowdin(c1.T @ s_ao @ c1, weight[occupied])
+    # Tier 2: atomic virtuals, projected out of tier 1, Loewdin among themselves. The split
+    # cuts between whole shells only (average of configuration fills a shell equally), so
+    # the degenerate-group discipline holds by construction.
+    c2 = t[:, ~occupied] - c1 @ (c1.T @ s_ao @ t[:, ~occupied])
+    c2 = c2 @ _weighted_lowdin(c2.T @ s_ao @ c2)
+    x = np.empty((nao, nao))
+    x[:, occupied] = c1
+    x[:, ~occupied] = c2
+
+    pop_per_fn = np.einsum("mi,mn,ni->i", x, s_ao @ d @ s_ao, x)
+    population = np.array([pop_per_fn[owner == ia].sum() for ia in range(layout.natm)])
+    result = AtomicReferenceCharges(
+        layout=layout, charge=np.asarray(layout.atom_charges, dtype=float) - population,
+        population=population, configurations=configurations,
+        any_non_default=bool(getattr(reference, "any_non_default", False)),
+        all_converged=all_converged)
+    if report:
+        result.report()
+    return result
+
+
 # --- Reduced AO populations, per orbital or per degenerate block ---------------------------
 
 @dataclass(frozen=True)

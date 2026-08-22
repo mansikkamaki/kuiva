@@ -588,12 +588,39 @@ for.
 
 ⚠ **Two things not to misread.** The **spin density of a state-averaged Kramers pair is exactly
 zero** everywhere — that is time-reversal symmetry, not a lost moment; look at a single state
-if the spin distribution is the question. And **no atomic charge is printed, deliberately**:
-the Löwdin charge was measured with the wrong *sign* on ionic textbook compounds (a negative
-titanium in TiCl₃, a zero cerium in CeCl₃) and a better basis does not rescue it, so it was
-withdrawn from every report rather than captioned. The `atomic_charge()` accessor remains for
-anyone who wants the arithmetic, as a diagnostic and never an oxidation state. The reduced
-*orbital* populations are the robust half and are what this is for.
+if the spin distribution is the question. And **no atomic charge is printed in this table,
+deliberately**: the Löwdin charge was measured with the wrong *sign* on ionic textbook
+compounds (a negative titanium in TiCl₃, a zero cerium in CeCl₃) and a better basis does not
+rescue it, so it was withdrawn from every report rather than captioned. The `atomic_charge()`
+accessor remains for anyone who wants the arithmetic, as a diagnostic and never an oxidation
+state. The reduced *orbital* populations are the robust half and are what this is for.
+
+### Atomic charges that can be trusted: the atomic-reference partition
+
+When a charge *is* wanted, ask for the **atomic-reference charges** — populations taken in an
+orthonormal basis built from the orbitals of each element's spherically averaged free atom,
+computed in the molecule's own basis with the same relativistic treatment. Occupied atomic
+orbitals are orthogonalized first (weighted by their atomic occupations) and the atomic
+virtuals are kept behind them, so bonding-region density is attributed by atomic *character*
+rather than by which centre's functions happen to describe it — the failure mode that sank
+the Löwdin charge. The scheme was selected by measurement against exactly that failure:
+across five systems and two to four basis sets the charges keep their signs, drift by ~0.1 e
+where Mulliken drifts 0.45 e and Löwdin flips sign, and a nucleus-free "ghost" basis over a
+pure chloride density picks up ~0.1 e where Löwdin took 2.4.
+
+```python
+scf = kuiva.ScalarSCF(mol, atomic_reference=True).run()   # one atomic SCF per element, cached
+ref = kuiva.Reference(scf).run()
+ref.atomic_reference_charges()                            # prints the table, returns arrays
+```
+
+The per-element reference state is **the same default the atomic mean field uses** — the
+neutral atom, and the trivalent ion on the f block — so each element has exactly one default
+reference across the program. Overriding it (the same `screening_options` `configuration`
+mapping the mean field takes) is honoured and **warns**: charges against a non-default
+reference are not comparable with default-reference ones. `atomic_reference=True` lives on
+the SCF stage because the free-atom orbitals need the integral library, which nothing
+downstream has; forget it and the charges call tells you exactly that.
 
 ### Molden files: what is actually in them
 
@@ -918,7 +945,9 @@ The release is usable for production work **with care**, and this is what the ca
   three of them — a negative Ti in TiCl₃, a zero Ce in CeCl₃, a negative H in HI — and a
   better basis does not rescue it. `atomic_charge()` remains as an accessor, a diagnostic and
   never an oxidation state. Reduced *orbital* populations are robust and are what the feature
-  is for.
+  is for. **The supported charge is the atomic-reference one** (see the populations section):
+  measured stable in sign and to ~0.1 e across bases where Löwdin fails qualitatively, at the
+  cost of one cached atomic SCF per element (`atomic_reference=True` on the SCF stage).
 - **The conventional CI ceiling is about 20 spinors at half filling.** It is a memory bound on
   the *determinant count*, not on the spinor count, so it moves with the memory limit and is
   enforced before the first allocation — dilute or nearly-full spaces well past 20 spinors run
@@ -968,7 +997,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.12.1.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.13.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -984,7 +1013,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.12.1'
+import kuiva; kuiva.__version__          # '0.13.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

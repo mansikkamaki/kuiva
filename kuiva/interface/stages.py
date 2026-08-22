@@ -234,6 +234,13 @@ class Reference(_Stage):
         self._check_ran()
         return self.reference.population_analysis(**kwargs)
 
+    def atomic_reference_charges(self, **kwargs):
+        """Atomic charges in the free-atom reference partition (needs the scalar SCF stage
+        to have run with ``atomic_reference=True``); see
+        :meth:`kuiva.interface.api.SpinorReference.atomic_reference_charges`."""
+        self._check_ran()
+        return self.reference.atomic_reference_charges(**kwargs)
+
     def write_molden(self, path, **kwargs):
         """Spinor densities to a molden file; see
         :meth:`kuiva.interface.api.SpinorReference.write_molden`."""

@@ -745,6 +745,14 @@ class ScalarX2CData:
     #: :attr:`ao_layout` this is *output* metadata, read by no part of the calculation, and
     #: optional for the same reason.
     properties: Optional[PropertyIntegrals] = None
+    #: Per-element free-atom reference orbitals (:class:`kuiva.basis.reference.
+    #: AtomicReferenceSet`), behind the atomic-reference charges of
+    #: :mod:`kuiva.props.population`. Opt-in (``atomic_reference=True``) because it costs one
+    #: small atomic SCF per unique element — sub-second for a light element, ~10 s for a
+    #: lanthanide — and it must be computed *here*: the analysis layer has no integral
+    #: library, and the reference must be in the molecule's own basis. Analysis metadata
+    #: only; no part of the calculation reads it.
+    atomic_reference: Optional[object] = None
 
     @property
     def nelec_total(self) -> int:
@@ -2039,6 +2047,7 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                    one_centre: bool = True,
                    gauge_origin=None, property_picture_change: bool = False,
                    anomaly_picture_change: bool = False,
+                   atomic_reference: bool = False,
                    verbose: int = 0) -> ScalarX2CData:
     """Run a scalar X2C (``sfx2c1e``) SCF and ingest it into :class:`ScalarX2CData`.
 
@@ -2131,6 +2140,17 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         (the default centre of mass), ``"charge"``, ``"origin"``, or three coordinates in
         bohr. It is ingested here because the multireference layer never calls PySCF again
 , and it is recorded in the dump header because ``L`` is defined relative to it.
+    atomic_reference : bool
+        Also compute the per-element free-atom reference orbitals behind the
+        atomic-reference charges (:func:`kuiva.props.population.atomic_reference_charges`).
+        **Off by default** because it costs one spherically constrained atomic SCF per
+        unique element — sub-second for a light element, ~10 s for a lanthanide — cached in
+        the process, and it must run *here*: the analysis layer has no integral library. The
+        reference state per element is the atomic mean field's default (neutral atom;
+        trivalent ion on the f block), overridden by the same
+        ``screening_options["configuration"]`` mapping the mean field takes, so one element
+        has one reference across the program; a non-default reference is recorded and the
+        charge report warns that its charges are not comparable with default-reference ones.
     """
     from ..x2c.methods import DEFAULT_METHOD, resolve
 
@@ -2238,6 +2258,12 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                              decoupling_options=decoupling_options,
                              **(screening_options or {})) if with_soc else None)
 
+    # ⚠ Must run here for the same reason the direct decomposition does: the reference is
+    # per (element, basis) and needs the integral library, which nothing downstream has.
+    atomic_ref = (_atomic_reference_set(atom_basis,
+                                        (screening_options or {}).get("configuration"))
+                  if atomic_reference else None)
+
     # Standard output block: the front-end's contribution to the output file.
     rows = [
         ("SCF reference", ref_name.upper() + (" (unrestricted)" if unrestricted else "")),
@@ -2280,9 +2306,164 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         aux_name=aux if isinstance(aux, str) else ("custom" if aux is not None else None),
         soc=soc, reference=ref_name, unrestricted=unrestricted, s2_deviation=s2_dev,
         basis_meta=meta, e_nuc=float(mol.energy_nuc()), ao_layout=ao_layout(mol),
-        properties=props,
+        properties=props, atomic_reference=atomic_ref,
     )
     return data
+
+
+def _run_aoc_scf(mf, mol, config, layout, element: str, *, spherical: bool = True):
+    """Install the average-of-configuration machinery on ``mf`` and run it.
+
+    The one assembly of the AOC SCF, shared by :func:`run_scalar_aoc` and the atomic
+    reference builder (:func:`_atomic_reference_entry`), so the two cannot drift apart on
+    which constraints an atomic reference carries. Returns ``(e_scf, state)``.
+    """
+    from ..amf.configuration import (angular_channel_groups,
+                                     install_configuration_average, spherical_projector)
+
+    state: Dict[str, object] = {}
+    mf.get_occ = _aoc_occupation(mol, config, layout.ao_l, state)
+    if not config.is_closed_shell:
+        # ⚠ **The occupations alone are not average of configuration.** Without this the
+        # two-electron energy is evaluated over the fractional *density*, whose open-open pair
+        # average factorizes into a product of one-particle averages — 0.3-0.5 Eh and up to
+        # 15% on a splitting. The same function drives the four-component backend; see its
+        # docstring for why one implementation covers both conventions.
+        install_configuration_average(mf, mol, state)
+    if spherical:
+        # ⚠ **And the occupations are not sphericity.** Filling a whole ``l`` shell equally
+        # makes the density spherical *given* spherical orbitals; it does nothing to stop the
+        # iteration from sliding into the lower, symmetry-broken solutions a fractionally
+        # occupied Hartree-Fock functional has, which it does — the anisotropy grows about an
+        # order of magnitude per cycle from roundoff. Projecting the Fock onto its rank-zero
+        # part each cycle imposes the symmetry that *defines* the average of configuration.
+        # Installed after the effective Fock above, so the projection is the last thing before
+        # the eigensolver.
+        project = spherical_projector(
+            angular_channel_groups(layout.ao_l, layout.ao_m, layout.ao_shell).values(),
+            int(mol.nao))
+        inner_get_fock = mf.get_fock
+        mf.get_fock = lambda *a, **k: project(inner_get_fock(*a, **k))
+    else:
+        log.warning(
+            "the average-of-configuration SCF for %s is running WITHOUT the spherical "
+            "constraint. An open-shell atom then converges to a symmetry-broken solution "
+            "whose shells no longer share one radial function; this setting exists to "
+            "measure that and is never a production one.", element)
+    e_scf = mf.kernel()
+    if not mf.converged:
+        log.error("scalar average-of-configuration SCF did not converge in %d cycles "
+                  "(E = %.8f Eh); everything downstream is built on these orbitals. An atom "
+                  "with several shells close in energy often needs level_shift= or damp=.",
+                  mf.max_cycle, e_scf)
+    return e_scf, state
+
+
+#: In-process cache of free-atom reference orbitals, keyed ``(element, basis spec,
+#: configuration)``. Geometry-independent by construction, so one entry serves every
+#: molecule and every geometry in the process; cheap enough (an atomic scalar SCF) that a
+#: persistent on-disk cache is not worth a formula version.
+_ATOMIC_REFERENCE_CACHE: Dict[tuple, object] = {}
+
+
+def _atomic_reference_entry(element: str, basis, configuration=None):
+    """The free-atom reference orbitals of one element, in its own basis (cached).
+
+    The reference state defaults to :func:`kuiva.amf.configuration.default_configuration` —
+    **the same default the atomic mean field uses** (neutral atom, trivalent ion on the f
+    block), a user decision so that each element has exactly one default reference across
+    the program. An explicit ``configuration`` overrides it; the entry then records
+    ``is_default=False`` (unless the override happens to equal the default), and the charge
+    report downstream warns that such charges are not comparable with default-reference
+    ones.
+
+    The SCF is the same spherically constrained average-of-configuration assembly the AOC
+    driver runs (:func:`_run_aoc_scf`), in the *molecule's own basis for this element* — the
+    same basis entry produces the same AO ordering for the free atom as for the atom inside
+    the molecule, which is what makes the downstream block-diagonal placement exact.
+    """
+    from pyscf import gto
+    from pyscf.scf import hf as pyscf_hf
+
+    from ..amf.configuration import AtomicConfiguration, default_configuration
+    from ..basis.reference import AtomicReferenceEntry
+
+    if hasattr(configuration, "to_atomic"):
+        configuration = configuration.to_atomic()
+    default = default_configuration(element)
+    config = (default if configuration is None
+              else AtomicConfiguration.coerce(configuration, element=element))
+    is_default = config == default
+    key = (element.capitalize(), repr(basis), config)
+    hit = _ATOMIC_REFERENCE_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    z = int(gto.charge(element))
+    n_elec = config.n_electrons
+    if not 1 <= n_elec <= z:
+        raise ValueError(
+            "the reference configuration {} has {} electrons, which is not a bound state "
+            "of {} (Z = {})".format(config.canonical, n_elec, element, z))
+    mol = build_mole(_SingleAtom(atoms=[(element, (0.0, 0.0, 0.0))], charge=z - n_elec,
+                                 spin=n_elec % 2, basis=basis), verbose=0)
+    _set_pyscf_memory(mol)
+    layout = ao_layout(mol)
+    mf = pyscf_hf.RHF(mol).sfx2c1e()
+    mf.conv_tol = 1e-10
+    mf.max_cycle = 200
+    with timer("atomic reference orbitals"):
+        _run_aoc_scf(mf, mol, config, layout, element, spherical=True)
+    entry = AtomicReferenceEntry(
+        element=element.capitalize(), c=np.asarray(mf.mo_coeff),
+        occ=np.asarray(mf.mo_occ), configuration=config.label or config.canonical,
+        is_default=bool(is_default), converged=bool(mf.converged))
+    _ATOMIC_REFERENCE_CACHE[key] = entry
+    return entry
+
+
+def _atomic_reference_set(atom_basis: Dict[str, str], configuration=None):
+    """Free-atom reference orbitals for every element of the molecule.
+
+    ``configuration`` is the same axis the atomic mean field takes (a mapping element →
+    reference, or ``None`` for the per-element defaults). ⚠ Keys must be *element symbols*:
+    a per-atom label ("Ti1") would require two references for one element block, which the
+    charge partition has no way to honour — refused rather than silently collapsed.
+    """
+    from ..basis.reference import AtomicReferenceSet
+
+    try:
+        from collections.abc import Mapping
+    except ImportError:                                                   # pragma: no cover
+        from collections import Mapping                                   # type: ignore
+
+    elements = sorted(atom_basis)
+    config_of = {}
+    if isinstance(configuration, Mapping):
+        wanted = {str(k).capitalize(): v for k, v in configuration.items()}
+        unknown = sorted(set(wanted) - {e.capitalize() for e in elements})
+        if unknown:
+            raise ValueError(
+                "atomic-reference configurations name {} which is not an element of this "
+                "molecule ({}). Per-atom reference configurations are not implemented for "
+                "the atomic-reference charges: one element, one reference.".format(
+                    ", ".join(unknown), ", ".join(elements)))
+        config_of = wanted
+    elif configuration is not None:
+        if len(elements) > 1:
+            raise ValueError(
+                "a single reference configuration ({!r}) cannot be applied to every element "
+                "of a molecule containing {}; pass a mapping.".format(
+                    configuration, ", ".join(elements)))
+        config_of = {elements[0].capitalize(): configuration}
+
+    entries = {}
+    for sym in elements:
+        entries[sym.capitalize()] = _atomic_reference_entry(
+            sym, atom_basis[sym], config_of.get(sym.capitalize()))
+    return AtomicReferenceSet(entries=entries,
+                              basis_label=", ".join("{}: {}".format(s, atom_basis[s])
+                                                    for s in elements))
 
 
 def run_scalar_aoc(element: str, configuration=None, *, basis,
@@ -2371,9 +2552,7 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
     from pyscf import gto
     from pyscf.scf import hf as pyscf_hf
 
-    from ..amf.configuration import (SHELL_LETTERS, AtomicConfiguration,
-                                     angular_channel_groups,
-                                     install_configuration_average, spherical_projector)
+    from ..amf.configuration import SHELL_LETTERS, AtomicConfiguration
     from ..amf.pyscf_dhf import SPHERICAL_DENSITY_TOLERANCE, density_anisotropy
     from ..x2c.methods import DEFAULT_METHOD, resolve
 
@@ -2417,7 +2596,6 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
     _set_pyscf_memory(mol)
 
     layout = ao_layout(mol)
-    state: Dict[str, object] = {}
     # ⚠ ``pyscf.scf.hf.RHF``, never ``pyscf.scf.RHF``: the latter is a dispatcher that hands
     # back an ROHF for a molecule with spin > 0, and an odd-electron average of configuration
     # would then silently run a different (aufbau, symmetry-broken) method. ``mol.spin`` here
@@ -2435,41 +2613,8 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
     mf.damp = damp
     if init_guess is not None:
         mf.init_guess = init_guess
-    mf.get_occ = _aoc_occupation(mol, config, layout.ao_l, state)
-    if not config.is_closed_shell:
-        # ⚠ **The occupations alone are not average of configuration.** Without this the
-        # two-electron energy is evaluated over the fractional *density*, whose open-open pair
-        # average factorizes into a product of one-particle averages — 0.3-0.5 Eh and up to
-        # 15% on a splitting. The same function drives the four-component backend; see its
-        # docstring for why one implementation covers both conventions.
-        install_configuration_average(mf, mol, state)
-    if spherical:
-        # ⚠ **And the occupations are not sphericity.** Filling a whole ``l`` shell equally
-        # makes the density spherical *given* spherical orbitals; it does nothing to stop the
-        # iteration from sliding into the lower, symmetry-broken solutions a fractionally
-        # occupied Hartree-Fock functional has, which it does — the anisotropy grows about an
-        # order of magnitude per cycle from roundoff. Projecting the Fock onto its rank-zero
-        # part each cycle imposes the symmetry that *defines* the average of configuration.
-        # Installed after the effective Fock above, so the projection is the last thing before
-        # the eigensolver.
-        project = spherical_projector(
-            angular_channel_groups(layout.ao_l, layout.ao_m, layout.ao_shell).values(),
-            int(mol.nao))
-        inner_get_fock = mf.get_fock
-        mf.get_fock = lambda *a, **k: project(inner_get_fock(*a, **k))
-    else:
-        log.warning(
-            "the average-of-configuration SCF for %s is running WITHOUT the spherical "
-            "constraint. An open-shell atom then converges to a symmetry-broken solution "
-            "whose shells no longer share one radial function; this setting exists to "
-            "measure that and is never a production one.", element)
     with timer("scalar AOC X2C SCF") as t_scf:
-        e_scf = mf.kernel()
-    if not mf.converged:
-        log.error("scalar average-of-configuration SCF did not converge in %d cycles "
-                  "(E = %.8f Eh); everything downstream is built on these orbitals. An atom "
-                  "with several shells close in energy often needs level_shift= or damp=.",
-                  max_cycle, e_scf)
+        e_scf, state = _run_aoc_scf(mf, mol, config, layout, element, spherical=spherical)
 
     mo_coeff = np.ascontiguousarray(np.asarray(mf.mo_coeff))
     mo_occ = np.ascontiguousarray(np.asarray(mf.mo_occ))
