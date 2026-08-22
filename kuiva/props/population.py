@@ -73,8 +73,17 @@ partition of a quantity that has no unique partition, and the Loewdin charge fai
   and ⚠ **the usual diffuse-function explanation does not hold**: the smallest primitive
   exponent on the metal barely moves between the two bases (it *rises* on Ti and Ce), while
   the Loewdin–Mulliken gap tracks the **ligand** (chlorides ~1.1–1.6 e, fluoride ~0.9 e,
-  hydride ≤0.07 e). What drives it is how much ligand valence density the symmetric
-  orthogonalization hands to the metal, i.e. metal–ligand overlap, not diffuseness per se.
+  hydride ≤0.07 e).
+* **The mechanism is measured, not conjectured** (ghost test: the metal's basis with no
+  nucleus and no electrons over a pure Cl3(3-) density): Loewdin assigns **2.4 electrons of
+  pure chloride density to functions merely labeled with the metal** where Mulliken assigns
+  0.6 — a 1.8 e labelling difference with no metal in the system, larger than the whole
+  molecular gap. The excess sits in the ligand-pointing d and p channels (not the diffuse s),
+  and it scales with the overlap conditioning: the same TiCl3 gives a 0.45 e gap in STO-3G
+  (smallest overlap eigenvalue 2.7e-01), 0.69 e in def2-SVP (2.4e-02) and 1.24 e — across
+  the sign boundary — in x2c-SVPall-2c (1.5e-05). An all-electron relativistic basis lives
+  permanently in the ill-conditioned regime where ``S^{1/2}`` is non-local, so the failure
+  is structural for this code, not an unlucky molecule (cf. Mayer 2004, below).
 * Kuiva's spinor implementation reproduces an independent scalar Loewdin on the same density
   to 1e-13, so all of this is the partition, not the code.
 
