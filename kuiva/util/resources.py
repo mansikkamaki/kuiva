@@ -1062,6 +1062,41 @@ def checkpoint_cost_fraction(budget: MemoryBudget = BUDGET) -> float:
 # --- Pre-flight --------------------------------------------------------------------------
 
 
+def _phase_walk(phases: Sequence[PhaseEstimate], carried: float):
+    """Walk the phases under the peak model: resident carried forward plus the current
+    phase's transients. Returns ``(rows, peak, worst)`` with one ``(phase, carried,
+    phase_peak)`` row per phase (``None`` values for an ungoverned one) — the single
+    implementation of the model, so :func:`plan_peak_gb` and :func:`preflight` cannot
+    disagree about what a plan peaks at."""
+    rows = []
+    peak = carried
+    worst: Optional[PhaseEstimate] = None
+    for phase in phases:
+        if not phase.governed:
+            rows.append((phase, None, None))
+            continue
+        carried += phase.resident_gb()
+        phase_peak = carried + phase.transient_gb()
+        # The phase that *peaks* is the one to report, not the first that happens to cross
+        # the limit: suggesting a limit that only gets the run as far as the next phase is
+        # worse than useless.
+        if phase_peak >= peak:
+            peak, worst = phase_peak, phase
+        rows.append((phase, carried, phase_peak))
+    return rows, peak, worst
+
+
+def plan_peak_gb(phases: Sequence[PhaseEstimate], *, budget: MemoryBudget = BUDGET) -> float:
+    """Planned peak [GB] of ``phases``, with no printing, no refusal and no ledger effect.
+
+    Exactly the model :func:`preflight` prints and judges — they share one implementation —
+    so a caller can compare alternative plans *before* committing to one and handing it to
+    the pre-flight. This is what the automatic two-electron route selection reads.
+    """
+    _, peak, _ = _phase_walk(phases, budget.resident_gb())
+    return peak
+
+
 def preflight(phases: Sequence[PhaseEstimate], *, budget: MemoryBudget = BUDGET,
               logger=None, title: str = "Memory pre-flight") -> float:
     """Print the phase-by-phase memory plan and refuse a calculation that cannot fit.
@@ -1091,20 +1126,11 @@ def preflight(phases: Sequence[PhaseEstimate], *, budget: MemoryBudget = BUDGET,
         out.Column("verdict", "{}", 9, align="<"),
     ])
     table.start()
-    carried = budget.resident_gb()
-    peak = carried
-    worst: Optional[PhaseEstimate] = None
-    for phase in phases:
-        if not phase.governed:
+    rows, peak, worst = _phase_walk(phases, budget.resident_gb())
+    for phase, carried, phase_peak in rows:
+        if carried is None:
             table.row(phase.name, None, None, None, "external")
             continue
-        carried += phase.resident_gb()
-        phase_peak = carried + phase.transient_gb()
-        # The phase that *peaks* is the one to report, not the first that happens to cross
-        # the limit: suggesting a limit that only gets the run as far as the next phase is
-        # worse than useless.
-        if phase_peak >= peak:
-            peak, worst = phase_peak, phase
         if phase_peak > limit:
             verdict = "ERROR"
         elif lims is not None and phase_peak > lims.warn_fraction * limit:
@@ -1212,5 +1238,6 @@ __all__ = [
     "Allocation", "PlannedAllocation", "PhaseEstimate", "MemoryBudget", "BUDGET",
     "configure", "ensure_configured", "limits", "reset", "clear", "calculation",
     "reserve", "require",
-    "transient_gb", "in_phase", "scratch_free_gb", "require_scratch", "preflight", "summary",
+    "transient_gb", "in_phase", "scratch_free_gb", "require_scratch", "preflight",
+    "plan_peak_gb", "summary",
 ]

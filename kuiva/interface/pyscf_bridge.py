@@ -849,6 +849,17 @@ def _choose_fit(atom_basis: Dict[str, str], fitting: Optional[str],
     ``O(nao^4/8)`` array, which is what bounds the size of system that fits. It is a value on
     *this* axis and not a separate switch, so it cannot be combined with density fitting and
     there is no contradiction to refuse.
+
+    ``fitting=None`` (and its explicit spelling ``"auto"``) returns the sentinel ``"auto"``:
+    **which Cholesky route serves the default is decided by the memory plan**, in
+    :func:`_auto_fit_route`, once the AO count and the configured limit are both known. The
+    stored route wherever its plan fits — it is never slower than the direct one by more
+    than a few per cent and is up to ~40% faster on a small system — and the integral-direct
+    route where the stored plan exceeds the limit, which is the one regime where the direct
+    route is *more* efficient overall (a calculation that runs, against one that is refused).
+    There is no fixed size cutoff: the measured CPU costs of the two routes stay within a
+    few per cent of each other from ~160 AOs up, so the array that only the stored route
+    needs is the entire decision.
     """
     if auxbasis is not None and fitting in (None, "df"):
         return "df", auxbasis
@@ -865,10 +876,46 @@ def _choose_fit(atom_basis: Dict[str, str], fitting: Optional[str],
         return "df", aux
     if fitting in ("cholesky-direct", "direct"):
         return "direct", None
-    if fitting in (None, "conventional", "cholesky"):
+    if fitting in (None, "auto"):
+        return "auto", None
+    if fitting in ("conventional", "cholesky"):
         return "conventional", None
-    raise ValueError("unknown fitting route {!r}; expected 'conventional', 'cholesky', "
-                     "'cholesky-direct', 'df' or None".format(fitting))
+    raise ValueError("unknown fitting route {!r}; expected 'auto', 'conventional', "
+                     "'cholesky', 'cholesky-direct', 'df' or None".format(fitting))
+
+
+def _auto_fit_route(nao: int, *, nelec: int, n_active: Optional[int] = None,
+                    screening: bool = False) -> Tuple[str, str]:
+    """Resolve ``fit_route="auto"`` against the memory plan. Returns ``(route, note)``.
+
+    The stored (conventional) Cholesky route whenever its own plan fits the configured
+    limit, the integral-direct route when it does not. The decision is the *plan*, not a
+    size constant, because the crossover is a property of the machine: on the two-electron
+    phase the two routes' CPU costs sit within a few per cent of each other from ~160 AOs
+    up (stored 8.7 vs direct 11.2 CPU s at nao = 105, 121.8 vs 119.7 at nao = 234, 433 vs
+    412–633 at nao = 324 depending on the batch-cache budget; 4 threads, Haswell), so CPU
+    cost never separates them — the ``O(nao^4/8)`` array only the stored route must hold is
+    the whole difference, and whether it fits is exactly what the plan already computes.
+
+    ⚠ The direct route is *not* asymptotically cheaper on CPU, and the entry predicting a
+    cost crossover near nao ≈ 350 was wrong: its batch evaluator loses the bra↔ket shell
+    symmetry (``aosym="s2ij"`` against the stored fill's ``s8``) and re-evaluates batches
+    its cache cannot hold, which together outweigh evaluating fewer columns at every size
+    measured. What it buys is memory, and the note returned says so in the output file.
+
+    ``note`` is non-empty only when the resolution *changed* something a user would see —
+    i.e. when the direct route was chosen — so the output of every calculation the stored
+    route serves is unchanged, byte for byte, by the existence of this mechanism.
+    """
+    budget = res.BUDGET
+    limits = budget.limits
+    limit = limits.memory_gb if limits is not None else float("inf")
+    peak = res.plan_peak_gb(memory_plan(nao, conventional=True, n_active=n_active,
+                                        nelec=nelec, screening=screening), budget=budget)
+    if peak <= limit:
+        return "conventional", ""
+    return "direct", ("chosen automatically: the stored-integral route plans "
+                      "{:.2f} GB against the {:.2f} GB limit".format(peak, limit))
 
 
 # The vectors-per-AO estimate is defined where the decomposition is (it seeds that array's
@@ -2005,14 +2052,22 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         cannot, which matters for the antiferromagnetically coupled polynuclear systems of
         the polynuclear targets — there ROHF often will not even converge.
     fitting : str, optional
-        ``None`` / ``"conventional"`` / ``"cholesky"`` — ingest conventional ERIs, which
-        :mod:`kuiva.integrals.transform` Cholesky-decomposes. **This is the default in every
-        case.** ``"cholesky-direct"`` — the same decomposition with the integrals evaluated
-        as it asks for them and never stored, which removes the ``O(nao^4/8)`` array that
-        otherwise bounds the size of system that fits; the factors come back on
+        ``None`` / ``"auto"`` (**the default**) — Cholesky decomposition, with the route the
+        integrals take to it decided by the memory plan: conventional stored ERIs wherever
+        their plan fits the configured limit, and the integral-direct evaluation where it
+        does not (in which case the output states so on its "two-electron route" line). The
+        two routes cost the same CPU to within a few per cent on anything larger than ~160
+        AOs and produce factors that agree to every digit a result is read from, so the
+        array is the entire decision. ``"conventional"`` / ``"cholesky"`` — always ingest
+        conventional ERIs, which :mod:`kuiva.integrals.transform` Cholesky-decomposes; a
+        system whose array does not fit is then refused rather than rerouted.
+        ``"cholesky-direct"`` — always evaluate the integrals as the decomposition asks for
+        them and never store them, which removes the ``O(nao^4/8)`` array that otherwise
+        bounds the size of system that fits; the factors come back on
         :attr:`ScalarX2CData.factors`. ``"df"`` — density fitting; see ``auxbasis``.
     cholesky_tol, orbit_pivots, one_centre :
-        The decomposition's own settings, used by ``fitting="cholesky-direct"`` **only**,
+        The decomposition's own settings, used **only** when the integral-direct route runs
+        (``fitting="cholesky-direct"``, or ``"auto"`` resolving to it),
         because that route decomposes here rather than downstream. They mean exactly what
         they mean in :meth:`kuiva.integrals.transform.ThreeIndexAO.from_scalar_data`, which
         is where the other routes take them from.
@@ -2092,8 +2147,15 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     fit_route, aux = _choose_fit(atom_basis, fitting, auxbasis)
 
     # The AO count is the first thing that is known and it fixes every large array of
-    # the front-end, so the whole plan is printed and judged here, before the SCF.
+    # the front-end, so the whole plan is printed and judged here, before the SCF — and it
+    # is also what resolves fitting="auto", which must happen first so the pre-flight judges
+    # the plan of the route that will actually run.
     res.ensure_configured(memory_gb)
+    fit_note = ""
+    if fit_route == "auto":
+        fit_route, fit_note = _auto_fit_route(
+            mol.nao, nelec=mol.nelectron, n_active=n_active,
+            screening=with_soc and chosen.screening != "none")
     res.preflight(memory_plan(mol.nao, conventional=fit_route == "conventional",
                               direct=fit_route == "direct",
                               shell_ao_max=_shell_ao_max(mol), n_shells=int(mol.nbas),
@@ -2183,7 +2245,8 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         ("AO basis functions", int(mol.nao)),
         ("molecular orbitals", nmo, "", "2 spin sets" if unrestricted else ""),
         ("electrons (alpha, beta)", "{}, {}".format(*mol.nelec)),
-        ("two-electron route", fit_route + (" [{}]".format(aux) if aux else "")),
+        ("two-electron route", fit_route + (" [{}]".format(aux) if aux else ""), "",
+         fit_note),
         ("gauge origin (property operators)", "({:.4f}, {:.4f}, {:.4f}) bohr".format(
             *np.asarray(props.gauge_origin).ravel()), "", props.origin_label),
         ("nuclear repulsion", float(mol.energy_nuc()), "Eh", "", out.E_FMT),
@@ -2339,6 +2402,11 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
     fit_route, aux = _choose_fit(atom_basis, fitting, auxbasis)
 
     res.ensure_configured(memory_gb)
+    fit_note = ""
+    if fit_route == "auto":
+        fit_route, fit_note = _auto_fit_route(
+            mol.nao, nelec=mol.nelectron,
+            screening=with_soc and chosen.screening != "none")
     res.preflight(memory_plan(mol.nao, conventional=fit_route == "conventional",
                               direct=fit_route == "direct",
                               shell_ao_max=_shell_ao_max(mol), n_shells=int(mol.nbas),
@@ -2459,7 +2527,8 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
         ("SCF one-electron Hamiltonian", "X2C (sfx2c1e, spin-free)"),
         ("AO basis functions", int(mol.nao)),
         ("molecular orbitals", nmo),
-        ("two-electron route", fit_route + (" [{}]".format(aux) if aux else "")),
+        ("two-electron route", fit_route + (" [{}]".format(aux) if aux else ""), "",
+         fit_note),
         ("nuclear repulsion", float(mol.energy_nuc()), "Eh", "", out.E_FMT),
         ("scalar AOC X2C SCF energy", float(e_scf), "Eh", "", out.E_FMT),
         ("SCF converged", bool(mf.converged)),

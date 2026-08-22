@@ -218,6 +218,14 @@ def main() -> int:
     #      no longer has a line for it. The threshold, the error bound and the pivot rule are
     #      the same, and so is the answer; what changes is only how the numbers are obtained.
     #
+    #      You rarely need to pick: the default (`fitting="auto"`) reads the memory
+    #      pre-flight and takes the stored route wherever its plan fits the configured limit
+    #      -- as it did for the first SCF above -- and this direct route where it does not,
+    #      saying so on the output's "two-electron route" line. The two routes cost the same
+    #      processor time to within a few per cent on anything beyond ~160 basis functions,
+    #      so the array is the entire decision. Passing `fitting=` explicitly, as done here
+    #      for the demonstration, pins the route regardless of the plan.
+    #
     #      One consequence to know about: this route decomposes inside the SCF stage, because
     #      that is the only point where the integrals can still be evaluated. `cholesky_tol`
     #      and `orbit_pivots` therefore belong to ScalarSCF here rather than to Reference.
@@ -290,6 +298,8 @@ def main() -> int:
         "the spinor guess is exactly Kramers paired": spinors.partner_deviation() < 1e-14,
         "time reversal squares to -1": t2_err < 1e-14,
         "the Cholesky error respects its threshold": cholesky_err < 10.0 * factors.tol,
+        "the default route resolution stored the integrals here":
+            scf.data.fit_route == "conventional",
         "the integral-direct route stores no integral array": scf_direct.data.eri is None,
         "the integral-direct route keeps the same error bound":
             direct_vs_exact < 10.0 * direct.tol,

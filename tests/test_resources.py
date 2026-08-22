@@ -519,6 +519,27 @@ def test_preflight_peaks_are_sequential_not_cumulative(budget):
     assert res.preflight(phases, budget=budget) == pytest.approx(0.7)
 
 
+def test_plan_peak_gb_is_preflights_model_without_the_side_effects(budget):
+    """The automatic two-electron route selection compares plans *before* committing one to
+    the pre-flight, so the two must share one peak model — asserted here by equality, on a
+    plan whose cumulative total (0.9) differs from its sequential peak (0.7). And the
+    comparison itself must not touch the ledger: no refusal, no calculation start."""
+    phases = [
+        res.PhaseEstimate("a", [res.PlannedAllocation("kept", 0.2),
+                                res.PlannedAllocation("buffer", 0.5, resident=False)]),
+        res.PhaseEstimate("ext", governed=False),
+        res.PhaseEstimate("b", [res.PlannedAllocation("kept too", 0.2)]),
+    ]
+    peak = res.plan_peak_gb(phases, budget=budget)
+    assert peak == pytest.approx(0.7)
+    assert budget.plan_peak_gb == 0.0                 # no side effect on the ledger
+    # An over-limit plan returns its peak instead of refusing: the caller is choosing
+    # between plans, and a refusal belongs to the plan that is actually adopted.
+    big = [res.PhaseEstimate("huge", [res.PlannedAllocation("x", 400.0)])]
+    assert res.plan_peak_gb(big, budget=budget) == pytest.approx(400.0)
+    assert res.preflight(phases, budget=budget) == pytest.approx(peak)
+
+
 def test_preflight_refuses_and_says_which_phase(budget):
     phases = [res.PhaseEstimate("integrals", [res.PlannedAllocation("small", 0.1)]),
               res.PhaseEstimate("nevpt2", [res.PlannedAllocation("4-RDM", 400.0)],

@@ -9,6 +9,7 @@ import pytest
 
 from kuiva.interface import Molecule, scalar_x2c_reference, build_mole
 from kuiva.interface.pyscf_bridge import run_scalar_x2c
+from kuiva.util import resources as res
 
 E_TOL = 1e-8 # Eh, meaningful energy tolerance
 
@@ -103,6 +104,54 @@ def test_df_is_used_when_the_user_supplies_an_auxiliary():
     d = run_scalar_x2c(mol, auxbasis="x2c-JFIT", screening="none")
     assert d.fit_route == "df" and d.aux_name == "x2c-JFIT"
     assert d.df_cderi is not None and d.eri is None
+
+
+def test_auto_route_follows_the_memory_plan(monkeypatch):
+    """``fitting=None`` (= ``"auto"``) resolves by the memory plan, not by a size constant.
+
+    Stored integrals wherever their plan fits the configured limit; integral-direct where it
+    does not. There is no fixed AO-count cutoff because no CPU crossover exists to place one
+    at: the two routes were measured within a few per cent of each other from ~160 AOs up,
+    so the ``O(nao^4/8)`` array only the stored route holds is the entire decision — and the
+    one regime where the direct route is *more* efficient overall is the one where the
+    stored plan is refused. The premise of each branch is asserted alongside its verdict, so
+    a drift in the sizing functions fails this test loudly instead of hollowing it out.
+    """
+    from kuiva.interface.pyscf_bridge import _auto_fit_route, memory_plan
+    nao, nelec = 105, 73                      # TiCl3 / x2c-SVPall-2c, no SCF needed
+
+    roomy = res.MemoryBudget(res.ResourceLimits(memory_gb=64.0, source="test"))
+    monkeypatch.setattr(res, "BUDGET", roomy)
+    route, note = _auto_fit_route(nao, nelec=nelec)
+    assert route == "conventional" and note == ""
+
+    tight = res.MemoryBudget(res.ResourceLimits(memory_gb=0.5, source="test"))
+    monkeypatch.setattr(res, "BUDGET", tight)
+    conv_peak = res.plan_peak_gb(memory_plan(nao, conventional=True, nelec=nelec),
+                                 budget=tight)
+    dir_peak = res.plan_peak_gb(memory_plan(nao, conventional=False, direct=True,
+                                            shell_ao_max=7, n_shells=13, nelec=nelec),
+                                budget=tight)
+    assert dir_peak <= 0.5 < conv_peak        # the premise the tight branch rests on
+    route, note = _auto_fit_route(nao, nelec=nelec)
+    assert route == "direct" and "chosen automatically" in note
+
+
+@pytest.mark.slow
+def test_auto_route_runs_direct_where_the_stored_route_would_be_refused():
+    """End to end: at a limit the stored plan exceeds, the default route is the direct one,
+    the calculation *runs* instead of being refused, and the result is the same reference
+    (route differences are below 1e-11 Eh on the SCF energy, measured 9e-13 here)."""
+    mol = Molecule([("Ti", (0.0, 0.0, 0.0)),
+                    ("Cl", (2.2007128, 0.0, 0.0)),
+                    ("Cl", (-1.1003564, 1.9058728, 0.0)),
+                    ("Cl", (-1.1003564, -1.9058728, 0.0))],
+                   basis="x2c-SVPall-2c", spin=1)
+    d = run_scalar_x2c(mol, screening="none", memory_gb=0.5)
+    assert d.fit_route == "direct"
+    assert d.eri is None and d.factors is not None and d.factors.orbit_complete
+    e_ref = run_scalar_x2c(mol, fitting="cholesky", screening="none", memory_gb=8.0).e_scf
+    assert abs(d.e_scf - e_ref) < 1e-10
 
 
 def test_the_direct_route_is_a_value_on_the_same_axis_and_carries_factors():

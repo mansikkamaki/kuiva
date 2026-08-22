@@ -237,7 +237,9 @@ def spinor_reference(molecule_or_data, *, threshold: float = DEFAULT_THRESHOLD,
     measuring that, not for production.
 
     ⚠ ``cholesky_tol`` and ``orbit_pivots`` are **passed on to the front end** when this is
-    given a :class:`Molecule`, because ``fitting="cholesky-direct"`` decomposes there — while
+    given a :class:`Molecule`, because ``fitting="cholesky-direct"`` (or the default
+    ``"auto"`` resolving to it when the stored plan exceeds the memory limit) decomposes
+    there — while
     the integrals can still be evaluated and without ever storing them. Given an
     already-ingested container that came off that route, the decomposition has happened and
     these two can no longer be applied; a threshold that disagrees with the one it ran at is

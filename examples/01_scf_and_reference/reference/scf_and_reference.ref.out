@@ -2,14 +2,14 @@
                                    K U I V A                                    
                  relativistic multireference quantum chemistry                  
                        example 1: the front end (Ne atom)                       
-                                 version 0.9.0                                  
+                                 version 0.11.0                                 
                 compiled kernels: disabled (KUIVA_KERNELS=numpy)                
            threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
 ================================================================================
    output file                                   output/scf_and_reference.out
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.12 s
+ Scalar-relativistic X2C reference                                    t = 0.13 s
 ================================================================================
    atoms                                                          1   (Ne)
    charge                                                         0
@@ -31,7 +31,7 @@
      three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
    planned peak                                               0.001  GB
-   machine available                                         10.884  GB
+   machine available                                         12.970  GB
    SCF reference                                                RHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            14
@@ -58,7 +58,7 @@
    reference configurations                               Ne: s4 p6
    spin-free correction, max |dh_sf|                   6.333909e-03  Eh
    spin-orbit correction, max |dw|                     5.331946e-04  Eh
-   discarded time-reversal-odd part                       5.221e-12  Eh   (1.7e-13 relative)
+   discarded time-reversal-odd part                       6.359e-12  Eh   (2.1e-13 relative)
 
 ================================================================================
  The finished SCF stage                                               t = 0.62 s
@@ -81,17 +81,17 @@ ScalarSCF
    condition number of S (retained)                       1.008e+01
 
 ================================================================================
- Spinor expansion                                                     t = 0.63 s
+ Spinor expansion                                                     t = 0.62 s
 ================================================================================
    scalar basis functions                                        14   (working basis)
    spinors                                                       28
    Kramers pairs                                                 14
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    1.12e-15
+   orthonormality error                                    2.93e-14
 
 ================================================================================
- Two-electron integrals                                               t = 0.63 s
+ Two-electron integrals                                               t = 0.62 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -106,7 +106,7 @@ ScalarSCF
    decomposition time                                          0.00  s wall
 
 ================================================================================
- The finished Reference stage                                         t = 0.63 s
+ The finished Reference stage                                         t = 0.62 s
 ================================================================================
 Reference
   spinors                       : 28
@@ -114,7 +114,7 @@ Reference
   two-electron factorization    : cholesky (91 vectors)
 
 ================================================================================
- Checks on the ingested reference                                     t = 0.63 s
+ Checks on the ingested reference                                     t = 0.62 s
 ================================================================================
 
  -- Orthonormal working basis --------------------------------------------------
@@ -126,7 +126,7 @@ Reference
    spinors                                                       28   (14 Kramers pairs)
    Kramers pairing deviation                              0.000e+00   (|barred - T(unbarred)|)
    max |T^2 C + C|                                        0.000e+00   (T^2 = -1)
-   orthonormality error                                   1.118e-15
+   orthonormality error                                   2.926e-14
 
  -- Two-electron integrals -----------------------------------------------------
    factorization route                                     cholesky
@@ -136,11 +136,11 @@ Reference
    max |(pq|rs) rebuilt - exact|                          2.731e-09  Eh   (over all 14^4 AO integrals)
 
 ================================================================================
- The same integrals, never stored (fitting='cholesky-direct')         t = 0.63 s
+ The same integrals, never stored (fitting='cholesky-direct')         t = 0.62 s
 ================================================================================
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.63 s
+ Scalar-relativistic X2C reference                                    t = 0.62 s
 ================================================================================
    atoms                                                          1   (Ne)
    charge                                                         0
@@ -162,7 +162,7 @@ Reference
      three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
    planned peak                                               0.003  GB
-   machine available                                         10.880  GB
+   machine available                                         12.964  GB
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
    factorization                                           cholesky
@@ -203,10 +203,10 @@ Reference
    reference configurations                               Ne: s4 p6
    spin-free correction, max |dh_sf|                   6.333909e-03  Eh
    spin-orbit correction, max |dw|                     5.331946e-04  Eh
-   discarded time-reversal-odd part                       5.221e-12  Eh   (1.7e-13 relative)
+   discarded time-reversal-odd part                       6.359e-12  Eh   (2.1e-13 relative)
 
 ================================================================================
- Orthonormal working basis                                            t = 0.68 s
+ Orthonormal working basis                                            t = 0.67 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                            14
@@ -217,17 +217,17 @@ Reference
    condition number of S (retained)                       1.008e+01
 
 ================================================================================
- Spinor expansion                                                     t = 0.68 s
+ Spinor expansion                                                     t = 0.67 s
 ================================================================================
    scalar basis functions                                        14   (working basis)
    spinors                                                       28
    Kramers pairs                                                 14
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    1.63e-13
+   orthonormality error                                    1.11e-15
 
 ================================================================================
- Two-electron integrals                                               t = 0.68 s
+ Two-electron integrals                                               t = 0.67 s
 ================================================================================
 
  -- Two-electron factors from the front end (integral-direct) ------------------
@@ -250,7 +250,7 @@ Reference
 
  -- One-electron Hamiltonian (two-component) -----------------------------------
    dimension                                                28 x 28   (spinor basis)
-   hermiticity error                                      1.776e-15  Eh
+   hermiticity error                                      5.995e-15  Eh
    largest spin-free element                              4.999e+01  Eh
    largest spin-orbit element                             1.927e-03  Eh   (the whole reason for the two-component treatment)
    the Hamiltonian provenance printed above travels with every stored
@@ -277,28 +277,28 @@ Reference
                                              0 Ne        3py            3.52
                                              0 Ne        2pz            1.84
                                              0 Ne        3pz            1.12
-   6-7             1.0000   -0.838087181010  0 Ne        2py           28.95
-                                             0 Ne        2pz           26.02
+   6-7             1.0000   -0.838087181010  0 Ne        2py           28.96
+                                             0 Ne        2pz           26.01
                                              0 Ne        3py           17.60
                                              0 Ne        3pz           15.81
-                                             0 Ne        2px            7.22
+                                             0 Ne        2px            7.23
                                              0 Ne        3px            4.39
-   8-9             1.0000   -0.838087180999  0 Ne        2pz           34.34
-                                             0 Ne        2py           27.46
-                                             0 Ne        3pz           20.87
-                                             0 Ne        3py           16.69
+   8-9             1.0000   -0.838087180999  0 Ne        2pz           34.35
+                                             0 Ne        2py           27.45
+                                             0 Ne        3pz           20.88
+                                             0 Ne        3py           16.68
    10-11           0.0000    1.641337523396  0 Ne        3s            53.45
                                              0 Ne        2s            45.50
                                              0 Ne        1s             1.05
    12-13           0.0000    1.697606638020  0 Ne        3py           55.53
                                              0 Ne        2py           33.75
-                                             0 Ne        3px            4.81
+                                             0 Ne        3px            4.82
                                              0 Ne        2px            2.93
-                                             0 Ne        3pz            1.86
-                                             0 Ne        2pz            1.13
+                                             0 Ne        3pz            1.85
+                                             0 Ne        2pz            1.12
    14-15           0.0000    1.697606638026  0 Ne        3pz           56.77
-                                             0 Ne        2pz           34.51
-                                             0 Ne        3px            4.90
+                                             0 Ne        2pz           34.50
+                                             0 Ne        3px            4.91
                                              0 Ne        2px            2.98
    ------------  --------  ----------------  ----------  ---------  --------
    contributions below 1.0% of a spinor are collected in 'remainder'
@@ -307,7 +307,7 @@ Reference
    produces -- do not read one as an oxidation state.
 
 ================================================================================
- Result                                                               t = 0.69 s
+ Result                                                               t = 0.68 s
 ================================================================================
    check                                                           verdict   
    --------------------------------------------------------------  ----------
@@ -317,31 +317,32 @@ Reference
    the spinor guess is exactly Kramers paired                      ok        
    time reversal squares to -1                                     ok        
    the Cholesky error respects its threshold                       ok        
+   the default route resolution stored the integrals here          ok        
    the integral-direct route stores no integral array              ok        
    the integral-direct route keeps the same error bound            ok        
    the two factorization routes give the same integrals            ok        
    the two-component Hamiltonian is Hermitian                      ok        
    spin-orbit coupling was ingested                                ok        
    --------------------------------------------------------------  ----------
-   checks                                             all 11 passed
+   checks                                             all 12 passed
 
 ================================================================================
- Timings                                                              t = 0.69 s
+ Timings                                                              t = 0.68 s
 ================================================================================
    region                                   calls     wall [s]       cpu [s]   cpu/wall   % wall
    --------------------------------------  ------  -----------  ------------  ---------  -------
-   scalar X2C SCF                               2         0.05          0.20       3.98     16.8
-   AO integrals                                 2         0.00          0.02       4.00      1.4
-     angular-momentum integrals                 2         0.00          0.00       3.99      0.1
-   X2C spin-orbit integrals                     2         0.01          0.03       3.99      2.2
-   atomic mean-field correction                 2         0.23          0.91       3.99     75.6
-     atomic 4c solve                            1         0.21          0.85       3.99     70.7
-       atomic 4c DHF                            1         0.19          0.75       3.99     62.9
+   scalar X2C SCF                               2         0.05          0.20       3.99     16.9
+   AO integrals                                 2         0.00          0.02       3.92      1.4
+     angular-momentum integrals                 2         0.00          0.00       4.01      0.1
+   X2C spin-orbit integrals                     2         0.01          0.03       4.00      2.3
+   atomic mean-field correction                 2         0.22          0.90       4.00     75.2
+     atomic 4c solve                            1         0.21          0.84       4.00     70.1
+       atomic 4c DHF                            1         0.19          0.74       4.00     62.2
      atomic mean-field decoupling               1         0.01          0.04       4.00      3.2
-   orthogonalization (canonical)                2         0.00          0.00       4.00      0.2
+   orthogonalization (canonical)                2         0.00          0.00       3.99      0.2
    Cholesky decomposition                       1         0.00          0.02       4.00      1.3
    integral-direct two-electron integrals       1         0.01          0.03       4.00      2.6
-     direct ERI diagonal                        1         0.00          0.01       4.01      0.5
+     direct ERI diagonal                        1         0.00          0.01       4.00      0.4
      Cholesky decomposition                     1         0.01          0.02       4.00      2.0
    --------------------------------------  ------  -----------  ------------  ---------  -------
    total (top-level regions)                                   0.30  s wall
@@ -353,4 +354,4 @@ Reference
    limit                                                      2.000  GB   (set for this calculation)
    pre-flight estimate                                        0.003  GB
    declared peak (Kuiva arrays)                               0.002  GB
-   peak resident set (VmHWM)                                  0.150  GB
+   peak resident set (VmHWM)                                  0.151  GB

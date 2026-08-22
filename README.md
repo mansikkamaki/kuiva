@@ -260,15 +260,21 @@ scf = kuiva.ScalarSCF(mol, reference="uhf").run()                    # unrestric
 scf = kuiva.ScalarSCF(mol, fitting="cholesky-direct").run()          # never store the integrals
 ```
 
-**`fitting="cholesky-direct"`** is the same decomposition, the same threshold and the same
-error bound, with each column of two-electron integrals evaluated when the pivoting asks for it
-instead of the whole array being built first. That array grows as the fourth power of the
-basis, so this is what decides whether a large system starts at all; it costs somewhat more
-processor time on a small one, and less as the system grows. It changes no result — measured
-identical to the stored route on a spin-orbit spectrum, and to 3e-15 on the integrals
-themselves. ⚠ On this route the decomposition happens in the SCF stage, so `cholesky_tol` and
-`orbit_pivots` belong to `ScalarSCF` rather than to `Reference`; passing a different threshold
-to `Reference` afterwards is reported and not silently applied.
+**Which Cholesky route runs is decided automatically by default** (`fitting="auto"`, the
+default): the stored-array route wherever its memory plan fits the configured limit, and
+**`fitting="cholesky-direct"`** where it does not — the same decomposition, the same threshold
+and the same error bound, with each column of two-electron integrals evaluated when the
+pivoting asks for it instead of the whole array being built first. That array grows as the
+fourth power of the basis, so it is what decides whether a large system starts at all — which
+is why the plan, not a size constant, makes the choice: the two routes cost the same processor
+time to within a few per cent on anything beyond ~160 basis functions (the stored route is up
+to ~40% faster below that, and always fits there), so the array is the entire decision. When
+the automatic choice takes the direct route, the output's "two-electron route" line says so and
+why. Either route changes no result — measured identical on a spin-orbit spectrum, and to
+3e-15 on the integrals themselves. Pass `fitting="cholesky"` or `fitting="cholesky-direct"` to
+pin a route regardless of the plan. ⚠ On the direct route the decomposition happens in the SCF
+stage, so `cholesky_tol` and `orbit_pivots` belong to `ScalarSCF` rather than to `Reference`;
+passing a different threshold to `Reference` afterwards is reported and not silently applied.
 
 ⚠ An unrestricted spinor set is orthonormal but **not Kramers paired**. With `reference="uhf"`
 an active space may therefore not be chosen as a contiguous spinor range; select by orbital
@@ -908,15 +914,17 @@ The release is usable for production work **with care**, and this is what the ca
   enforced before the first allocation — dilute or nearly-full spaces well past 20 spinors run
   comfortably. The hard limit is 64 spinors (a single 64-bit occupation mask). Beyond the
   ceiling, the tensor-network solver takes over.
-- **The integral factorization is memory-bound, and the default route is the bounded one.**
-  `fitting="cholesky"` (the default) materializes the conventional two-electron integral array,
-  which grows as the fourth power of the basis and is reserved against the memory limit before
-  the SCF. This, rather than core count, is what bounds the size of system that fits.
-  `fitting="cholesky-direct"` removes that array — see above — and is not the default because
-  it is a trade: it costs processor time at small sizes, and how far that penalty persists has
-  been measured only up to about 200 basis functions. ⚠ Note also that the scalar SCF is
-  PySCF's, and it makes its own in-core/direct decision within the memory it is given: this
-  option removes Kuiva's copy of the array, not necessarily every copy.
+- **The integral factorization is memory-bound, and the memory plan picks the route.**
+  The stored route materializes the conventional two-electron integral array, which grows as
+  the fourth power of the basis and is reserved against the memory limit before the SCF. This,
+  rather than core count, is what bounds the size of system that fits. `fitting="auto"` (the
+  default) therefore switches to `cholesky-direct` — which removes that array, see above —
+  exactly when the stored plan exceeds the limit, and says so in the output. The direct route
+  is *not* faster where both fit (measured within a few per cent of the stored route from
+  ~160 basis functions up, and up to ~46% slower when its batch cache is squeezed at very
+  large sizes); what it buys is that the calculation starts at all. ⚠ Note also that the
+  scalar SCF is PySCF's, and it makes its own in-core/direct decision within the memory it is
+  given: the direct route removes Kuiva's copy of the array, not necessarily every copy.
 - **Kramers degeneracy in the general two-component CI emerges numerically, not by
   construction.** A Kramers-restricted (time-reversal-adapted) path is not implemented. In
   practice the measured splitting is far below the 1e-8–1e-6 Eh band reserved for a genuine
@@ -950,7 +958,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.10.1.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.11.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -966,7 +974,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.10.1'
+import kuiva; kuiva.__version__          # '0.11.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
