@@ -291,8 +291,9 @@ def _phys_space(modes: Sequence[int], bases: Dict[int, ModeBasis],
     if not modes:
         return Space([(QuantumNumber.zero(width), 1)]), np.array([0], dtype=np.int64)
     charge_lists = [bases[m].charges for m in modes]
+    zero = charge_lists[0][0].zero_like()
     states = list(itertools.product(*[range(bases[m].dim) for m in modes]))
-    qns = [sum((cl[i] for cl, i in zip(charge_lists, st)), QuantumNumber.zero(width))
+    qns = [sum((cl[i] for cl, i in zip(charge_lists, st)), zero)
            for st in states]
     order = sorted(range(len(states)), key=lambda k: (qns[k], k))
     sectors: List[Tuple[QuantumNumber, int]] = []
@@ -331,6 +332,11 @@ class TTNO:
     node_modes: Tuple[Tuple[int, ...], ...]
     mode_dims: Tuple[Tuple[int, ...], ...]
     charge: QuantumNumber
+    #: The quantum number each mode carries when **occupied**, in mode order. With particle
+    #: number alone this is ``(1,)`` everywhere and says nothing; with irrep labels widening
+    #: the quantum number it is what lets a consumer compute the sector of a determinant —
+    #: which is how a guess and a target charge are built without re-deriving the labels.
+    mode_charges: Tuple[QuantumNumber, ...] = ()
     #: memory reservations backing ``tensors`` (one per node). An owner that drops the TTNO
     #: in a limit-configured run releases these via ``res.BUDGET.release``; a cached TTNO
     #: (the reconnection compile cache) is genuinely resident and keeps them.
@@ -405,6 +411,33 @@ class TTNO:
         return m.transpose(perm), modes
 
 
+def _sector_filter(bases, all_modes):
+    """``allowed(p, q, r, s)`` — whether an excitation string conserves the group label.
+
+    ``E_pq`` shifts the label by ``chg(p) - chg(q)`` and the two-electron string by
+    ``chg(p) + chg(r) - chg(q) - chg(s)``; a nonzero shift is a term the group forbids, and
+    every operator in one TTNO must carry the same total charge shift. Without widened labels
+    every string conserves the particle number by construction and this is the constant
+    ``True`` — so an unlabelled template enumerates exactly what it always did.
+    """
+    if bases is None:
+        return lambda p, q, r, s: True
+    if isinstance(bases, ModeBasis):
+        bases = {m: bases for m in all_modes}
+    chg = {m: bases[m].charges[1] for m in all_modes}
+    zero = next(iter(chg.values())).zero_like() if chg else None
+    if zero is None or zero.width <= 1:
+        return lambda p, q, r, s: True
+
+    def allowed(p, q, r, s):
+        shift = chg[p] - chg[q]
+        if r is not None:
+            shift = shift + chg[r] - chg[s]
+        return shift == zero
+
+    return allowed
+
+
 def compile_ttno(graph: NetworkGraph, terms: Sequence[Optional[ProductTerm]],
                  bases=None, root: int = 0,
                  attachments: Optional[list] = None) -> TTNO:
@@ -431,7 +464,11 @@ def compile_ttno(graph: NetworkGraph, terms: Sequence[Optional[ProductTerm]],
     elif isinstance(bases, ModeBasis):
         bases = {m: bases for m in all_modes}
     width = bases[all_modes[0]].charges[0].width if all_modes else 1
-    zero = QuantumNumber.zero(width)
+    # ⚠ The identity is taken **from the bases**, not built from the width alone: a cyclic
+    # component carries its modulus on the label, and an identity without it would poison
+    # every sum it takes part in with plain integer arithmetic (:class:`QuantumNumber`).
+    zero = (bases[all_modes[0]].charges[0].zero_like() if all_modes
+            else QuantumNumber.zero(width))
 
     # --- intern matrices, derive charge shifts, validate the terms ------------------------
     mat_ids: Dict[bytes, int] = {}
@@ -591,6 +628,8 @@ def compile_ttno(graph: NetworkGraph, terms: Sequence[Optional[ProductTerm]],
                 phys_space=tuple(p[0] for p in phys),
                 phys_perm=tuple(p[1] for p in phys),
                 node_modes=node_modes, mode_dims=mode_dims, charge=charge,
+                mode_charges=tuple(bases[m].charges[1] if bases[m].dim > 1 else zero
+                                   for m in all_modes),
                 allocations=allocations)
     dims = ttno.bond_dimensions()
     if dims:
@@ -788,7 +827,9 @@ class TTNOTemplate:
     scatters per refilled node.
     """
 
-    def __init__(self, graph: NetworkGraph, root: int = 0):
+    def __init__(self, graph: NetworkGraph, root: int = 0, bases=None):
+        """``bases``: per-mode :class:`ModeBasis`, widening the quantum number with irrep
+        labels (:func:`kuiva.symm.mode_bases`). Default: particle number only."""
         all_modes = sorted(m for c in graph.contents for m in c)
         if all_modes != list(range(len(all_modes))):
             raise ValueError("graph mode labels must be exactly 0..n-1, got {}"
@@ -798,13 +839,21 @@ class TTNOTemplate:
         self.root = int(root)
         self.n_modes = n
 
+        # ⚠ **Every** index tuple is enumerated, including those whose integral is a
+        # symmetry zero, because the same table is read backwards to extract Gamma and a
+        # template built from one integral set's nonzero terms could not report an element
+        # whose integral happened to vanish. The one exception is a tuple the *group* forbids
+        # (below): its operator string changes the sector, so no state in a definite sector
+        # has any expectation of it at all, and Gamma's zero there is exact rather than
+        # circumstantial.
+        allowed = _sector_filter(bases, all_modes)
         terms: List[ProductTerm] = []
         kinds: List[int] = []
         idxs: List[Tuple[int, int, int, int]] = []
         for p in range(n):
             for q in range(n):
                 t = fermion_term(1.0, [(p, True), (q, False)])
-                if t is not None:
+                if t is not None and allowed(p, q, None, None):
                     terms.append(t)
                     kinds.append(0)
                     idxs.append((p, q, 0, 0))
@@ -814,7 +863,7 @@ class TTNOTemplate:
                     for s in range(n):
                         t = fermion_term(1.0, [(p, True), (r, True),
                                                (s, False), (q, False)])
-                        if t is not None:
+                        if t is not None and allowed(p, q, r, s):
                             terms.append(t)
                             kinds.append(1)
                             idxs.append((p, q, r, s))
@@ -823,7 +872,8 @@ class TTNOTemplate:
         self.n_terms = len(terms)
 
         attachments: list = []
-        ttno = compile_ttno(graph, terms, root=self.root, attachments=attachments)
+        ttno = compile_ttno(graph, terms, bases=bases, root=self.root,
+                            attachments=attachments)
         self.ttno = ttno
 
         # -- per-node entry tables ---------------------------------------------------------

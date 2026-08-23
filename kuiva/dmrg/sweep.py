@@ -247,9 +247,25 @@ def state_to_dense(state: TTNState, ttno: TTNO, root: int = 0,
     return vec
 
 
+def target_charge(ttno: TTNO, n_elec: int, sector=None) -> QuantumNumber:
+    """The quantum number of the sector a solve targets: ``N`` plus, with labels, an irrep.
+
+    ``sector`` is the irrep component as a plain integer tuple. Omitted, it is the identity —
+    correct and complete when the quantum number is particle number alone, and a **choice**
+    once labels widen it, which is why every caller that has a sector passes one.
+    """
+    width = ttno.charge.width
+    values = [int(n_elec)] + list(sector if sector is not None else [0] * (width - 1))
+    if len(values) != width:
+        raise ValueError("sector {} has {} components; the quantum number is {} wide "
+                         "(one of them is N)".format(sector, len(values) - 1, width))
+    return QuantumNumber(*values, moduli=ttno.charge.moduli)
+
+
 def random_state(ttno: TTNO, n_elec: int, max_bond: int, n_roots: int = 1,
                  center: Optional[int] = None,
-                 rng: Optional[np.random.Generator] = None) -> TTNState:
+                 rng: Optional[np.random.Generator] = None,
+                 charge: Optional[QuantumNumber] = None) -> TTNState:
     """A canonicalized random state with charge-consistent bond spaces.
 
     Bond sectors are the subtree-reachable charges (folded from the TTNO's physical
@@ -266,8 +282,12 @@ def random_state(ttno: TTNO, n_elec: int, max_bond: int, n_roots: int = 1,
     rng = rng if rng is not None else np.random.default_rng()
     center = ttno.root if center is None else int(center)
     width = ttno.charge.width
-    charge = QuantumNumber(*([int(n_elec)] + [0] * (width - 1)))
-    zero = QuantumNumber.zero(width)
+    # ⚠ With irrep labels widening the quantum number, "N electrons" is no longer a sector:
+    # the target has to name the irrep too, and a zero there would silently ask for the
+    # totally symmetric one. The caller supplies it; without labels the two agree.
+    charge = (target_charge(ttno, n_elec) if charge is None
+              else QuantumNumber(*charge, moduli=ttno.charge.moduli))
+    zero = ttno.charge.zero_like()
 
     def fold(nodes) -> Dict[QuantumNumber, int]:
         counts = {zero: 1}
@@ -578,7 +598,7 @@ class _LocalProblem(object):
 
 
 def _charge_zero_slice(space: Space) -> Optional[slice]:
-    zero = QuantumNumber.zero(space.width)
+    zero = space.qns[0].zero_like()
     for i, qn in enumerate(space.qns):
         if qn == zero:
             return slice(int(space.offsets[i]), int(space.offsets[i + 1]))
@@ -592,7 +612,7 @@ def _env_diag(env: BlockTensor) -> Optional[np.ndarray]:
     if sl is None:
         return None
     arr = np.zeros((sl.stop - sl.start, bond_space.total_dim), dtype=np.complex128)
-    zero = QuantumNumber.zero(op_space.width)
+    zero = op_space.qns[0].zero_like()
     for row, block in zip(env.sectors, env.blocks):
         sb, so, sk = (int(i) for i in row)
         if sb != sk or op_space.qns[so] != zero:
@@ -616,7 +636,7 @@ def _w_diag(w: _Lab) -> Optional[_DenseLab]:
     if any(s is None for s in slices):
         return None
     phys = t.spaces[-1]
-    zero = QuantumNumber.zero(t.spaces[0].width)
+    zero = t.charge.zero_like()
     arr = np.zeros(tuple(s.stop - s.start for s in slices) + (phys.total_dim,),
                    dtype=np.complex128)
     for b, row in enumerate(t.sectors):
@@ -887,7 +907,7 @@ def _stack_roots(roots: List[BlockTensor], weights: np.ndarray) -> BlockTensor:
     docstring), with the degenerate-group rule applied to the *ensemble* spectrum.
     """
     t0 = roots[0]
-    aux = Space([(QuantumNumber.zero(t0.charge.width), len(roots))])
+    aux = Space([(t0.charge.zero_like(), len(roots))])
     spaces = t0.spaces + (aux,)
     signs = t0.signs + (1,)
     blocks = []

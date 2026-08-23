@@ -54,6 +54,7 @@ from typing import Dict, Hashable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ..util import output as out
 from ..util import resources as res
 from ..util import threads
 from ..util.errors import SolverFailure
@@ -138,7 +139,8 @@ class DMRGSolver:
                  max_sweeps: int = 30, conv_tol: float = 1e-9,
                  davidson_tol: float = 1e-8, trunc_tol: float = 0.0,
                  boundary_check: int = 0, on_split: str = "raise",
-                 enforce_kramers: bool = True, seed: int = 0) -> None:
+                 enforce_kramers: bool = True, symmetry: Optional[object] = None,
+                 sector=None, seed: int = 0) -> None:
         self.n_elec = int(n_elec)
         self.max_bond = int(max_bond)
         self.n_roots = int(n_roots)
@@ -155,6 +157,24 @@ class DMRGSolver:
         self.boundary_check = int(boundary_check)
         self.on_split = on_split
         self.enforce_kramers = bool(enforce_kramers)
+        #: Irrep labels of the active spinors (:class:`kuiva.symm.OrbitalLabels`), widening
+        #: the network's conserved quantum number from ``(N,)`` to ``(N, irrep)``. ⚠ With
+        #: labels on, ``N`` alone is no longer a sector, so ``sector`` names the irrep the
+        #: solve targets — defaulted to the label of the aufbau determinant, which is what
+        #: an unlabelled run implicitly solved for and keeps the default honest.
+        self.symmetry = symmetry
+        self.sector = sector
+        self._bases = None
+        if symmetry is not None:
+            from ..symm.sectors import mode_bases
+            self._bases = mode_bases(symmetry, symmetry.group)
+            if len(symmetry) < self.n_elec:
+                raise ValueError("{} labelled spinors cannot hold {} electrons"
+                                 .format(len(symmetry), self.n_elec))
+            out.entry(log, "network quantum number", "(N, irrep)", "",
+                      "{}; sector {}".format(
+                          symmetry.group.name,
+                          symmetry.group.irrep_name(self._target_label())))
         self._rng = np.random.default_rng(seed)
 
         self._graph = graph
@@ -174,6 +194,26 @@ class DMRGSolver:
         self.n_solves = 0
         self.n_proposals = 0
         self.n_adoptions = 0
+
+    def _target_label(self):
+        """The irrep the solve targets: the request, or the aufbau determinant's own label.
+
+        ⚠ The default is a **choice**, not a neutral one: the totally symmetric sector would
+        be the obvious guess and is routinely the wrong one for an odd electron count, where
+        every determinant carries a fermion label. Taking it from the lowest ``N`` spinors
+        reproduces what an unlabelled run solved for.
+        """
+        group = self.symmetry.group
+        if self.sector is not None:
+            return group.label_of(self.sector)
+        total = group.identity()
+        for row in self.symmetry.labels[:self.n_elec]:
+            total = group.compose(total, row)
+        return total
+
+    def _charge(self):
+        from ..symm.sectors import sector_charge
+        return sector_charge(self._target_label(), self.symmetry.group, self.n_elec)
 
     @property
     def graph(self) -> Optional[NetworkGraph]:
@@ -198,7 +238,7 @@ class DMRGSolver:
     def _template(self, graph: NetworkGraph) -> TTNOTemplate:
         tpl = self._templates.get(graph)
         if tpl is None:
-            tpl = TTNOTemplate(graph)
+            tpl = TTNOTemplate(graph, bases=self._bases)
             self._templates[graph] = tpl
         return tpl
 
@@ -231,7 +271,8 @@ class DMRGSolver:
         ttno = template.fill(h, eri)
         if self._state is None:
             self._state = random_state(ttno, self.n_elec, self.max_bond,
-                                       n_roots=self.n_roots, rng=self._rng)
+                                       n_roots=self.n_roots, rng=self._rng,
+                                       charge=None if self._bases is None else self._charge())
         result = solve_ttn(ttno, self._state, max_sweeps=self.max_sweeps,
                            conv_tol=self.conv_tol, trunc_tol=self.trunc_tol,
                            max_bond=self.max_bond, weights=self.requested_weights,
@@ -298,9 +339,17 @@ class DMRGSolver:
             else "{}:unset".format(self.KEY_PREFIX)
 
     def _key_for(self, graph: NetworkGraph) -> str:
-        return "{}:e{}:roots{}:D{}:tol{:.1e}:{}".format(
+        key = "{}:e{}:roots{}:D{}:tol{:.1e}:{}".format(
             self.KEY_PREFIX, self.n_elec, self.n_roots, self.max_bond,
             self.trunc_tol, _graph_digest(graph))
+        if self._bases is None:
+            return key
+        # Same rule as the CI solver's symmetry mode: the key moves only for a solver that
+        # actually carries labels, so every state and checkpoint written without them still
+        # matches its own and keeps its warm start. A labelled network is a *different*
+        # surface -- its sectors are finer and its target is one of them.
+        return "{}:{}[{}]".format(key, self.symmetry.group.name,
+                                  self.symmetry.group.irrep_name(self._target_label()))
 
     def reset_state(self) -> None:
         """Forget the warm-start network (a fresh problem, or a restart from disk)."""

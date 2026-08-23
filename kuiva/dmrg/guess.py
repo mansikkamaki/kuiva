@@ -194,6 +194,32 @@ def _popcount(masks: np.ndarray) -> np.ndarray:
     return counts
 
 
+def _mode_quantum_numbers(ttno, n_modes: int):
+    """The occupied-mode quantum numbers, in mode order, defaulting to particle number.
+
+    A TTNO compiled without irrep labels carries none; particle number alone is then the whole
+    quantum number and ``(1,)`` per mode is exactly right.
+    """
+    if getattr(ttno, "mode_charges", ()):
+        return list(ttno.mode_charges)
+    one = ttno.charge.like([1] + [0] * (ttno.charge.width - 1))
+    return [one] * int(n_modes)
+
+
+def _mask_charge(masks: np.ndarray, mode_qn, reference):
+    """Quantum number of each determinant bitmask: the group sum over its occupied modes."""
+    zero = reference.zero_like()
+    out = []
+    for m in np.asarray(masks, dtype=np.uint64):
+        total = zero
+        bits = int(m)
+        for mode in range(len(mode_qn)):
+            if (bits >> mode) & 1:
+                total = total + mode_qn[mode]
+        out.append(total)
+    return out
+
+
 def expansion_to_ttn(ttno: TTNO, masks: np.ndarray, civecs: np.ndarray, *,
                      weights: Optional[Sequence[float]] = None,
                      center: Optional[int] = None, max_bond: Optional[int] = None,
@@ -239,8 +265,21 @@ def expansion_to_ttn(ttno: TTNO, masks: np.ndarray, civecs: np.ndarray, *,
     if not np.all(counts == n_elec):
         raise ValueError("determinants carry different electron counts")
     width = ttno.charge.width
-    charge = QuantumNumber(*([n_elec] + [0] * (width - 1)))
-    zero = QuantumNumber.zero(width)
+    # The subtree quantum numbers below are built the way the total is: particle number plus,
+    # where the modes carry them, the group sum of the occupied modes' irrep labels.
+    # ⚠ Without that second half a labelled network would be seeded entirely in the totally
+    # symmetric sector — a perfectly normalized state of the wrong symmetry.
+    mode_qn = _mode_quantum_numbers(ttno, len(all_modes))
+    det_charges = _mask_charge(masks, mode_qn, ttno.charge)
+    charge = det_charges[0]
+    if int(charge.n) != n_elec:                       # pragma: no cover - defensive
+        raise AssertionError("determinant charge disagrees with its electron count")
+    if any(q != charge for q in det_charges[1:]):
+        raise ValueError(
+            "the determinants span more than one symmetry sector ({}), so they do not "
+            "describe one state of the labelled network; expand one sector at a time"
+            .format(sorted({tuple(q) for q in det_charges})))
+    zero = ttno.charge.zero_like()
     w = np.full(n_roots, 1.0 / n_roots) if weights is None \
         else np.asarray(weights, dtype=float) / float(np.sum(weights))
     sqrtw = np.sqrt(w)
@@ -338,19 +377,19 @@ def expansion_to_ttn(ttno: TTNO, masks: np.ndarray, civecs: np.ndarray, *,
         # non-center node: build T[(child bonds.., phys), (outside pattern, root)]
         out_key = (masks & ~bits).astype(np.uint64)
         uniq, col_of = np.unique(out_key, return_inverse=True)
-        n_in = n_elec - _popcount(uniq)                 # subtree N per unique column
-        col_sectors: List[Tuple[QuantumNumber, int]] = []
-        qns = sorted(set(int(x) for x in n_in))
-        col_counts = {q: int(np.count_nonzero(n_in == q)) for q in qns}
-        col_space = Space([(QuantumNumber(*([q] + [0] * (width - 1))),
-                            col_counts[q] * n_roots) for q in qns])
-        # position of each unique column inside its sector: rank within equal-N group
+        # The subtree label of a column is the total minus the label of everything outside it
+        # — the same subtraction that gives the subtree electron count, done in the group.
+        in_qn = [charge - q for q in _mask_charge(uniq, mode_qn, ttno.charge)]
+        qns = sorted(set(in_qn))
+        col_counts = {q: sum(1 for x in in_qn if x == q) for q in qns}
+        col_space = Space([(q, col_counts[q] * n_roots) for q in qns])
+        # position of each unique column inside its sector: rank within its equal-label group
         col_sec = np.zeros(len(uniq), dtype=np.int64)
         col_base = np.zeros(len(uniq), dtype=np.int64)
         rank = {q: 0 for q in qns}
         for j in range(len(uniq)):
-            q = int(n_in[j])
-            col_sec[j] = col_space.sector_index(QuantumNumber(*([q] + [0] * (width - 1))))
+            q = in_qn[j]
+            col_sec[j] = col_space.sector_index(q)
             col_base[j] = rank[q] * n_roots
             rank[q] += 1
 
@@ -412,7 +451,8 @@ def expansion_to_ttn(ttno: TTNO, masks: np.ndarray, civecs: np.ndarray, *,
             key = int(pat[i])
             got = proj_cache.get(key, False)
             if got is False:
-                q = QuantumNumber(*([int(n_in_det[i])] + [0] * (width - 1)))
+                q = _mask_charge(np.asarray([masks[i] & bits], dtype=np.uint64),
+                                 mode_qn, ttno.charge)[0]
                 if q not in bs.qns:
                     got = None                          # pattern truncated away entirely
                 else:

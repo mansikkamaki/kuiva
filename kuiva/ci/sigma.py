@@ -95,7 +95,7 @@ References
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -122,6 +122,14 @@ def sigma_workspace_gb(n_spinor: int, n_elec: int) -> float:
     10.2 GB at 22, 46.4 GB at 24. At 20 spinors nothing is batched over the determinant index
     and the pure-gather design above holds exactly; above ~22 residency fails on a normal node
     and the answer is a different algorithm, not a bigger run of this one.
+
+    ⚠ **The Kramers-restricted symmetry mode does not move this**, measured rather than
+    assumed and recorded in this package's validation record. That mode halves the *Davidson*
+    subspace, which is the smaller term: at CAS(9, 20) with 10 states the peak goes from
+    2.90 GB to 2.46 GB, all of the difference in the subspace and none of it here. ``F`` and
+    ``G`` are gathered over the whole determinant space in both modes, because the
+    intermediates ``K`` connected to a representative determinant are scattered across all of
+    it. Switching symmetry mode is therefore never the answer to this refusal.
     """
     from .strings import cas_dimension
     ndet = cas_dimension(n_spinor, n_elec)
@@ -344,6 +352,9 @@ class SigmaOperator:
                         "their output row (no atomics in a threaded port); above ~22 spinors "
                         "that is no longer possible and the answer is a batched, scattering "
                         "kernel that does not exist yet -- not a larger run of this one",
+                        "the Kramers-restricted CI mode does NOT help here: it halves the "
+                        "Davidson subspace, not this workspace, which is gathered over the "
+                        "whole determinant space in either mode",
                         "above the conventional-CI ceiling, use DMRG"])
         self.f_buf = np.empty((self.ndet, n * n), dtype=np.complex128)
         self.g_buf = np.empty((self.ndet, n * n), dtype=np.complex128)
@@ -462,6 +473,72 @@ def _assert_four_fold(eri: np.ndarray) -> None:
                          "max deviation {:.3e}".format(err))
 
 
+#: Relative tolerance on the time-reversal symmetry of a set of active-space integrals.
+#: ⚠ Not a physical tolerance: the relations below are **exact** for a Kramers-paired orbital
+#: set, so anything above roundoff means the orbitals have stopped being Kramers paired. Loose
+#: enough (1e-9) to survive a CASSCF trajectory's accumulated rotation error, tight enough that
+#: an unrestricted reference or a genuinely broken pairing fails by many orders.
+TIME_REVERSAL_TOL = 1.0e-9
+
+
+def time_reversal_violation(h: np.ndarray, eri: np.ndarray) -> Tuple[float, float]:
+    """``(one-electron, two-electron)`` relative breach of time-reversal symmetry.
+
+    In the interleaved Kramers-paired convention of ``kuiva/spinor/expand.py`` — spinor ``2p``
+    unbarred, ``2p+1`` barred, ``T a+_k T^-1 = t_k a+_{kbar}`` with ``t_k = (-1)^k`` — an
+    operator commutes with time reversal exactly when::
+
+        h_pq     = t_p t_q         conj(h_{pbar,qbar})
+        (pq|rs)  = t_p t_q t_r t_s conj((pbar qbar|rbar sbar))
+
+    ⚠ **This is a genuine structural check and not a restatement of hermiticity.** It fails on
+    a swapped spin block, on an unrestricted (un-Kramers-paired) orbital set, and on an active
+    space that splits a Kramers pair across its boundary — none of which hermiticity, the
+    4-fold permutational relations or any trace condition can see. It is what the
+    Kramers-restricted CI stands on: that path assumes ``[H, T] = 0`` in the *operator*, and if
+    it is false the solver returns a converged, degenerate, plausible, wrong spectrum.
+
+    Both figures are relative to ``max|h|`` and ``max|eri|`` respectively, so they are
+    comparable across systems. One pass over the ``n^4`` array — 2.6 MB at 20 spinors.
+    """
+    h = np.asarray(h)
+    eri = np.asarray(eri)
+    n = h.shape[0]
+    if n % 2 != 0:
+        raise ValueError("a Kramers-paired active space has an even number of spinors; got {}"
+                         .format(n))
+    swap = np.arange(n) ^ 1
+    t = np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+
+    scale_h = max(float(np.max(np.abs(h))), 1.0)
+    err_h = float(np.max(np.abs(h - np.outer(t, t) * np.conj(h[np.ix_(swap, swap)]))))
+    sign4 = (t[:, None, None, None] * t[None, :, None, None]
+             * t[None, None, :, None] * t[None, None, None, :])
+    scale_eri = max(float(np.max(np.abs(eri))), 1.0)
+    err_eri = float(np.max(np.abs(
+        eri - sign4 * np.conj(eri[np.ix_(swap, swap, swap, swap)]))))
+    return err_h / scale_h, err_eri / scale_eri
+
+
+def assert_time_reversal(h: np.ndarray, eri: np.ndarray, *,
+                         tol: float = TIME_REVERSAL_TOL, what: str = "") -> None:
+    """Raise unless ``h`` and ``eri`` commute with time reversal to ``tol``.
+
+    See :func:`time_reversal_violation`. The message names the orbital set rather than the
+    integrals, because that is what the caller can do something about.
+    """
+    err_h, err_eri = time_reversal_violation(h, eri)
+    if max(err_h, err_eri) <= tol:
+        return
+    raise ValueError(
+        "{}the active-space integrals are not time-reversal symmetric (relative breach "
+        "{:.2e} one-electron, {:.2e} two-electron, against {:.1e}). The orbitals spanning "
+        "this active space are not a Kramers-paired set: with an unrestricted reference they "
+        "never are, and an active space that splits a Kramers pair across its boundary "
+        "destroys the pairing too. Use the general complex CI path, which assumes none of "
+        "this".format(what and (what + ": "), err_h, err_eri, tol))
+
+
 def sigma_vector(space: CASSpace, c: np.ndarray, h: np.ndarray, eri: np.ndarray,
                  **kwargs) -> np.ndarray:
     """One-shot ``H c`` (tests and one-off use).
@@ -474,5 +551,6 @@ def sigma_vector(space: CASSpace, c: np.ndarray, h: np.ndarray, eri: np.ndarray,
 
 
 __all__ = ["SigmaOperator", "sigma_vector", "sigma_workspace_gb", "eri_matrix_gb",
-           "gather_block_size",
+           "gather_block_size", "time_reversal_violation", "assert_time_reversal",
+           "TIME_REVERSAL_TOL",
            "sigma_gather_f_numpy", "sigma_gather_out_numpy", "BYTES_PER_GATHER_INCIDENCE"]

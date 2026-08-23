@@ -279,6 +279,23 @@ def test_array_gb_is_exact():
     _assert_predicts(res.array_gb(a.shape, a.dtype), a.nbytes, tol=0.0)
 
 
+def test_sector_sizing_matches_the_arrays_a_labelled_ci_holds():
+    """The two arrays per-irrep selection adds: the per-determinant labels (transient, but
+    large enough that a matrix-product formulation would have been the biggest array in the
+    solve) and the resident determinant-to-sector index."""
+    from kuiva.ci.strings import CASSpace
+    from kuiva.symm.groups import C2Z
+    from kuiva.symm.sectors import (SectorTable, determinant_labels, determinant_labels_gb,
+                                    sector_index_gb)
+
+    space = CASSpace(10, 5, build_map=False)
+    labels = np.tile(np.array([[1], [3]], dtype=int), (5, 1))
+    det = determinant_labels(space.occupations(), labels, C2Z.moduli)
+    _assert_predicts(determinant_labels_gb(space.ndet, C2Z.width), det.nbytes, tol=0.0)
+    table = SectorTable.build(space.occupations(), labels, C2Z)
+    _assert_predicts(sector_index_gb(space.ndet), table.sector_of.nbytes, tol=0.0)
+
+
 def test_array_gb_survives_sizes_that_overflow_int64():
     """A 4-RDM of 40 spinors is 40^8 elements: the *point* is to reject it, not to crash."""
     assert res.rdm_gb(40, 4) == pytest.approx(40.0 ** 8 * 16 / res.BYTES_PER_GB)

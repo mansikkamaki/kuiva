@@ -112,29 +112,76 @@ SCHMIDT_STABILITY_RTOL = 1.0e-13
 class QuantumNumber(tuple):
     """An abelian quantum-number label: a tuple of integers, particle number ``N`` first.
 
-    Extensible by design: today the tuple is ``(N,)``; abelian double-group irrep and
-    omega-like labels widen it later with no rewrite. Arithmetic is the componentwise group
-    operation.
+    Extensible by design: the tuple starts as ``(N,)`` and abelian double-group irrep (and
+    omega-like) labels widen it with no rewrite of anything that consumes it. Arithmetic is
+    the componentwise group operation.
 
     ⚠ Subclasses :class:`tuple` for hashability, total ordering (lexicographic — what sorts
     :class:`Space` sectors and block-table rows) and immutability, but ``+`` and ``-`` are
     **componentwise**, not concatenation. Mixing a :class:`QuantumNumber` with a plain tuple
     in arithmetic raises, so the redefinition cannot be triggered by accident.
+
+    Cyclic components
+    -----------------
+    ``moduli`` gives a per-component modulus, ``None`` where the component is unbounded
+    (``N`` always is). A component with a modulus is **reduced on construction**, so the
+    stored tuple is the canonical representative and hashing, ordering and equality — the
+    three things the block machinery is built on — need no change at all.
+
+    ⚠ **The modulus has to live here rather than in the layer that builds the labels**, and
+    that is a correction to the obvious design. A finite cyclic group is not a subgroup of the
+    integers: a double-group label has terms that conserve it and do *not* conserve the plain
+    integer sum (``l_p - l_q + l_r - l_s = 4`` in a ``Z4`` component, which is the identity),
+    so integer-only arithmetic would silently drop legal Hamiltonian terms. Every one of them
+    is Hermitian, correctly labelled and missing, which is exactly the class of error that
+    produces a converged, plausible, wrong energy.
+
+    Moduli **propagate** through arithmetic: an operand that carries them wins, and two
+    operands carrying different ones is an error rather than a merge. That is what lets an
+    unlabelled ``QuantumNumber.zero(width)`` — of which there are many, and all of them are
+    genuinely the identity — go on working unchanged.
     """
 
-    def __new__(cls, *labels: int):
+    def __new__(cls, *labels: int, moduli=None):
         if len(labels) == 1 and isinstance(labels[0], (tuple, list)):
             labels = tuple(labels[0])
         if not labels:
             raise ValueError("a QuantumNumber needs at least the particle-number label N")
         if not all(isinstance(x, (int, np.integer)) for x in labels):
             raise TypeError("QuantumNumber labels must be integers, got {!r}".format(labels))
-        return tuple.__new__(cls, (int(x) for x in labels))
+        values = tuple(int(x) for x in labels)
+        if moduli is None and isinstance(labels[0], QuantumNumber):
+            moduli = labels[0].moduli
+        if moduli is not None:
+            moduli = tuple(None if m is None else int(m) for m in moduli)
+            if len(moduli) != len(values):
+                raise ValueError("{} moduli for a width-{} quantum number"
+                                 .format(len(moduli), len(values)))
+            if any(m is not None and m <= 0 for m in moduli):
+                raise ValueError("a cyclic component needs a positive modulus, got {}"
+                                 .format(moduli))
+            values = tuple(v if m is None else v % m for v, m in zip(values, moduli))
+        obj = tuple.__new__(cls, values)
+        obj._moduli = moduli
+        return obj
+
+    @property
+    def moduli(self):
+        """Per-component moduli, or ``None`` when every component is unbounded."""
+        return getattr(self, "_moduli", None)
 
     @classmethod
-    def zero(cls, width: int = 1) -> "QuantumNumber":
+    def zero(cls, width: int = 1, moduli=None) -> "QuantumNumber":
         """The identity element with ``width`` labels."""
-        return cls(*([0] * int(width)))
+        return cls(*([0] * int(width)), moduli=moduli)
+
+    def zero_like(self) -> "QuantumNumber":
+        """The identity element of *this* label's group — moduli included."""
+        return QuantumNumber(*([0] * len(self)), moduli=self.moduli)
+
+    def like(self, values) -> "QuantumNumber":
+        """A label of this group with the given components."""
+        return QuantumNumber(*values, moduli=self.moduli)
 
     @property
     def n(self) -> int:
@@ -154,16 +201,25 @@ class QuantumNumber(tuple):
                                                                             len(other)))
         return other
 
+    def _moduli_with(self, other):
+        mine, theirs = self.moduli, other.moduli
+        if mine is None or theirs is None or mine == theirs:
+            return mine if mine is not None else theirs
+        raise ValueError("QuantumNumber moduli differ: {} vs {}; two different groups are "
+                         "being added".format(mine, theirs))
+
     def __add__(self, other):
         other = self._check(other)
-        return QuantumNumber(*(a + b for a, b in zip(self, other)))
+        return QuantumNumber(*(a + b for a, b in zip(self, other)),
+                             moduli=self._moduli_with(other))
 
     def __sub__(self, other):
         other = self._check(other)
-        return QuantumNumber(*(a - b for a, b in zip(self, other)))
+        return QuantumNumber(*(a - b for a, b in zip(self, other)),
+                             moduli=self._moduli_with(other))
 
     def __neg__(self):
-        return QuantumNumber(*(-a for a in self))
+        return QuantumNumber(*(-a for a in self), moduli=self.moduli)
 
     def __radd__(self, other):
         # sum() starts from int 0; map it to the identity so sum(qns) works.

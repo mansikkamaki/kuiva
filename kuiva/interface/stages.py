@@ -395,6 +395,14 @@ class CASSCF(_Stage):
     ``event_interval``, ...). ``mode="second-order"`` is the right explicit choice for a
     heavy element or a large state average.
 
+    With point-group symmetry on (``point_group=`` at the front end), ``n_states`` may be a
+    mapping ``{irrep: n}`` instead of a count — each irrep is then solved in its own sector of
+    the determinant space, which is a request "lowest n" cannot express — and
+    ``preserve_symmetry=True`` masks inter-irrep orbital rotations so the labels are still
+    exact at convergence. ⚠ The mask is a **constraint**: it converges to the lowest
+    *symmetric* solution, which is not the global one where the symmetry is spontaneously
+    broken.
+
     After :meth:`run`: :attr:`energy`, :attr:`energies` (total state energies [Eh]),
     :attr:`coeff`, :attr:`converged`, :attr:`active`, :attr:`solver`, plus per-solver
     results (``"ci"``: :attr:`outcome`, :attr:`boundary`, :attr:`boundary_initial`;
@@ -405,11 +413,12 @@ class CASSCF(_Stage):
 
     def __init__(self, upstream, *, active=None, character=None,
                  n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
-                 threshold: Optional[float] = None, n_states: int = 1, weights=None,
+                 threshold: Optional[float] = None, n_states=1, weights=None,
                  solver: str = "ci", solver_options: Optional[Dict[str, Any]] = None,
                  graph=None, checkpoint=None, restart=None,
                  checkpoint_options: Optional[Dict[str, Any]] = None,
                  callback: Optional[Callable[[dict], Optional[bool]]] = None,
+                 preserve_symmetry: bool = False,
                  report: bool = True, **optimizer_options) -> None:
         super().__init__()
         self._finished(upstream, (Reference, CheapCI), "CASSCF")
@@ -419,7 +428,17 @@ class CASSCF(_Stage):
         if solver not in ("ci", "dmrg"):
             raise ValueError("solver must be 'ci' or 'dmrg'; got {!r}".format(solver))
         self.solver_kind = solver
-        self.n_states = int(n_states)
+        #: ``n_states`` is either a count or, with point-group labels present, a per-irrep
+        #: mapping ``{irrep: n}``. The two are forms of one argument; the mapping's total is
+        #: what :attr:`n_states` reports so every consumer of the count still works.
+        self.state_request = dict(n_states) if isinstance(n_states, dict) else None
+        self.n_states = (sum(int(v) for v in n_states.values())
+                         if self.state_request is not None else int(n_states))
+        self.preserve_symmetry = bool(preserve_symmetry)
+        if self.preserve_symmetry and solver != "ci":
+            raise ValueError("preserve_symmetry= constrains the shared orbital optimizer and "
+                             "is wired for solver='ci'; drive kuiva.mcscf directly with "
+                             "labels= for a network solver")
         self.weights = weights
         self.solver_options = dict(solver_options or {})
         self.checkpoint, self.restart = checkpoint, restart
@@ -512,7 +531,10 @@ class CASSCF(_Stage):
     def _execute_ci(self) -> None:
         from .api import casscf as _api_casscf
         outcome = _api_casscf(self.reference_stage.reference, active=self.space,
-                              n_states=self.n_states, weights=self.weights,
+                              n_states=(self.state_request if self.state_request is not None
+                                        else self.n_states),
+                              preserve_symmetry=self.preserve_symmetry,
+                              weights=self.weights,
                               coeff=self._orbitals, checkpoint=self.checkpoint,
                               restart=self.restart,
                               checkpoint_options=self.checkpoint_options,

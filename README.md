@@ -176,14 +176,24 @@ to make in any real run, and they are the reason the API asks for them explicitl
    trajectory was safe. Below 50 cm⁻¹ it warns. The diagnostic never kills a run: a failure to
    measure the gap is a warning and no report, which is a weaker statement than a clean one.
 
-   A clean gap is necessary and not sufficient, and the case to know about is a free ion: one
-   complete `2J+1` manifold is a boundary, and it is still not an ensemble the symmetry of the
-   *term* leaves invariant. Averaging a single J makes the spherical point a saddle of the
-   function being optimized, so the run slides off it by however far rounding noise pushes —
-   on a p¹ atom the residual g anisotropy of a j = ½-only average differed sixtyfold between
-   two BLAS libraries given identical input, while the average over the whole term gave the
-   analytic Landé values on both. Average whole terms; if a sub-manifold average is what you
-   want, check the manifold splitting of the result directly.
+   A clean gap is necessary and not sufficient, so the converged boundary report also states
+   the **spin non-invariance** of the averaged density — whether the ensemble is one the
+   symmetry leaves invariant at all. Near zero (every term-complete or full-space average)
+   means safe by symmetry, and the gap is irrelevant. Large (any single-J or single-doublet
+   average — measured 0.07–0.70, cleanly separated from the invariant class) means the
+   average *leans* on the
+   spin–orbit structure and is protected only by its boundary gap and its starting orbitals.
+   Measured across free ions and ligand-field complexes: a leaning average over a ~30 cm⁻¹
+   gap is a saddle — a 10⁻⁸-sized Kramers defect grows by orders of magnitude per iteration
+   until the run is refused; leaning averages over gaps of a few hundred cm⁻¹ and up were
+   locally stable, ligand-field ground-doublet averages among them. The case to know about
+   is the free ion with several open-shell electrons: a J-only average that is locally
+   stable at the symmetric orbitals still converged *from the scalar guess* to a solution
+   with the `2J+1` manifold split by ~2 cm⁻¹, every diagnostic clean — a wrong basin, which
+   no check can see from inside the run. Average whole terms; if a sub-manifold average is
+   what you want, converge the whole-term (or full-space) average first, start the
+   sub-manifold run from those orbitals, and check the manifold splitting of the result
+   directly.
 
 Everything the run prints goes through one output grammar, so an output file reads like a
 conventional quantum-chemistry output: a banner, sections, label/value blocks and fixed-width
@@ -236,6 +246,67 @@ Options are those of `kuiva.interface.api.scalar_x2c_reference`, validated by na
 refused rather than silently promoted. The gauge origin (default: centre of mass) is fixed
 here, not at the property dump, because `L` is defined relative to it and the multireference
 layer never calls PySCF again.
+
+#### Point-group symmetry
+
+`point_group=` on `ScalarSCF` (or on the `Molecule`) turns on **abelian double-group
+symmetry**: every orbital gets an irrep label, and the run prints the character table of the
+group it is actually using — boson *and* fermion (spinor) irreps, with every operation named
+by its lab-frame geometry (`C2(z)`, `sigma(xy)`, `i`) rather than by a Schoenflies label whose
+orientation you would have to guess. Two programs agreeing on "C2h, Bu" and disagreeing on
+which axis is `z` produce different numbers and no error message; the table is there so that
+cannot happen quietly.
+
+```python
+scf = kuiva.ScalarSCF(molecule, point_group="auto").run()   # or "C2h", "D2h", ...
+```
+
+Labels alone change nothing. What they enable is asked for separately: **per-irrep state
+selection** (`n_states={"1E1/2g": 2, "2E1/2g": 2}`) and a **symmetry-preserving orbital
+optimization** (`preserve_symmetry=True`), both on `CASSCF`.
+
+Where the molecule's real group is bigger than the abelian one — every atom, and every group
+reduced above — the converged states are additionally **classified** by the irreps of the full
+point double group, and the run then prints three tables: the abelian one used in the
+mathematics, the full one used in the labelling, and the computed correspondence between them.
+On planar TiCl3 the abelian labels call all five Kramers doublets of the `d` shell the same
+thing; the `D3h` labels separate them into three multiplets. ⚠ This **classifies and never
+adapts**: no symmetry-adapted many-particle basis is built, every stage still runs in the
+abelian subgroup, and no number changes. What it adds is a refusal — a state count that cuts a
+multiplet whose dimension theory fixes. Pass `classification=False` to switch it off, or
+`classify=False` on a single `CASCI`/`CASSCF`.
+
+Five things are worth knowing before you switch it on.
+
+- ⚠ **The molecule is never reoriented.** The operations are tested in the frame you give the
+  geometry in, because reorienting would move the gauge origin and every property operator
+  fixed with it. A symmetry axis that is not `z` is reported and **not used** — orient the
+  input so the axis is `z`.
+- ⚠ **Groups whose *double* group is not abelian are reduced.** `C2v`, `D2` and `D2h` have
+  two-dimensional fermion irreps, which one integer cannot label, so the labels come from the
+  largest subgroup that does have one-dimensional ones (`C2(z)`, `C2h(z)`). The reduction is
+  reported.
+- ⚠ **A per-irrep count is not a safety mechanism.** Where the real group is bigger than the
+  abelian one being used — every atom, and every reduced group above — two members of a
+  physically degenerate manifold can carry different labels, so a per-irrep count can split
+  the manifold exactly as a plain count can. The state-average boundary check stays the thing
+  that catches it.
+- ⚠ **A single state inside a degenerate block has no irrep**, for the same reason a single
+  spinor inside a degenerate manifold has no populations: the eigensolver may return any
+  rotation of the block. Blocks are labelled, and a block spanning two irreps is named for
+  both.
+- ⚠ **A per-irrep count and the Kramers-restricted CI combine over *conjugate pairs* of
+  irreps.** Time reversal conjugates a label, so a sector is time-reversal-closed only when it
+  is self-conjugate; asking for `n` states of an irrep in that mode returns the `n`
+  time-reversed partners in its conjugate as well. That combination also makes well defined a
+  request the general path refuses — `n` states of one sector alone splits every Kramers pair,
+  because the partners live in the conjugate sector and are not selected.
+
+Degenerate orbitals are **symmetry-adapted** rather than refused: the SCF is free to return
+an arbitrary mixture of two degenerate orbitals, and a mixture is an eigenvector of nothing.
+The rotation happens inside the degenerate block, so no density, energy or observable
+changes, and the run reports how many blocks it touched. An orbital that is still not an
+eigenvector afterwards is refused, naming the orbital and the operation.
 
 ### `Reference(scf, **options)`
 
@@ -310,6 +381,32 @@ delocalize. There is no default: an active space is a physical statement.
 The states: `n_states`, `weights`. The optimizer: `mode` (`"auto"`, `"quasi-newton"`,
 `"second-order"`), `max_iter`, `conv_grad`, `conv_energy`, `max_step`, `callback`.
 Checkpointing: `checkpoint=path`, `restart=path`, `checkpoint_options`.
+
+With point-group symmetry on, `n_states` may be a mapping instead of a count, and the
+orbital rotation may be constrained:
+
+```python
+cas = kuiva.CASSCF(ref, character=("Ti", "d"), n_active=10,
+                   n_states={"1E1/2": 2, "2E1/2": 2},   # per irrep, not "lowest n"
+                   preserve_symmetry=True).run()        # rotations within an irrep only
+```
+
+Each irrep is solved in its own sector of the determinant space, so *"the two lowest states
+of `1E1/2`"* is a request rather than a filter applied afterwards — and it is a request the
+plain "lowest n" form cannot express at all. The states come back merged and ascending in
+the ordinary convention, so the state-averaging gate, the boundary diagnostic, the property
+dump and NEVPT2 see exactly what they always did. ⚠ A per-irrep spectrum is only meaningful
+while the orbitals are symmetry-pure, which is checked at every solve rather than assumed.
+
+`preserve_symmetry=True` masks inter-irrep rotations out of the parameter list, so the
+labels are exact at convergence rather than only at the start. ⚠ It is a **constraint**: what
+it converges to is the lowest *symmetric* solution, which is not the global one wherever the
+symmetry is spontaneously broken. Without it the drift is measured and reported rather than
+assumed away.
+
+The tensor-network solver takes the same labels as a **conserved quantum number** rather than
+a classification (`solver_options=dict(symmetry=..., sector="1E1/2")`), so a labelled sweep
+cannot leave the sector it targets.
 
 `mode="auto"` is the robust default rather than the cheapest one, and escalates on the
 *gradient* trajectory. ⚠ **It is the orbital problem that decides the mode, not the CI cost**:
@@ -989,15 +1086,37 @@ The release is usable for production work **with care**, and this is what the ca
   scalar SCF is PySCF's, and it makes its own in-core/direct decision within the memory it is
   given: the direct route removes Kuiva's copy of the array, not necessarily every copy.
 - **Kramers degeneracy in the general two-component CI emerges numerically, not by
-  construction.** A Kramers-restricted (time-reversal-adapted) path is not implemented. In
-  practice the measured splitting is far below the 1e-8–1e-6 Eh band reserved for a genuine
-  numerical splitting, but it is not zero by symmetry. The **tensor-network** solver's figure is
-  larger and for a different reason: a sweep converges its roots separately, leaving of order
-  1e-9 Eh between paired states even where nothing is truncated. Both are far below anything
-  physical; neither is a bound on the other.
-- **No point-group or double-group symmetry is used.** States are the lowest *n* roots; there
-  is no irrep selection, and a state average must be checked against the boundary diagnostic
-  rather than assumed safe. Non-abelian symmetry adaptation is out of scope.
+  construction** — that path is the default and every reference in this project is one of its
+  results. In practice the measured splitting is far below the 1e-8–1e-6 Eh band reserved for a
+  genuine numerical splitting, but it is not zero by symmetry. The **tensor-network** solver's
+  figure is larger and for a different reason: a sweep converges its roots separately, leaving
+  of order 1e-9 Eh between paired states even where nothing is truncated. Both are far below
+  anything physical; neither is a bound on the other.
+- **The Kramers-restricted (time-reversal-adapted) CI covers odd electron counts only, and is
+  worth a factor of two only above two Kramers pairs.** `solver_options=dict(
+  kramers="restricted")` on a CASSCF keeps the eigensolver's expansion subspace closed under
+  time reversal, so one stored direction spans a whole Kramers pair: measured 1.8–1.9× less CPU
+  from three averaged pairs upward, and ⚠ **8% *slower* at two pairs**, where a block Davidson
+  adds one expansion direction per iteration instead of two. It refuses an even electron count
+  (a different theorem, giving a real Hamiltonian rather than a halved subspace — not
+  implemented) and an odd state count, and it refuses integrals whose orbitals are not
+  Kramers-paired. ⚠ It does **not** raise the active-space ceiling: the sigma-vector residency
+  that sets the ceiling is a whole-space gather in either mode.
+- **Point-group symmetry is abelian double groups only, opt-in, and does not make a state
+  average safe.** `point_group=` labels the orbitals and enables per-irrep state selection and a
+  symmetry-preserving orbital optimization; without it, states are the lowest *n* roots exactly
+  as before. Three limits are real. The operations are tested in the frame the geometry is given
+  in — the molecule is never reoriented, because that would move the gauge origin — so a
+  symmetry axis that is not `z` is not used. Groups whose *double* group is non-abelian (`C2v`,
+  `D2`, `D2h`) are reduced to the largest subgroup that has one-dimensional fermion irreps —
+  and where that happens the converged states are also *classified* by the full double group's
+  irreps, which is a labelling of the finished spectrum and changes nothing about how it was
+  computed. And because the group used in the mathematics can be smaller than the molecule's
+  real one, two members of a
+  physically degenerate manifold can carry different labels: **a per-irrep count can split a
+  manifold exactly as a plain count can**, so the state-average boundary diagnostic stays what
+  catches it. Non-abelian symmetry adaptation is out of scope, and labelling states by
+  non-abelian irreps is not implemented.
 - **NEVPT2 is strongly contracted only, on a conventional-CI reference.** FIC and
   quasi-degenerate variants are not implemented and are not planned — the artificial multiplet
   splitting they would cure is four orders of magnitude below the size at which a splitting
@@ -1021,7 +1140,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.14.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.16.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1037,7 +1156,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.14.0'
+import kuiva; kuiva.__version__          # '0.16.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
@@ -1195,11 +1314,48 @@ generate validation reference data live with that code, in `tests/`.
   DOI:10.1002/cphc.201100682.
 - **Time-reversal-adapted (Kramers-restricted) two-component MCSCF/CI.** J. Thyssen, T. Fleig,
   H. J. Aa. Jensen, _J. Chem. Phys._ **129**, 034109 (2008), DOI:10.1063/1.2943670; T. Fleig,
-  J. Olsen, L. Visscher, _J. Chem. Phys._ **119**, 2963 (2003), DOI:10.1063/1.1590636.
+  J. Olsen, L. Visscher, _J. Chem. Phys._ **119**, 2963 (2003), DOI:10.1063/1.1590636;
+  T. Saue, H. J. Aa. Jensen, _J. Chem. Phys._ **111**, 6211 (1999), DOI:10.1063/1.479958.
+- **Self-dual (quaternion) Hermitian eigenvalue structure**, which is what the
+  Kramers-restricted eigensolver's subspace problem is. A. Bunse-Gerstner, R. Byers,
+  V. Mehrmann, _SIAM J. Matrix Anal. Appl._ **10**, 419 (1989), DOI:10.1137/0610030.
 - **Corresponding orbitals** (the standard way to pair two non-orthogonal orbital sets).
   A. T. Amos, G. G. Hall, _Proc. R. Soc. London A_ **263**, 483 (1961), DOI:10.1098/rspa.1961.0175.
 - **UHF natural orbitals as an active-space guess.** P. Pulay, T. P. Hamilton, _J. Chem. Phys._
   **88**, 4926 (1988), DOI:10.1063/1.454704.
+
+### Point-group and double-group symmetry
+
+- **Double-group character tables**, stored in `kuiva/symm/groups.py` and printed by every
+  symmetric run. G. F. Koster, J. O. Dimmock, R. G. Wheeler, H. Statz, _Properties of the
+  Thirty-Two Point Groups_, MIT Press (1963); S. L. Altmann, P. Herzig, _Point-Group Theory
+  Tables_, Clarendon Press (1994).
+- **The spin-1/2 representation and the `E`/`Ebar` distinction** that makes a double group a
+  double group. E. P. Wigner, _Group Theory and its Application to the Quantum Mechanics of
+  Atomic Spectra_, Academic Press (1959), ch. 15; H. A. Bethe, _Ann. Phys._ **3**, 133 (1929),
+  DOI:10.1002/andp.19293950202.
+- **Abelian double groups as the working symmetry of a two- or four-component molecular code**,
+  which is the design this follows. T. Saue, H. J. Aa. Jensen, _J. Chem. Phys._ **111**, 6211
+  (1999), DOI:10.1063/1.479958; L. Visscher, _Chem. Phys. Lett._ **253**, 20 (1996),
+  DOI:10.1016/0009-2614(96)00234-5.
+- **Rotation matrices for real spherical harmonics by recursion**, which is how the full
+  group's operators are built on the AO basis. J. Ivanic, K. Ruedenberg, _J. Phys. Chem._
+  **100**, 6342 (1996), DOI:10.1021/jp953350u, and the erratum, _J. Phys. Chem. A_ **102**,
+  9099 (1998), DOI:10.1021/jp9833350.
+- **Character tables from the class-sum matrices**, which is why the full double-group tables
+  printed by a classifying run are computed rather than transcribed. W. Burnside, _Theory of
+  Groups of Finite Order_, 2nd ed., Cambridge University Press (1911), ch. XV; J. D. Dixon,
+  _Numer. Math._ **10**, 446 (1967), DOI:10.1007/BF02162876.
+- **Irrep naming**, for the single-valued rows. R. S. Mulliken, _J. Chem. Phys._ **23**, 1997
+  (1955), DOI:10.1063/1.1740655.
+- **Projection of a reducible representation onto characters**, which is what classifies a
+  converged degenerate block. M. Tinkham, _Group Theory and Quantum Mechanics_, McGraw-Hill
+  (1964), ch. 3.
+- **The Fock-space image of a one-body unitary**, applied here as a product of two-mode
+  rotations so that a symmetry operation can be applied to a CI vector exactly.
+  D. J. Thouless, _Nucl. Phys._ **21**, 225 (1960), DOI:10.1016/0029-5582(60)90048-1; the
+  adjacent-pair elimination is the Givens QR of G. H. Golub, C. F. Van Loan, _Matrix
+  Computations_, 4th ed., Johns Hopkins University Press (2013), section 5.2.
 
 ### Integral factorization and transformation
 

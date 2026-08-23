@@ -144,6 +144,11 @@ def test_ci_casscf_ground_doublet(cas):
     # noise (1e-15..1e-13 Eh measured), asserted well above that but far below physics
     assert abs(cas.energies[1] - cas.energies[0]) < KRAMERS_TOL
     assert cas.boundary_initial is not None and cas.boundary is not None
+    # the j = 1/2-only average leans on the spin-orbit structure (module docstring: its
+    # residual anisotropy is whatever the rounding made it), and the converged boundary
+    # report now says so — measured 0.64 here, 0 on the term-complete average
+    assert cas.boundary.spin_noninvariance is not None
+    assert cas.boundary.spin_noninvariance > 0.3 and cas.boundary.leaning is True
 
 
 def test_property_dump_gives_the_lande_g(cas_term, tmp_path):
@@ -158,6 +163,10 @@ def test_property_dump_gives_the_lande_g(cas_term, tmp_path):
     assert float(np.ptp(cas_term.energies[2:])) < LEVEL_TOL
     assert all(abs(g - G_LANDE[level.size]) < 2e-3
                for level in levels for g in level.g_values)
+    # the flip side of the leaning assertion on `cas`: the term-complete ensemble is one the
+    # symmetry leaves invariant, and the report measures that as an exact zero (1e-16 here)
+    assert cas_term.boundary.spin_noninvariance < 1e-8
+    assert cas_term.boundary.leaning is False
 
 
 # --- shape 2: NEVPT2 on the converged reference ----------------------------------------------

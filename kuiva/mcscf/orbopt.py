@@ -195,7 +195,8 @@ class OrbitalSpaces:
     def n_virtual(self) -> int:
         return int(self.virtual.size)
 
-    def rotation_pairs(self, active_active: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+    def rotation_pairs(self, active_active: bool = False,
+                       labels: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
         """Non-redundant rotation pairs ``(p, q)``, ``p`` from the higher space.
 
         Inactive-inactive and virtual-virtual rotations are **exactly** redundant (they
@@ -204,6 +205,19 @@ class OrbitalSpaces:
         redundant for a truncated CI, which is why the flag exists — but the
         preferred way to fix the active-space basis there is the natural-spinor rotation, not
         an energy gradient that a truncated CI cannot make stationary.
+
+        ``labels`` is an ``(n_orb, width)`` array of irrep labels (:mod:`kuiva.symm`). Given
+        it, pairs joining **different** irreps are dropped, so ``kappa`` is block diagonal over
+        the irreps and ``exp(kappa)`` cannot mix them: the orbitals stay symmetry-pure
+        *exactly*, at every iteration, by construction rather than to a tolerance. That is
+        what makes an irrep label still mean something at convergence, and it is the same
+        mechanism the redundant rotations above are removed by — a mask on the parameter list,
+        with the rest of the optimizer untouched.
+
+        ⚠ It is a **constraint**, and a constrained optimum is not the unconstrained one
+        wherever the symmetry is spontaneously broken. The energy it converges to is the lowest
+        *symmetric* one; where that matters the answer is to run without the mask and read the
+        drift the CI measures, not to loosen the mask.
         """
         rows, cols = [], []
         for hi, lo in ((self.active, self.inactive), (self.virtual, self.inactive),
@@ -218,7 +232,14 @@ class OrbitalSpaces:
             cols.append(t[lo_pos])
         if not rows:
             return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
-        return np.concatenate(rows), np.concatenate(cols)
+        r, c = np.concatenate(rows), np.concatenate(cols)
+        if labels is not None:
+            lab = np.atleast_2d(np.asarray(labels, dtype=int))
+            if lab.shape[0] != self.n_orb:
+                raise ValueError("{} labels for {} spinors".format(lab.shape[0], self.n_orb))
+            same = np.all(lab[r] == lab[c], axis=1)
+            r, c = r[same], c[same]
+        return r, c
 
     def __repr__(self) -> str:
         return "OrbitalSpaces(inactive={}, active={}, virtual={})".format(
@@ -863,6 +884,7 @@ class OrbitalOptimizer:
 
     def __init__(self, spaces: OrbitalSpaces, *, max_step: float = DEFAULT_MAX_STEP,
                  memory: int = 10, active_active: bool = False,
+                 labels: Optional[np.ndarray] = None,
                  trust: Optional[float] = None, mode: str = "auto",
                  second_order_start: float = SECOND_ORDER_START,
                  stall_patience: int = 3, stall_window: int = STALL_WINDOW,
@@ -874,7 +896,8 @@ class OrbitalOptimizer:
         self.spaces = spaces
         self.max_step = float(max_step)
         self.memory = int(memory)
-        self.rows, self.cols = spaces.rotation_pairs(active_active)
+        self.labels = None if labels is None else np.atleast_2d(np.asarray(labels, dtype=int))
+        self.rows, self.cols = spaces.rotation_pairs(active_active, labels=self.labels)
         self.trust = float(trust if trust is not None else max_step)
         self.mode = mode
         self.second_order_start = float(second_order_start)
@@ -1201,7 +1224,8 @@ class OrbitalOptimizer:
         if stored != self.n_parameters:
             raise ValueError(
                 "this optimizer has {} rotation parameters and the stored state has {}; the "
-                "orbital partition (or active_active) differs from the run that wrote it"
+                "orbital partition, active_active, or the irrep mask (labels=) differs from "
+                "the run that wrote it"
                 .format(self.n_parameters, stored))
         recorded = state.get("space_key")
         same_chart = space_key is None or recorded is None or recorded == space_key
@@ -1292,7 +1316,8 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                       ci_solver: Callable[[CASIntegrals], Tuple[float, np.ndarray, np.ndarray]],
                       *, e_nuc: float = 0.0, max_iter: int = 50, conv_grad: float = 1e-4,
                       conv_energy: float = 1e-8, max_step: float = DEFAULT_MAX_STEP,
-                      memory: int = 10, active_active: bool = False, mode: str = "auto",
+                      memory: int = 10, active_active: bool = False,
+                      labels: Optional[np.ndarray] = None, mode: str = "auto",
                       second_order_start: float = SECOND_ORDER_START,
                       callback: Optional[Callable[[dict], Optional[bool]]] = None,
                       report: bool = True,
@@ -1321,6 +1346,12 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
     ``optimizer_state`` (from :meth:`OrbitalOptimizer.state_dict`), ``start_iteration`` and
     ``history`` resume a checkpointed run: pass the checkpointed orbitals as ``c_spinor`` and
     the three of these, and the trajectory continues rather than starting over.
+    ``labels`` (an ``(n_orb, width)`` irrep-label array from :mod:`kuiva.symm`) restricts the
+    rotation to **within** each irrep, so the orbitals stay symmetry-pure exactly rather than
+    to a tolerance and a label still means something at convergence. ⚠ It is a constraint: the
+    result is the lowest *symmetric* solution, which is not the global one wherever the
+    symmetry is spontaneously broken.
+
     ``space_key`` is the CI solver's chart identity and is what makes the restored curvature
     chart-scoped — see :meth:`OrbitalOptimizer.load_state_dict`. ⚠ ``max_iter`` counts
     **total** macro-iterations, so a restart at iteration 12 with ``max_iter=50`` runs 38
@@ -1329,7 +1360,7 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
     """
     c = np.ascontiguousarray(c_spinor, dtype=np.complex128)
     opt = OrbitalOptimizer(spaces, max_step=max_step, memory=memory,
-                           active_active=active_active, mode=mode,
+                           active_active=active_active, labels=labels, mode=mode,
                            second_order_start=second_order_start, conv_grad=conv_grad)
     if optimizer_state is not None:
         opt.load_state_dict(optimizer_state, space_key=space_key)
@@ -1338,7 +1369,10 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
         out.entries(log, [
             ("inactive / active / virtual spinors",
              "{} / {} / {}".format(spaces.n_inactive, spaces.n_active, spaces.n_virtual)),
-            ("orbital rotation parameters", opt.n_parameters, "", "complex"),
+            ("orbital rotation parameters", opt.n_parameters, "",
+             "complex" if labels is None else
+             "complex; irrep-blocked, {} of {} pairs kept".format(
+                 opt.n_parameters, spaces.rotation_pairs(active_active)[0].size)),
             ("optimizer mode", mode, "",
              "second order below |g| = {:.1e}".format(second_order_start)
              if mode == "auto" else ""),

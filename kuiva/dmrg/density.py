@@ -287,7 +287,7 @@ def _apply_term(ttno: TTNO, state: TTNState,
             continue
         modified.append(u)
         local = np.eye(1, dtype=np.complex128)
-        shift = QuantumNumber.zero(ttno.charge.width)
+        shift = ttno.charge.zero_like()
         for m in ttno.node_modes[u]:
             mat = mat_at.get(m)
             if mat is None:
@@ -311,7 +311,8 @@ def _bond_identity(space, width: int) -> BlockTensor:
     rows = np.array([[i, i] for i in range(space.nsectors)], dtype=np.int64)
     blocks = [np.eye(int(space.dims[i]), dtype=np.complex128)
               for i in range(space.nsectors)]
-    return BlockTensor((space, space), (1, -1), QuantumNumber.zero(width), rows, blocks)
+    return BlockTensor((space, space), (1, -1), space.qns[0].zero_like(), rows,
+                       blocks)
 
 
 def _overlap(graph, center: int, parent: np.ndarray, order_leafward: Sequence[int],

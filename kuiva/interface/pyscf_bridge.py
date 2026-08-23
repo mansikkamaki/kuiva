@@ -745,6 +745,15 @@ class ScalarX2CData:
     #: :attr:`ao_layout` this is *output* metadata, read by no part of the calculation, and
     #: optional for the same reason.
     properties: Optional[PropertyIntegrals] = None
+    #: Abelian double-group symmetry of this reference (:class:`kuiva.symm.MolecularSymmetry`)
+    #: — the group actually used, what was asked for, what the geometry has, and one integer
+    #: label per scalar MO. ``None`` means **no symmetry**, and every consumer then takes the
+    #: path it took before labels existed. ⚠ When it is not ``None``, :attr:`mo_coeff` is the
+    #: *symmetry-adapted* orbital set: degenerate blocks may have been rotated inside
+    #: themselves so that each orbital is an eigenvector of every group operation. That
+    #: changes no density, no energy and no observable, and it is the only way a label can
+    #: exist for an orbital the SCF was free to return as an arbitrary mixture.
+    symmetry: Optional[object] = None
     #: Per-element free-atom reference orbitals (:class:`kuiva.basis.reference.
     #: AtomicReferenceSet`), behind the atomic-reference charges of
     #: :mod:`kuiva.props.population`. Opt-in (``atomic_reference=True``) because it costs one
@@ -2109,6 +2118,8 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                    gauge_origin=None, property_picture_change: bool = False,
                    anomaly_picture_change: bool = False,
                    atomic_reference: bool = False,
+                   point_group: Optional[str] = None,
+                   classification="auto",
                    verbose: int = 0) -> ScalarX2CData:
     """Run a scalar X2C (``sfx2c1e``) SCF and ingest it into :class:`ScalarX2CData`.
 
@@ -2156,6 +2167,28 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         axes below, which may be set directly instead. ⚠ Setting both a name and an axis that
         **contradicts** it raises rather than picking a winner, so no
         calculation runs with a Hamiltonian nobody asked for. See :mod:`kuiva.x2c.methods`.
+    point_group : str, optional
+        Turn on abelian double-group symmetry and label every orbital by its irrep.
+        ``"auto"`` uses whatever operations the geometry has **in the frame it was given
+        in**; a named group of the D2h chain is verified rather than assumed and refused if
+        the molecule does not have it. ⚠ The molecule is never reoriented — that would move
+        the gauge origin and every property operator fixed with it — so a symmetry axis that
+        is not ``z`` is reported and not used, and the fix is to orient the input geometry.
+        ⚠ Groups whose **double** group is non-abelian (``C2v``, ``D2``, ``D2h``) carry
+        two-dimensional fermion irreps, which one integer cannot label; those reduce to the
+        largest subgroup that does have one-dimensional fermion irreps, and the reduction is
+        reported at the point of selection. Labels alone change nothing: they enable
+        per-irrep state selection and the symmetry-preserving orbital optimizer, both of
+        which are requested separately.
+    classification : str or bool, optional
+        The **non-abelian** classification layer, which needs ``point_group=`` to be on.
+        ``"auto"`` (the default) detects the molecule's full point double group and activates
+        the layer only when that group is genuinely larger than the abelian label group — the
+        case in which a per-irrep count can cut a physically degenerate manifold with every
+        abelian check still passing. A named group is verified rather than assumed;
+        ``False`` switches it off. ⚠ It **classifies and never adapts**: converged states get
+        the name of the multiplet they are, and the mathematics of every stage still runs in
+        the abelian subgroup. It changes no number.
     property_picture_change : bool
         Apply the X2C picture change to the magnetic moment operator
         (:func:`picture_changed_moment`) instead of using the bare non-relativistic ``L`` and
@@ -2356,6 +2389,8 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     # per (element, basis) and needs the integral library, which nothing downstream has.
     atomic_ref = _atomic_reference_set(mol) if atomic_reference else None
 
+    data_layout = ao_layout(mol)
+
     # Standard output block: the front-end's contribution to the output file.
     rows = [
         ("SCF reference", ref_name.upper() + (" (unrestricted)" if unrestricted else "")),
@@ -2386,6 +2421,23 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         log.warning("spin-orbit coupling was not ingested (with_soc=False): the calculation "
                     "will be scalar-relativistic only")
 
+    # Symmetry last, because it may *replace* the orbital set with a symmetry-adapted one and
+    # everything above reads mo_coeff. The adaptation is a rotation inside a degenerate block:
+    # the density, the energy and every observable are untouched, and it is what makes a label
+    # exist for an orbital the SCF was entitled to return as an arbitrary mixture of partners.
+    symmetry = None
+    if point_group is not None:
+        from ..symm import analyze as _analyze_symmetry
+        from ..symm import report as _report_symmetry
+        with timer("symmetry labelling"):
+            symmetry, adapted = _analyze_symmetry(
+                data_layout, tuple(np.asarray(c) for c in
+                                   (mo_coeff if unrestricted else (mo_coeff,))),
+                s_ao, point_group=point_group, mo_energy=mf.mo_energy,
+                classification=classification)
+        mo_coeff = np.asarray(adapted) if unrestricted else adapted[0]
+        _report_symmetry(symmetry, log, spinor_labels=symmetry.spinor_labels())
+
     na, nb = mol.nelec
     data = ScalarX2CData(
         nao=mol.nao, nmo=nmo, nelec=(int(na), int(nb)),
@@ -2397,8 +2449,8 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         fit_route=fit_route, eri=eri, df_cderi=df_cderi, factors=factors,
         aux_name=aux if isinstance(aux, str) else ("custom" if aux is not None else None),
         soc=soc, reference=ref_name, unrestricted=unrestricted, s2_deviation=s2_dev,
-        basis_meta=meta, e_nuc=float(mol.energy_nuc()), ao_layout=ao_layout(mol),
-        properties=props, atomic_reference=atomic_ref,
+        basis_meta=meta, e_nuc=float(mol.energy_nuc()), ao_layout=data_layout,
+        properties=props, atomic_reference=atomic_ref, symmetry=symmetry,
     )
     return data
 

@@ -711,6 +711,90 @@ def test_an_even_cut_through_a_degenerate_block_breaks_the_averaged_DENSITY():
     assert half > 1e5 * max(whole, 1e-15), "and the two must not be the same number"
 
 
+# --- The spin-invariance half of "is this ensemble safe" -----------------------------------
+#
+# A clean boundary gap says the cut is unambiguous; it deliberately does not say the ensemble
+# is one the symmetry leaves invariant, and the measured counterexample is a complete 2J+1
+# manifold whose average converged with that manifold split by 725 cm^-1. The detector for
+# the second statement is the spin-rotation non-invariance of the averaged density: exactly
+# zero for a complete spin multiplet (or a term-complete average), order one for any ensemble
+# that weights the spin-orbit structure of its states.
+
+def _interleaved_spin_operator(n_spatial: int) -> np.ndarray:
+    """``S_k`` in the synthetic interleaved (spatial, spin) spinor basis."""
+    sigma = np.array([[[0.0, 1.0], [1.0, 0.0]],
+                      [[0.0, -1.0j], [1.0j, 0.0]],
+                      [[1.0, 0.0], [0.0, -1.0]]], dtype=np.complex128)
+    return np.stack([np.kron(np.eye(n_spatial), 0.5 * sigma[k]) for k in range(3)])
+
+
+def test_spin_noninvariance_separates_complete_from_cut_spin_multiplets():
+    """The detector itself, on the same synthetic system as the mechanism tests above:
+    averaging a whole quartet leaves the density spin-rotation invariant, half of it does
+    not — and the two differ by orders of magnitude, not by a tolerance."""
+    from kuiva.mcscf.casci import ensemble_spin_noninvariance                # noqa: PLC0415
+
+    h, eri = _spin_free_spinor_integrals(3, seed=11)
+    s_mo = _interleaved_spin_operator(3)
+    solver = FullCISolver(6, 3, n_states=20, enforce_kramers=False)
+    energies = solver.solve_active(h, eri).energies
+    start, stop = _first_quartet(energies)
+
+    whole = FullCISolver(6, 3, n_states=stop, enforce_kramers=False)
+    s_whole = ensemble_spin_noninvariance(whole.solve_active(h, eri).gamma, s_mo)
+    cut = FullCISolver(6, 3, n_states=start + 2, enforce_kramers=False)
+    s_cut = ensemble_spin_noninvariance(cut.solve_active(h, eri).gamma, s_mo)
+
+    assert s_whole < 1e-9, "a complete spin-multiplet average must be spin-rotation invariant"
+    assert s_cut > 0.05, "half a quartet must lean on the spin structure"
+    assert s_cut > 1e5 * max(s_whole, 1e-15)
+
+
+def test_boundary_report_carries_and_reports_the_spin_invariance(kuiva_caplog):
+    """The field reaches the report, and an ambiguous boundary of a *leaning* ensemble warns
+    with the mechanism named — the warning a user actually needs is the combination, because
+    each half alone has a benign reading (a clean gap; a stable ligand-field doublet)."""
+    import logging                                                     # noqa: PLC0415
+
+    leaning = BoundaryReport(n_states=2, ndet=6, margin=4, gap_cm=10.0,
+                             next_cm=(0.0, 10.0), spin_noninvariance=0.64)
+    assert leaning.leaning is True
+    with kuiva_caplog.at_level(logging.INFO):
+        leaning.report()
+    messages = [r.getMessage() for r in kuiva_caplog.records]
+    assert any("spin invariance" in m and "leaning" in m for m in messages)
+    warnings = [r.getMessage() for r in kuiva_caplog.records
+                if r.levelno >= logging.WARNING]
+    assert any("not spin-rotation invariant" in m for m in warnings)
+
+    invariant = BoundaryReport(n_states=6, ndet=6, margin=0, gap_cm=None,
+                               spin_noninvariance=3e-16)
+    assert invariant.leaning is False
+    unmeasured = BoundaryReport(n_states=2, ndet=6, margin=4, gap_cm=500.0)
+    assert unmeasured.leaning is None
+
+
+def test_casscf_measures_spin_invariance_when_given_the_spin_operator(system):
+    """End to end through the mcscf driver: with ``spin_ao_2c`` the converged boundary
+    report carries the number; without it the field stays ``None`` (the pre-flight one
+    always does — no density exists yet where it runs)."""
+    factors, h_ao, c0, spaces, n_elec = system
+    n = h_ao.shape[0]
+    rng = np.random.default_rng(7)
+    s2c = rng.standard_normal((3, n, n)) + 1j * rng.standard_normal((3, n, n))
+    s2c = 0.5 * (s2c + s2c.conj().transpose(0, 2, 1))
+
+    outcome = casscf(factors, h_ao, c0, spaces, n_elec, n_states=2, max_iter=3,
+                     report=False, spin_ao_2c=s2c)
+    assert outcome.boundary is not None
+    assert outcome.boundary.spin_noninvariance is not None
+    assert outcome.boundary_initial is not None
+    assert outcome.boundary_initial.spin_noninvariance is None
+
+    bare = casscf(factors, h_ao, c0, spaces, n_elec, n_states=2, max_iter=3, report=False)
+    assert bare.boundary.spin_noninvariance is None
+
+
 def test_the_boundary_is_measured_before_the_optimization_and_not_only_after(system,
                                                                             kuiva_caplog):
     """⚠ **The check that can actually save a run.**

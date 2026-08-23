@@ -52,6 +52,11 @@ Conventions (fixed here; the RDMs and the orbital optimizer depend on them)
   with symmetries ``Gamma_pqrs = Gamma_rspq``, ``Gamma_pqrs* = Gamma_qpsr``,
   ``Gamma_pqrs = -Gamma_psrq``, and the trace condition ``sum_r Gamma_pqrr = (N-1) gamma_pq``.
   The last is asserted in the tests: it is a cheap, strong check on the phase bookkeeping.
+* **Time reversal on determinants** — the mask (:func:`kramers_partner`), the sign
+  (:func:`kramers_sign`), and the two combined as an antiunitary operation on CI vectors
+  (:class:`KramersMap`). Defined here and nowhere else, for the same reason as everything
+  above: a second derivation of the sign would agree on every test until one of them changed.
+  The derivation and the ``T^2 = (-1)^N`` identity are with the functions.
 
 References
 ----------
@@ -177,15 +182,226 @@ def kramers_partner(masks) -> np.ndarray:
     from reordering the creation operators back into ascending order; this function does not
     compute it, and no caller may read a returned mask as a *state*. What it is for is
     membership: whether a determinant **space** is closed under time reversal, which is a
-    statement about the set of masks alone. A Kramers-adapted CI (the unimplemented second
-    symmetry mode) is where the phase bookkeeping belongs, and it is deliberately not
-    half-started here.
+    statement about the set of masks alone. The phase is :func:`kramers_sign` and the two are
+    combined, once, by :class:`KramersMap`.
 
     ⚠ Presumes a Kramers-paired spinor set. With an unrestricted reference (``kramers_paired=False``) the spinors are not partnered and the swap means nothing — the
     caller has to know, because a mask array carries no such flag.
     """
     m = np.asarray(masks, dtype=_U64)
     return ((m & _UNBARRED_BITS) << _U64(1)) | ((m & _BARRED_BITS) >> _U64(1))
+
+
+# --- Time reversal on determinants: the phase kramers_partner deliberately leaves out -------
+#
+# ⚠ **The whole of the time-reversal determinant algebra is here**, because this module is the
+# one place the determinant conventions are defined and a second derivation of the sign would
+# agree on every test until the day one of them changed.
+#
+# On creation operators the ``-i sigma_y K`` convention of kuiva/spinor/expand.py reads
+#
+#     T a+_{2p} T^-1 = +a+_{2p+1},      T a+_{2p+1} T^-1 = -a+_{2p}
+#
+# i.e. ``t_k = (-1)^k``. Applying that to the ascending reference string of a determinant and
+# then restoring ascending order gives ``T|I> = s_I |Ibar>`` with **two** factors, both pure
+# bit arithmetic:
+#
+#   * ``(-1)^(occupied barred spinors)`` from the ``t_k`` above;
+#   * ``(-1)^(closed Kramers pairs)`` from the reordering. A *closed* site contributes the
+#     adjacent operator pair ``(2p, 2p+1)``, which comes back as ``(2p+1, 2p)`` — exactly one
+#     transposition — while a singly occupied site's single operator keeps its position in the
+#     ordering, since the map ``k -> k^1`` never moves an operator past a different site.
+#
+# so
+#
+#     s_I = (-1)^(barred occupations of I + closed pairs of I)
+#
+# and therefore ``s_I s_Ibar = (-1)^N``: T^2 = -1 exactly for an odd electron count, which is
+# Kramers' theorem in its determinant form and is asserted as such in the tests.
+
+
+def kramers_sign(masks) -> np.ndarray:
+    """``s_I`` in ``T|I> = s_I |Ibar>``, elementwise ``int8``.
+
+    See the derivation above; ``kramers_partner`` supplies ``Ibar`` and this the phase.
+
+    ⚠ Presumes a Kramers-paired spinor set, exactly as :func:`kramers_partner` does. A mask
+    array carries no such flag, so the caller has to know.
+    """
+    m = np.asarray(masks, dtype=_U64)
+    barred = _popcount(m & _BARRED_BITS)
+    closed = _popcount((m & (m >> _U64(1))) & _UNBARRED_BITS)
+    return (1 - 2 * ((barred + closed) & 1)).astype(np.int8)
+
+
+def kramers_representative(masks) -> np.ndarray:
+    """Boolean mask of the canonical member of each time-reversal pair.
+
+    The canonical member is the one whose **lowest singly occupied Kramers pair is unbarred**,
+    which — usefully — is the same thing as the numerically smaller mask: ``I`` and ``Ibar``
+    agree on every closed and every empty pair and first differ at the lowest singly occupied
+    one, where the unbarred member carries the lower bit. So the predicate is one comparison,
+    no table, and it costs nothing to state either way round.
+
+    A **self-conjugate** determinant (``Ibar == I``, all pairs closed or empty — possible only
+    for an even electron count) is its own representative and is reported as ``True``.
+    """
+    m = np.asarray(masks, dtype=_U64)
+    return m <= kramers_partner(m)
+
+
+# --- Sizing for the time-reversal map ------------------------------------------------------
+
+#: Bytes per determinant of a :class:`KramersMap`: an ``int64`` partner index, an ``int8``
+#: sign, and the ``float64`` phase the vector operation multiplies by.
+BYTES_PER_KRAMERS_ENTRY = 8 + 1 + 8
+
+
+def kramers_map_gb(ndet: int) -> float:
+    """Size [GB] of a :class:`KramersMap` over ``ndet`` determinants (exact sizing function).
+
+    Small against everything it sits beside — 3 MB at the 184 756 determinants of a
+    half-filled 20-spinor space, against 2.2 GB of sigma workspace — but it is an
+    ``ndet``-sized resident array and is declared like one.
+    """
+    return float(ndet) * BYTES_PER_KRAMERS_ENTRY / res.BYTES_PER_GB
+
+
+class KramersMap:
+    """Time reversal over a complete CAS space: a permutation, a sign, and a conjugation.
+
+    ``T`` is antiunitary, so on a CI vector it is *not* a matrix. It is exactly three cheap
+    operations::
+
+        (T v)_J = s_{Jbar} conj(v_{Jbar})
+
+    — a gather through :attr:`partner`, a conjugation, and a multiply by :attr:`phase`. That
+    is ``O(ndet)``, against the ``O(ndet * n_elec * n_empty)`` of one sigma-vector gather, so
+    ⚠ **this is orchestration and not a kernel-port candidate**: it is roughly ``1/n^2`` of the
+    work of the operator it accompanies and could not clear the port gate at any size.
+
+    Attributes
+    ----------
+    partner : ``(ndet,)`` ``int64``
+        Index of ``Ibar``. An involution: ``partner[partner[I]] == I``.
+    sign : ``(ndet,)`` ``int8``
+        ``s_I`` of :func:`kramers_sign`.
+    phase : ``(ndet,)`` ``float64``
+        ``s_{Ibar}``, i.e. ``sign[partner]`` — the factor :meth:`time_reverse` multiplies by,
+        precomputed because it is the one that appears in the vector operation. It equals
+        ``(-1)^N * sign``, and that identity is what ``T^2 = (-1)^N`` reduces to here.
+    representatives : ``(n_pairs,)`` ``int64``
+        Indices of the canonical member of each pair (:func:`kramers_representative`). For an
+        odd electron count there are exactly ``ndet / 2`` of them and no determinant is
+        self-conjugate.
+    """
+
+    def __init__(self, space: "CASSpace") -> None:
+        n_elec = int(space.n_elec)
+        if space.n_spinor % 2 != 0:
+            raise ValueError(
+                "time reversal pairs spinors 2p and 2p+1, so a Kramers-paired active space "
+                "has an even number of spinors; got {}".format(space.n_spinor))
+        res.reserve("CAS time-reversal map ({} spinors, {} electrons)"
+                    .format(space.n_spinor, n_elec), kramers_map_gb(space.ndet),
+                    note="{} determinants".format(space.ndet))
+        partner_masks = kramers_partner(space.masks)
+        self.partner = np.ascontiguousarray(space.rank(partner_masks), dtype=np.int64)
+        self.sign = kramers_sign(space.masks)
+        self.phase = np.ascontiguousarray(self.sign[self.partner], dtype=np.float64)
+        self.n_elec = n_elec
+        self.ndet = int(space.ndet)
+        self.representatives = np.ascontiguousarray(
+            np.nonzero(kramers_representative(space.masks))[0], dtype=np.int64)
+        # Two checks that cost one pass each and fail loudly on the only two ways this can be
+        # wrong: a mask array that is not closed under the pair swap (an active space that
+        # splits a Kramers pair across its boundary, which the spinor conventions forbid), and
+        # a sign convention that has drifted from T^2 = (-1)^N.
+        if not np.array_equal(self.partner[self.partner], np.arange(self.ndet)):
+            raise RuntimeError("the determinant space is not closed under time reversal: the "
+                               "partner map is not an involution")
+        expected = -1 if n_elec % 2 else 1
+        if not np.all(self.sign[self.partner] * self.sign == expected):
+            raise RuntimeError("the time-reversal signs do not satisfy T^2 = {} for {} "
+                               "electrons".format(expected, n_elec))
+
+    @property
+    def parity(self) -> int:
+        """``T^2`` on this space: ``-1`` for an odd electron count, ``+1`` for an even one.
+
+        ⚠ The two are **different theorems and different code paths**. ``-1`` is Kramers'
+        theorem — every level at least doubly degenerate, no self-conjugate determinant, and
+        the quaternion structure the Kramers-restricted CI runs on. ``+1`` gives neither; what
+        it gives instead is a basis in which ``H`` can be made real, which is a separate
+        construction and not this one.
+        """
+        return -1 if self.n_elec % 2 else 1
+
+    @property
+    def n_pairs(self) -> int:
+        return int(self.representatives.size)
+
+    def time_reverse(self, vectors: np.ndarray,
+                     out: Optional[np.ndarray] = None) -> np.ndarray:
+        """``T|v>`` for one CI vector ``(ndet,)`` or a stack ``(n, ndet)``.
+
+        ⚠ **Antilinear**: applied to a stack it time-reverses each row *independently*, so
+        ``T(sum_i c_i v_i) = sum_i conj(c_i) T v_i`` has to be assembled by the caller with the
+        conjugated coefficients. Every consumer in the Kramers-restricted solver does exactly
+        that, and getting it wrong is a plausible, norm-preserving, wrong answer.
+        """
+        v = np.asarray(vectors, dtype=np.complex128)
+        if v.shape[-1] != self.ndet:
+            raise ValueError("a CI vector over this space has length {}, got {}"
+                             .format(self.ndet, v.shape[-1]))
+        result = np.take(v, self.partner, axis=-1, out=out)
+        np.conjugate(result, out=result)
+        result *= self.phase
+        return result
+
+    def restrict(self, mask) -> "KramersMap":
+        """The same map on a **time-reversal-closed subset** of the determinants.
+
+        ⚠ The subset must be closed under ``T``, and it is checked rather than assumed. A
+        symmetry sector generally is **not**: time reversal conjugates an irrep label, so a
+        sector maps onto its *conjugate* and only the union of the two is closed. That union
+        is what a Kramers-restricted per-irrep solve runs in, and it is why a conjugate pair
+        of sectors — not a sector — is the indivisible unit of such a selection.
+
+        The returned map addresses the compressed space (position within ``mask``), so it
+        pairs with a compressed operator; nothing about the convention changes.
+        """
+        mask = np.ascontiguousarray(mask, dtype=bool)
+        if mask.shape != (self.ndet,):
+            raise ValueError("the subset mask covers {} determinants and this map {}"
+                             .format(mask.size, self.ndet))
+        index = np.nonzero(mask)[0]
+        position = np.full(self.ndet, -1, dtype=np.int64)
+        position[index] = np.arange(index.size, dtype=np.int64)
+        partner = position[self.partner[index]]
+        if np.any(partner < 0):
+            missing = int(np.count_nonzero(partner < 0))
+            raise ValueError(
+                "the subset is not closed under time reversal: {} of its {} determinants have "
+                "their time-reversed partner outside it. A symmetry sector is closed only "
+                "together with its conjugate sector".format(missing, index.size))
+        out = object.__new__(KramersMap)
+        out.partner = np.ascontiguousarray(partner, dtype=np.int64)
+        out.sign = np.ascontiguousarray(self.sign[index])
+        out.phase = np.ascontiguousarray(self.phase[index], dtype=np.float64)
+        out.n_elec = self.n_elec
+        out.ndet = int(index.size)
+        # The canonical member of each pair is the one with the lower compressed index --
+        # a choice, not a convention: the only requirement on the representatives is that they
+        # take exactly one determinant from each pair, and the mask-based predicate the full
+        # map uses does not survive compression.
+        out.representatives = np.ascontiguousarray(
+            np.nonzero(np.arange(out.ndet) < out.partner)[0], dtype=np.int64)
+        return out
+
+    def __repr__(self) -> str:
+        return "KramersMap(ndet={}, n_elec={}, T^2={:+d})".format(
+            self.ndet, self.n_elec, self.parity)
 
 
 def ladder_map(masks_from, masks_to, mode: int, *, dagger: bool = False):
@@ -687,6 +903,7 @@ class CASSpace:
                     self.masks)
         self._hole_masks: Optional[np.ndarray] = None
         self._occ: Optional[np.ndarray] = None
+        self._kramers: Optional["KramersMap"] = None
         self.h2d_det = self.h2d_orb = self.h2d_sign = None
         self.d2h_hole = self.d2h_orb = self.d2h_sign = None
         if build_map:
@@ -724,6 +941,17 @@ class CASSpace:
         if self._occ is None:
             self._occ = occupation_matrix(self.masks, self.n_spinor)
         return self._occ
+
+    def kramers(self) -> "KramersMap":
+        """The time-reversal map over this space (built once, cached).
+
+        A complete CAS space over a Kramers-paired spinor set is closed under time reversal by
+        construction — the pair swap permutes the ``k``-subsets among themselves — which is
+        exactly what makes this a permutation rather than a projection.
+        """
+        if self._kramers is None:
+            self._kramers = KramersMap(self)
+        return self._kramers
 
     def determinants(self) -> "Determinants":
         """The same space as an arbitrary-list :class:`Determinants`.
@@ -1333,5 +1561,6 @@ __all__ = ["Determinants", "Connections", "connections", "connections_scan_numpy
            "CASSpace", "binomial_table", "cas_dimension", "cas_vector_gb",
            "excitation_map_gb", "cas_rank_numpy", "cas_unrank_numpy",
            "excitation_map_numpy", "BYTES_PER_INCIDENCE",
-           "kramers_partner", "ladder_map", "apply_ladder",
+           "kramers_partner", "kramers_sign", "kramers_representative", "KramersMap",
+           "kramers_map_gb", "BYTES_PER_KRAMERS_ENTRY", "ladder_map", "apply_ladder",
            "DEFAULT_MAX_SPINORS"]

@@ -3,7 +3,7 @@
     source setup.sh          # once per shell
     python casscf_ligand_field.py
 
-Runs in two to three minutes on TiCl3 and writes ``output/casscf_ligand_field.out``.
+Runs in about three minutes on TiCl3 and writes ``output/casscf_ligand_field.out``.
 
 WHAT THIS SHOWS
 ---------------
@@ -13,7 +13,7 @@ cheap enough to run while you read the file.
 
     ScalarSCF -> Reference -> CASSCF -> the spin-orbit spectrum
 
-Three things are worth watching, and each of them is a decision you will have to make in
+Four things are worth watching, and each of them is a decision you will have to make in
 any real calculation:
 
 1. **The active space is stated as orbital character, not as indices.** "The five lowest
@@ -35,6 +35,53 @@ any real calculation:
    extra, discards them, and reports the gap -- at the starting orbitals as well as the
    converged ones, because the starting one is what says whether the trajectory was safe.
 
+4. **Which CI symmetry mode.** The spectrum is solved twice: once on the general complex
+   path, which is the default and the reference path, and once with the
+   time-reversal-adapted (Kramers-restricted) one, which reaches the same ten states from
+   five Kramers pairs and half the applications of H. It is an odd-electron-only cost
+   option, it is worth nothing below three averaged pairs, and it needs the orbitals to be
+   Kramers paired -- all three of which the run states rather than leaves you to discover.
+
+5. **What point-group symmetry buys, and what it does not.** The molecule is run with
+   `point_group="auto"`, so every orbital carries an irrep label and the run prints the
+   character table of the group it is actually using, with every operation named by its
+   lab-frame geometry. Two things follow. States can then be asked for **per irrep**
+   (`n_states={"1E1/2": 5, "2E1/2": 5}`) instead of "lowest n", which is a request the
+   general path cannot express at all. And the orbital rotation can be masked to within
+   each irrep, so the labels still mean something at convergence rather than only at the
+   start.
+
+   The honest limits are printed too. The real group of planar TiCl3 is D3h; the labels
+   come from the largest subgroup whose *double* group is abelian, which in this frame is
+   Cs(xy) -- so the two members of every Kramers doublet carry the two conjugate fermion
+   labels, and a per-irrep count of one in each is one whole doublet. Because the abelian
+   group is smaller than the real one, a per-irrep count can still cut a physically
+   degenerate manifold, which is exactly why the state-average boundary check of point 3
+   stays load-bearing with symmetry on.
+
+6. **What the multiplets actually are.** The abelian labels say the same thing about all
+   five doublets -- every one of them is "1E1/2 + 2E1/2", because a Kramers pair always
+   spans both conjugate sectors of a group this small. The converged states are therefore
+   also *classified* by the irreps of the molecule's full double group, D3h, which
+   separates the same five doublets into three different multiplets. That is a labelling
+   and nothing else: no symmetry-adapted basis is built, the mathematics of every stage
+   still runs in the abelian subgroup, and the energies are bit-for-bit the ones the
+   unclassified run produces. The run prints three tables so the labels can be read: the
+   abelian character table used in the math, the D3h double-group table used in the
+   labelling, and the computed correspondence between them.
+
+   ⚠ The correspondence table is the row worth reading. Every D3h fermion irrep subduces
+   to *both* abelian sectors, which is the precise statement of why a per-irrep count in
+   the abelian group cannot protect a multiplet -- and why, with the multiplets named, a
+   state count that cuts one is refused outright.
+
+7. **Both symmetries at once.** ``kramers="restricted"`` and ``n_states={irrep: n}``
+   combine, and the combination is stated over **conjugate pairs of irreps**: time reversal
+   conjugates a label, so a sector is not time-reversal-closed by itself and only the union
+   of a conjugate pair is. Asking for five states of 1E1/2 in the restricted mode therefore
+   returns ten -- the five and their time-reversed partners in 2E1/2 -- which is the same
+   spectrum again, reached with both symmetries imposed.
+
 THE ANSWER YOU SHOULD SEE
 -------------------------
 D3h splits the d shell into a1' + e'' + e', so the ten spinors of the 3d shell give **five
@@ -42,8 +89,12 @@ Kramers doublets**:
 
     0, 0 | 15442, 15442 | 15521, 15521 | 23882, 23882 | 23958, 23958   cm^-1
 
-Five pairs, each exactly degenerate. That pattern is fixed by symmetry and by Kramers'
-theorem, not by any parameter of this program. The absolute splittings are a small-basis
+Five pairs, each exactly degenerate, and with symmetry on each pair carries one state of
+1E1/2 and one of 2E1/2 -- the two conjugate fermion irreps of Cs(xy), which is what a
+Kramers pair looks like once the abelian group is smaller than the real one. Classified in
+the full group the same five doublets read **1E1/2, 1E1/2, E3/2, E3/2, 2E1/2**: three
+distinct D3h multiplets where the abelian labels saw one. That pattern
+is fixed by symmetry and by Kramers' theorem, not by any parameter of this program. The absolute splittings are a small-basis
 CASSCF without dynamic correlation, so treat them as the ligand-field pattern rather than
 as spectroscopy; example 5 is where the correlation correction comes in.
 
@@ -177,8 +228,13 @@ def main() -> int:
     # ----------------------------------------------------------------------------------
     # 1. The front end. Everything below starts from these orbitals and integrals.
     # ----------------------------------------------------------------------------------
+    # point_group="auto" tests the operations in the frame the geometry is GIVEN in -- the
+    # molecule is never reoriented, because that would move the gauge origin and every
+    # property operator fixed with it. Planar TiCl3 built as above has its C3 axis along z
+    # and its ligands in the xy plane, so what is found here is the reflection sigma(xy).
     molecule = kuiva.Molecule(atoms=planar_mx3("Ti", "Cl", R_TICL),
-                              basis="x2c-SVPall-2c", charge=0, spin=1)
+                              basis="x2c-SVPall-2c", charge=0, spin=1,
+                              point_group="auto")
     # atomic_reference=True also computes each element's free-atom reference orbitals here,
     # in this basis (cached per element) -- they are what the robust atomic-reference
     # charges below are measured against, and only the front end can build them.
@@ -254,6 +310,162 @@ def main() -> int:
     out.note(log, "eigenstates. There is no separate spin-orbit mixing step and no")
     out.note(log, "spin-free intermediate to interpret.")
 
+    # ----------------------------------------------------------------------------------
+    # 3a. The same spectrum, solved with the time-reversal-adapted (Kramers-restricted) CI.
+    # ----------------------------------------------------------------------------------
+    # A non-default symmetry mode, for ODD electron counts only, and it is kept for cost --
+    # not for the degeneracy, which the general path already delivers below. The
+    # eigensolver keeps its expansion subspace closed under time reversal, so one stored
+    # direction spans a whole Kramers pair and half as many applications of H deliver the
+    # same spectrum. Everything it returns is in the general convention: the same energies
+    # in the same order, the same density matrices, the same state-averaging gate.
+    #
+    # ⚠ Two honest caveats, both worth knowing before you switch it on:
+    #
+    #   * the saving arrives above TWO Kramers pairs. At two, a block Davidson adds one
+    #     expansion direction per iteration where the general path adds two, needs twice
+    #     the iterations, and comes out slightly slower. The CASSCF above averages over
+    #     exactly one doublet, which is why the mode is used here on the ten-root spectrum
+    #     and not on the orbital optimization.
+    #   * it needs the orbitals to be Kramers paired, which is a property of the orbital
+    #     set and not of the method. That is checked at every solve rather than assumed,
+    #     and an unrestricted reference is refused rather than silently mishandled.
+    out.subsection(log, "The same spectrum, Kramers-restricted")
+    restricted = casci(reference.reference, n_states=N_STATES_CI, coeff=cas.coeff,
+                       active=cas.active.spaces.active, n_active_elec=N_ACTIVE_ELEC,
+                       kramers="restricted", report=False)
+    mode_shift = float(np.max(np.abs(restricted.total_energies
+                                     - spectrum.total_energies))) * HARTREE_TO_CM
+    out.entries(log, [
+        ("applications of H, general", spectrum.n_apply),
+        ("applications of H, Kramers-restricted", restricted.n_apply, "",
+         "the same {} states from {} time-reversal pairs".format(N_STATES_CI,
+                                                                 N_STATES_CI // 2)),
+        ("largest shift in the spectrum", mode_shift, "cm^-1", "", out.SCI_FMT),
+    ])
+    out.note(log, "the two modes are two routes to one spectrum. The general path is the")
+    out.note(log, "default and the reference path; this one is a cost option and says so")
+    out.note(log, "when it is selected.")
+
+    # ----------------------------------------------------------------------------------
+    # 3c. The same spectrum again, asked for PER IRREP.
+    # ----------------------------------------------------------------------------------
+    # With labels on, n_states can be a mapping instead of a count. Each irrep is solved in
+    # its own sector of the determinant space, so "the five lowest states of 1E1/2" is a
+    # request rather than a filter applied afterwards -- and the states come back
+    # sector-pure, which the general path's degenerate blocks are not (inside a degenerate
+    # block the eigensolver may return any rotation, and here the two conjugate sectors meet
+    # at every level, so half of a general solve's states are 50/50 mixtures. That is the
+    # eigensolver's freedom, not impurity, and the run reports it as a block).
+    #
+    # ⚠ The active space here is a Kramers-paired one and the state count is even, so this
+    # asks for exactly the same ten states by a different route. That is the point: it is a
+    # comparison, not a shortcut.
+    out.subsection(log, "The same spectrum, selected per irrep")
+    fermion = [reference.reference.spinor_labels.group.irrep_name(t)
+               for t in reference.reference.spinor_labels.group.labels(fermion=True)]
+    per_irrep = casci(reference.reference,
+                      n_states={name: N_STATES_CI // len(fermion) for name in fermion},
+                      coeff=cas.coeff, active=cas.active.spaces.active,
+                      n_active_elec=N_ACTIVE_ELEC, enforce_kramers=False, report=False)
+    irrep_shift = float(np.max(np.abs(np.sort(per_irrep.total_energies)
+                                      - spectrum.total_energies))) * HARTREE_TO_CM
+    irrep_counts = {name: sum(1 for x in per_irrep.irreps if x == name) for name in fermion}
+    out.entries(log, [
+        ("fermion irreps of the label group", ", ".join(fermion), "",
+         "conjugate pair: one member of every Kramers doublet in each"),
+        ("states per irrep", ", ".join("{}: {}".format(k, v)
+                                       for k, v in irrep_counts.items())),
+        ("largest shift in the spectrum", irrep_shift, "cm^-1", "", out.SCI_FMT),
+        ("weight outside a state's own irrep", per_irrep.sector_leakage, "", "",
+         out.SCI_FMT),
+    ])
+    out.note(log, "the two selections are two routes to one spectrum. Per-irrep selection")
+    out.note(log, "changes what n_states MEANS, so it is never applied because a group was")
+    out.note(log, "detected -- only because it was asked for.")
+
+    # ----------------------------------------------------------------------------------
+    # 3c-bis. The multiplets, named by the FULL double group.
+    # ----------------------------------------------------------------------------------
+    # The abelian labels above are as far as one integer per spinor can go: every Kramers
+    # doublet spans both conjugate sectors, so all five read "1E1/2 + 2E1/2" and the labels
+    # cannot tell one doublet from another. The classification layer applies the operators
+    # of the molecule's full double group (D3h here) to the converged CI states and projects
+    # the block traces onto its characters, which separates the same five doublets into three
+    # multiplets.
+    #
+    # ⚠ It CLASSIFIES and never adapts. No symmetry-adapted many-particle basis is built,
+    # nothing in the CI or the orbital optimizer changes, and the energies are the same
+    # numbers -- which is asserted below rather than asserted in prose. What it buys is that
+    # a multiplet's dimension is then fixed by theory, so a state count that cuts one is
+    # refused instead of producing a plausible average over a fragment.
+    out.subsection(log, "The multiplets, in the full double group")
+    unclassified = casci(reference.reference, n_states=N_STATES_CI, coeff=cas.coeff,
+                         active=cas.active.spaces.active, n_active_elec=N_ACTIVE_ELEC,
+                         classify=False, report=False)
+    full = reference.reference.symmetry.full_group
+    multiplets = list(spectrum.multiplets or ())
+    distinct = sorted(set(multiplets))
+    subduction = full.subduction(reference.reference.symmetry.group)
+    spread = {full.irrep_names[r]: sorted(reference.reference.symmetry.group.irrep_name(t)
+                                          for t in d)
+              for r, d in subduction.items() if full.is_fermion(r)}
+    out.entries(log, [
+        ("classification group", full.name, "",
+         "labels on converged states; the math ran in {}".format(
+             reference.reference.symmetry.group.name)),
+        ("multiplets of the ten states", ", ".join(multiplets)),
+        ("distinct multiplets", len(distinct), "", ", ".join(distinct)),
+        ("worst projection residual", spectrum.classification.max_residual, "", "",
+         out.SCI_FMT),
+    ])
+    for name in sorted(spread):
+        out.entry(log, "{} subduces to".format(name), " + ".join(spread[name]), "",
+                  "both abelian sectors, which is why an abelian count cannot protect it")
+    out.note(log, "the abelian labels call all five doublets the same thing; the full group")
+    out.note(log, "separates them. The classification changes no energy and no density.")
+
+    # ----------------------------------------------------------------------------------
+    # 3c-ter. Both symmetries at once.
+    # ----------------------------------------------------------------------------------
+    # ⚠ Time reversal CONJUGATES an irrep label, so a sector is time-reversal-closed only
+    # when it is self-conjugate and otherwise only the union of a conjugate pair is. The
+    # unit of a Kramers-restricted per-irrep selection is therefore that pair: five states
+    # of 1E1/2 come back as ten, the five and their partners in 2E1/2.
+    out.subsection(log, "Both symmetries at once")
+    combined = casci(reference.reference, n_states={fermion[0]: N_STATES_CI // 2},
+                     coeff=cas.coeff, active=cas.active.spaces.active,
+                     n_active_elec=N_ACTIVE_ELEC, kramers="restricted", report=False)
+    combined_shift = float(np.max(np.abs(np.sort(combined.total_energies)
+                                         - spectrum.total_energies))) * HARTREE_TO_CM
+    out.entries(log, [
+        ("requested", "{}: {}".format(fermion[0], N_STATES_CI // 2), "",
+         "one irrep of the conjugate pair"),
+        ("states returned", int(combined.energies.size), "",
+         "the partners in {} come with them".format(fermion[1])),
+        ("largest shift in the spectrum", combined_shift, "cm^-1", "", out.SCI_FMT),
+    ])
+
+    # ----------------------------------------------------------------------------------
+    # 3d. A symmetry-preserving CASSCF, for comparison.
+    # ----------------------------------------------------------------------------------
+    # preserve_symmetry=True masks the orbital rotation to within each irrep, so exp(kappa)
+    # cannot mix them and the labels are exact at convergence rather than only at the start.
+    # ⚠ It is a CONSTRAINT: what it converges to is the lowest *symmetric* solution, which
+    # is not the global one wherever the symmetry is spontaneously broken. Here it is not,
+    # so the two agree -- and that agreement is the check worth making.
+    out.subsection(log, "A symmetry-preserving CASSCF")
+    cas_sym = kuiva.CASSCF(reference, character=("Ti", "d"), n_active=N_ACTIVE,
+                           n_active_elec=N_ACTIVE_ELEC, n_states=N_STATES_SCF,
+                           max_iter=MAX_ITER, conv_grad=CONV_GRAD,
+                           preserve_symmetry=True, report=False).run()
+    out.entries(log, [
+        ("unconstrained CASSCF energy", cas.energy, "Eh", "", out.E_FMT),
+        ("irrep-blocked CASSCF energy", cas_sym.energy, "Eh", "", out.E_FMT),
+        ("difference", (cas_sym.energy - cas.energy) * HARTREE_TO_CM, "cm^-1", "",
+         out.SCI_FMT),
+    ])
+
     ti_d_fraction = is_titanium_d(reference.reference, cas.coeff,
                                   cas.active.spaces.active)
 
@@ -317,6 +529,26 @@ def main() -> int:
             max(abs(s) for s in splittings) < KRAMERS_SPLIT_MAX,
         "the CASCI at converged orbitals reproduces the CASSCF doublet":
             abs(float(np.mean(spectrum.total_energies[:2])) - cas.energy) < 1e-8,
+        "the Kramers-restricted CI gives the same spectrum": mode_shift < 1e-4,
+        "per-irrep selection gives the same spectrum": irrep_shift < 1e-4,
+        "and returns sector-pure states": per_irrep.sector_leakage < 1e-8,
+        "each Kramers doublet has one member in each conjugate irrep":
+            set(irrep_counts.values()) == {N_STATES_CI // 2},
+        "the full group separates the five doublets into three multiplets":
+            len(distinct) == 3 and all(x != "?" for x in multiplets),
+        "every multiplet is a whole irrep of D3h":
+            spectrum.classification.max_residual < 1e-8,
+        "and every one of them spreads over both abelian sectors":
+            all(len(v) == 2 for v in spread.values()),
+        "classifying changed no energy": np.array_equal(spectrum.energies,
+                                                        unclassified.energies),
+        "both symmetries at once give the same spectrum": combined_shift < 1e-4,
+        "and a per-irrep request under Kramers restriction returns whole conjugate pairs":
+            combined.energies.size == N_STATES_CI,
+        "the symmetry-preserving CASSCF converged to the same energy":
+            bool(cas_sym.converged) and abs(cas_sym.energy - cas.energy) < 1e-6,
+        "and reaches it with half the applications of H":
+            2 * restricted.n_apply == spectrum.n_apply,
         "the state average is unambiguous at both ends":
             bool(cas.boundary.is_clean and cas.boundary_initial.is_clean),
         "the boundary gap exceeds {:.0e} cm^-1 at both ends".format(BOUNDARY_MIN_CM):

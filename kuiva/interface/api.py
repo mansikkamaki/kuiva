@@ -7,7 +7,7 @@ multireference layer consumes. This is the single public entry point for the fro
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -44,12 +44,24 @@ class Molecule:
         ``2S`` (number of unpaired electrons), PySCF convention.
     unit : str
         ``"Angstrom"`` (default) or ``"Bohr"``.
+    point_group : str, optional
+        Abelian double-group symmetry: ``"auto"``, or a name of the D2h chain. ⚠ The
+        operations are tested in the frame the geometry is given in and the molecule is never
+        reoriented, so orient the input so the symmetry axis is ``z``. See
+        :func:`kuiva.interface.pyscf_bridge.run_scalar_x2c`.
+    classification : str or bool, optional
+        The non-abelian classification layer (needs ``point_group``): ``"auto"`` detects the
+        full point double group and labels converged states by its irreps, activating only
+        where the abelian group is not the whole story. ⚠ Classification, never adaptation —
+        it changes no number.
     """
     atoms: List[Atom]
     basis: BasisSpec
     charge: int = 0
     spin: int = 0
     unit: str = "Angstrom"
+    point_group: Optional[str] = None
+    classification: object = "auto"
 
     def __post_init__(self) -> None:
         # Normalise symbols and validate the basis assignment eagerly (fail fast). The
@@ -91,6 +103,8 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                          gauge_origin=None, property_picture_change: bool = False,
                          anomaly_picture_change: bool = False,
                          atomic_reference: bool = False,
+                         point_group: Optional[str] = None,
+                         classification=None,
                          verbose: int = 0) -> ScalarX2CData:
     """Run the scalar-X2C front-end for ``molecule`` and return the ingested reference.
 
@@ -120,6 +134,12 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
         ("charge", molecule.charge),
         ("spin (2S)", molecule.spin),
     ])
+    if molecule.point_group is not None and point_group is not None \
+            and str(molecule.point_group) != str(point_group):
+        raise ValueError(
+            "the molecule declares point_group={!r} and this call asks for {!r}; the symmetry "
+            "a calculation runs in is one statement, not two".format(molecule.point_group,
+                                                                     point_group))
     return run_scalar_x2c(molecule, reference=reference, fitting=fitting, auxbasis=auxbasis,
                           with_soc=with_soc, method=method, x2c_approx=x2c_approx,
                           screening=screening, screening_options=screening_options,
@@ -130,7 +150,12 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                           one_centre=one_centre, gauge_origin=gauge_origin,
                           property_picture_change=property_picture_change,
                           anomaly_picture_change=anomaly_picture_change,
-                          atomic_reference=atomic_reference, verbose=verbose)
+                          atomic_reference=atomic_reference,
+                          point_group=(molecule.point_group if point_group is None
+                                       else point_group),
+                          classification=(molecule.classification if classification is None
+                                          else classification),
+                          verbose=verbose)
 
 
 @dataclass
@@ -156,6 +181,28 @@ class SpinorReference:
         """Spinor coefficients in the AO basis, as the integral transform expects them."""
         sb = self.spinors.transform_scalar_basis(self.orth.x, basis="ao")
         return sb.c if columns is None else sb.take(columns)
+
+    @property
+    def symmetry(self):
+        """The scalar reference's :class:`kuiva.symm.MolecularSymmetry`, or ``None``.
+
+        ``None`` means the front end was not asked for symmetry, and every consumer then
+        behaves exactly as it did before labels existed.
+        """
+        return self.data.symmetry
+
+    @property
+    def spinor_labels(self):
+        """Per-spinor irrep labels (:class:`kuiva.symm.OrbitalLabels`), or ``None``.
+
+        The labels are of the **guess** spinors, which are the columns every active-space
+        selection indexes into. ⚠ They stay exact only while the orbitals stay symmetry-pure:
+        a CASSCF that is not told to preserve the symmetry may rotate out of it, which the
+        CI measures rather than assumes.
+        """
+        if self.data.symmetry is None:
+            return None
+        return self.data.symmetry.spinor_labels()
 
     @property
     def ao_layout(self):
@@ -330,7 +377,7 @@ def active_space_for(reference: SpinorReference, *, active=None, character=None,
         if character is not None:
             raise ValueError("give the resolved ActiveSpace or a character selection, "
                              "not both")
-        return active
+        return _with_labels(active, reference)
     if (active is None) == (character is None):
         raise ValueError(
             "give exactly one of active=[spinor indices] or character=(atom, l) with "
@@ -339,8 +386,9 @@ def active_space_for(reference: SpinorReference, *, active=None, character=None,
     n_orb = reference.nspinor
     n_elec_total = reference.data.nelec_total
     if active is not None:
-        return active_space(active, n_orb, n_elec_total, n_active_elec=n_active_elec,
-                            kramers_paired=reference.spinors.kramers_paired)
+        return _with_labels(
+            active_space(active, n_orb, n_elec_total, n_active_elec=n_active_elec,
+                         kramers_paired=reference.spinors.kramers_paired), reference)
     kwargs = {} if threshold is None else {"threshold": float(threshold)}
 
     if isinstance(character, list):
@@ -375,25 +423,85 @@ def active_space_for(reference: SpinorReference, *, active=None, character=None,
         elif n_active is not None and n_explicit != int(n_active):
             raise ValueError("the fragment counts sum to {} spinors but n_active = {}; drop "
                              "n_active or make them agree".format(n_explicit, n_active))
-        return active_space_by_characters(
+        return _with_labels(active_space_by_characters(
             reference.spinors_in_ao(), reference.data.s_ao, reference.ao_layout,
             n_elec_total, fragments=[tuple(e) for e in entries],
-            n_active_elec=n_active_elec, occupation=reference.spinors.occ, **kwargs)
+            n_active_elec=n_active_elec, occupation=reference.spinors.occ, **kwargs), reference)
 
     if n_active is None or int(n_active) % 2 != 0:
         raise ValueError("character selection needs an even n_active (whole Kramers pairs, "
                          "whole Kramers pairs only); got {!r}".format(n_active))
     atom, l = character
-    return active_space_by_character(
+    return _with_labels(active_space_by_character(
         reference.spinors_in_ao(), reference.data.s_ao, reference.ao_layout, n_elec_total,
         atom=atom, l=l, n_pairs=int(n_active) // 2, n_active_elec=n_active_elec,
-        occupation=reference.spinors.occ, **kwargs)
+        occupation=reference.spinors.occ, **kwargs), reference)
+
+
+def _with_labels(space, reference: SpinorReference):
+    """Attach the reference's spinor labels, sliced to the active columns.
+
+    ⚠ **A label-open active space makes every sector count a lie.** The labels are attached
+    only after checking that the space is closed under conjugation — that whenever a spinor is
+    active, the partner carrying the conjugate label is too. A Kramers-paired selection is
+    closed by construction (a pair's two members carry conjugate labels), so this fires only
+    where the pairing was already broken, and it warns rather than refusing because the
+    calculation itself is still perfectly well defined without labels.
+
+    ⚠ Closure under the *abelian* group is not closure under the molecule's real group. Where
+    the two differ — every atom, and every molecule reduced from a group whose double group
+    is non-abelian — a per-irrep count can still cut a physically degenerate manifold, which
+    is what the state-average gate and the boundary diagnostic are there for.
+    """
+    labels = reference.spinor_labels
+    if labels is None:
+        return space
+    if len(labels) != reference.nspinor:
+        log.warning("the reference carries %d spinor labels for %d spinors, so the active "
+                    "space is left unlabelled; per-irrep selection is unavailable for this "
+                    "run", len(labels), reference.nspinor)
+        return space
+    active = labels.take(space.spaces.active)
+    group = active.group
+    counts = active.counts()
+    unbalanced = [group.irrep_name(t) for t in group.labels(fermion=True)
+                  if counts.get(t, 0) != counts.get(group.conjugate(t), 0)]
+    if unbalanced:
+        log.warning("the active space holds unequal numbers of spinors in the conjugate "
+                    "irrep pair(s) %s, so it is not closed under time reversal; sector counts "
+                    "computed from it describe the truncation as much as the physics",
+                    ", ".join(sorted(unbalanced)))
+    return replace(space, labels=active)
+
+
+def _classifier_for(reference: SpinorReference, space, orbitals, solver_space,
+                    classify=True):
+    """A :class:`kuiva.symm.StateClassifier` for this reference, or ``None``.
+
+    ⚠ Everything here degrades to ``None`` rather than raising: the non-abelian layer is a
+    *labelling* of converged states and no calculation may fail because a label could not be
+    attached. The one thing that does refuse is downstream — a state count that cuts a
+    multiplet whose dimension theory fixes.
+    """
+    if not classify:
+        return None
+    symmetry = reference.symmetry
+    if symmetry is None or getattr(symmetry, "full_group", None) is None:
+        return None
+    from ..symm.classify import StateClassifier
+    try:
+        return StateClassifier(symmetry.full_group, reference.ao_layout, orbitals,
+                               np.asarray(reference.data.s_ao), space.spaces, solver_space)
+    except Exception as exc:                       # noqa: BLE001 - advisory by design
+        log.warning("the non-abelian classification layer is off for this active space (%s); "
+                    "the abelian labels and every number are unaffected", exc)
+        return None
 
 
 def casci(reference: SpinorReference, *, active=None, character=None,
           n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
           n_states: int = 1, weights=None, coeff: Optional[np.ndarray] = None,
-          report: bool = True, **solver_kwargs):
+          report: bool = True, classify: bool = True, **solver_kwargs):
     """A full CI at fixed orbitals over the chosen active space.
 
     The spectrum this returns **is** the spin-orbit spectrum: the CI is already
@@ -412,18 +520,25 @@ def casci(reference: SpinorReference, *, active=None, character=None,
         out.section(log, "CASCI")
         space.report(log)
     orbitals = reference.spinors_in_ao() if coeff is None else np.ascontiguousarray(coeff)
+    if space.labels is not None:
+        solver_kwargs.setdefault("symmetry", space.labels)
+    from ..ci.strings import CASSpace
+    classifier = _classifier_for(reference, space, orbitals,
+                                 CASSpace(space.spaces.n_active, space.n_elec),
+                                 classify=classify)
     result = _casci(reference.factors, reference.h_one_electron(), orbitals, space.spaces,
                     space.n_elec, n_states=n_states, e_nuc=reference.data.e_nuc,
-                    weights=weights, report=report, **solver_kwargs)
+                    weights=weights, report=report, classifier=classifier, **solver_kwargs)
     result.description = space.description
     return result
 
 
 def casscf(reference: SpinorReference, *, active=None, character=None,
            n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
-           n_states: int = 1, weights=None, coeff: Optional[np.ndarray] = None,
+           n_states=1, weights=None, coeff: Optional[np.ndarray] = None,
            checkpoint=None, restart=None, checkpoint_options: Optional[Dict] = None,
-           solver_options: Optional[Dict] = None, callback=None, report: bool = True,
+           solver_options: Optional[Dict] = None, callback=None,
+           preserve_symmetry: bool = False, report: bool = True, classify: bool = True,
            **optimizer_kwargs):
     """State-averaged two-component CASSCF — the calculation this program exists for.
 
@@ -447,6 +562,16 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
 
     ``optimizer_kwargs`` pass through to :func:`kuiva.mcscf.orbopt.optimize_orbitals`
     (``mode``, ``max_iter``, ``conv_grad``, ``conv_energy``, ``max_step``, ...).
+
+    Symmetry
+    --------
+    ``n_states={irrep: n}`` selects states **per irrep** instead of "lowest n" (the front end
+    must have been run with ``point_group=``). ``preserve_symmetry=True`` additionally
+    restricts the orbital rotation to within each irrep, so the labels still mean something at
+    convergence rather than only at the start. ⚠ That is a **constraint**: what it converges
+    to is the lowest *symmetric* solution, which is not the global one wherever the symmetry
+    is spontaneously broken. Without it a per-irrep selection still works, and the CI measures
+    how far the orbitals have drifted out of the symmetry rather than assuming they have not.
 
     Is the state average complete?
     -------------------------------------
@@ -503,8 +628,11 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
         if resumed is not None:
             resumed.report(log)
 
+    solver_options = dict(solver_options or {})
+    if space.labels is not None:
+        solver_options.setdefault("symmetry", space.labels)
     solver = FullCISolver(space.spaces.n_active, space.n_elec, n_states=n_states,
-                          weights=weights, **(solver_options or {}))
+                          weights=weights, **solver_options)
     if resumed is not None:
         solver.set_guess(resumed.ci_vectors)
         optimizer_kwargs.update(resumed.optimizer_kwargs())
@@ -521,10 +649,30 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
                                   **(checkpoint_options or {}))
         hook = policy.callback
 
+    if preserve_symmetry:
+        labels = reference.spinor_labels
+        if labels is None:
+            raise ValueError(
+                "preserve_symmetry=True needs irrep labels for the orbitals, and this "
+                "reference carries none; run the front end with point_group=")
+        if coeff is not None or resumed is not None:
+            log.warning("preserve_symmetry=True masks the orbital rotation by the labels of "
+                        "the reference's OWN spinors, and this run starts from a different "
+                        "orbital set; the mask is only meaningful if that set is the "
+                        "symmetry-adapted one the labels were read off")
+        optimizer_kwargs.setdefault("labels", labels.labels)
+
     optimizer_kwargs.setdefault("report", report)
+    # the two-component spin matrices let the converged boundary report state whether the
+    # averaged density is spin-rotation invariant — the front-end has the overlap, the
+    # mcscf layer deliberately does not
+    from ..spinor.expand import spin_operator
+    optimizer_kwargs.setdefault("spin_ao_2c", spin_operator(np.asarray(reference.data.s_ao)))
+    classifier = _classifier_for(reference, space, orbitals, solver.space, classify=classify)
     outcome = _casscf(reference.factors, reference.h_one_electron(), orbitals, space.spaces,
                       space.n_elec, n_states=n_states, e_nuc=reference.data.e_nuc,
-                      solver=solver, active=space, callback=hook, **optimizer_kwargs)
+                      solver=solver, active=space, callback=hook, classifier=classifier,
+                      **optimizer_kwargs)
     if policy is not None:
         outcome.checkpoint_path = str(policy.path)
         if report:

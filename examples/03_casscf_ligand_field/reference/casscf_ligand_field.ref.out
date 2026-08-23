@@ -2,7 +2,7 @@
                                    K U I V A                                    
                  relativistic multireference quantum chemistry                  
                     example 3: two-component CASSCF on TiCl3                    
-                                 version 0.14.0                                 
+                                 version 0.16.0                                 
                 compiled kernels: disabled (KUIVA_KERNELS=numpy)                
            threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
 ================================================================================
@@ -31,7 +31,7 @@
      three-index MO block B^P_p,occ                           0.288  GB   (210 spinors x 73 occupied)
    memory limit                                               6.000  GB   (set for this calculation)
    planned peak                                               0.703  GB
-   machine available                                         10.780  GB
+   machine available                                         10.077  GB
    SCF reference                                               ROHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                           105
@@ -40,10 +40,10 @@
    two-electron route                                  conventional
    gauge origin (property operators)             (-0.0000, 0.0000, 0.0000) bohr   (centre of mass)
    nuclear repulsion                               381.610309039030  Eh
-   scalar X2C SCF energy                         -2235.138328803089  Eh
+   scalar X2C SCF energy                         -2235.138328803090  Eh
    SCF converged                                                yes
-   SCF time                                                    1.37  s wall   (5.46 s cpu)
-   AO integral time                                            0.77  s wall   (3.08 s cpu)
+   SCF time                                                    1.35  s wall   (5.40 s cpu)
+   AO integral time                                            0.79  s wall   (3.17 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
    two-component Hamiltonian                                X2C-AMF
@@ -58,10 +58,64 @@
    reference configurations                      Cl: s6 p11, Ti: s8 p12 d2
    spin-free correction, max |dh_sf|                   7.592974e-02  Eh
    spin-orbit correction, max |dw|                     8.384170e-03  Eh
-   discarded time-reversal-odd part                       6.493e-10  Eh   (7.1e-12 relative)
+   discarded time-reversal-odd part                       9.347e-10  Eh   (1.0e-11 relative)
+
+ -- Molecular symmetry ---------------------------------------------------------
+   point group requested                                       auto
+   operations detected                                    sigma(xy)
+   label group                                               Cs(xy)   (generators sigma(xy)(order 4))
+   frame                                             input geometry   (the molecule is never reoriented)
+   degenerate blocks adapted                                      4   (rotated inside a degenerate block; no observable changes)
+   largest block mixing removed                            1.47e-07
+   worst off-diagonal residual                             5.62e-09   (of C^T S U(g) C)
+   character table of Cs(xy) (lab frame; the group used in the math)
+   irrep                 E      sigma(xy)           Ebar   sigma(xy)bar
+   --------  -------------  -------------  -------------  -------------
+   A'                    1              1              1              1
+   A''                   1             -1              1             -1
+   1E1/2                 1              i             -1             -i
+   2E1/2                 1             -i             -1              i
+   --------  -------------  -------------  -------------  -------------
+   rows above the fermion block are single-valued (boson) irreps; the rows with chi(Ebar) = -1 are the spinor irreps
+   classification group                                         D3h   (non-abelian labels on converged states; the math stays abelian)
+   classification group order                                    24
+   character table of the double group of D3h (lab frame; the group used in the CLASSIFICATION)
+   irrep           E     Ebar   2C3(z)   2C3(z)bar   6C2(x)   2sigma(xy)   6sigma(xz)   2S3(z)   2S3(z)bar
+   --------  -------  -------  -------  ----------  -------  -----------  -----------  -------  ----------
+   A1'             1        1        1           1        1            1            1        1           1
+   A1''            1        1        1           1        1           -1           -1       -1          -1
+   A2'             1        1        1           1       -1            1           -1        1           1
+   A2''            1        1        1           1       -1           -1            1       -1          -1
+   E'              2        2       -1          -1        0            2            0       -1          -1
+   E''             2        2       -1          -1        0           -2            0        1           1
+   1E1/2           2       -2        1          -1        0            0            0    1.732      -1.732
+   2E1/2           2       -2        1          -1        0            0            0   -1.732       1.732
+   E3/2            2       -2       -2           2        0            0            0        0           0
+   --------  -------  -------  -------  ----------  -------  -----------  -----------  -------  ----------
+   rows with chi(Ebar) = -dim are the spinor (double-valued) irreps; the mathematics of the calculation runs in the abelian subgroup above, not here
+   correspondence between the classification group and the label group (computed subduction)
+   irrep of D3h      dim  sectors of Cs(xy)   
+   --------------  -----  --------------------
+   A1'                 1  A'                  
+   A1''                1  A''                 
+   A2'                 1  A'                  
+   A2''                1  A''                 
+   E'                  2  2 x A'              
+   E''                 2  2 x A''             
+   1E1/2               2  1E1/2 + 2E1/2       
+   2E1/2               2  1E1/2 + 2E1/2       
+   E3/2                2  1E1/2 + 2E1/2       
+   --------------  -----  --------------------
+   a multiplet spread over more than one sector is one a per-irrep state count can cut in half with every abelian check still passing
+   spinors per fermion irrep
+   irrep        spinors   conjugate
+   ----------  --------  ----------
+   1E1/2            105       2E1/2
+   2E1/2            105       1E1/2
+   ----------  --------  ----------
 
 ================================================================================
- Orthonormal working basis                                           t = 61.54 s
+ Orthonormal working basis                                           t = 68.82 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                           105
@@ -72,17 +126,17 @@
    condition number of S (retained)                       2.203e+05
 
 ================================================================================
- Spinor expansion                                                    t = 61.54 s
+ Spinor expansion                                                    t = 68.82 s
 ================================================================================
    scalar basis functions                                       105   (working basis)
    spinors                                                      210
    Kramers pairs                                                105
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    3.01e-11
+   orthonormality error                                    3.06e-11
 
 ================================================================================
- Two-electron integrals                                              t = 61.54 s
+ Two-electron integrals                                              t = 68.82 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -94,10 +148,10 @@
    largest neglected diagonal                             9.968e-09  Eh
    factor storage                                             0.047  GB
    matrix elements                               stored AO integral array
-   decomposition time                                          1.22  s wall
+   decomposition time                                          1.25  s wall
 
 ================================================================================
- Problem                                                             t = 62.76 s
+ Problem                                                             t = 70.07 s
 ================================================================================
    system                                                     TiCl3   (planar D3h, Ti-Cl = 2.25 A)
    physics                                       Ti(III) d^1 in a ligand field
@@ -108,11 +162,17 @@
    CASCI roots at the converged orbitals                         10   (5 Kramers doublets)
 
 ================================================================================
- CASSCF                                                              t = 62.77 s
+ CASSCF                                                              t = 70.08 s
 ================================================================================
    active space                                          CAS(1, 10)   (5 lowest Kramers pairs of l=2 character on 1 Ti)
    inactive / active / virtual spinors                72 / 10 / 128
    determinants                                                  10
+   active spinors per fermion irrep
+   irrep        spinors   conjugate
+   ----------  --------  ----------
+   1E1/2              5       2E1/2
+   2E1/2              5       1E1/2
+   ----------  --------  ----------
    state-average boundary gap                              15433.24  cm^-1   (to root 3 of 10, at the starting orbitals)
 
  -- Orbital optimization -------------------------------------------------------
@@ -123,46 +183,54 @@
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      1     -2235.582958076734   -6.242e-03   1.938e+00    0.0020  qn           2.34
-      2     -2235.583056367003   -9.829e-05   7.817e-02    0.0004  qn           2.38
-      3     -2235.583075699362   -1.933e-05   1.090e-02    0.0003  qn           2.39
-      4     -2235.583099222541   -2.352e-05   1.485e-02    0.0009  qn           2.38
-      5     -2235.583106589798   -7.367e-06   1.203e-02    0.0012  qn           2.39
-      6     -2235.583113939581   -7.350e-06   4.350e-02    0.0005  qn           2.39
-      7     -2235.583116027221   -2.088e-06   5.745e-03    0.0003  qn           2.38
-      8     -2235.583119661601   -3.634e-06   5.594e-03    0.0011  qn           2.38
-      9     -2235.583122830029   -3.168e-06   4.923e-03    0.0019  qn           2.38
-     10     -2235.583125768431   -2.938e-06   2.707e-02    0.0012  qn           2.38
-     11     -2235.583127120391   -1.352e-06   8.036e-03    0.0006  qn           2.39
-     12     -2235.583127748601   -6.282e-07   3.355e-03    0.0004  qn           2.39
-     13     -2235.583127765586   -1.698e-08   6.235e-03    0.0002  qn           2.38
-     14     -2235.583128002085   -2.365e-07   1.388e-02    0.0001  qn           2.38
-     15     -2235.583128011443   -9.358e-09   1.101e-03    0.0000  qn           2.39
-     16     -2235.583128018235   -6.792e-09   1.278e-04    0.0000  qn           2.42
-     17     -2235.583128020670   -2.435e-09   3.891e-04    0.0000  qn           2.39
-     18     -2235.583128022767   -2.096e-09   5.815e-04    0.0000  qn           2.38
-     19     -2235.583128023030   -2.628e-10   1.388e-04    0.0000  qn           2.39
-     20     -2235.583128023030    0.000e+00   3.208e-05    0.0000  qn           0.56
+      1     -2235.582958076773   -6.242e-03   1.938e+00    0.0020  qn           2.46
+      2     -2235.583056367032   -9.829e-05   7.817e-02    0.0004  qn           2.43
+      3     -2235.583075699381   -1.933e-05   1.090e-02    0.0004  qn           2.45
+      4     -2235.583099222560   -2.352e-05   1.485e-02    0.0011  qn           2.43
+      5     -2235.583106589805   -7.367e-06   1.203e-02    0.0013  qn           2.43
+      6     -2235.583113939589   -7.350e-06   4.350e-02    0.0005  qn           2.48
+      7     -2235.583116027230   -2.088e-06   5.745e-03    0.0003  qn           2.45
+      8     -2235.583119661611   -3.634e-06   5.594e-03    0.0011  qn           2.43
+      9     -2235.583122830042   -3.168e-06   4.923e-03    0.0019  qn           2.46
+     10     -2235.583125768444   -2.938e-06   2.707e-02    0.0012  qn           2.44
+     11     -2235.583127120400   -1.352e-06   8.035e-03    0.0006  qn           2.42
+     12     -2235.583127748609   -6.282e-07   3.355e-03    0.0004  qn           2.45
+     13     -2235.583127765593   -1.698e-08   6.235e-03    0.0003  qn           2.44
+     14     -2235.583128002092   -2.365e-07   1.388e-02    0.0001  qn           2.43
+     15     -2235.583128011449   -9.357e-09   1.101e-03    0.0000  qn           2.48
+     16     -2235.583128018240   -6.791e-09   1.278e-04    0.0000  qn           2.42
+     17     -2235.583128020674   -2.434e-09   3.891e-04    0.0000  qn           2.43
+     18     -2235.583128022773   -2.099e-09   5.815e-04    0.0000  qn           2.44
+     19     -2235.583128023038   -2.647e-10   1.388e-04    0.0000  qn           2.44
+     20     -2235.583128023038    0.000e+00   3.208e-05    0.0000  qn           0.57
    ----  ---------------------  -----------  ----------  --------  ------  ---------
    converged
    second-order steps taken                                       0
    Hessian-vector products                                        0
    rejected steps                                                 0
-     state                 E [Eh]     rel [cm^-1]     weight
-   -------  ---------------------  --------------  ---------
-         0     -2235.583128023030            0.00     0.5000
-         1     -2235.583128023030            0.00     0.5000
-   -------  ---------------------  --------------  ---------
-   10 applications of H in 0 iterations
+   state multiplets in D3h (classification only; the math ran in the abelian subgroup)
+   states        size  multiplet        residual
+   ----------  ------  ------------  -----------
+   0-1              2  1E1/2           2.522e-13
+   ----------  ------  ------------  -----------
+   a block reported as ? does not decompose into whole irreps: either the state count cut a multiplet or the orbitals are no longer symmetry-pure
+     state                 E [Eh]     rel [cm^-1]     weight          irrep     multiplet
+   -------  ---------------------  --------------  ---------  -------------  ------------
+         0     -2235.583128023038            0.00     0.5000  1E1/2 + 2E1/2         1E1/2
+         1     -2235.583128023038            0.00     0.5000  1E1/2 + 2E1/2         1E1/2
+   -------  ---------------------  --------------  ---------  -------------  ------------
+   10 applications of H in 0 iterations; largest weight outside a state's own irrep 9.99e-16
    state-average boundary gap                              15442.34  cm^-1   (to root 3 of 10, at the converged orbitals)
+   state-average spin invariance                          7.191e-02   (leaning on the spin-orbit structure)
+   irrep purity                                           9.992e-16   (largest weight of a converged state outside its own irrep)
 
 ================================================================================
- The finished CASSCF stage                                          t = 111.64 s
+ The finished CASSCF stage                                          t = 120.17 s
 ================================================================================
 CASSCF
   active space     : CAS(1, 10)  5 lowest Kramers pairs of l=2 character on 1 Ti
   solver           : ci
-  E(CASSCF) [Eh]   : -2235.583128023030
+  E(CASSCF) [Eh]   : -2235.583128023038
   converged        : True
   macro-iterations : 20
   |grad|           : 3.21e-05
@@ -173,48 +241,64 @@ CASSCF
    boundary unambiguous                                         yes
 
 ================================================================================
- The spin-orbit spectrum at the converged orbitals                  t = 111.64 s
+ The spin-orbit spectrum at the converged orbitals                  t = 120.17 s
 ================================================================================
 
 ================================================================================
- CASCI                                                              t = 111.64 s
+ CASCI                                                              t = 120.17 s
 ================================================================================
    active space                                          CAS(1, 10)   (10 explicit spinors)
    inactive / active / virtual spinors                72 / 10 / 128
    determinants                                                  10
+   active spinors per fermion irrep
+   irrep        spinors   conjugate
+   ----------  --------  ----------
+   1E1/2              5       2E1/2
+   2E1/2              5       1E1/2
+   ----------  --------  ----------
 
  -- CASCI ----------------------------------------------------------------------
    active space                                          CAS(1, 10)
    determinants                                                  10
    states                                                        10
-     state                 E [Eh]     rel [cm^-1]     weight
-   -------  ---------------------  --------------  ---------
-         0     -2235.583128023030            0.00     0.1000
-         1     -2235.583128023030            0.00     0.1000
-         2     -2235.512767554563        15442.34     0.1000
-         3     -2235.512767554563        15442.34     0.1000
-         4     -2235.512408101027        15521.23     0.1000
-         5     -2235.512408101027        15521.23     0.1000
-         6     -2235.474314449435        23881.82     0.1000
-         7     -2235.474314449435        23881.82     0.1000
-         8     -2235.473967026293        23958.07     0.1000
-         9     -2235.473967026293        23958.07     0.1000
-   -------  ---------------------  --------------  ---------
-   10 applications of H in 0 iterations
+   state multiplets in D3h (classification only; the math ran in the abelian subgroup)
+   states        size  multiplet        residual
+   ----------  ------  ------------  -----------
+   0-1              2  1E1/2           2.522e-13
+   2-3              2  1E1/2           1.413e-12
+   4-5              2  E3/2            1.413e-12
+   6-7              2  2E1/2           1.098e-12
+   8-9              2  E3/2            1.098e-12
+   ----------  ------  ------------  -----------
+   a block reported as ? does not decompose into whole irreps: either the state count cut a multiplet or the orbitals are no longer symmetry-pure
+     state                 E [Eh]     rel [cm^-1]     weight          irrep     multiplet
+   -------  ---------------------  --------------  ---------  -------------  ------------
+         0     -2235.583128023038            0.00     0.1000  1E1/2 + 2E1/2         1E1/2
+         1     -2235.583128023038            0.00     0.1000  1E1/2 + 2E1/2         1E1/2
+         2     -2235.512767554573        15442.34     0.1000  1E1/2 + 2E1/2         1E1/2
+         3     -2235.512767554573        15442.34     0.1000  1E1/2 + 2E1/2         1E1/2
+         4     -2235.512408101035        15521.23     0.1000  1E1/2 + 2E1/2          E3/2
+         5     -2235.512408101035        15521.23     0.1000  1E1/2 + 2E1/2          E3/2
+         6     -2235.474314449442        23881.82     0.1000  1E1/2 + 2E1/2         2E1/2
+         7     -2235.474314449442        23881.82     0.1000  1E1/2 + 2E1/2         2E1/2
+         8     -2235.473967026302        23958.07     0.1000  1E1/2 + 2E1/2          E3/2
+         9     -2235.473967026302        23958.07     0.1000  1E1/2 + 2E1/2          E3/2
+   -------  ---------------------  --------------  ---------  -------------  ------------
+   10 applications of H in 0 iterations; largest weight outside a state's own irrep 1.55e-15
 
  -- TiCl3 d^1 in D3h -----------------------------------------------------------
      state                 E [Eh]     rel [cm^-1]    pair split [Eh]
    -------  ---------------------  --------------  -----------------
-         0     -2235.583128023030            0.00                   
-         1     -2235.583128023030            0.00          0.000e+00
-         2     -2235.512767554563        15442.34                   
-         3     -2235.512767554563        15442.34          0.000e+00
-         4     -2235.512408101027        15521.23                   
-         5     -2235.512408101027        15521.23          0.000e+00
-         6     -2235.474314449435        23881.82                   
-         7     -2235.474314449435        23881.82          0.000e+00
-         8     -2235.473967026293        23958.07                   
-         9     -2235.473967026293        23958.07          0.000e+00
+         0     -2235.583128023038            0.00                   
+         1     -2235.583128023038            0.00          0.000e+00
+         2     -2235.512767554573        15442.34                   
+         3     -2235.512767554573        15442.34          0.000e+00
+         4     -2235.512408101035        15521.23                   
+         5     -2235.512408101035        15521.23          0.000e+00
+         6     -2235.474314449442        23881.82                   
+         7     -2235.474314449442        23881.82          0.000e+00
+         8     -2235.473967026302        23958.07                   
+         9     -2235.473967026302        23958.07          0.000e+00
    -------  ---------------------  --------------  -----------------
    5 Kramers doublets; the split column is the numerical degeneracy
    Kramers doublets                                               5
@@ -223,6 +307,48 @@ CASSCF
    the CI is already two-component, so these roots ARE the spin-orbit
    eigenstates. There is no separate spin-orbit mixing step and no
    spin-free intermediate to interpret.
+
+ -- The same spectrum, Kramers-restricted --------------------------------------
+   CI symmetry mode                              Kramers-restricted   (time-reversal-closed Davidson subspace; 5 pairs solved for 10 states, energies and RDMs in the general convention)
+   applications of H, general                                    10
+   applications of H, Kramers-restricted                          5   (the same 10 states from 5 time-reversal pairs)
+   largest shift in the spectrum                          0.000e+00  cm^-1
+   the two modes are two routes to one spectrum. The general path is the
+   default and the reference path; this one is a cost option and says so
+   when it is selected.
+
+ -- The same spectrum, selected per irrep --------------------------------------
+   state selection                                        per irrep   (1E1/2: 5, 2E1/2: 5)
+   fermion irreps of the label group                   1E1/2, 2E1/2   (conjugate pair: one member of every Kramers doublet in each)
+   states per irrep                              1E1/2: 5, 2E1/2: 5
+   largest shift in the spectrum                          0.000e+00  cm^-1
+   weight outside a state's own irrep                     8.882e-16
+   the two selections are two routes to one spectrum. Per-irrep selection
+   changes what n_states MEANS, so it is never applied because a group was
+   detected -- only because it was asked for.
+
+ -- The multiplets, in the full double group -----------------------------------
+   classification group                                         D3h   (labels on converged states; the math ran in Cs(xy))
+   multiplets of the ten states                  1E1/2, 1E1/2, 1E1/2, 1E1/2, E3/2, E3/2, 2E1/2, 2E1/2, E3/2, E3/2
+   distinct multiplets                                            3   (1E1/2, 2E1/2, E3/2)
+   worst projection residual                              1.413e-12
+   1E1/2 subduces to                                  1E1/2 + 2E1/2   (both abelian sectors, which is why an abelian count cannot protect it)
+   2E1/2 subduces to                                  1E1/2 + 2E1/2   (both abelian sectors, which is why an abelian count cannot protect it)
+   E3/2 subduces to                                   1E1/2 + 2E1/2   (both abelian sectors, which is why an abelian count cannot protect it)
+   the abelian labels call all five doublets the same thing; the full group
+   separates them. The classification changes no energy and no density.
+
+ -- Both symmetries at once ----------------------------------------------------
+   state selection                                        per irrep   (1E1/2: 5)
+   CI symmetry mode                              Kramers-restricted   (time-reversal-closed Davidson subspace; 5 pairs solved for 10 states, energies and RDMs in the general convention)
+   requested                                               1E1/2: 5   (one irrep of the conjugate pair)
+   states returned                                               10   (the partners in 2E1/2 come with them)
+   largest shift in the spectrum                          0.000e+00  cm^-1
+
+ -- A symmetry-preserving CASSCF -----------------------------------------------
+   unconstrained CASSCF energy                   -2235.583128023038  Eh
+   irrep-blocked CASSCF energy                   -2235.583128023033  Eh
+   difference                                             9.981e-07  cm^-1
    Ti d character of the converged active pairs       74.7% - 94.0%
 
  -- Atomic-reference charges (SCF guess vs converged CASSCF) -------------------
@@ -233,11 +359,11 @@ CASSCF
    number a plain Loewdin partition gets qualitatively wrong here.
 
 ================================================================================
- Per-atom basis and reference state (front end only)                t = 112.93 s
+ Per-atom basis and reference state (front end only)                t = 176.79 s
 ================================================================================
 
 ================================================================================
- Scalar-relativistic X2C reference                                  t = 112.93 s
+ Scalar-relativistic X2C reference                                  t = 176.79 s
 ================================================================================
    atoms                                                          4   (Cl Ti)
    charge                                                         0
@@ -247,8 +373,8 @@ CASSCF
    phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF                                                       external 
-   two-electron integrals            0.512           0.000       0.512  ok       
-   spinor MO transform               0.913           0.371       1.284  ok       
+   two-electron integrals            0.513           0.000       0.513  ok       
+   spinor MO transform               0.915           0.371       1.286  ok       
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
      mol.max_memory = the rest of the limit
@@ -256,8 +382,8 @@ CASSCF
      three-index AO factors                                   0.086  GB   (naux ~ 1488)
      three-index MO block B^P_p,occ                           0.401  GB   (248 spinors x 73 occupied)
    memory limit                                               6.000  GB   (set for this calculation)
-   planned peak                                               1.284  GB
-   machine available                                         10.326  GB
+   planned peak                                               1.286  GB
+   machine available                                          9.385  GB
    SCF reference                                               ROHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                           124
@@ -266,10 +392,10 @@ CASSCF
    two-electron route                                  conventional
    gauge origin (property operators)             (-0.0000, 0.0000, 0.0000) bohr   (centre of mass)
    nuclear repulsion                               381.610309039030  Eh
-   scalar X2C SCF energy                         -2235.311793815517  Eh
+   scalar X2C SCF energy                         -2235.311793815520  Eh
    SCF converged                                                yes
-   SCF time                                                    2.10  s wall   (8.41 s cpu)
-   AO integral time                                            1.01  s wall   (4.04 s cpu)
+   SCF time                                                    2.16  s wall   (8.63 s cpu)
+   AO integral time                                            1.02  s wall   (4.10 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
    two-component Hamiltonian                                 X2C-1e
@@ -280,7 +406,7 @@ CASSCF
    two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
 
 ================================================================================
- Orthonormal working basis                                          t = 116.77 s
+ Orthonormal working basis                                          t = 180.72 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                           124
@@ -291,7 +417,7 @@ CASSCF
    condition number of S (retained)                       3.739e+05
 
 ================================================================================
- Spinor expansion                                                   t = 116.77 s
+ Spinor expansion                                                   t = 180.72 s
 ================================================================================
    scalar basis functions                                       124   (working basis)
    spinors                                                      248
@@ -301,7 +427,7 @@ CASSCF
    orthonormality error                                    7.98e-11
 
 ================================================================================
- Two-electron integrals                                             t = 116.77 s
+ Two-electron integrals                                             t = 180.72 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -313,7 +439,7 @@ CASSCF
    largest neglected diagonal                             9.811e-09  Eh
    factor storage                                             0.077  GB
    matrix elements                               stored AO integral array
-   decomposition time                                          2.04  s wall
+   decomposition time                                          2.10  s wall
 
  -- Atomic-reference charges ---------------------------------------------------
    atom            Z   population      charge
@@ -333,7 +459,7 @@ CASSCF
    q(Ti) against the Ti(3+) reference                       +2.3841
 
 ================================================================================
- Result                                                             t = 118.82 s
+ Result                                                             t = 182.83 s
 ================================================================================
    check                                                           verdict   
    --------------------------------------------------------------  ----------
@@ -341,6 +467,18 @@ CASSCF
    five Kramers doublets in the spectrum                           ok        
    the pairs are degenerate to better than 1e-06 Eh                ok        
    the CASCI at converged orbitals reproduces the CASSCF doublet   ok        
+   the Kramers-restricted CI gives the same spectrum               ok        
+   per-irrep selection gives the same spectrum                     ok        
+   and returns sector-pure states                                  ok        
+   each Kramers doublet has one member in each conjugate irrep     ok        
+   the full group separates the five doublets into three multiplets  ok        
+   every multiplet is a whole irrep of D3h                         ok        
+   and every one of them spreads over both abelian sectors         ok        
+   classifying changed no energy                                   ok        
+   both symmetries at once give the same spectrum                  ok        
+   and a per-irrep request under Kramers restriction returns whole conjugate pairs  ok        
+   the symmetry-preserving CASSCF converged to the same energy     ok        
+   and reaches it with half the applications of H                  ok        
    the state average is unambiguous at both ends                   ok        
    the boundary gap exceeds 1e+04 cm^-1 at both ends               ok        
    the converged active space really is Ti d                       ok        
@@ -350,58 +488,66 @@ CASSCF
    per-atom labels are decorated where atoms differ                ok        
    the overridden reference is announced as non-default            ok        
    --------------------------------------------------------------  ----------
-   checks                                             all 12 passed
+   checks                                             all 24 passed
 
 ================================================================================
- Timings                                                            t = 118.82 s
+ Timings                                                            t = 182.83 s
 ================================================================================
-   region                           calls     wall [s]       cpu [s]   cpu/wall   % wall
-   ------------------------------  ------  -----------  ------------  ---------  -------
-   scalar X2C SCF                       2         3.47         13.87       4.00      2.9
-   AO integrals                         2         1.78          7.12       4.00      1.5
-     angular-momentum integrals         2         0.00          0.00       3.99      0.0
-   X2C spin-orbit integrals             2         0.79          3.16       4.00      0.7
-   atomic mean-field correction         1        58.38        233.53       4.00     49.3
-     atomic 4c solve                    2        58.07        232.27       4.00     49.1
-       atomic 4c DHF                    2        53.13        212.53       4.00     44.9
-     atomic mean-field decoupling       2         0.31          1.22       4.00      0.3
-   atomic reference orbitals            4         0.50          2.00       4.00      0.4
-   orthogonalization (canonical)        2         0.00          0.01       4.00      0.0
-   Cholesky decomposition               2         3.26         13.04       4.00      2.8
-   CAS determinant addressing           2         0.00          0.00       3.97      0.0
-   CAS excitation map                   2         0.00          0.00       4.04      0.0
-   CAS integrals                        4         4.26         14.13       3.32      3.6
-     J/K build                          4         2.62          8.93       3.41      2.2
-     3-index transform                  4         1.59          4.97       3.14      1.3
-   dense CI diagonalization             4         0.01          0.02       4.00      0.0
-     sigma step 1: gather F            40         0.00          0.01       4.04      0.0
-     sigma step 2: GEMM                40         0.00          0.00       2.35      0.0
-     sigma step 3: gather sigma        40         0.00          0.01       4.01      0.0
-     sigma one-electron term           40         0.00          0.00       4.10      0.0
-   full CI: diagonal                    2         0.00          0.00       3.93      0.0
-   RDM gather F                        12         0.00          0.00       3.98      0.0
-   RDM accumulation F^H F              12         0.00          0.00       4.01      0.0
-   macro-iteration                     20        45.87        155.47       3.39     38.8
-     J/K build                         39        20.51         68.71       3.35     17.3
-     CAS integrals                     19        24.06         81.59       3.39     20.3
-       J/K build                       19        15.53         54.01       3.48     13.1
-       3-index transform               19         8.22         26.34       3.20      6.9
-     full CI: diagonal                 19         0.00          0.00       3.84      0.0
-     dense CI diagonalization          19         0.03          0.11       4.00      0.0
-       sigma step 1: gather F         190         0.01          0.03       4.04      0.0
-       sigma step 2: GEMM             190         0.00          0.01       2.13      0.0
-       sigma step 3: gather sigma     190         0.01          0.03       4.02      0.0
-       sigma one-electron term        190         0.00          0.01       4.17      0.0
-     RDM gather F                      38         0.00          0.01       4.00      0.0
-     RDM accumulation F^H F            38         0.00          0.01       4.04      0.0
-   ------------------------------  ------  -----------  ------------  ---------  -------
-   total (top-level regions)                                 118.32  s wall
-   total CPU                                                 442.37  s cpu
+   region                                     calls     wall [s]       cpu [s]   cpu/wall   % wall
+   ----------------------------------------  ------  -----------  ------------  ---------  -------
+   scalar X2C SCF                                 2         3.51         14.03       4.00      1.9
+   AO integrals                                   2         1.82          7.26       4.00      1.0
+     angular-momentum integrals                   2         0.00          0.00       3.99      0.0
+   X2C spin-orbit integrals                       2         0.83          3.33       4.00      0.5
+   atomic mean-field correction                   1        59.16        236.63       4.00     32.5
+     atomic 4c solve                              2        58.83        235.29       4.00     32.3
+       atomic 4c DHF                              2        53.85        215.37       4.00     29.5
+     atomic mean-field decoupling                 2         0.33          1.31       4.00      0.2
+   atomic reference orbitals                      4         0.50          1.99       4.00      0.3
+   symmetry labelling                             1         6.45          7.66       1.19      3.5
+   orthogonalization (canonical)                  2         0.00          0.01       3.82      0.0
+   Cholesky decomposition                         2         3.36         13.42       4.00      1.8
+   CAS determinant addressing                    12         0.00          0.00       3.97      0.0
+   CAS excitation map                            12         0.00          0.01       4.02      0.0
+   state classification: operator matrices        8         0.31          1.25       4.00      0.2
+   CAS integrals                                 11        12.41         41.18       3.32      6.8
+     J/K build                                   11         7.76         26.54       3.42      4.3
+     3-index transform                           11         4.47         13.92       3.11      2.5
+   dense CI diagonalization                      10         0.01          0.05       4.00      0.0
+     sigma step 1: gather F                      90         0.00          0.02       4.04      0.0
+     sigma step 2: GEMM                          90         0.00          0.00       2.22      0.0
+     sigma step 3: gather sigma                  90         0.00          0.02       4.07      0.0
+     sigma one-electron term                     90         0.00          0.00       4.14      0.0
+   full CI: diagonal                              7         0.00          0.00       3.91      0.0
+   RDM gather F                                  54         0.00          0.01       4.02      0.0
+   RDM accumulation F^H F                        54         0.00          0.02       4.03      0.0
+   macro-iteration                               40        93.80        317.24       3.38     51.5
+     J/K build                                   78        42.07        140.68       3.34     23.1
+     CAS integrals                               38        49.21        166.49       3.38     27.0
+       J/K build                                 38        32.07        111.39       3.47     17.6
+       3-index transform                         38        16.53         52.63       3.18      9.1
+     full CI: diagonal                           38         0.00          0.01       3.85      0.0
+     dense CI diagonalization                    38         0.05          0.22       4.00      0.0
+       sigma step 1: gather F                   380         0.02          0.06       4.03      0.0
+       sigma step 2: GEMM                       380         0.01          0.01       2.38      0.0
+       sigma step 3: gather sigma               380         0.02          0.07       4.05      0.0
+       sigma one-electron term                  380         0.00          0.02       4.10      0.0
+     RDM gather F                                76         0.00          0.01       4.01      0.0
+     RDM accumulation F^H F                      76         0.01          0.02       4.04      0.0
+   state classification: characters               6         0.09          0.35       4.00      0.0
+   dense Kramers-restricted CI diagonalization       2         0.00          0.01       4.00      0.0
+     sigma step 1: gather F                      10         0.00          0.00       4.06      0.0
+     sigma step 2: GEMM                          10         0.00          0.00       2.14      0.0
+     sigma step 3: gather sigma                  10         0.00          0.00       4.00      0.0
+     sigma one-electron term                     10         0.00          0.00       4.03      0.0
+   ----------------------------------------  ------  -----------  ------------  ---------  -------
+   total (top-level regions)                                 182.27  s wall
+   total CPU                                                 644.46  s cpu
    cost is cpu [s]; wall [s] also reflects thread count and, on a
    thermally clamped machine, time the CPU was forced to stay idle.
 
  -- Memory ---------------------------------------------------------------------
    limit                                                      6.000  GB   (set for this calculation)
-   pre-flight estimate                                        1.284  GB
-   declared peak (Kuiva arrays)                               0.503  GB
-   peak resident set (VmHWM)                                  1.230  GB
+   pre-flight estimate                                        1.286  GB
+   declared peak (Kuiva arrays)                               0.504  GB
+   peak resident set (VmHWM)                                  1.241  GB
