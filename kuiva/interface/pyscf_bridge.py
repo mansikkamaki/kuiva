@@ -676,6 +676,92 @@ def picture_changed_moment(mol, gauge_origin=None, *, approx: str = "1e",
 
 
 @dataclass(frozen=True)
+class MoleculeSpec:
+    """The input needed to rebuild this calculation's ``Mole`` — geometry, basis, charge.
+
+    ⚠ **This is plain data, not a ``Mole``**: no ``Mole`` crosses the ingestion boundary and
+    nothing downstream gains a PySCF dependency by carrying this. It exists for the one
+    operation that genuinely needs the *basis functions* back after ingestion: the cross-basis
+    overlap ``<AO(target)|AO(source)>`` behind :func:`cross_overlap`, which is what lets a
+    converged orbital set be projected onto a different basis set.
+
+    ⚠ It is rebuilt through :func:`build_mole`, from the same registry names the run was
+    given, rather than from the primitives :class:`kuiva.basis.layout.AOLayout` carries: the
+    layout stores the integral library's *internal* contraction coefficients (primitive
+    normalisation already folded in), and feeding those back through the basis-input path
+    normalises them a second time. The result is a basis that looks right, integrates to
+    plausible numbers, and is not the one the calculation ran in.
+
+    It duck-types as a :class:`kuiva.interface.api.Molecule` for :func:`build_mole`, which is
+    what makes the rebuilt basis the original one rather than a reconstruction of it.
+    """
+
+    atoms: Tuple[Tuple[str, Tuple[float, float, float]], ...]
+    basis: object
+    charge: int = 0
+    spin: int = 0
+    unit: str = "Angstrom"
+    #: The per-atom reference-configuration spec, carried so the rebuilt ``Mole`` gets the
+    #: same decorated atom labels (``"Ti2"``) and therefore the same per-atom basis routing.
+    configuration: object = None
+
+    @classmethod
+    def from_molecule(cls, molecule, configuration=None) -> "MoleculeSpec":
+        """Capture a (duck-typed) Kuiva ``Molecule`` and the run's ``configuration``."""
+        return cls(atoms=tuple((str(sym), tuple(float(x) for x in xyz))
+                               for sym, xyz in molecule.atoms),
+                   basis=molecule.basis, charge=int(molecule.charge),
+                   spin=int(molecule.spin), unit=str(getattr(molecule, "unit", "Angstrom")),
+                   configuration=configuration)
+
+    @property
+    def elements(self) -> Tuple[str, ...]:
+        return tuple(sym.capitalize() for sym, _ in self.atoms)
+
+    def __repr__(self) -> str:
+        return "MoleculeSpec({} atoms: {}, basis={!r})".format(
+            len(self.atoms), " ".join(self.elements), self.basis)
+
+
+def cross_overlap(source: MoleculeSpec, target: MoleculeSpec, *,
+                  verbose: int = 0) -> np.ndarray:
+    """``<AO(target) | AO(source)>``, shape ``(nao_target, nao_source)``.
+
+    The one integral a basis-set projection needs (:mod:`kuiva.orth.project`): the target
+    basis' representation of every source basis function. Both molecules are rebuilt through
+    :func:`build_mole`, so each side is exactly the basis its own calculation ran in.
+
+    ⚠ **The two must be the same molecule.** Elements and their order are checked and a
+    mismatch is refused; the nuclear coordinates are checked and a mismatch **warns** rather
+    than refusing, because carrying an orbital set from one geometry to the next along a scan
+    is a legitimate and useful thing to do — but it is not what a basis-set projection is, and
+    doing it by accident produces a guess that is merely mediocre rather than obviously wrong.
+    """
+    from pyscf import gto
+
+    mol_s = build_mole(source, verbose=verbose, configuration=source.configuration)
+    mol_t = build_mole(target, verbose=verbose, configuration=target.configuration)
+    sym_s = [mol_s.atom_pure_symbol(i) for i in range(mol_s.natm)]
+    sym_t = [mol_t.atom_pure_symbol(i) for i in range(mol_t.natm)]
+    if sym_s != sym_t:
+        raise ValueError(
+            "a basis-set projection needs the same molecule on both sides; the source has "
+            "atoms {} and the target has {}".format(sym_s, sym_t))
+    dr = (float(np.max(np.abs(np.asarray(mol_s.atom_coords())
+                              - np.asarray(mol_t.atom_coords())))) if sym_s else 0.0)
+    if dr > 1e-8:
+        log.warning("the two bases sit on geometries differing by up to %.3e bohr; the "
+                    "projection is still well defined, but it is now a projection across "
+                    "geometries as well as across bases", dr)
+
+    s_cross = np.asarray(gto.intor_cross("int1e_ovlp", mol_t, mol_s), dtype=float)
+    if s_cross.shape != (mol_t.nao, mol_s.nao):
+        raise RuntimeError("cross overlap has shape {} for {} x {} basis functions"
+                           .format(s_cross.shape, mol_t.nao, mol_s.nao))
+    return np.ascontiguousarray(s_cross)
+
+
+@dataclass(frozen=True)
 class ScalarX2CData:
     """Self-contained scalar-relativistic X2C reference (the ingestion boundary).
 
@@ -762,6 +848,12 @@ class ScalarX2CData:
     #: library, and the reference must be in the molecule's own basis. Analysis metadata
     #: only; no part of the calculation reads it.
     atomic_reference: Optional[object] = None
+    #: What this calculation was asked to run on (:class:`MoleculeSpec`), kept so the basis
+    #: can be rebuilt for the one operation that needs it after ingestion: the cross-basis
+    #: overlap behind :func:`cross_overlap`, i.e. projecting an orbital set onto a different
+    #: basis set. Plain data; optional, so a container built by hand in a test is still valid
+    #: — a projection then refuses and says which side is missing it.
+    molecule: Optional[MoleculeSpec] = None
 
     @property
     def nelec_total(self) -> int:
@@ -2451,6 +2543,7 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         soc=soc, reference=ref_name, unrestricted=unrestricted, s2_deviation=s2_dev,
         basis_meta=meta, e_nuc=float(mol.energy_nuc()), ao_layout=data_layout,
         properties=props, atomic_reference=atomic_ref, symmetry=symmetry,
+        molecule=MoleculeSpec.from_molecule(molecule, configuration),
     )
     return data
 
@@ -2841,6 +2934,7 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
     )
 
 
-__all__ = ["ScalarX2CData", "SpinOrbitX2C", "PropertyIntegrals", "build_mole",
+__all__ = ["ScalarX2CData", "SpinOrbitX2C", "PropertyIntegrals", "MoleculeSpec",
+           "build_mole", "cross_overlap",
            "run_scalar_x2c", "run_scalar_aoc", "ingest_spin_orbit",
            "ingest_property_integrals", "gauge_origin_for", "eri_memory_gb", "ao_layout"]

@@ -15,11 +15,14 @@ import numpy as np
 from ..basis import registry as reg
 from ..integrals.transform import DEFAULT_CHOLESKY_TOL, ThreeIndexAO
 from ..orth.canonical import DEFAULT_THRESHOLD, OrthonormalBasis
+from ..orth.project import (DEFAULT_CARRY as _DEFAULT_CARRY,
+                            DEFAULT_SCHEME as _DEFAULT_PROJECTION_SCHEME)
 from ..spinor.expand import SpinorBasis
 from ..util import output as out
 from ..util import resources as res
 from ..util.logging import get_logger
-from .pyscf_bridge import ScalarX2CData, build_mole, memory_plan, run_scalar_x2c
+from .pyscf_bridge import (ScalarX2CData, build_mole, cross_overlap, memory_plan,
+                           run_scalar_x2c)
 
 log = get_logger(__name__)
 
@@ -335,6 +338,118 @@ def spinor_reference(molecule_or_data, *, threshold: float = DEFAULT_THRESHOLD,
     out.section(log, "Two-electron integrals")
     factors = ThreeIndexAO.from_scalar_data(data, cholesky_tol, orbit_pivots=orbit_pivots)
     return SpinorReference(data=data, orth=orth, spinors=spinors, factors=factors)
+
+
+def project_to_basis(source: SpinorReference, target: SpinorReference,
+                     coeff: Optional[np.ndarray] = None, *, space=None,
+                     carry: str = _DEFAULT_CARRY,
+                     scheme: str = _DEFAULT_PROJECTION_SCHEME,
+                     repair_pairing="auto", report: bool = True):
+    """Carry an orbital set from one basis-set calculation onto another.
+
+    The production route to a large-basis CASSCF: converge it in a small basis, where the
+    active orbitals are cheap to find and easy to identify, then project that result into the
+    production basis and start there. The reverse direction (large onto small) is the same
+    call and is supported; it discards a variational space rather than reproducing one, which
+    the diagnostics say out loud.
+
+    Parameters
+    ----------
+    source, target : :class:`SpinorReference`
+        The two ingested references. They must be the same molecule in different bases; the
+        elements are checked and a geometry difference warns. Both must have come from the
+        front end (a container assembled by hand carries no basis to rebuild).
+    coeff : ndarray ``(2*nao_source, n_source)``, optional
+        The orbitals to carry over, in the **source AO basis** — normally a converged
+        ``CASSCFOutcome.coeff``. Defaults to the source reference's own guess spinors.
+    space : :class:`~kuiva.mcscf.casci.ActiveSpace` or
+        :class:`~kuiva.mcscf.orbopt.OrbitalSpaces`, optional
+        The source partition. Given, the inactive / active / virtual split is carried across
+        exactly and each space is reported on separately; omitted, the set is one block.
+    carry : str
+        ``"active"`` (**the default**) carries the active orbitals and takes the inactive and
+        virtual ones from the target's own SCF; ``"all"`` carries every orbital. ⚠ The
+        default deliberately carries *less*: the active space is what the small-basis
+        calculation was for, while the source's inactive orbitals are not eigenvectors of
+        anything in the target basis and start the optimization with a large core-virtual
+        gradient. :mod:`kuiva.orth.project` states the measurement.
+    scheme : str
+        The orthonormalization the projection is repaired with — ``"blocked"`` (default),
+        ``"symmetric"`` or ``"gram-schmidt"``. See :mod:`kuiva.orth.project`, which is where
+        the choice is documented and where the numbers behind the default live.
+    repair_pairing : bool or ``"auto"``
+        Rebuild the carried orbitals as explicit Kramers pairs. ⚠ On by default, because a
+        converged general-complex CASSCF is entitled to leave its *active* orbitals far from
+        pair-aligned — active-active rotations are redundant — while everything downstream
+        that reads the pairing convention needs pairs. ``"auto"`` degrades to a warning for
+        an unrestricted reference, whose spinors are not Kramers pairs at all.
+
+    Returns
+    -------
+    :class:`~kuiva.orth.project.BasisProjection`
+        ``.coeff`` is in the **target AO basis**, ready to pass as ``coeff=`` to
+        :func:`casscf` or :func:`casci`; ``.plan`` holds the target orbital partition, and
+        the rest is the evidence that the projection is worth using.
+    """
+    from ..orth.project import project_spinors
+
+    spaces = getattr(space, "spaces", space)
+    for name, ref in (("source", source), ("target", target)):
+        if ref.data.molecule is None:
+            raise ValueError(
+                "the {} reference carries no molecule specification, so its basis cannot be "
+                "rebuilt for the cross-basis overlap; a projection needs both sides to have "
+                "come from the front end (kuiva.interface.api.scalar_x2c_reference)"
+                .format(name))
+    if source.data.nelec_total != target.data.nelec_total:
+        raise ValueError(
+            "the source reference holds {} electrons and the target {}; a projection carries "
+            "one calculation's orbitals into another basis, not into another molecule"
+            .format(source.data.nelec_total, target.data.nelec_total))
+    c_source = (source.spinors_in_ao() if coeff is None
+                else np.ascontiguousarray(coeff, dtype=np.complex128))
+
+    if report:
+        out.section(log, "Basis-set projection of the orbitals")
+        out.entries(log, [
+            ("source basis", ", ".join(sorted(set(source.data.basis_meta.values())))),
+            ("target basis", ", ".join(sorted(set(target.data.basis_meta.values())))),
+            ("AO functions", "{} -> {}".format(source.data.nao, target.data.nao)),
+        ])
+    s_cross = cross_overlap(source.data.molecule, target.data.molecule)
+    kw = {}
+    if spaces is not None:
+        kw = dict(inactive=spaces.inactive, active=spaces.active, virtual=spaces.virtual)
+    return project_spinors(c_source, s_cross, target.orth,
+                           complete_with=target.spinors_in_ao(),
+                           complete_energy=target.spinors.energy,
+                           carry=carry, scheme=scheme, repair_pairing=repair_pairing,
+                           report=report, **kw)
+
+
+def projected_active_space(plan, target: SpinorReference, n_active_elec: int,
+                           description: str = ""):
+    """The target-basis :class:`~kuiva.mcscf.casci.ActiveSpace` a projection lands on.
+
+    ``plan`` is a :class:`~kuiva.orth.project.ColumnPlan` or anything carrying one (a
+    finished :class:`~kuiva.orth.project.BasisProjection` does).
+
+    ⚠ **The active space follows the orbitals.** A projection carries the source partition
+    across column for column, so the target space is the projected index set with the
+    source's own electron count — never a fresh selection against the target's guess
+    orbitals, which would be a different calculation wearing the same name. It is also why
+    this needs no ``character=``: the physical statement was made once, where the space was
+    chosen. The target reference's irrep labels are attached here, because they are the
+    target's own.
+    """
+    from ..mcscf.casci import ActiveSpace
+    from ..mcscf.orbopt import OrbitalSpaces
+
+    plan = getattr(plan, "plan", plan)
+    spaces = OrbitalSpaces(inactive=plan.inactive, active=plan.active,
+                           virtual=plan.virtual, n_orb=plan.n_target)
+    return _with_labels(ActiveSpace(spaces=spaces, n_elec=int(n_active_elec),
+                                    description=description), target)
 
 
 # --- The multireference entry points ------------------------------------------
@@ -754,4 +869,5 @@ def property_dump(reference: SpinorReference, source, path, *, title: str = "",
 
 __all__ = ["Molecule", "ScalarX2CData", "SpinorReference", "scalar_x2c_reference",
            "spinor_reference", "build_mole", "memory_plan",
+           "project_to_basis", "projected_active_space",
            "active_space_for", "casci", "casscf", "property_matrices", "property_dump"]

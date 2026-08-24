@@ -450,6 +450,63 @@ A restart takes its active space **from the file**; restating it in a way that d
 refused rather than reconciled, and `max_iter` counts total macro-iterations across the
 restart, so an interrupted-and-restarted run costs what an uninterrupted one would.
 
+#### Starting from a calculation in a different basis set
+
+A CASSCF costs what its basis costs, and almost all of that expense buys the *orbitals* —
+while the active space, which is a statement about chemistry, is very nearly the same in a
+small basis as in a large one. `project_from=` converges the calculation where it is cheap
+and continues it where you want it:
+
+```python
+cheap = kuiva.CASSCF(kuiva.Reference(scf_small).run(),
+                     character=("Ti", "d"), n_active=10, n_active_elec=1).run()
+
+cas   = kuiva.CASSCF(kuiva.Reference(scf_large).run(), project_from=cheap).run()
+```
+
+The converged spinors are re-expressed over the target AO basis, made orthonormal again, and
+the dimensions the larger basis adds are completed from its own SCF. The source may be a
+`CASSCF`, a `CheapCI` or a plain `Reference`, and it may be in a *larger* basis than the
+target — projecting downwards is the same call.
+
+⚠ **The active space comes across with the orbitals and may not be restated.** It was chosen
+once, against the orbitals being carried; re-selecting it here would resolve it against the
+target reference's own guess orbitals, which is a different calculation wearing the same
+name. (A projection from a bare `Reference` has no active space to inherit, so there it *is*
+stated — and is then resolved against the source.) A projection replaces the `CheapCI`
+pre-optimization rather than following it, and does not combine with `restart=`.
+
+`projection=dict(...)` configures it:
+
+- **`carry`** — `"active"` (default) carries the active orbitals and takes the inactive and
+  virtual ones from the target's own SCF; `"all"` carries every orbital. ⚠ The default
+  deliberately carries *less*. The source's inactive orbitals are not eigenvectors of
+  anything in the target basis, so carrying them re-introduces an inactive–virtual gradient —
+  where the core orbital energies are the largest numbers — that the target's own SCF had
+  already removed. Measured, `"all"` costs roughly twice the macro-iterations.
+- **`scheme`** — how the projected set is made orthonormal again: `"blocked"` (default,
+  space by space, symmetric within each, so the CAS partition stays exact), `"symmetric"`
+  (one Löwdin over the whole set: the smallest total change, and the only one allowed to mix
+  active with inactive and virtual character) or `"gram-schmidt"` (never inverts a Gram
+  matrix, so it is the most forgiving of a heavily truncating downward projection).
+- **`repair_pairing`** — rebuild the carried orbitals as explicit Kramers pairs, on by
+  default. ⚠ A converged general-complex CASSCF is entitled to leave its *active* orbitals
+  far from pair-aligned, because rotations inside the active space are redundant and nothing
+  pushes back; everything downstream that reads the pairing convention needs pairs.
+
+The projection reports what it did, and the numbers are invariants rather than coefficient
+comparisons: the **retained norm** of each source orbital (how much of it exists in the target
+basis at all), the **principal overlaps** between the source active space and the one handed
+on (unchanged by any rotation inside either space), and the **complement separation** (the
+evidence that the orbitals with no source really are the orthogonal complement). ⚠ Read them.
+Every way of getting a basis projection wrong still produces an orthonormal orbital set of
+the right shape that starts a calculation which converges — the failure shows up only as a
+run that takes longer than it should.
+
+Example 9 is this workflow end to end. The lower-level entry point is
+`kuiva.interface.api.project_to_basis`, which returns the projected coefficients and the
+diagnostics without running anything.
+
 ### `NEVPT2(casscf, **options)`
 
 Strongly contracted NEVPT2 on a converged reference — post-processing, per state, decomposed by
@@ -965,6 +1022,7 @@ built) or `compiled kernels: native ...` (with one), and in the latter case quan
 | 6 | `06_property_export` | the two products: the property-matrix dump and the OuluSpin pseudospin export, reaching the same g values by two independent routes | ~4 min |
 | 7 | `07_checkpoint_restart` | a CASSCF checkpointed every macro-iteration, interrupted, and resumed from disk to the same energy | ~3 min |
 | 8 | `08_slater_condon` | the extras: Slater–Condon parameters `F^k`, `G^k`, `R^k` and spin–orbit constants `ζ` of a free scandium atom, from an average-of-configuration reference | ~1 min |
+| 9 | `09_basis_projection` | converging the CASSCF in a cheap basis and continuing it in the production one: `project_from=`, what the projection carries, what it measures, and the reverse direction | ~3 min |
 
 ## Extras
 
@@ -1140,7 +1198,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.16.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.17.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1156,7 +1214,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.16.0'
+import kuiva; kuiva.__version__          # '0.17.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
@@ -1302,6 +1360,22 @@ generate validation reference data live with that code, in `tests/`.
   V. Veryazov, R. Lindh, _WIREs Comput. Mol. Sci._ **3**, 143 (2013), DOI:10.1002/wcms.1117;
   F. Aquilante, T. B. Pedersen, R. Lindh, _J. Chem. Phys._ **125**, 174101 (2006),
   DOI:10.1063/1.2360264.
+- **Projecting molecular orbitals from one basis set onto another**, and the Fock/density-matrix
+  alternative to it (`OVPROJECTION` and `FOPPROJECTION` in Q-Chem's terms). R. P. Steele,
+  R. A. DiStasio Jr., Y. Shao, J. Kong, M. Head-Gordon, _J. Chem. Phys._ **125**, 074108 (2006),
+  DOI:10.1063/1.2234371; projected starting vectors from a smaller basis as the standard SCF
+  guess, J. Almlöf, K. Fægri, K. Korsell, _J. Comput. Chem._ **3**, 385 (1982),
+  DOI:10.1002/jcc.540030314.
+- **The same operation for the active orbitals of a CASSCF, as a production workflow** —
+  OpenMolcas' `EXPBAS`. I. Fdez. Galván _et al._, _J. Chem. Theory Comput._ **15**, 5925 (2019),
+  DOI:10.1021/acs.jctc.9b00532; F. Aquilante _et al._, _J. Chem. Phys._ **152**, 214117 (2020),
+  DOI:10.1063/5.0004835.
+- **Least-squares optimality of symmetric orthonormalization**, which is why the projected set is
+  repaired that way. B. C. Carlson, J. M. Keller, _Phys. Rev._ **105**, 102 (1957),
+  DOI:10.1103/PhysRev.105.102.
+- **Principal angles between orbital subspaces** ("corresponding orbitals"), the invariant the
+  projection is judged by. A. T. Amos, G. G. Hall, _Proc. R. Soc. London A_ **263**, 483 (1961),
+  DOI:10.1098/rspa.1961.0175.
 
 ### Spinor basis, time reversal, and Kramers pairs
 

@@ -55,6 +55,7 @@ import numpy as np
 from ..util import output as out
 from ..util.logging import get_logger
 from .api import (Molecule, SpinorReference as _SpinorData, active_space_for,
+                  project_to_basis as _project_to_basis, projected_active_space,
                   property_matrices as _property_matrices, scalar_x2c_reference,
                   spinor_reference)
 
@@ -395,6 +396,32 @@ class CASSCF(_Stage):
     ``event_interval``, ...). ``mode="second-order"`` is the right explicit choice for a
     heavy element or a large state average.
 
+    Starting from a smaller (or larger) basis
+    -----------------------------------------
+    ``project_from=`` takes a **finished stage of the same molecule in a different basis** —
+    a :class:`CASSCF`, a :class:`CheapCI` or a plain :class:`Reference` — and starts this run
+    from that stage's orbitals projected onto this basis
+    (:func:`kuiva.interface.api.project_to_basis`). That is the production route to a
+    large-basis CASSCF: converge it in a small basis, where the active orbitals are cheap to
+    optimize and easy to identify, and continue here. The reverse (large onto small) is the
+    same call.
+
+    ⚠ **The active space comes across with the orbitals and may not be restated here.** It
+    was chosen once, against the orbitals being carried; re-selecting it against this
+    reference's guess orbitals would silently define a different calculation. A projection
+    from a bare :class:`Reference`, which has no active space, is the one case where the
+    space *is* stated here — and it is then resolved against the **source** reference, for
+    the same reason.
+
+    ⚠ A projection **replaces** the pre-optimization rather than following it: what it hands
+    over is already optimized active orbitals. ``project_from=`` therefore needs a
+    :class:`Reference` upstream, and does not combine with ``restart=`` (which brings its own
+    orbitals and its own space). ``projection=dict(...)`` passes options through to
+    :func:`~kuiva.interface.api.project_to_basis` — ``carry`` (``"active"``, the default, or
+    ``"all"``), ``scheme`` (``"blocked"``, ``"symmetric"``, ``"gram-schmidt"``) and
+    ``repair_pairing``; that function's docstring is where each is explained and
+    :mod:`kuiva.orth.project` is where the defaults are argued.
+
     With point-group symmetry on (``point_group=`` at the front end), ``n_states`` may be a
     mapping ``{irrep: n}`` instead of a count — each irrep is then solved in its own sector of
     the determinant space, which is a request "lowest n" cannot express — and
@@ -406,7 +433,10 @@ class CASSCF(_Stage):
     After :meth:`run`: :attr:`energy`, :attr:`energies` (total state energies [Eh]),
     :attr:`coeff`, :attr:`converged`, :attr:`active`, :attr:`solver`, plus per-solver
     results (``"ci"``: :attr:`outcome`, :attr:`boundary`, :attr:`boundary_initial`;
-    ``"dmrg"``: :attr:`orbital`, :attr:`events`, :attr:`boundary_gap_cm`, :attr:`graph`).
+    ``"dmrg"``: :attr:`orbital`, :attr:`events`, :attr:`boundary_gap_cm`, :attr:`graph`) and,
+    with ``project_from=``, :attr:`projection` — the
+    :class:`~kuiva.orth.project.BasisProjection` carrying the orbitals it started from and the
+    invariants that say whether the projection was worth using.
     """
 
     _GRAPH_CHOICES = ("mutual-information", "fiedler")
@@ -418,7 +448,8 @@ class CASSCF(_Stage):
                  graph=None, checkpoint=None, restart=None,
                  checkpoint_options: Optional[Dict[str, Any]] = None,
                  callback: Optional[Callable[[dict], Optional[bool]]] = None,
-                 preserve_symmetry: bool = False,
+                 preserve_symmetry: bool = False, project_from=None,
+                 projection: Optional[Dict[str, Any]] = None,
                  report: bool = True, **optimizer_options) -> None:
         super().__init__()
         self._finished(upstream, (Reference, CheapCI), "CASSCF")
@@ -446,27 +477,45 @@ class CASSCF(_Stage):
         self.callback, self.report = callback, bool(report)
         self.optimizer_options = dict(optimizer_options)
 
+        self.project_from = project_from
+        self.projection_options = dict(projection or {})
+        if project_from is None and self.projection_options:
+            raise ValueError("projection= configures project_from=, which was not given")
+        if project_from is not None:
+            _check_options(self.projection_options,
+                           _allowed_options(_project_to_basis,
+                                            exclude=("source", "target", "coeff", "space",
+                                                     "report")),
+                           "CASSCF projection")
+
         # -- the active space and the starting orbitals, resolved now (fail fast) ----------
         requested = active is not None or character is not None
-        if restart is not None:
+        if project_from is not None:
+            self._setup_projection(upstream, requested, active=active, character=character,
+                                   n_active=n_active, n_active_elec=n_active_elec,
+                                   threshold=threshold, restart=restart)
+        elif restart is not None:
             if solver == "dmrg":
                 raise ValueError("restart= is the conventional-CI checkpoint route; the "
                                  "network state is not checkpointed by this layer")
             if not Path(restart).exists():
                 raise ValueError("restart checkpoint {!r} does not exist".format(restart))
-        self.space = (_resolve_space(self.reference_stage, active=active,
-                                     character=character, n_active=n_active,
-                                     n_active_elec=n_active_elec, threshold=threshold,
-                                     what="CASSCF")
-                      if requested else None)
-        if self.space is None and restart is None:
-            if isinstance(upstream, CheapCI):
-                self.space = upstream.space
-            else:
-                _resolve_space(self.reference_stage, active=None, character=None,
-                               n_active=None, n_active_elec=None, threshold=None,
-                               what="CASSCF")                # raises with the guidance
-        self._orbitals = upstream.orbitals if isinstance(upstream, CheapCI) else None
+        if project_from is None:
+            self.space = (_resolve_space(self.reference_stage, active=active,
+                                         character=character, n_active=n_active,
+                                         n_active_elec=n_active_elec, threshold=threshold,
+                                         what="CASSCF")
+                          if requested else None)
+            if self.space is None and restart is None:
+                if isinstance(upstream, CheapCI):
+                    self.space = upstream.space
+                else:
+                    _resolve_space(self.reference_stage, active=None, character=None,
+                                   n_active=None, n_active_elec=None, threshold=None,
+                                   what="CASSCF")            # raises with the guidance
+            self._orbitals = upstream.orbitals if isinstance(upstream, CheapCI) else None
+        else:
+            self._orbitals = None                            # built by run(), from the plan
 
         # -- per-solver eager validation ----------------------------------------------------
         from ..mcscf.orbopt import optimize_orbitals
@@ -520,9 +569,91 @@ class CASSCF(_Stage):
                                      .format(graph))
             self.graph_request = graph
 
+    # -- starting from another basis ----------------------------------------------------
+
+    def _setup_projection(self, upstream, requested, *, active, character, n_active,
+                          n_active_elec, threshold, restart) -> None:
+        """Resolve everything a ``project_from=`` run needs, without doing the projection.
+
+        The projection itself costs a one-electron integral over two bases and an
+        ``O(nao^3)`` orthonormalization, so it belongs in ``run()`` like every other
+        expensive thing. What has to happen *here* is the part that can be wrong: which
+        stage is being projected from, whether the two are really the same molecule in two
+        bases, and where the active space lands in the target's numbering — which is pure
+        integer bookkeeping (:func:`kuiva.orth.project.plan_columns`) and needs no integrals.
+        """
+        from ..orth.project import plan_columns
+
+        self._finished(self.project_from, (Reference, CheapCI, CASSCF), "CASSCF project_from")
+        if restart is not None:
+            raise ValueError(
+                "project_from= and restart= are two different ways to supply the starting "
+                "orbitals and the active space; a restart continues an interrupted run in "
+                "its own basis, so give one or the other")
+        if not isinstance(upstream, Reference):
+            raise ValueError(
+                "project_from= needs a Reference upstream: what it hands over is already "
+                "optimized active orbitals, so it replaces the cheap pre-optimization "
+                "rather than following it. Build this stage on the target Reference.")
+        source_stage = (self.project_from if isinstance(self.project_from, Reference)
+                        else self.project_from.reference_stage)
+        if source_stage is upstream:
+            raise ValueError(
+                "project_from= names a stage on this same Reference, so there is no basis "
+                "to project between; give the stage from the other basis' calculation")
+        self.projection_source = source_stage.reference
+
+        # The space is a statement about the orbitals being carried, so it comes from the
+        # source and is resolved in the source's numbering.
+        source_space = getattr(self.project_from, "active", None) \
+            or getattr(self.project_from, "space", None)
+        if source_space is not None:
+            if requested:
+                raise ValueError(
+                    "the active space comes across with the projected orbitals ({}); "
+                    "restating it here would resolve it against this reference's guess "
+                    "orbitals instead, which is a different calculation. Drop active=/"
+                    "character=, or project from the Reference and state it once."
+                    .format(source_space.description or "CAS({}, {})".format(
+                        source_space.n_elec, source_space.n_active)))
+        else:
+            source_space = _resolve_space(source_stage, active=active, character=character,
+                                          n_active=n_active, n_active_elec=n_active_elec,
+                                          threshold=threshold,
+                                          what="CASSCF with project_from=Reference")
+        self.source_space = source_space
+
+        spaces = source_space.spaces
+        plan = plan_columns(spaces.inactive, spaces.active, spaces.virtual,
+                            upstream.reference.nspinor)
+        self.space = projected_active_space(
+            plan, upstream.reference, source_space.n_elec,
+            description="{} (projected from {})".format(
+                source_space.description or "explicit spinor indices",
+                ", ".join(sorted(set(self.projection_source.data.basis_meta.values())))))
+        self._plan = plan
+
+    def _run_projection(self) -> None:
+        """Do the projection and install its orbitals as this run's starting guess."""
+        source = self.projection_source
+        target = self.reference_stage.reference
+        coeff = getattr(self.project_from, "coeff", None)
+        if coeff is None:
+            coeff = getattr(self.project_from, "orbitals", None)
+        self.projection = _project_to_basis(source, target, coeff, space=self.source_space,
+                                            report=self.report, **self.projection_options)
+        plan = self.projection.plan
+        if not (np.array_equal(plan.active, self._plan.active)
+                and np.array_equal(plan.inactive, self._plan.inactive)):
+            raise RuntimeError("the projection landed on a different orbital partition than "
+                               "the one validated at construction; this is a bug")
+        self._orbitals = self.projection.coeff
+
     # -- execution --------------------------------------------------------------------------
 
     def _execute(self) -> None:
+        if self.project_from is not None:
+            self._run_projection()
         if self.solver_kind == "ci":
             self._execute_ci()
         else:
@@ -647,6 +778,9 @@ class CASSCF(_Stage):
         ]
         if self.solver_kind == "dmrg":
             entries.append(("largest bond dimension", str(self.solver.last.max_bond_dim)))
+        if self.project_from is not None:
+            entries.append(("projected active-space overlap",
+                            "{:.6f}".format(self.projection.fidelity)))
         return entries
 
 
