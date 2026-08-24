@@ -401,8 +401,12 @@ def test_a_restart_reproduces_the_uninterrupted_trajectory_bitwise(system, tmp_p
     checkpoint = read_checkpoint(path)
     assert checkpoint.iteration == 4
 
-    resumed = optimize_orbitals(factors, h_ao, checkpoint.coeff, checkpoint.spaces, solver,
-                                max_iter=8, **dict(kwargs, **checkpoint.optimizer_kwargs()))
+    resumed = optimize_orbitals(
+        factors, h_ao, checkpoint.coeff, checkpoint.spaces, solver, max_iter=8,
+        # A plain callable declares no chart, so both sides are None and chart-scoping is
+        # unconditionally satisfied -- which is the documented behaviour for a wrapped
+        # ci_solver, not an accident of this test.
+        **dict(kwargs, **checkpoint.optimizer_kwargs(space_key=None)))
     assert resumed.n_iterations == straight.n_iterations
     assert resumed.energy == straight.energy                       # bitwise
     assert np.array_equal(resumed.coeff, straight.coeff)
@@ -439,9 +443,10 @@ def test_a_full_casscf_restart_converges_to_the_same_answer(system, tmp_path):
     assert checkpoint.state_energies.size == 1
     resumed_solver = FullCISolver(spaces.n_active, n_elec, enforce_kramers=False)
     resumed_solver.set_guess(checkpoint.ci_vectors)
-    resumed = optimize_orbitals(factors, h_ao, checkpoint.coeff, checkpoint.spaces,
-                                resumed_solver, max_iter=budget,
-                                **dict(common, **checkpoint.optimizer_kwargs()))
+    resumed = optimize_orbitals(
+        factors, h_ao, checkpoint.coeff, checkpoint.spaces, resumed_solver, max_iter=budget,
+        **dict(common,
+               **checkpoint.optimizer_kwargs(space_key=resumed_solver.space_key())))
     assert resumed.n_iterations == straight.n_iterations == budget
     assert abs(resumed.energy - straight.energy) < 1e-9
     assert len(resumed.history) == len(straight.history)
@@ -459,7 +464,10 @@ def test_the_policy_writes_a_checkpoint_every_macro_iteration(system, tmp_path):
     assert policy.stats.gb_written > 0.0
     final = read_checkpoint(tmp_path / "run.chk")
     assert final.iteration == 5
-    assert final.metadata == {}
+    # The state average is recorded by the policy itself, from the solver, so that a
+    # restart can always be checked against it (test_a_restart_with_a_different_state_average
+    # _is_refused is the mechanism test). Nothing else was asked for here.
+    assert final.metadata == {"state_average": "n_states=1;weights=equal"}
     assert final.n_active_elec == n_elec
 
 
@@ -480,3 +488,167 @@ def test_a_user_callback_is_chained_not_replaced(system, tmp_path):
     assert seen == [1, 2]
     assert result.n_iterations == 2
     assert read_checkpoint(tmp_path / "run.chk").iteration == 2
+
+
+# --- the restart's state average, and the chart it is compared against ---------------------
+
+def test_optimizer_kwargs_carries_the_LIVE_key_not_the_files_own(system):
+    """⚠ **The mechanism, not the observable.** Chart-scoping compares the key recorded
+    *inside* ``optimizer_state`` against the key of the solver that is about to run. Handing
+    the checkpoint its own ``space_key`` back compares the file with itself, so ``same_chart``
+    is unconditionally true and curvature is restored across any chart change without a word
+    — and the run then converges to a number nobody can tell apart from a good one.
+
+    The argument is required rather than defaulted precisely so that the defect cannot come
+    back by omission: this test would fail as a ``TypeError`` if it ever grew a default.
+    """
+    checkpoint = make_checkpoint()
+    assert checkpoint.space_key == "full-ci:4:2"
+
+    with pytest.raises(TypeError):
+        checkpoint.optimizer_kwargs()                  # no live key -> no silent self-compare
+
+    kwargs = checkpoint.optimizer_kwargs(space_key="full-ci:4:4")
+    assert kwargs["space_key"] == "full-ci:4:4"        # the LIVE key, not "full-ci:4:2"
+    assert kwargs["optimizer_state"]["space_key"] == "full-ci:4:2"   # the file's, untouched
+
+    # And the two together are what load_state_dict actually compares.
+    _, _, _, spaces, _ = system
+    opt = OrbitalOptimizer(OrbitalSpaces.from_counts(2, 4, 8), mode="quasi-newton")
+    opt.load_state_dict(kwargs["optimizer_state"], space_key=kwargs["space_key"])
+    assert opt._s == [] and opt._ah_guess is None      # cleared, because the charts differ
+
+
+def test_the_policy_records_the_state_average_from_the_solver(system, tmp_path):
+    """Read from the solver rather than accepted from the caller, so a driver cannot fail to
+    describe its own state average and leave a restart uncheckable."""
+    from kuiva.io.checkpoint import STATE_AVERAGE_KEY, state_average_key
+
+    factors, h_ao, c0, spaces, n_elec = system
+    solver = FullCISolver(spaces.n_active, n_elec, n_states=2, weights=[0.75, 0.25],
+                          enforce_kramers=False)
+    assert state_average_key(solver) == "n_states=2;weights=0.75,0.25"
+
+    policy = CheckpointPolicy(tmp_path / "run.chk", solver=solver, min_interval=0.0,
+                              cost_fraction=1.0, metadata={"active_space": "d shell"})
+    optimize_orbitals(factors, h_ao, c0, spaces, solver, max_iter=1, e_nuc=0.0,
+                      mode="second-order", callback=policy.callback, report=False)
+    stored = read_checkpoint(tmp_path / "run.chk").metadata
+    assert stored[STATE_AVERAGE_KEY] == "n_states=2;weights=0.75,0.25"
+    assert stored["active_space"] == "d shell"         # the caller's entries are untouched
+
+
+@pytest.mark.parametrize("n_states, weights, why", [
+    (3, None, "a different state count"),
+    (2, [0.6, 0.4], "different weights at the same count"),
+])
+def test_a_restart_with_a_different_state_average_is_refused(system, n_states, weights, why):
+    """⚠ A different state average is a different *calculation*, not a different chart.
+
+    The energy functional itself changes, so the converged orbitals and energy do; restoring
+    the old average's curvature onto it produces a trajectory that is an average of two
+    averages, with a plausible number at the end and nothing in the output saying so. The
+    active space is refused on the same grounds a few lines away in the same function.
+    """
+    from kuiva.interface.api import _check_restart_state_average
+
+    _, _, _, spaces, n_elec = system
+    written_by = FullCISolver(spaces.n_active, n_elec, n_states=2, enforce_kramers=False)
+    resumed = make_checkpoint()
+    resumed.metadata["state_average"] = state_average_key_of(written_by)
+
+    now = FullCISolver(spaces.n_active, n_elec, n_states=n_states, weights=weights,
+                       enforce_kramers=False)
+    with pytest.raises(ValueError, match="different state average is a different calc"):
+        _check_restart_state_average(resumed, now, "run.chk")
+
+    # ...and the matching one passes, or the refusal would be vacuous.
+    same = FullCISolver(spaces.n_active, n_elec, n_states=2, enforce_kramers=False)
+    _check_restart_state_average(resumed, same, "run.chk")
+
+
+def test_a_checkpoint_predating_the_state_average_warns_rather_than_passing(
+        system, kuiva_caplog):
+    """⚠ "Cannot be compared" is a weaker statement than "matches", and is said as such."""
+    from kuiva.interface.api import _check_restart_state_average
+
+    _, _, _, spaces, n_elec = system
+    resumed = make_checkpoint()
+    resumed.metadata.pop("state_average", None)
+    _check_restart_state_average(resumed, FullCISolver(spaces.n_active, n_elec, n_states=5,
+                                                       enforce_kramers=False), "old.chk")
+    assert any("cannot be checked against it" in r.message for r in kuiva_caplog.records)
+
+
+def state_average_key_of(solver):
+    from kuiva.io.checkpoint import state_average_key
+    return state_average_key(solver)
+
+
+# --- a solver whose `last` is not a CASCIResult --------------------------------------------
+
+def test_a_solver_without_ci_vectors_warns_instead_of_killing_the_run(system, tmp_path,
+                                                                     kuiva_caplog):
+    """⚠ **The write-failure promise, one step earlier.** ``from_info`` used to read
+    ``last.vectors`` and ``last.total_energies`` unconditionally, and was called *outside* the
+    guarded region — so a solver whose ``last`` is a tensor-network ``SweepResult`` (which has
+    neither: its ``energies`` exclude ``e_core`` and are a different quantity) raised an
+    ``AttributeError`` straight into the optimizer's loop and killed the calculation. The
+    module's documented semantics are that losing a restart point is a WARNING and the run
+    continues.
+    """
+    factors, h_ao, c0, spaces, n_elec = system
+
+    class SweepLike(object):
+        """Only what a SweepResult has: no `vectors`, no `total_energies`."""
+        energies = np.array([-7.6, -7.4])
+        max_discarded = 1e-9
+
+    class NetworkLikeSolver(object):
+        n_roots = 2
+        requested_weights = None
+
+        def __init__(self, inner):
+            self._inner = inner
+            self.last = SweepLike()
+
+        def space_key(self):
+            return "network:4:2"
+
+        def __call__(self, ints):
+            return self._inner(ints)
+
+    solver = NetworkLikeSolver(frozen_rdm_solver(system))
+    policy = CheckpointPolicy(tmp_path / "net.chk", solver=solver, min_interval=0.0,
+                              cost_fraction=1.0)
+    result = optimize_orbitals(factors, h_ao, c0, spaces, solver, max_iter=3, e_nuc=0.0,
+                               mode="second-order", callback=policy.callback, report=False)
+
+    assert result.n_iterations == 3                      # the run was NOT killed
+    assert policy.stats.n_written == 3                   # and it still checkpointed
+    back = read_checkpoint(tmp_path / "net.chk")
+    assert back.ci_vectors is None                       # nothing invented
+    assert back.state_energies.size == 0                 # local energies NOT passed off as totals
+    assert back.space_key == "network:4:2"
+    assert back.metadata["state_average"] == "n_states=2;weights=equal"   # n_roots, duck-typed
+
+
+def test_an_exception_building_a_checkpoint_warns_and_the_run_continues(system, tmp_path,
+                                                                       kuiva_caplog):
+    """The guard is around ``from_info`` as well as around the write itself: an exception
+    while *assembling* the object is the same promise broken one step earlier."""
+    factors, h_ao, c0, spaces, n_elec = system
+    solver = FullCISolver(spaces.n_active, n_elec, enforce_kramers=False)
+    policy = CheckpointPolicy(tmp_path / "run.chk", solver=solver, min_interval=0.0,
+                              cost_fraction=1.0)
+
+    def explode(info):
+        raise RuntimeError("no idea what a checkpoint is")
+
+    policy.from_info = explode
+    result = optimize_orbitals(factors, h_ao, c0, spaces, solver, max_iter=2, e_nuc=0.0,
+                               mode="second-order", callback=policy.callback, report=False)
+    assert result.n_iterations == 2
+    assert policy.stats.n_written == 0 and policy.stats.n_skipped == 2
+    assert any("could not assemble the checkpoint" in r.message
+               for r in kuiva_caplog.records)

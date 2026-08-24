@@ -1686,3 +1686,81 @@ def test_batch_slices_cover_everything_exactly_once():
     # A single item that does not fit is still attempted — the resident checks refuse, not this.
     assert ptblocks.batch_slices(3, 100.0, budget_gb=1e-6) == [slice(0, 1), slice(1, 2),
                                                                slice(2, 3)]
+
+
+# --- the intruder diagnostic: computed, printed, and now actually compared ------------------
+
+def test_class_energy_records_the_signed_denominator_as_well_as_the_absolute_one():
+    """⚠ The two answer different questions and the absolute one cannot see the worse case.
+
+    A small ``|dE|`` says the sum is badly conditioned. A **negative** ``dE`` says a perturber
+    has fallen below the reference, which makes the class energy wrong in sign as well as in
+    size — and ``|dE|`` for that same term can be perfectly comfortable.
+    """
+    from kuiva.pt.classes import ClassContext, class_energy
+
+    ctx = ClassContext(blocks=None, provider=None, eps_inactive=np.zeros(0),
+                       eps_virtual=np.zeros(0), fock_vi=None, fock_va=None, fock_ai=None)
+    result = class_energy("Sr", np.array([1.0, 1.0, 1.0]), np.array([2.0, -0.4, 5.0]), ctx,
+                          cutoff=False)
+    assert result.min_denominator == pytest.approx(0.4)      # |dE|: looks merely tight
+    assert result.min_signed_denominator == pytest.approx(-0.4)   # ...and is actually below 0
+
+
+@pytest.mark.parametrize("min_abs, min_signed, expect", [
+    (2.5, 2.5, None),                                  # comfortably outside the band
+    (0.05, 0.05, "intruder band"),                     # the conventional warning tier
+    (1e-9, 1e-9, "essentially zero"),                  # a vanishing denominator
+    (0.4, -0.4, "wrong in sign"),                      # a perturber below the reference
+])
+def test_a_small_denominator_now_warns_instead_of_only_being_printed(
+        min_abs, min_signed, expect, kuiva_caplog):
+    """⚠ **The defect.** ``min_denominator`` was computed for every class and printed in the
+    per-class table, and was compared against nothing at all — so the one number saying
+    whether a class's ``E2`` can be believed reached the user only if the user already knew
+    what value to be alarmed by. The bounds are fixed in advance, not fitted to the shipped
+    systems.
+    """
+    from kuiva.pt.classes import ClassResult
+    from kuiva.pt.nevpt2 import _warn_on_intruder
+
+    entry = ClassResult(name="Sijrs", norm=1.0, energy=-0.1, n_perturbers=3,
+                        min_denominator=min_abs, min_signed_denominator=min_signed)
+    _warn_on_intruder(0, "Sijrs", entry, shifted=False)
+
+    warnings = [r.message for r in kuiva_caplog.records if r.levelname == "WARNING"]
+    if expect is None:
+        assert not warnings
+    else:
+        assert any(expect in m for m in warnings), warnings
+
+
+def test_the_bands_are_the_pre_registered_ones(kuiva_caplog):
+    """The constants are the contract; a test that read them from the code it checks would
+    pass no matter what they became."""
+    from kuiva.pt.nevpt2 import INTRUDER_SEVERE_EH, INTRUDER_WARN_EH
+
+    assert INTRUDER_WARN_EH == 0.1
+    assert INTRUDER_SEVERE_EH == 1.0e-6
+
+
+def test_an_applied_shift_does_not_silence_the_intruder_warning(kuiva_caplog):
+    """⚠ A level shift bounds the damage; it does not remove the intruder. Going quiet because
+    the symptom was treated is how a shifted run gets quoted as a clean one."""
+    from kuiva.pt.classes import ClassResult
+    from kuiva.pt.nevpt2 import _warn_on_intruder
+
+    entry = ClassResult(name="Sr", norm=1.0, energy=-0.1, n_perturbers=3,
+                        min_denominator=0.01, min_signed_denominator=0.01)
+    _warn_on_intruder(2, "Sr", entry, shifted=True)
+    messages = [r.message for r in kuiva_caplog.records if r.levelname == "WARNING"]
+    assert any("intruder band" in m and "level shift is applied" in m for m in messages)
+
+
+def test_a_class_with_no_denominators_says_nothing(kuiva_caplog):
+    """A class that reports only a norm formed no denominators; there is nothing to judge."""
+    from kuiva.pt.classes import ClassResult
+    from kuiva.pt.nevpt2 import _warn_on_intruder
+
+    _warn_on_intruder(0, "Sij", ClassResult(name="Sij", norm=1.0), shifted=False)
+    assert not [r for r in kuiva_caplog.records if r.levelname == "WARNING"]

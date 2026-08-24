@@ -285,22 +285,36 @@ class PropertyMatrices:
         e = np.asarray(self.energies, dtype=float)
         return (e - e.min()) * HARTREE_TO_CM
 
-    def analyse(self, tol_cm: float = 1.0) -> List[Multiplet]:
+    def analyse(self, tol_cm: float = 1.0,
+                pseudo_doublet_tol_cm: Optional[float] = None) -> List[Multiplet]:
         """The phase-invariant reduction — the **only** sound way to compare these.
 
         Degeneracy pattern, relative energies, and the invariant ``M_ij = Tr_block(mu_i mu_j)``
         with its principal g values. Any validation of this file's contents must go through
         here; element-by-element comparison of :attr:`mu` compares arbitrary phases.
+
+        ``pseudo_doublet_tol_cm`` groups tunnelling-split singlets into **non-Kramers
+        pseudo-doublets** — the integer-spin (Tb/Ho-type) case, where the moment belongs to
+        the pair and each singlet alone has none. Opt-in and never inferred; see
+        :func:`kuiva.props.multiplet.analyse_spectrum`.
         """
-        return analyse_spectrum(self.energies, self.mu, tol_cm=tol_cm)
+        return analyse_spectrum(self.energies, self.mu, tol_cm=tol_cm,
+                                pseudo_doublet_tol_cm=pseudo_doublet_tol_cm)
 
     def hermiticity_error(self) -> float:
         """``max |A - A^dag|`` over the three moment components — a structural self-check."""
         mu = np.asarray(self.mu)
         return float(np.max(np.abs(mu - mu.conj().transpose(0, 2, 1)))) if mu.size else 0.0
 
-    def report(self, logger=None) -> None:
-        """The INFO summary: the multiplet table, never the matrices themselves."""
+    def report(self, logger=None, pseudo_doublet_tol_cm: Optional[float] = None) -> None:
+        """The INFO summary: the multiplet table, never the matrices themselves.
+
+        ⚠ A block with no g values prints ``nan``, not ``0``: a ``size = 1`` block carries no
+        magnetic moment, and "not defined here" is a different statement from "measured zero".
+        With ``pseudo_doublet_tol_cm`` the table gains a ``Delta`` column and non-Kramers
+        pairs are marked — read ``g_3`` as ``g_z`` there, and ``g_1``/``g_2`` as the residual
+        that should be zero by symmetry.
+        """
         logger = logger or log
         out.subsection(logger, "Spin-orbit multiplets and magnetic moments")
         out.entries(logger, [
@@ -312,18 +326,34 @@ class PropertyMatrices:
              "exactly zero for a Kramers-paired inactive set", "{:.2e}"),
             ("moment matrix hermiticity", self.hermiticity_error(), "mu_B", "", "{:.2e}"),
         ])
-        table = out.Table(logger, [
-            out.col_count("block", 7), out.Column("states", "{:d}", 8),
-            out.Column("E [cm^-1]", out.CM_FMT, 14),
-            out.Column("spread", "{:.3e}", 11),
-            out.Column("g_1", "{:.4f}", 9), out.Column("g_2", "{:.4f}", 9),
-            out.Column("g_3", "{:.4f}", 9)])
+        multiplets = self.analyse(pseudo_doublet_tol_cm=pseudo_doublet_tol_cm)
+        paired = pseudo_doublet_tol_cm is not None
+        columns = [out.col_count("block", 7), out.Column("states", "{:d}", 8),
+                   out.Column("E [cm^-1]", out.CM_FMT, 14),
+                   out.Column("spread", "{:.3e}", 11),
+                   out.Column("g_1", "{:.4f}", 9), out.Column("g_2", "{:.4f}", 9),
+                   out.Column("g_3", "{:.4f}", 9)]
+        if paired:
+            columns.append(out.Column("Delta", "{:.3e}", 11))
+        table = out.Table(logger, columns)
         table.start()
-        for i, m in enumerate(self.analyse()):
+        for i, m in enumerate(multiplets):
             g = m.g_values if m.g_values else (float("nan"),) * 3
-            table.row(i, m.size, m.energy_cm, m.spread_cm, g[0], g[1], g[2])
-        table.end("g values are principal values of M_ij = Tr_block(mu_i mu_j); "
-                  "phases are arbitrary ")
+            row = [i, m.size, m.energy_cm, m.spread_cm, g[0], g[1], g[2]]
+            if paired:
+                row.append(float("nan") if m.tunnelling_gap_cm is None
+                           else m.tunnelling_gap_cm)
+            table.row(*row)
+        # ⚠ Each clause appears only when the table it describes contains the thing it
+        # describes. A note about `nan` under a table with no `nan` in it is noise, and it
+        # would also move every committed reference that has none.
+        note = "g values are principal values of M_ij = Tr_block(mu_i mu_j); phases are arbitrary"
+        if any(not m.g_values for m in multiplets):
+            note += "; nan = the block carries no moment (a single state has none)"
+        if paired:
+            note += ("; Delta marks a non-Kramers pseudo-doublet, where g_3 is g_z and "
+                     "g_1/g_2 are a residual that is zero by symmetry")
+        table.end(note + " ")
 
     def write(self, path, **kwargs) -> Path:
         """Write the property dump file. See :func:`write_dump`."""

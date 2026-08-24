@@ -50,6 +50,29 @@ and a thinned checkpoint still restarts the calculation where a skipped one does
 ⚠ A checkpoint at a **converged** iteration is written unconditionally. The cadence policy is
 about how often to insure against a crash; the last one is the result.
 
+⚠ What a restart is checked against, and the two ways it silently was not
+-------------------------------------------------------------------------
+A restart continues **the calculation that was interrupted**. Two things define that
+calculation beyond the orbitals, and both were being taken on trust:
+
+* **the state average.** :func:`state_average_key` records ``n_states`` and the *requested*
+  weights, read from the solver by :meth:`CheckpointPolicy._metadata` rather than accepted
+  from a caller, so no driver can leave a restart uncheckable by forgetting to describe
+  itself. A mismatch is **refused**, on the same grounds a restated active space that
+  disagrees is: a different state average changes the energy functional, so it is a different
+  calculation and not a different chart of this one. Continuing from converged orbitals into a
+  *new* state average is what ``coeff=`` is for. A file predating the record cannot be
+  compared and says so — which is a weaker statement than "matches", and is worded as one.
+* **the chart, for curvature.** :meth:`CASSCFCheckpoint.optimizer_kwargs` takes the **live**
+  solver's ``space_key`` as a *required* argument. It used to take none and hand back
+  ``self.space_key``, which compared the file with itself: ``same_chart`` was then
+  unconditionally true, and L-BFGS pairs, the augmented-Hessian warm start and the trust
+  radius were restored across any chart change without a word. Nothing observable failed —
+  the run converged, to a number indistinguishable from a good one.
+
+Both are the same lesson twice: a check whose two sides come from the same place is not a
+check, and the mechanism, not the observable, is what the tests hold.
+
 References
 ----------
 * HDF5: The HDF Group, "Hierarchical Data Format, version 5" (1997-2024), https://www.hdfgroup.org/HDF5/.
@@ -202,16 +225,26 @@ class CASSCFCheckpoint:
         import dataclasses
         return dataclasses.replace(self, ci_vectors=None)
 
-    def optimizer_kwargs(self) -> Dict[str, Any]:
+    def optimizer_kwargs(self, *, space_key: Optional[str]) -> Dict[str, Any]:
         """The keyword arguments that resume :func:`kuiva.mcscf.orbopt.optimize_orbitals`.
 
         Kept here rather than at the call site so that a restart cannot silently drop one of
-        them — forgetting ``start_iteration`` would restart the *budget*, and forgetting
-        ``space_key`` would restore curvature across a chart change.
+        them — forgetting ``start_iteration`` would restart the *budget*.
+
+        ⚠ **``space_key`` is the LIVE solver's key and is a required argument, never
+        ``self.space_key``.** Chart-scoping works by comparing the key recorded *inside*
+        ``optimizer_state`` against the key of the solver that is about to run: handing this
+        object's own key back would compare the file with itself, make ``same_chart``
+        unconditionally true, and restore curvature — L-BFGS pairs, the augmented-Hessian
+        warm start, the trust radius — belonging to a surface that no longer exists. That is
+        precisely the bug the mechanism exists to prevent, and it is invisible: the run
+        converges, to a number nobody can tell apart from a good one. It was a no-argument
+        method that did exactly this; the argument is required so no caller can restore the
+        mistake by omission.
         """
         return {"optimizer_state": self.optimizer_state,
                 "start_iteration": int(self.iteration),
-                "space_key": self.space_key,
+                "space_key": space_key,
                 "history": np.asarray(self.history).tolist()}
 
     def report(self, logger=None) -> None:
@@ -435,6 +468,46 @@ def read_checkpoint(path, *, check_fingerprint: bool = True) -> CASSCFCheckpoint
     return checkpoint
 
 
+# --- The state average, as an identity ------------------------------------------------------
+
+#: Metadata key under which :func:`state_average_key` is stored. Metadata is a free-form
+#: ``{str: str}`` map already written into every checkpoint, so recording the state average
+#: there costs no schema change and an older file simply carries no entry — which the restart
+#: check reads as "cannot be compared", never as "matches".
+STATE_AVERAGE_KEY = "state_average"
+
+
+def state_average_key(solver) -> Optional[str]:
+    """A canonical string identifying the state average a solver was built for.
+
+    ⚠ **This is deliberately NOT part of** :meth:`~kuiva.mcscf.casci.FullCISolver.space_key`.
+    That key is the identity of the CI *surface* and is compared to decide whether restored
+    L-BFGS curvature is still meaningful; widening it would move the key for every
+    calculation ever checkpointed and silently downgrade each of their warm starts to cold
+    ones. The state average is a different question — not "is this the same surface?" but "is
+    this the same calculation?" — so it is checked separately, against the file's metadata,
+    and answered by a refusal rather than by discarding curvature.
+
+    The *requested* weights are what is recorded, not the equalized ones the averaging gate
+    produces: the request is what a user restates and what a mismatch is about, and the
+    equalization is a deterministic function of it and of the spectrum.
+
+    Returns ``None`` for a solver that declares no state average, which is not comparable to
+    anything and is treated as such.
+    """
+    n_states = getattr(solver, "n_states", None)
+    if n_states is None:
+        n_states = getattr(solver, "n_roots", None)      # the tensor-network spelling
+    if n_states is None:
+        return None
+    weights = getattr(solver, "requested_weights", None)
+    if weights is None:
+        rendered = "equal"
+    else:
+        rendered = ",".join("{:.12g}".format(float(w)) for w in np.asarray(weights).ravel())
+    return "n_states={};weights={}".format(int(n_states), rendered)
+
+
 # --- The policy ------------------------------------------------------------------------------
 
 @dataclass
@@ -495,9 +568,25 @@ class CheckpointPolicy:
 
     # -- the optimizer hook ---------------------------------------------------------------
     def callback(self, info: dict):
-        """The ``callback`` :func:`~kuiva.mcscf.orbopt.optimize_orbitals` calls."""
+        """The ``callback`` :func:`~kuiva.mcscf.orbopt.optimize_orbitals` calls.
+
+        ⚠ **Building the checkpoint is inside the guarded region, not beside it.** The
+        module's failure semantics say a *write* failure is a WARNING and the run continues;
+        an exception raised while assembling the object would have escaped into the
+        optimizer's loop and killed the calculation instead, which is the same promise broken
+        one step earlier. Everything from ``from_info`` onwards is therefore guarded here, and
+        :meth:`write` keeps its own guard around the file itself.
+        """
         if self.enabled:
-            self.write(self.from_info(info), force=bool(info.get("converged")))
+            try:
+                checkpoint = self.from_info(info)
+            except Exception as exc:
+                log.warning("could not assemble the checkpoint at iteration %s (%s: %s); the "
+                            "calculation continues, but there is no restart point for it",
+                            info.get("iteration"), type(exc).__name__, exc)
+                self.stats.n_skipped += 1
+            else:
+                self.write(checkpoint, force=bool(info.get("converged")))
         return None if self.chain is None else self.chain(info)
 
     def from_info(self, info: dict) -> CASSCFCheckpoint:
@@ -507,6 +596,14 @@ class CheckpointPolicy:
         optimizer are already in hand at the end of a macro-iteration, so nothing has to be
         recomputed to checkpoint. The *states* come from the solver, which the optimizer does
         not know about — it never knew there were states.
+
+        ⚠ **What the solver's ``last`` carries is duck-typed, never assumed.** A
+        ``FullCISolver`` leaves a ``CASCIResult`` there, with CI vectors and *total* state
+        energies; a tensor-network solver leaves a ``SweepResult``, which has neither — its
+        ``energies`` exclude ``e_core`` and are not the same quantity, so they are **not**
+        substituted. A solver that cannot supply one of them contributes nothing for it
+        rather than raising: the orbitals, the RDMs and the optimizer state are what a restart
+        actually needs, and they are present either way.
         """
         spaces: OrbitalSpaces = info["spaces"]
         optimizer = info["optimizer"]
@@ -515,10 +612,14 @@ class CheckpointPolicy:
         if self.solver is not None and hasattr(self.solver, "space_key"):
             space_key = self.solver.space_key()
         vectors = None
-        if self.store_ci_vectors and last is not None:
+        if self.store_ci_vectors and getattr(last, "vectors", None) is not None:
             vectors = np.ascontiguousarray(last.vectors)
-        energies = (np.zeros(0) if last is None
-                    else np.asarray(last.total_energies, dtype=float))
+        totals = getattr(last, "total_energies", None)
+        energies = np.zeros(0) if totals is None else np.asarray(totals, dtype=float)
+        if last is not None and totals is None:
+            log.debug("the solver's last result (%s) carries no total state energies; the "
+                      "checkpoint records none rather than storing a different quantity "
+                      "under that name", type(last).__name__)
         n_elec = self.n_active_elec
         if n_elec is None:
             n_elec = int(getattr(self.solver, "n_elec", 0))
@@ -534,7 +635,20 @@ class CheckpointPolicy:
             optimizer_state=optimizer.state_dict(space_key=space_key),
             ci_vectors=vectors, space_key=space_key,
             history=np.asarray(info.get("history", []), dtype=float),
-            metadata=self.metadata)
+            metadata=self._metadata())
+
+    def _metadata(self) -> Dict[str, str]:
+        """``self.metadata`` plus the state average, taken from the solver.
+
+        ⚠ Read from the solver here rather than accepted from the caller, so that a restart
+        can never fail to be checkable because a driver forgot to describe its own state
+        average. The caller's own entries win nothing and lose nothing: this key is reserved.
+        """
+        metadata = dict(self.metadata)
+        key = state_average_key(self.solver)
+        if key is not None:
+            metadata[STATE_AVERAGE_KEY] = key
+        return metadata
 
     # -- the decision ---------------------------------------------------------------------
     def write(self, checkpoint: CASSCFCheckpoint, *, force: bool = False) -> bool:

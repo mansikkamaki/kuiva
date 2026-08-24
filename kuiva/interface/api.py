@@ -613,6 +613,45 @@ def _classifier_for(reference: SpinorReference, space, orbitals, solver_space,
         return None
 
 
+def _check_restart_state_average(resumed, solver, path) -> None:
+    """Refuse a restart whose state average differs from the one in the file.
+
+    The active space is checked the same way and for the same reason a few lines above: a
+    restart **continues the calculation that was interrupted**, and a different state average
+    is a different calculation, not a different chart of this one. The energy functional
+    itself changes, so the converged answer does — and the trajectory that came out would be
+    an average of two averages, with a plausible number at the end of it and nothing in the
+    output saying so.
+
+    ⚠ Refusing, rather than clearing curvature the way a genuine chart change does, is the
+    decision here. Continuing from converged orbitals into a *new* state average is a real
+    thing to want, and it is what ``coeff=`` is for; the message says so.
+
+    A file written before the state average was recorded carries no entry. That is read as
+    "cannot be compared" and warned about — never as "matches", which would be the same
+    silent pass this check exists to remove.
+    """
+    from ..io.checkpoint import STATE_AVERAGE_KEY, state_average_key
+
+    stored = resumed.metadata.get(STATE_AVERAGE_KEY)
+    current = state_average_key(solver)
+    if stored is None:
+        log.warning("the checkpoint at %s predates the recorded state average, so this "
+                    "restart cannot be checked against it; confirm that n_states and weights "
+                    "match the interrupted run, because restoring curvature across a changed "
+                    "state average converges to a plausible wrong answer", path)
+        return
+    if current is not None and stored != current:
+        raise ValueError(
+            "the checkpoint at {} was written for a state average of {} and this call asks "
+            "for {}. A restart continues the calculation that was interrupted; a different "
+            "state average is a different calculation, whose orbitals and energy differ. "
+            "Leave n_states/weights out so they come from the file, make them match — or, if "
+            "starting a NEW state average from these converged orbitals is what you meant, "
+            "read the orbitals and pass them as coeff= instead of restarting."
+            .format(path, stored.replace(";", ", "), current.replace(";", ", ")))
+
+
 def casci(reference: SpinorReference, *, active=None, character=None,
           n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
           n_states: int = 1, weights=None, coeff: Optional[np.ndarray] = None,
@@ -749,8 +788,13 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
     solver = FullCISolver(space.spaces.n_active, space.n_elec, n_states=n_states,
                           weights=weights, **solver_options)
     if resumed is not None:
+        _check_restart_state_average(resumed, solver, restart)
         solver.set_guess(resumed.ci_vectors)
-        optimizer_kwargs.update(resumed.optimizer_kwargs())
+        # ⚠ The LIVE solver's key, never the file's own. Chart-scoping compares the key
+        # recorded inside optimizer_state against the key of the solver about to run; handing
+        # the checkpoint its own key back compares the file with itself, so the comparison
+        # always passes and curvature is restored across a chart change without a word.
+        optimizer_kwargs.update(resumed.optimizer_kwargs(space_key=solver.space_key()))
 
     hook = callback
     policy = None

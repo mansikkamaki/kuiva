@@ -135,6 +135,31 @@ FOCK_MODES = ("state-averaged", "state-specific")
 #: nonzero value means the inactive/virtual rotation leaked into the active space.
 ACTIVE_INVARIANCE_TOL = 1.0e-10
 
+#: ⚠ **The intruder band [Eh], and both bounds are FIXED IN ADVANCE.** ``min_denominator`` was
+#: computed and printed for every class from the beginning and compared against nothing, so
+#: the one number that says whether a class's ``E2`` can be believed sat in a table with no
+#: verdict attached to it.
+#:
+#: Two tiers, because there are two distinct failures and they deserve different volumes:
+#:
+#: * :data:`INTRUDER_WARN_EH` — the conventional intruder band. ``E2`` is still a number, but a
+#:   perturber this close to the reference contributes out of proportion to its physical
+#:   weight and the class is sensitive to everything upstream of it. The level shifts exist
+#:   for exactly this, and the message names them.
+#: * :data:`INTRUDER_SEVERE_EH` — a denominator that is essentially zero, or (the signed
+#:   check) **negative**: a perturber has fallen to or below the reference. That is not a
+#:   badly conditioned sum, it is a divergent term, and the class energy is meaningless rather
+#:   than merely suspect. A negative denominator additionally makes it wrong in *sign*, which
+#:   no amount of looking at the magnitude would reveal.
+#:
+#: ⚠ Both were chosen **before** measuring the shipped systems, which is the project's
+#: pre-registration discipline: a threshold set to whatever the current test set happens to
+#: produce is a threshold that fires on the next one and cannot fail on this one. What the
+#: shipped systems actually show is recorded in this package's validation notes, so the band
+#: re-opens on data rather than on impression.
+INTRUDER_WARN_EH = 0.1
+INTRUDER_SEVERE_EH = 1.0e-6
+
 
 # --- pseudo-canonicalization ----------------------------------------------------------------
 
@@ -741,6 +766,7 @@ def _evaluate_classes(names: Sequence[str], ctx: ClassContext, state: int,
                         "an imaginary part of %.3e. That is a conjugation error somewhere in "
                         "the contraction chain, not rounding",
                         state, name, entry.max_imaginary)
+        _warn_on_intruder(state, name, entry, shifted=ctx.shift != 0.0)
         log.debug("state %d %s: norm %.6e, E %s, %d perturbers (%d dropped), min |dE| %s",
                   state, name, entry.norm,
                   "n/a" if entry.energy is None else "{:.10f}".format(entry.energy),
@@ -748,6 +774,48 @@ def _evaluate_classes(names: Sequence[str], ctx: ClassContext, state: int,
                   "n/a" if entry.min_denominator is None
                   else "{:.3e}".format(entry.min_denominator))
     return results
+
+
+def _warn_on_intruder(state: int, name: str, entry, *, shifted: bool) -> None:
+    """Compare a class's smallest denominator against the pre-registered band.
+
+    ⚠ The whole point of this function is that :attr:`ClassResult.min_denominator` used to be
+    computed, printed in the per-class table, and compared to **nothing** — so an intruder
+    announced itself only to a reader who already knew what number to be alarmed by.
+
+    A level shift already applied does not remove an intruder; it bounds the damage. The
+    warning therefore still fires, and says so, rather than going quiet because the symptom
+    was treated.
+    """
+    signed = entry.min_signed_denominator
+    absolute = entry.min_denominator
+    if absolute is None:
+        return                                    # a class that formed no denominators
+    treated = " (a level shift is applied, which bounds this rather than removing it)" \
+        if shifted else ""
+    # ⚠ The signed test first, and it is NOT "signed < severe": a denominator of +1e-9 is
+    # essentially zero (the tier below), while a negative one is a qualitatively different
+    # failure -- a perturber genuinely underneath the reference, which the absolute value
+    # cannot see at all. Wording them alike would blur the two.
+    if signed is not None and signed <= 0.0:
+        log.warning(
+            "state %d, class %s: the smallest energy denominator is %.3e Eh -- a perturber "
+            "has fallen to or below the reference, so this class's E2 is divergent and wrong "
+            "in sign, not merely ill-conditioned. Do not quote this correction: the reference "
+            "is the thing to fix (the active space, or which states it is averaged over)%s",
+            state, name, signed, treated)
+    elif absolute < INTRUDER_SEVERE_EH:
+        log.warning(
+            "state %d, class %s: the smallest energy denominator is %.3e Eh, essentially "
+            "zero, so this class's E2 is meaningless rather than merely suspect%s",
+            state, name, absolute, treated)
+    elif absolute < INTRUDER_WARN_EH:
+        log.warning(
+            "state %d, class %s: the smallest energy denominator is %.3e Eh, inside the "
+            "%.2g Eh intruder band -- E2 for this class is sensitive to a perturber that "
+            "contributes out of proportion to its physical weight. Check it against a run "
+            "with imaginary_shift=, and against a larger active space%s",
+            state, name, absolute, INTRUDER_WARN_EH, treated)
 
 
 def _assemble(per_state, names, e_casscf, canonical, fock, shift,

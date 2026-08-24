@@ -28,10 +28,16 @@ heavy element the expensive part of that rebuild would be the four-component ato
 calculation behind the two-electron spin-orbit term -- which is why *that* has a persistent
 cache of its own, keyed on the element rather than on the iterate.
 
-Large objects (a tensor-network state, big CI vectors) are written by policy under a budget:
-Kuiva estimates the write cost and thins or skips when a checkpoint would cost more than a
-few per cent of the compute since the last one, but a checkpoint at a *converged* iteration
-is always written. Both are warm starts -- losing one costs time, not correctness.
+Written by policy under a budget: the CI vectors, and only below a size threshold. Kuiva
+estimates the write cost and *thins* -- drops the vectors -- or skips outright when a
+checkpoint would cost more than a few per cent of the compute since the last one, but a
+checkpoint at a *converged* iteration is always written. The vectors are a Davidson warm
+start, which is why they are the first thing dropped: losing them costs the next solve its
+order of magnitude, and nothing else. A thinned checkpoint still restarts the calculation.
+
+⚠ **A tensor-network state is not checkpointed at all**, by this layer or any other: a
+``solver="dmrg"`` CASSCF refuses ``checkpoint=`` and ``restart=`` rather than write a file
+that could not resume it. Everything below is the conventional-CI route.
 
 ⚠ **Same energy, not the same bits.** The checkpoint restores the orbitals, the quasi-Newton
 curvature memory, the trust radius and the eigensolver's guess exactly. What it cannot

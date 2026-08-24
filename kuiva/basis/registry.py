@@ -8,7 +8,14 @@ ingestion consistency checks (relativistic-treatment compatibility across atoms,
 guarding against silently mixing incompatible recontraction variants).
 
 The registry does **not** store basis coefficients. Actual basis data is obtained from a
-provider at resolve time:
+provider at resolve time — and, for the Basis Set Exchange families, **cached per
+``(family, element)``**: the fetch-and-parse is pure and deterministic and was being repeated
+on every ``build_mole``, once per atom label, hence twice per atom whenever a cross-basis
+overlap builds both bases. Measured 0.245 s cold against 20 us warm for one two-element
+molecule. ⚠ The cached parse is stored **frozen** (nested tuples) and thawed into fresh lists
+per call: the same object would otherwise be handed to every consumer, and PySCF's ``Mole``
+build is entitled to normalize what it is given — one in-place mutation would silently change
+the basis of every later molecule in the process.
   * ``pyscf``  — families bundled with PySCF (Dyall, ANO-RCC);
   * ``bse``    — Basis Set Exchange (families PySCF does not bundle: the Karlsruhe
                  ``x2c-*all(-2c)`` sets, their ``x2c-JFIT`` auxiliaries, and the Peterson
@@ -459,14 +466,46 @@ def resolve_for_pyscf(name: str, elements: Sequence[Union[int, str]]):
         )
     if fam.provider is Provider.PYSCF:
         return fam.provider_name
-    # BSE provider
+    return {s: _parsed_bse_element(fam.provider_name, s) for s in syms}
+
+
+@lru_cache(maxsize=None)
+def _bse_element_shells(provider_name: str, symbol: str) -> tuple:
+    """Fetch and parse ONE element of ONE BSE family. Cached on ``(family, element)``.
+
+    Fetching from Basis Set Exchange and running ``pyscf.gto.basis.parse`` over the NWChem
+    text is pure, deterministic and by far the most expensive thing in
+    :func:`resolve_for_pyscf` — and it was being repeated on **every** ``build_mole``, once
+    per atom label, hence twice per atom for a cross-basis overlap. The key is
+    ``(provider family, element)`` rather than the whole element list, so a molecule of five
+    elements and a molecule of one share four of the five entries.
+
+    ⚠ **The parsed shells are returned as nested tuples and must stay immutable.** They are
+    handed out from the cache to every caller, and PySCF's ``Mole`` build is free to
+    normalize what it is given; one caller mutating a shared list in place would poison the
+    basis of every later molecule in the process. :func:`_parsed_bse_element` is what turns
+    them back into the fresh nested lists PySCF expects, per call.
+    """
     import basis_set_exchange as bse
     from pyscf.gto import basis as _pbasis
-    out = {}
-    for s in syms:
-        nw = bse.get_basis(fam.provider_name, elements=[s], fmt="nwchem", header=False)
-        out[s] = _pbasis.parse(nw)
-    return out
+
+    nw = bse.get_basis(provider_name, elements=[symbol], fmt="nwchem", header=False)
+    return _freeze(_pbasis.parse(nw))
+
+
+def _freeze(obj):
+    """Nested lists -> nested tuples, so a cached parse cannot be mutated by a consumer."""
+    return tuple(_freeze(x) for x in obj) if isinstance(obj, (list, tuple)) else obj
+
+
+def _thaw(obj):
+    """The inverse of :func:`_freeze` — a fresh nested list per caller."""
+    return [_thaw(x) for x in obj] if isinstance(obj, (list, tuple)) else obj
+
+
+def _parsed_bse_element(provider_name: str, symbol: str) -> list:
+    """One element's parsed shells, from the cache, as a fresh mutable structure."""
+    return _thaw(_bse_element_shells(provider_name, symbol))
 
 
 # --- Measuring the contraction of actual basis data -------------------

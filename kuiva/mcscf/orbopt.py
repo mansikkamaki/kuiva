@@ -103,7 +103,7 @@ References
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -1323,7 +1323,9 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                       report: bool = True,
                       optimizer_state: Optional[dict] = None, start_iteration: int = 0,
                       space_key: Optional[str] = None,
-                      history: Optional[Sequence[float]] = None) -> CASSCFResult:
+                      history: Optional[Sequence[float]] = None,
+                      extra_columns: Sequence[Tuple[Any, Callable[[], Any]]] = ()
+                      ) -> CASSCFResult:
     """Alternate CI and orbital steps to convergence — the shared MCSCF driver.
 
     ``ci_solver(ints) -> (energy, gamma, gamma2)`` is the **only** thing that distinguishes a
@@ -1357,6 +1359,18 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
     **total** macro-iterations, so a restart at iteration 12 with ``max_iter=50`` runs 38
     more; that is what makes an interrupted-and-restarted run cost the same as an
     uninterrupted one.
+
+    Solver-specific columns
+    -----------------------
+    ``extra_columns`` is a sequence of ``(Column, getter)`` pairs appended to the iteration
+    table; each ``getter()`` takes no arguments and returns that iteration's value. It exists
+    so a solver can put its own quality number in the one table a reader is looking at — the
+    tensor-network truncation weight is the case it was added for — **without this driver
+    learning anything about that solver**. The getter closes over whatever it needs.
+
+    ⚠ This is an *additive keyword*, deliberately, and not a restructuring of the loop below.
+    That loop is the validated driver: it may grow arguments and its ``callback(info)`` dict
+    may grow keys, but its control flow is not rearranged to accommodate a caller.
     """
     c = np.ascontiguousarray(c_spinor, dtype=np.complex128)
     opt = OrbitalOptimizer(spaces, max_step=max_step, memory=memory,
@@ -1381,7 +1395,8 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
         ])
         table = out.Table(log, [out.col_iter(), out.col_energy("E [Eh]"), out.col_delta(),
                                 out.col_resid("|g|"), out.Column("max rot", "{:.4f}", 8),
-                                out.Column("step", "{}", 6, align="<"), out.col_time()])
+                                out.Column("step", "{}", 6, align="<"), out.col_time()]
+                          + [column for column, _ in extra_columns])
         table.start()
 
     # Trust-region loop with genuine accept/reject: a trial rotation is evaluated before it
@@ -1421,7 +1436,8 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                               "radius now %.2e", de, opt.trust)
         if report:
             table.row(it, energy, de, gnorm, step.max_rotation,
-                      "2nd" if step.second_order else "qn", t_it.wall)
+                      "2nd" if step.second_order else "qn", t_it.wall,
+                      *[getter() for _, getter in extra_columns])
         if callback is not None:
             # Extended additively for the checkpoint writer: the orbitals, the RDMs and
             # the optimizer are what a restart needs, and they are already in hand here. A

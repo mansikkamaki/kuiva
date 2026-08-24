@@ -197,6 +197,12 @@ class ClassResult:
     n_dropped: int = 0
     #: Smallest ``|dE_l|`` over the kept labels — the intruder diagnostic.
     min_denominator: Optional[float] = None
+    #: Smallest **signed** ``dE_l`` over the kept labels. ⚠ Kept beside the absolute one
+    #: because the two answer different questions: a small ``|dE|`` says the perturbation is
+    #: badly conditioned, a **non-positive** ``dE`` says a perturber has fallen below the
+    #: reference, which makes the class energy wrong in sign as well as in size. The absolute
+    #: value alone cannot see the second, and the second is the more serious.
+    min_signed_denominator: Optional[float] = None
     #: Largest discarded imaginary part of a quantity that is real by construction. A
     #: growing value is the cheapest detector of a conjugation error.
     max_imaginary: float = 0.0
@@ -409,7 +415,8 @@ def class_energy(name: str, norms: np.ndarray, denominators: np.ndarray,
     return ClassResult(name=name, norm=total_norm, energy=energy,
                        n_perturbers=int(round(prefactor * kept_norms.size)),
                        n_dropped=n_dropped,
-                       min_denominator=float(np.min(np.abs(kept_denom))))
+                       min_denominator=float(np.min(np.abs(kept_denom))),
+                       min_signed_denominator=float(np.min(kept_denom)))
 
 
 def _shifted_ratio(norms: np.ndarray, denominators: np.ndarray,
@@ -445,7 +452,8 @@ def _lumped_energy(name: str, norms: np.ndarray, denominators: np.ndarray,
     energy = -prefactor * float(_shifted_ratio(kept_norm, kept_denom, ctx).sum())
     return ClassResult(name=name, norm=total_norm, energy=energy,
                        n_perturbers=int(np.count_nonzero(keep)), n_dropped=n_dropped,
-                       min_denominator=float(np.min(np.abs(kept_denom))))
+                       min_denominator=float(np.min(np.abs(kept_denom))),
+                       min_signed_denominator=float(np.min(kept_denom)))
 
 
 def label_buffer_gb(n_labels: int) -> float:
@@ -535,6 +543,7 @@ def _eval_sijrs(ctx: ClassContext) -> ClassResult:
     energy_total = 0.0
     n_kept = 0
     min_denom = np.inf
+    min_signed = np.inf
     # Batch over the *virtual* index: the four-index batch is (nba, nc, nv, nc), so a core
     # batch would scale as nv^2 and a virtual one only as nv. One transient-budget query.
     per_a = batch_gb((nc, nv, nc), count=3)
@@ -553,9 +562,13 @@ def _eval_sijrs(ctx: ClassContext) -> ClassResult:
         n_kept += part.n_perturbers
         if part.min_denominator is not None:
             min_denom = min(min_denom, part.min_denominator)
+        if part.min_signed_denominator is not None:
+            min_signed = min(min_signed, part.min_signed_denominator)
     return ClassResult(name="Sijrs", norm=norm_total, energy=energy_total,
                        n_perturbers=n_kept,
-                       min_denominator=None if not np.isfinite(min_denom) else min_denom)
+                       min_denominator=None if not np.isfinite(min_denom) else min_denom,
+                       min_signed_denominator=(None if not np.isfinite(min_signed)
+                                               else min_signed))
 
 
 def _eval_srsi(ctx: ClassContext) -> ClassResult:
@@ -618,7 +631,9 @@ def _eval_srsi(ctx: ClassContext) -> ClassResult:
                           groups=keys[:filled])
     return ClassResult(name="Srsi", norm=result.norm, energy=result.energy,
                        n_perturbers=result.n_perturbers, n_dropped=result.n_dropped,
-                       min_denominator=result.min_denominator, max_imaginary=max_imag)
+                       min_denominator=result.min_denominator,
+                       min_signed_denominator=result.min_signed_denominator,
+                       max_imaginary=max_imag)
 
 
 def _eval_sijr(ctx: ClassContext) -> ClassResult:
@@ -671,7 +686,9 @@ def _eval_sijr(ctx: ClassContext) -> ClassResult:
                           groups=keys[:filled])
     return ClassResult(name="Sijr", norm=result.norm, energy=result.energy,
                        n_perturbers=result.n_perturbers, n_dropped=result.n_dropped,
-                       min_denominator=result.min_denominator, max_imaginary=max_imag)
+                       min_denominator=result.min_denominator,
+                       min_signed_denominator=result.min_signed_denominator,
+                       max_imaginary=max_imag)
 
 
 def _eval_srs(ctx: ClassContext) -> ClassResult:
@@ -728,7 +745,9 @@ def _eval_srs(ctx: ClassContext) -> ClassResult:
                           groups=keys[:filled])
     return ClassResult(name="Srs", norm=result.norm, energy=result.energy,
                        n_perturbers=result.n_perturbers, n_dropped=result.n_dropped,
-                       min_denominator=result.min_denominator, max_imaginary=max_imag)
+                       min_denominator=result.min_denominator,
+                       min_signed_denominator=result.min_signed_denominator,
+                       max_imaginary=max_imag)
 
 
 def _eval_sij(ctx: ClassContext) -> ClassResult:
@@ -776,7 +795,9 @@ def _eval_sij(ctx: ClassContext) -> ClassResult:
                           groups=keys[:filled])
     return ClassResult(name="Sij", norm=result.norm, energy=result.energy,
                        n_perturbers=result.n_perturbers, n_dropped=result.n_dropped,
-                       min_denominator=result.min_denominator, max_imaginary=max_imag)
+                       min_denominator=result.min_denominator,
+                       min_signed_denominator=result.min_signed_denominator,
+                       max_imaginary=max_imag)
 
 
 def _eval_sir(ctx: ClassContext) -> ClassResult:
@@ -863,7 +884,9 @@ def _eval_sir(ctx: ClassContext) -> ClassResult:
                           groups=keys[:filled])
     return ClassResult(name="Sir", norm=result.norm, energy=result.energy,
                        n_perturbers=result.n_perturbers, n_dropped=result.n_dropped,
-                       min_denominator=result.min_denominator, max_imaginary=max_imag)
+                       min_denominator=result.min_denominator,
+                       min_signed_denominator=result.min_signed_denominator,
+                       max_imaginary=max_imag)
 
 
 def _eval_sr(ctx: ClassContext) -> ClassResult:
@@ -936,7 +959,9 @@ def _eval_sr(ctx: ClassContext) -> ClassResult:
                           groups=keys[:filled])
     return ClassResult(name="Sr", norm=result.norm, energy=result.energy,
                        n_perturbers=result.n_perturbers, n_dropped=result.n_dropped,
-                       min_denominator=result.min_denominator, max_imaginary=max_imag)
+                       min_denominator=result.min_denominator,
+                       min_signed_denominator=result.min_signed_denominator,
+                       max_imaginary=max_imag)
 
 
 def _eval_si(ctx: ClassContext) -> ClassResult:
@@ -994,7 +1019,9 @@ def _eval_si(ctx: ClassContext) -> ClassResult:
                           groups=keys[:filled])
     return ClassResult(name="Si", norm=result.norm, energy=result.energy,
                        n_perturbers=result.n_perturbers, n_dropped=result.n_dropped,
-                       min_denominator=result.min_denominator, max_imaginary=max_imag)
+                       min_denominator=result.min_denominator,
+                       min_signed_denominator=result.min_signed_denominator,
+                       max_imaginary=max_imag)
 
 
 # --- the registry ------------------------------------------------------------------------------

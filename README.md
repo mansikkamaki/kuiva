@@ -378,9 +378,74 @@ or `active=[spinor indices]` for an explicit one. `atom` may be a sequence of ce
 populations are pooled — the right form for equivalent centres whose canonical orbitals
 delocalize. There is no default: an active space is a physical statement.
 
+**Two shells in one active space** — the union form is how you say it, and it is worth spelling
+out because the syntax does not announce itself:
+
+```python
+character=[("Dy", "f", 14), ("Dy", "d", 10)]     # 4f + 5d, one active space
+```
+
+Each triple is `(atom, l, n_spinors)`, in whole Kramers pairs — `14` is the seven f pairs, `10`
+the five d pairs. The fragments are resolved independently and unioned, and a pair claimed by
+two of them is **refused rather than shared**: a pair clearing two thresholds at once means the
+fragments were not the disjoint physical statement they were written as.
+
+⚠ **A second shell of the *same* `l` is a different case, and the union form cannot express
+it.** Two fragments with the same `(atom, l)` select the same lowest pairs and are refused for
+overlapping. The only way to say "3d plus 4d" is the single form, asking for more pairs of that
+character:
+
+```python
+character=("Ti", "d"), n_active=20               # the lowest TEN d pairs: 3d + 4d
+```
+
+That reads *"the lowest ten Kramers pairs of d character on Ti"*, and which shells those are is
+whatever the orbitals put there — a weaker statement than naming the shell, and deliberately so:
+a principal quantum number is refused everywhere in this API because such labels count shells
+*within the basis*. Check what you actually got with the populations below.
+
+⚠ **The pre-optimizer will never suggest a double shell.** `CheapCI.suggested_active()` selects
+on fractional *occupation*, and the correlating shell of a double-shell active space is empty at
+that level of treatment — its members come back at ~1e-4 and are not returned. That is a
+structural blindness, not a threshold to lower, and it is the concrete reason the suggestion is
+documented as a lower bound: a double shell has to be asked for.
+
 The states: `n_states`, `weights`. The optimizer: `mode` (`"auto"`, `"quasi-newton"`,
 `"second-order"`), `max_iter`, `conv_grad`, `conv_energy`, `max_step`, `callback`.
 Checkpointing: `checkpoint=path`, `restart=path`, `checkpoint_options`.
+
+#### ⚠ Before you set `n_states`: four questions
+
+The reasoning is in [A first calculation](#a-first-calculation) item 3. This is the short form,
+put where the number is actually set — the state average is the single most common way to get a
+plausible wrong answer out of this program.
+
+1. **Does the count land on a manifold boundary?** A count that stops *inside* a near-degenerate
+   manifold makes the averaged density non-invariant; the Fock operator built from it splits the
+   shell, and the selection keeps cutting the same way. Kuiva solves a few roots the average does
+   *not* use and reports the gap at the starting orbitals and at the converged ones, warning
+   below 50 cm⁻¹. Read those two lines — they are the only evidence there is.
+2. **Is it the count for *this* spectrum?** A count that bounds the `2S+1` terms of a spin-free
+   calculation generally cuts the `2J+1` multiplets of the same system with spin–orbit coupling
+   on, and the converse bites equally. Carry the two counts separately; do not reuse one.
+3. **Is the average one the symmetry leaves invariant?** Landing on a boundary is necessary and
+   not sufficient. The converged boundary report also states the averaged density's **spin
+   non-invariance**: near zero — a whole term, or the whole space — is safe by symmetry and the
+   gap stops mattering; large — a single J, a single Kramers doublet — means the average *leans*
+   on the spin–orbit structure and is protected only by its gap and by where it started.
+4. **If it leans, where did the orbitals come from?** Converge the whole-term (or full-space)
+   average first, start the sub-manifold run from those orbitals, and check the manifold
+   splitting of the answer directly. A leaning average can converge from the scalar guess into a
+   wrong basin with every diagnostic clean, and no static check can see that from inside the run.
+
+`boundary_check=0` switches the diagnostic off; `boundary_check=n` sets how many extra roots it
+solves. ⚠ It never kills a run: a failure to *measure* the gap is a warning and **no** report,
+which is a weaker statement than a clean one, not a substitute for it.
+
+A count that would split a Kramers pair is refused outright, as is one that cuts a multiplet
+whose dimension the full double group fixes (with `point_group=` on). Neither refusal catches a
+manifold cut in half — an even remainder passes both — which is why the questions above are
+yours and not the program's.
 
 With point-group symmetry on, `n_states` may be a mapping instead of a count, and the
 orbital rotation may be constrained:
@@ -433,6 +498,15 @@ cas = kuiva.CASSCF(pre, solver="dmrg", n_states=4, graph="mutual-information",
   a `NetworkGraph`, or `"mutual-information"` / `"fiedler"` to build one from a `CheapCI`
   upstream. ⚠ Checkpoint/restart of the network state is not wired into this layer.
 
+  ⚠ **Read `w_disc`.** The iteration table gains a column carrying the largest discarded
+  weight of that macro-iteration's sweeps, and the stage report gives the final value; both
+  are also on the finished stage as `cas.max_discarded`. It is the network's primary quality
+  number — the fraction of the state the truncation threw away — and every energy from this
+  solver has to be quoted with it. The *trend* matters as much as the value: truncation
+  growing as the orbitals move is the signal that `max_bond` is too small. The per-sweep table
+  stays at DEBUG, because one table per sweep across many macro-iterations would bury the
+  output file it is printed into.
+
 A third solver, `kuiva.qc`, runs the configuration selection of a CI on a quantum computer or
 its simulator through the same seam, and can drive a whole CASSCF on Kuiva's own exact simulator
 or on Qiskit Aer. It is a **research vehicle**, never a default, optional, and dependent on
@@ -449,6 +523,14 @@ at the end of this file.
 A restart takes its active space **from the file**; restating it in a way that disagrees is
 refused rather than reconciled, and `max_iter` counts total macro-iterations across the
 restart, so an interrupted-and-restarted run costs what an uninterrupted one would.
+
+⚠ **The state average is refused on the same grounds.** `n_states` and `weights` are recorded
+in the checkpoint and cross-checked, and a restart asking for a different average is refused
+rather than continued: a different state average is a different *calculation*, not a different
+chart of this one — the energy functional itself changes, so the converged orbitals and energy
+do. Continuing from converged orbitals into a **new** state average is a real thing to want,
+and it is `coeff=`, not `restart=`. (A checkpoint written before the average was recorded
+cannot be checked, and says so rather than passing quietly.)
 
 #### Starting from a calculation in a different basis set
 
@@ -523,6 +605,15 @@ pt.multiplets()                                   # barycentres beside the per-s
   on the pseudo-canonical spectrum, never as a count.
 - Intruder-state level shifts (real and imaginary) exist and are **parameter-free by default**;
   any applied shift warns.
+- ⚠ **The intruder diagnostic warns rather than merely printing.** Each class's smallest energy
+  denominator appears in its table as `min |dE|`, and it is now compared against a fixed band:
+  below **0.1 Eh** that class's `E2` leans on a perturber contributing out of proportion to its
+  physical weight, and Kuiva says so, naming the class and pointing at `imaginary_shift`. Below
+  **1e-6 Eh**, or at a **negative** denominator — a perturber that has fallen to or below the
+  reference — the warning is louder, because the class energy is then divergent rather than
+  ill-conditioned, and a negative denominator makes it wrong in sign as well. A level shift
+  already applied does not silence either: it bounds the damage, it does not remove the
+  intruder. The fix is the reference — the active space, or which states it averages over.
 - All eight excitation classes are a *partition* of the first-order interacting space, so a
   restricted `classes=` gives a **partial** `E2` and says so.
 - ⚠ **Inside a degenerate CI manifold the individual per-state `E2` depend on the
@@ -555,6 +646,27 @@ position in the active list; `None` discovers them from the converged state's en
 ground Kramers doublet per site"*. ⚠ Every site must sit in **one particle-number sector**,
 because a pseudospin labels a multiplet; a single delocalized electron over several sites is
 refused. For a single centre, one site holding the whole active space is the right form.
+
+### Driving one piece by hand
+
+The stage classes are a thin layer over `kuiva.interface.api` (`api` below) and the module
+drivers, all of which stay public and usable directly. Collected here are the entry points that
+have **no stage of their own**, because otherwise they are findable only by knowing the module
+path. Reaching for one is a deliberate step off the documented path; each is still bound by the
+same memory limit, the same provenance records and the same state-averaging gate as a stage,
+being the same code underneath.
+
+| call | what it is for |
+|---|---|
+| `api.casci(reference, ...)` | a full CI at **fixed** orbitals over a chosen active space — the scan primitive. Same space, same states, many orbital sets or geometries, no orbital optimization. `coeff=` runs it on converged CASSCF orbitals, or on a set read from a checkpoint. |
+| `api.property_matrices(reference, source)` | the `H` and `mu` matrices **without writing a file**, for comparing two calculations in memory through `.analyse()`. `api.property_dump` is this plus the write. |
+| `api.active_space_for(reference, character=..., n_active=...)` | resolve an active-space request into the object the drivers take, so it can be inspected or reused before a run is committed to. |
+| `api.projected_active_space(plan, target, n_active_elec)` | the target-basis active space a projection lands on, for driving `api.project_to_basis` by hand instead of through `project_from=`. |
+| `SpinorReference.h_one_electron()` | the `(2·nao, 2·nao)` one-electron Hamiltonian in the AO basis: the full two-component X2C operator with spin–orbit coupling ingested, and the spin-free one lifted to two components without it. This is the operator the correlated energy is an expectation value of. |
+| `api.memory_plan(nao, ...)` | the phase-by-phase memory estimate the pre-flight prints, as data. Every entry is a function of dimensions only, so it answers "will this fit?" before any array — or any SCF — exists. |
+| `api.build_mole(molecule)` | the PySCF `Mole` a `Molecule` resolves to, including the decorated atom labels (`"Ti2"`) that per-atom bases and reference configurations are addressed by. |
+| `kuiva.interface.pyscf_bridge.run_scalar_aoc(element, configuration, basis=...)` | a scalar X2C SCF on **one atom or ion, averaged over a configuration** — spherical, one radial function per shell. The reference an atomic *shell* quantity has to come from, and what `kuiva.extras` is built on. ⚠ Its occupations are fractional, and the pipeline stages are not validated on such a reference. |
+| `Molecule.from_xyz_string(xyz, basis)` | a molecule from `"El x y z"` lines, in Angstrom. ⚠ Those lines **only** — an `.xyz` *file* opens with an atom count and a comment line, and neither is skipped. |
 
 ---
 
@@ -631,6 +743,26 @@ that difference on a small system, never to run a production calculation: its co
 fourth power of the basis, so anything with a heavy element in it is out of reach. That is why
 X2CAMF exists.
 
+#### Gaunt and Breit: a third axis with no name on it
+
+The four-component reference behind `"x2camf"` and `"mmf"` runs with the Dirac–**Coulomb**
+operator by default. The Gaunt and full Breit interactions are available, and
+`screening_options` is the only route to them:
+
+```python
+scf = kuiva.ScalarSCF(mol, screening_options={"interaction": "gaunt"}).run()   # or "breit"
+```
+
+⚠ **The interaction is not part of the Hamiltonian's name.** The method table above has five
+names and none of them says which two-electron interaction the reference was solved with: a
+Gaunt-corrected run is still called `X2C-AMF`, and two runs differing only in this print the
+same method line. What records it is the **screening record's `interaction` field**, which
+`scf.data.soc.provenance()` returns and every stored product carries in its header. When two
+calculations disagree, compare that field rather than the method name.
+
+`screening_options` also carries `backend` and `uncontract`; the full list is in
+`kuiva.amf.correction.amf_correction`.
+
 On a finished stage, `scf.data.soc.provenance()` returns all of this as JSON — the method name, the decoupling
 record (including `max |X|` per atom, the conditioning diagnostic) and the screening record. It
 is what a stored property matrix must carry: a matrix that does not say which Hamiltonian
@@ -699,7 +831,8 @@ ever per `(element, basis, charge, configuration, interaction)` and cached both 
 and on disk (`~/.cache/kuiva/amf`, `$KUIVA_AMF_CACHE`, or `off`): a potential-energy surface
 pays it once, not once per point. `screening="none"` is the escape hatch and the right choice
 for anything that is not about spin–orbit coupling, where the correction is pure cost — it
-changes no scalar quantity.
+changes no scalar quantity. ⚠ It does **not** turn spin–orbit coupling off; that is
+`with_soc=False`, and the two are described at the end of this section.
 
 The reference configuration defaults to the neutral atom, except the f block, which defaults to
 M(3+), on chemistry. Open shells are occupied by average of configuration, not aufbau.
@@ -731,6 +864,31 @@ mixing of incompatible recontractions — run over the whole per-atom assignment
 mean fields and reference orbitals are solved per `(element, basis, configuration)`, so an
 oxygen in TZVP and an oxygen in SVP each get the matching atomic reference.
 
+⚠ **For an actinide that per-atom form is required, not a convenience.** No single
+X2C-recontracted family covers an actinide *and* an ordinary ligand atom: the Karlsruhe
+`x2c-nZVPall-2c` sets stop at Rn (Z = 86), and the Peterson `cc-pVnZ-X2C` / `cc-pwCVnZ-X2C`
+sets that do reach Ac–Lr begin at K and contain no H, C, N, O or F. The assignment therefore
+has to name both halves, and this is the pattern to copy:
+
+```python
+mol = kuiva.Molecule(
+    atoms=[("U", (0.0, 0.0, 0.0)),
+           ("O", (0.0, 0.0,  1.77)), ("O", (0.0, 0.0, -1.77))],
+    basis={"U": "cc-pVTZ-X2C", "default": "x2c-TZVPall-2c"},
+    charge=2, spin=0)
+```
+
+Mixing those two families across atoms is checked and passes silently: both are X2C
+recontractions, so they target the same relativistic treatment. **ANO-RCC** is the one family
+covering H–Cm on its own, but it is a Douglas–Kroll–Hess recontraction — putting it beside an
+X2C set is allowed and **warns**, and it is on you to confirm that is what you meant.
+
+⚠ **The honest caveat: no actinide system is validated at any tier.** The committed cross-checks
+against DIRAC and OpenMolcas stop at Bi (Z = 83), and the heaviest f element in them is Dy. The
+basis sets are registered, the Hamiltonian has no element cutoff, and nothing in the path is
+element-specific — but "in scope" is not "tested", so an actinide number out of this code
+currently has no external reference behind it.
+
 The correction is also usable on its own, one element at a time:
 
 ```python
@@ -741,6 +899,46 @@ atom = gto.M(atom="Ne 0 0 0", basis="x2c-SVPall-2c")
 corr = amf_correction(atom, method="x2camf")     # (Delta h_sf, Delta w) in the AO basis
 corr.report()                                    # method, interaction, backend, magnitudes
 ```
+
+### The spin-free route: turning spin–orbit coupling off entirely
+
+`screening="none"` and `with_soc=False` are different things and are easy to confuse.
+`screening="none"` drops the *two-electron* picture change and keeps the one-electron spin–orbit
+operator, so the calculation is still two-component and still spin–orbit coupled — with
+j-splittings 5–30 % too large. `with_soc=False` ingests no two-component Hamiltonian at all: the
+correlated step runs on the spin-free X2C operator lifted to two components, and what comes out
+is a scalar-relativistic spectrum whose degeneracies are `2S+1` rather than `2J+1`.
+
+```python
+scf = kuiva.ScalarSCF(mol, with_soc=False).run()      # no spin-orbit coupling anywhere
+```
+
+It is the right setting for a spin-free reference number: a term energy to compare against a
+non-relativistic code, a `2S+1` term count to check a state average against before turning
+coupling on, an NEVPT2 decomposition with the spin structure still intact. The front end says so
+in a warning every time, because a scalar answer read as a relativistic one is the whole failure
+mode. Three things are worth knowing before relying on it.
+
+- **It costs what the two-component calculation costs.** The determinant space is still built
+  over spinors, so a given active space has the full two-component determinant count, not the
+  smaller α-string × β-string product a spin-free code would use. Switching spin–orbit coupling
+  off makes the answer simpler, not the calculation cheaper.
+- ⚠ **`Sz` is conserved here, and Kuiva does not exploit it.** With no spin–orbit coupling the
+  Hamiltonian commutes with `Sz` and the determinants fall into sectors; there is no sector
+  machinery, and every root is solved in the one full space.
+- ⚠ **Which is exactly why the eigensolver's guess is *generic* rather than merely good.** Those
+  sectors are invariant subspaces, and a Krylov method can never leave the ones its starting
+  vectors lie in. A guess taken from the lowest-diagonal determinants can lie entirely inside a
+  few of them — the solver then converges every residual, reports success, and returns states
+  that are **not the lowest**, with no gate anywhere seeing it. Measured on a spin-free
+  Dy(3+) CAS(9, 14): a 66-root solve missed 22 of the true lowest 66 and came back 6766 cm⁻¹ too
+  high, in a *third* of the iterations of the correct solve — so a fast solve is evidence of
+  nothing here. Generic vectors are prepended to every cold start, which makes that failure
+  structurally unavailable rather than impossible: the argument is Rayleigh–Ritz interlacing,
+  not a bound. ⚠ **A spectrum that changes qualitatively when you ask for a different number of
+  roots is this, not physics** — and the definitive check is a dense diagonalization of the
+  active-space Hamiltonian (`kuiva.ci.strings.hamiltonian_matrix`), which is cheap enough to
+  reach for whenever a spin-free spectrum surprises you.
 
 ---
 
@@ -959,6 +1157,9 @@ deliberately dull, because it is a contract with an external ITO / crystal-field
   energies, and `M_ij = Tr_block(mu_i mu_j)` with its principal g values.
   `PropertyMatrices.analyse()` is that reduction, one call away, and free ions then have
   *analytic* targets (Landé g) independent of every program involved.
+- ⚠ **A block of one state reports no g values — `nan`, never `0`.** A single state has no
+  first-order magnetic moment, and "not defined here" is a different statement from "measured
+  zero". The distinction is the whole of the **non-Kramers** case below.
 - ⚠ **No picture change is applied to `L` and `S`** — see [Limitations](#limitations--what-not-to-trust).
 - The header carries the full Hamiltonian provenance, the gauge origin, and the active space as
   a physical statement rather than an index window.
@@ -973,6 +1174,37 @@ the ab initio states onto it. ⚠ **Here `H` is *not* diagonal**, and the header
 `[ENERGIES]` lists its eigenvalues and `[MATRIX U]` the diagonalizing unitary. The `M`
 convention and the storage order are OuluSpin's, restated in every file, so the file needs no
 permutation on the way in. Spin operator matrices are deliberately not written.
+
+### ⚠ Non-Kramers ions: when the ground "doublet" is two singlets
+
+An **integer**-spin ion — Tb(3+) ⁷F₆, Ho(3+) ⁵I₈, and the Ln single-molecule magnets this code
+exists for — has no Kramers protection. Its ground doublet is two *singlets* split by a
+tunnelling gap Δ, anything from 10⁻⁵ to tens of cm⁻¹. They therefore do not group at the
+default 1 cm⁻¹ degeneracy tolerance, and each arrives as a block of one state — which carries
+no magnetic moment, because the moment belongs to the **pair**.
+
+So the multiplet table prints `nan` for those two blocks, and the run warns, naming Δ. Group
+them explicitly to get the number you actually want:
+
+```python
+cas_matrices = kuiva.PropertyDump(cas, "tb.props").run().matrices
+for m in cas_matrices.analyse(pseudo_doublet_tol_cm=50.0):
+    if m.non_kramers:
+        print(m.g_z, m.tunnelling_gap_cm, m.g_transverse_residual)
+```
+
+- **It is opt-in and never inferred.** Whether two nearby singlets are one tunnelling-split
+  doublet or two crystal-field levels is physics their energies cannot settle, and a wrong
+  grouping manufactures a plausible g out of two unrelated states.
+- **`g_z` is the number to quote.** For a non-Kramers doublet the transverse components vanish
+  identically (Griffith; Abragam & Bleaney), so the effective-spin description carries `g_z`
+  and Δ and nothing else.
+- ⚠ **`g_transverse_residual` is the check that can fail.** It is zero by symmetry for a real
+  pseudo-doublet; a value comparable to `g_z` says these two states are not one, and the
+  grouping request was wrong. Read it — a diagnostic whose only possible value is the one you
+  assumed is not a diagnostic.
+- Three near-equal singlets are not a doublet: a state consumed by one pair cannot join
+  another, so nothing is quietly counted twice.
 
 Both files carry a `format_version` that is bumped when the *meaning* of a stored field
 changes, so a consumer can refuse rather than misinterpret.
@@ -1198,7 +1430,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.17.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.18.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1214,7 +1446,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.17.0'
+import kuiva; kuiva.__version__          # '0.18.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

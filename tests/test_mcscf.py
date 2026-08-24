@@ -827,3 +827,66 @@ def test_disconnected_entanglement_graph_is_reported(kuiva_caplog):
     with kuiva_caplog.at_level("INFO"):
         fiedler_order(info)
     assert any("disconnected" in r.message for r in kuiva_caplog.records)
+
+
+# --- solver-specific columns in the shared iteration table ---------------------------------
+
+def _exact_ci(spaces, nelec):
+    """The exact active-space CI as a plain ``ci_solver(ints)`` callable."""
+    def ci_solver(ints):
+        occ = list(itertools.combinations(range(spaces.n_active), nelec))
+        dets = Determinants.from_occupations(occ, spaces.n_active)
+        mat = hamiltonian_matrix(dets, ints.h_active_effective(),
+                                 ints.active_eri()).toarray()
+        w, v = np.linalg.eigh(mat)
+        g1, g2 = rdm12(dets, v[:, 0])
+        return w[0] + ints.e_core, g1, g2
+    return ci_solver
+
+
+def test_extra_columns_put_a_solver_number_in_the_shared_table(system, kuiva_caplog):
+    """⚠ The seam that made the DMRG truncation weight visible without teaching the shared
+    driver what a bond dimension is.
+
+    ``max_discarded`` is a tensor-network quality number: it is computed every sweep, and the
+    sweep table runs at DEBUG inside a CASSCF (one table per sweep times many
+    macro-iterations is noise in a file that *is* the output), so it appeared nowhere at INFO
+    at all. A production DMRG run never showed how much of the state it had thrown away.
+
+    The fix is an **additive keyword**, not a restructuring of the validated loop: the caller
+    supplies ``(Column, zero-argument getter)`` pairs and the driver appends them. This test
+    is the mechanism — the value reaches the row, once per accepted iteration, from a getter
+    the driver knows nothing about.
+    """
+    from kuiva.util import output as out
+
+    factors, h_ao, c0, spaces, nelec = system
+    seen = []
+
+    def getter():
+        seen.append(len(seen))
+        return 10.0 ** -(3 + len(seen))
+
+    kuiva_caplog.set_level("INFO")
+    result = optimize_orbitals(factors, h_ao, c0, spaces, _exact_ci(spaces, nelec),
+                               max_iter=3, e_nuc=0.0, mode="second-order", report=True,
+                               extra_columns=((out.col_sci("w_disc"), getter),))
+
+    assert len(seen) == result.n_iterations                # one call per reported row
+    text = "\n".join(r.message for r in kuiva_caplog.records)
+    assert "w_disc" in text                                # the header carries the column
+    assert "1.000e-04" in text                             # ...and the first row its value
+
+
+def test_the_table_is_unchanged_when_no_extra_columns_are_given(system, kuiva_caplog):
+    """The default is empty, so every existing output — and every committed reference — is
+    byte-for-byte what it was. An additive keyword that changed the default would not be one.
+    """
+    factors, h_ao, c0, spaces, nelec = system
+    kuiva_caplog.set_level("INFO")
+    optimize_orbitals(factors, h_ao, c0, spaces, _exact_ci(spaces, nelec),
+                      max_iter=2, e_nuc=0.0, mode="second-order", report=True)
+    text = "\n".join(r.message for r in kuiva_caplog.records)
+    assert "w_disc" not in text
+    header = [line for line in text.splitlines() if "max rot" in line]
+    assert header and header[0].rstrip().endswith("wall [s]")

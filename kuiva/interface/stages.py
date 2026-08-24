@@ -433,7 +433,9 @@ class CASSCF(_Stage):
     After :meth:`run`: :attr:`energy`, :attr:`energies` (total state energies [Eh]),
     :attr:`coeff`, :attr:`converged`, :attr:`active`, :attr:`solver`, plus per-solver
     results (``"ci"``: :attr:`outcome`, :attr:`boundary`, :attr:`boundary_initial`;
-    ``"dmrg"``: :attr:`orbital`, :attr:`events`, :attr:`boundary_gap_cm`, :attr:`graph`) and,
+    ``"dmrg"``: :attr:`orbital`, :attr:`events`, :attr:`boundary_gap_cm`, :attr:`graph`,
+    :attr:`max_discarded` -- the largest ensemble truncation weight of the final sweep, the
+    network's primary quality number and the one a truncated result must be quoted with) and,
     with ``project_from=``, :attr:`projection` — the
     :class:`~kuiva.orth.project.BasisProjection` carrying the orbitals it started from and the
     invariants that say whether the projection was worth using.
@@ -533,7 +535,7 @@ class CASSCF(_Stage):
                 exclude=("factors", "h_ao", "c_spinor", "spaces", "ci_solver", "n_elec",
                          "e_nuc", "n_states", "weights", "solver", "active",
                          "solver_options", "callback", "report", "optimizer_state",
-                         "start_iteration", "space_key", "history"))
+                         "start_iteration", "space_key", "history", "extra_columns"))
             _check_options(self.optimizer_options, allowed, "CASSCF (orbital optimizer)")
         else:
             from ..dmrg import DMRGSolver
@@ -557,7 +559,8 @@ class CASSCF(_Stage):
             allowed = _allowed_options(
                 driver, exclude=("factors", "h_ao", "c_spinor", "spaces", "ci_solver",
                                  "e_nuc", "callback", "report", "optimizer_state",
-                                 "start_iteration", "space_key", "history"))
+                                 "start_iteration", "space_key", "history",
+                                 "extra_columns"))
             _check_options(self.optimizer_options, allowed, "CASSCF (orbital optimizer)")
             if isinstance(graph, str):
                 if graph not in self._GRAPH_CHOICES:
@@ -697,9 +700,19 @@ class CASSCF(_Stage):
         if self.report:
             out.section(log, "CASSCF (DMRG solver)")
             self.space.report(log)
+        # ⚠ The truncation weight is the tensor network's primary quality number, and without
+        # this it appeared nowhere at INFO: the sweep table is at DEBUG (one table per sweep
+        # times many macro-iterations is noise in a file that IS the output), so a production
+        # DMRG output never said how much of the state was thrown away. It rides the
+        # optimizer's additive extra_columns keyword, so the shared driver stays ignorant of
+        # what a bond dimension is. The trend matters as much as the final value -- truncation
+        # growing as the orbitals move is the signal that max_bond is too small.
+        w_disc = ((out.col_sci("w_disc"),
+                   lambda: (float("nan") if solver.last is None
+                            else float(solver.last.max_discarded))),)
         result = driver(ref.factors, h_ao, orbitals, self.space.spaces, solver,
                         e_nuc=ref.data.e_nuc, callback=self.callback, report=self.report,
-                        **self.optimizer_options)
+                        extra_columns=w_disc, **self.optimizer_options)
 
         # The optimizer's last solve may sit at a rejected trial step; the states this stage
         # reports must belong to the returned orbitals. One warm solve pins them there and
@@ -716,11 +729,16 @@ class CASSCF(_Stage):
         self.boundary_gap_cm = solver.last.boundary_gap_cm
         self.graph = solver.graph
         self._energies = np.asarray(solver.last.energies, dtype=float) + ints.e_core
+        self.max_discarded = float(solver.last.max_discarded)
         if self.report:
             out.entries(log, [
                 ("state energies [Eh]", ", ".join(out.E_FMT.format(e)
                                                   for e in self._energies)),
                 ("largest bond dimension", solver.last.max_bond_dim),
+                # ⚠ The number that says whether any of the above is converged with respect
+                # to the network, and the one a truncated result has to be quoted with.
+                ("largest discarded weight", self.max_discarded, "",
+                 "ensemble truncation, final sweep", "{:.3e}"),
                 ("state-average boundary gap",
                  "complete" if self.boundary_gap_cm is None
                  else "{:.2f} cm^-1".format(self.boundary_gap_cm)),
@@ -778,6 +796,11 @@ class CASSCF(_Stage):
         ]
         if self.solver_kind == "dmrg":
             entries.append(("largest bond dimension", str(self.solver.last.max_bond_dim)))
+            # ⚠ Beside the bond dimension, never instead of it: the cap says what was
+            # allowed and this says what it cost. An energy from this solver is not quotable
+            # without it.
+            entries.append(("largest discarded weight",
+                            "{:.3e}".format(self.max_discarded)))
         if self.project_from is not None:
             entries.append(("projected active-space overlap",
                             "{:.6f}".format(self.projection.fidelity)))

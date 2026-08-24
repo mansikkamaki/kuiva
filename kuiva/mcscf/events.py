@@ -87,7 +87,7 @@ References
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -200,7 +200,9 @@ def optimize_orbitals_events(
         max_event_interval: int = DEFAULT_MAX_EVENT_INTERVAL,
         trust_floor: Optional[float] = None, keep_memory_on_adopt: bool = False,
         callback: Optional[Callable[[dict], Optional[bool]]] = None,
-        report: bool = True) -> EventCASSCFResult:
+        report: bool = True,
+        extra_columns: Sequence[Tuple[Any, Callable[[], Any]]] = ()
+        ) -> EventCASSCFResult:
     """Event-gated MCSCF driver for a solver whose internal space adapts.
 
     A **sibling** of :func:`kuiva.mcscf.orbopt.optimize_orbitals`, not a mode of it. The two
@@ -229,6 +231,11 @@ def optimize_orbitals_events(
     ``keep_memory_on_adopt``
         Transport the L-BFGS pairs across an adoption instead of clearing them. Off by
         default — see :meth:`~kuiva.mcscf.orbopt.OrbitalOptimizer.reset_chart`.
+
+    ``extra_columns``
+        Solver-specific ``(Column, zero-argument getter)`` pairs appended to the iteration
+        table, exactly as in :func:`~kuiva.mcscf.orbopt.optimize_orbitals` — the two drivers
+        take the same argument so a caller does not have to know which one it reached.
 
     ``callback(info)`` behaves as in the plain driver (returning ``False`` stops the run), with
     ``event`` added to the info mapping.
@@ -259,7 +266,8 @@ def optimize_orbitals_events(
         table = out.Table(log, [out.col_iter(), out.col_energy("E [Eh]"), out.col_delta(),
                                 out.col_resid("|g|"), out.Column("max rot", "{:.4f}", 8),
                                 out.Column("step", "{}", 6, align="<"),
-                                out.Column("event", "{}", 18, align="<"), out.col_time()])
+                                out.Column("event", "{}", 18, align="<"), out.col_time()]
+                          + [column for column, _ in extra_columns])
         table.start()
 
     # The starting point establishes the incumbent surface. A failure here has nothing to
@@ -359,7 +367,8 @@ def optimize_orbitals_events(
 
         if report:
             table.row(it, energy, de, gnorm, step.max_rotation,
-                      "2nd" if step.second_order else "qn", tag, t_it.wall)
+                      "2nd" if step.second_order else "qn", tag, t_it.wall,
+                      *[getter() for _, getter in extra_columns])
         if callback is not None:
             info = {"iteration": it, "energy": energy, "grad_norm": gnorm, "de": de,
                     "second_order": step.second_order, "converged": converged,
