@@ -22,8 +22,10 @@ from .dump import (FORMAT_VERSION, PropertyMatrices, inactive_moment, property_m
                    read_dump, spinor_operators, state_operator_matrices, write_dump)
 from .molden import MoldenOrbital, SpinorMoldenReport, write_molden, write_spinor_molden
 from .multiplet import (
-    G_ELECTRON, HARTREE_TO_CM, Multiplet, analyse_spectrum, block_moment_tensor,
-    degeneracy_pattern, degenerate_blocks, lande_g, magnetic_moment_matrices,
+    AXIS_DEFINED_RTOL, G_ELECTRON, HARTREE_TO_CM, PSEUDO_DOUBLET_HINT_CM, Multiplet,
+    analyse_spectrum,
+    axis_is_defined, block_moment_tensor, degeneracy_pattern, degenerate_blocks,
+    g_determinant_sign, lande_g, magnetic_moment_matrices, multiplet_g_axes,
     multiplet_g_values,
 )
 from .population import (
@@ -39,6 +41,7 @@ __all__ = [
     "G_ELECTRON", "HARTREE_TO_CM", "Multiplet", "analyse_spectrum", "block_moment_tensor",
     "degeneracy_pattern", "degenerate_blocks", "lande_g", "magnetic_moment_matrices",
     "multiplet_g_values",
+    "AXIS_DEFINED_RTOL", "PSEUDO_DOUBLET_HINT_CM", "axis_is_defined", "g_determinant_sign", "multiplet_g_axes",
     "AtomicPopulations", "AtomicReferenceCharges", "OrbitalPopulations",
     "atomic_populations", "atomic_reference_charges", "lowdin_analysis",
     "orbital_populations",

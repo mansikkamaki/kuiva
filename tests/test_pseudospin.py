@@ -16,7 +16,7 @@ import pytest
 from kuiva.dmrg import (NetworkGraph, hamiltonian_product_terms,
                         one_electron_product_terms, solve_manifold)
 from kuiva.props.multiplet import degeneracy_pattern
-from kuiva.props.pseudospin import (FORMAT_VERSION, assign_pseudospin,
+from kuiva.props.pseudospin import (FORMAT_VERSION, PseudospinModel, assign_pseudospin,
                                     pseudospin_from_model, read_pseudospin,
                                     write_pseudospin)
 
@@ -276,3 +276,40 @@ def test_empty_provenance_warns(kuiva_caplog, tmp_path):
     ps = assign_pseudospin(v.conj().T @ h @ v, mu_p, [2], [mu_p])
     write_pseudospin(tmp_path / "bare.psd", ps)
     assert any("provenance" in r.message for r in kuiva_caplog.records)
+
+
+def test_a_pseudospin_export_round_trips_through_from_file(tmp_path):
+    """The sibling of ``PropertyMatrices.from_dump``, and there for the same reason: the
+    phases in the file are arbitrary, so two stored exports can only be compared through
+    ``analyse()`` — which needs the model object, not ``read_pseudospin``'s dictionary."""
+    s1 = spin1_ops()
+    i3 = np.eye(3, dtype=np.complex128)
+    sa = np.stack([np.kron(m, i3) for m in s1])
+    sb = np.stack([np.kron(i3, m) for m in s1])
+    h_eff = 0.1 * sum(sa[k] @ sb[k] for k in range(3))
+    ps = assign_pseudospin(h_eff, -2.0 * (sa + sb), [3, 3], [-2.0 * s1, -2.0 * s1],
+                           site_electrons=[1, 1], orbitals=[(0, 1, 2), (3, 4, 5)],
+                           provenance={"model": "S=1 pair"})
+    path = write_pseudospin(tmp_path / "rt.psd", ps)
+
+    back = PseudospinModel.from_file(path)
+    assert np.array_equal(back.h, ps.h) and np.array_equal(back.mu, ps.mu)
+    assert np.array_equal(back.unitary, ps.unitary)
+    assert np.array_equal(back.energies, ps.energies)
+    assert back.dims == ps.dims and back.frame == ps.frame
+    assert back.energy_shift == ps.energy_shift
+    assert back.provenance == {"model": "S=1 pair"}
+    assert np.allclose(back.frame_rotation, ps.frame_rotation)
+    assert back.basis_labels() == ps.basis_labels()
+
+    for a, b in zip(back.sites, ps.sites):
+        assert (a.index, a.twice_s, a.n_electrons, a.orbitals) == \
+               (b.index, b.twice_s, b.n_electrons, b.orbitals)
+        assert np.allclose(a.axis, b.axis) and a.axis_choice == b.axis_choice
+        assert np.array_equal(a.moment, b.moment)
+        # ⚠ g values are RECOMPUTED from the moments rather than read: a stored reduction is a
+        # second thing that can disagree with the matrices it came from. They must therefore
+        # agree to the arithmetic, not merely to the file's printed precision.
+        assert a.g_values == pytest.approx(b.g_values, rel=1e-12)
+
+    assert [m.size for m in back.analyse()] == [m.size for m in ps.analyse()]

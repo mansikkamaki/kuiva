@@ -106,6 +106,20 @@ HARTREE_TO_CM = 219474.6313632
 #: on purpose — a missed warning is a silent wrong answer, a spurious one costs a glance.
 PSEUDO_DOUBLET_HINT_CM = 100.0
 
+#: ⚠ **Advisory, and deliberately loose.** Relative separation of two principal g values below
+#: which their axes are treated as spanning a plane rather than naming directions
+#: (:func:`axis_is_defined`). It is a statement about what may be *quoted*, not a numerical
+#: tolerance: a free ion's `j = 1/2` doublet is isotropic by symmetry and still comes out of a
+#: real calculation with its top two g values differing by ~1e-3 of themselves — basis and
+#: picture-change anisotropy, not physics. Calling that an easy axis would name a direction
+#: that is an artefact of the last few digits, and print it beside an axiality of 1.00.
+#:
+#: ⚠ **Not the same number as** :data:`kuiva.props.pseudospin.AXIS_DEGENERACY_RTOL`, and the
+#: difference is intentional: that one guards a *labelling* axis, where any in-plane choice is
+#: equally valid and self-consistency is all that is required, so a tight threshold costs
+#: nothing. This one gates a claim someone will put in a paper.
+AXIS_DEFINED_RTOL = 1.0e-2
+
 
 @dataclass(frozen=True)
 class Multiplet:
@@ -125,6 +139,15 @@ class Multiplet:
         Principal g values from :func:`multiplet_g_values` (ascending), or ``()`` — which is
         also what a ``size = 1`` block returns, since it carries no moment. ⚠ Never
         ``(0, 0, 0)``: a measured zero and the absence of a measurement must not print alike.
+    g_axes : np.ndarray, shape (3, 3)
+        Principal magnetic axes as **columns**, column ``k`` belonging to ``g_values[k]`` — so
+        the last column is the easy axis of an axial block. ``None`` if no moments were given.
+        ⚠ Meaningful only where the corresponding g value is non-degenerate; see
+        :meth:`easy_axis_is_defined`.
+    g_sign : float
+        Sign of ``det(g)`` for a Kramers doublet (:func:`g_determinant_sign`), ``0.0`` where
+        it is not defined. ⚠ A property of the states, not a convention — and the part
+        :attr:`m_tensor` cannot carry, being quadratic in ``mu``.
     non_kramers : bool
         This block was assembled from two singlets by an explicit ``pseudo_doublet_tol_cm``
         request (module docstring). ⚠ Read :attr:`g_z`, not :attr:`g_values`.
@@ -138,6 +161,8 @@ class Multiplet:
     spread_cm: float
     m_tensor: Optional[np.ndarray] = None
     g_values: Tuple[float, ...] = ()
+    g_axes: Optional[np.ndarray] = None
+    g_sign: float = 0.0
     non_kramers: bool = False
     tunnelling_gap_cm: Optional[float] = None
 
@@ -175,6 +200,34 @@ class Multiplet:
         if not self.non_kramers or len(self.g_values) < 2:
             return float("nan")
         return float(sorted(self.g_values)[-2])
+
+    @property
+    def easy_axis(self) -> Optional[np.ndarray]:
+        """The axis of the largest principal g value — the easy axis of an axial block.
+
+        ⚠ Check :meth:`easy_axis_is_defined` first. An easy-plane or isotropic block has no
+        easy *axis*, and what comes back for one is a vector the eigensolver happened to
+        choose inside a degenerate plane.
+        """
+        return None if self.g_axes is None else np.asarray(self.g_axes)[:, -1]
+
+    def easy_axis_is_defined(self, rtol: float = AXIS_DEFINED_RTOL) -> bool:
+        """Whether :attr:`easy_axis` is a direction rather than a choice within a plane."""
+        return bool(self.g_axes is not None and axis_is_defined(self.g_values, -1, rtol))
+
+    @property
+    def axiality(self) -> float:
+        """``g_max / g_perp`` with ``g_perp`` the mean of the other two — how axial the block is.
+
+        A single number for "is this an Ising-like doublet or an isotropic one", which is what
+        the axes are usually consulted for. ``inf`` for a perfectly axial block, ``1`` for an
+        isotropic one, ``nan`` where there are no g values.
+        """
+        if len(self.g_values) < 3:
+            return float("nan")
+        g = sorted(self.g_values)
+        perp = 0.5 * (g[0] + g[1])
+        return float("inf") if perp <= 0.0 else float(g[2] / perp)
 
 
 def degenerate_blocks(energies_cm: Sequence[float], tol_cm: float = 1.0) -> List[Tuple[int, int]]:
@@ -244,6 +297,108 @@ def block_moment_tensor(mu: np.ndarray, start: int, size: int) -> np.ndarray:
     # Tr(mu_i mu_j) is real for Hermitian mu_i; symmetrise to kill numerical asymmetry.
     m = np.real(m)
     return 0.5 * (m + m.T)
+
+
+def multiplet_g_axes(m_tensor: np.ndarray) -> np.ndarray:
+    """Principal magnetic axes of a block: the ``(3, 3)`` eigenvectors of ``M``, as columns.
+
+    Column ``k`` is the axis belonging to :func:`multiplet_g_values`'s ``k``-th value, so the
+    two are read together and the last column is the **easy axis** of an axial system — the
+    quantity a crystal-field analysis is usually after and the one this module used to compute
+    and throw away.
+
+    ⚠ **An axis is defined only up to its sign, and only when its g value is
+    non-degenerate.** The sign is fixed here by making the largest-magnitude component
+    positive, which is a convention and nothing more (a magnetic axis is a *line*). Where two
+    principal values coincide — an isotropic or easy-plane block — their axes span a plane and
+    any pair in it is as good: the eigenvector routine returns one such pair and it means
+    nothing on its own. :func:`axis_is_defined` is the test, and it is worth applying before
+    quoting a direction.
+
+    Returned as a **proper** triad (``det = +1``), so it is a rotation into the principal
+    frame rather than a rotation with a reflection hidden in it.
+    """
+    m = np.asarray(m_tensor, dtype=float)
+    _, vectors = np.linalg.eigh(0.5 * (m + m.T))
+    vectors = np.array(vectors, dtype=float)
+    for k in range(3):                       # a magnetic axis is a line; fix a sign for print
+        j = int(np.argmax(np.abs(vectors[:, k])))
+        if vectors[j, k] < 0.0:
+            vectors[:, k] = -vectors[:, k]
+    if np.linalg.det(vectors) < 0.0:         # keep it a rotation, not a rotoreflection
+        vectors[:, 0] = -vectors[:, 0]
+    return vectors
+
+
+def axis_is_defined(g_values: Sequence[float], k: int = -1,
+                    rtol: float = AXIS_DEFINED_RTOL) -> bool:
+    """Whether principal axis ``k`` is a direction at all, rather than a choice in a plane.
+
+    ⚠ The check that stops an arbitrary vector being quoted as an easy axis. Two coincident
+    principal values leave their axes spanning a plane, and the eigensolver then returns some
+    pair from it — self-consistent, reproducible, and physically meaningless as a direction.
+    Default ``k = -1``: the easy axis of an axial block.
+
+    ⚠ **The tolerance is loose on purpose** (:data:`AXIS_DEFINED_RTOL`): the degeneracy that
+    matters here is the *physical* one, and a symmetry-isotropic doublet still comes out of a
+    real calculation anisotropic in its last few digits. See that constant.
+    """
+    g = np.sort(np.asarray(g_values, dtype=float))
+    if g.size < 2:
+        return False
+    scale = float(np.max(np.abs(g)))
+    if scale <= 0.0:
+        return False
+    k = k % g.size
+    gaps = []
+    if k > 0:
+        gaps.append(g[k] - g[k - 1])
+    if k < g.size - 1:
+        gaps.append(g[k + 1] - g[k])
+    return bool(min(gaps) > rtol * scale)
+
+
+def g_determinant_sign(mu: np.ndarray, start: int, size: int) -> float:
+    """Sign of ``det(g)`` for a Kramers doublet — the part ``M`` throws away.
+
+    ``M = Tr_b(mu_i mu_j)`` is quadratic in ``mu``, so it fixes ``|det g|`` and loses the
+    sign. The sign is nevertheless a property of the states and not a convention, and it is
+    recoverable from a **third-order** invariant. Writing
+    ``mu_i = -(1/2) mu_B sum_k g_ik sigma_k`` on the doublet and using
+    ``Tr(sigma_a [sigma_b, sigma_c]) = 4i eps_abc``,
+
+    ::
+
+        Tr( mu_x [mu_y, mu_z] ) = -(i/2) mu_B^3 det(g),
+
+    so ``det(g) = 2i Tr(mu_x [mu_y, mu_z]) / mu_B^3``. It is a trace of block-restricted
+    operators, hence **invariant under any unitary mixing inside the block and under every
+    per-state phase** — the same footing as ``M`` itself, which is what makes it quotable
+    across programs at all (module docstring; Chibotaru & Ungur 2012).
+
+    Returns ``+1.0`` or ``-1.0``, or ``0.0`` — never a guess. Three cases give ``0.0``:
+
+    * ⚠ **the block is not a doublet.** For a larger multiplet the three-fold product is not
+      the determinant of anything, and a number here would look like one.
+    * the block carries no moment at all.
+    * ⚠ **``det(g)`` is numerically zero**, which is the case a strongly axial doublet
+      actually presents: with two principal g values at ~1e-6 the product is ~1e-12 against an
+      ``O(1)`` scale, and its *sign* is then a property of the rounding rather than of the
+      states. Reporting one would be inventing information. Observed on the TiCl3 doublets of
+      example 6, whose axialities reach 1e6.
+    """
+    if int(size) != 2:
+        return 0.0
+    sl = slice(start, start + size)
+    blk = np.asarray(mu)[:, sl, sl]
+    x, y, z = blk[0], blk[1], blk[2]
+    triple = np.trace(x @ (y @ z - z @ y))
+    # Purely imaginary for Hermitian mu; the real part is rounding and is discarded.
+    det_g = float(np.real(2.0j * triple))
+    scale = float(np.max(np.abs(blk))) ** 3
+    if scale <= 0.0 or abs(det_g) <= 1.0e-10 * scale:
+        return 0.0
+    return 1.0 if det_g > 0.0 else -1.0
 
 
 def multiplet_g_values(m_tensor: np.ndarray, size: int) -> Tuple[float, ...]:
@@ -369,13 +524,19 @@ def analyse_spectrum(energies_hartree: Sequence[float],
         blk_e = e_cm[start:start + size]
         m_tensor = None
         g_vals: Tuple[float, ...] = ()
+        g_axes = None
+        g_sign = 0.0
         if mu_sorted is not None:
             m_tensor = block_moment_tensor(mu_sorted, start, size)
             g_vals = multiplet_g_values(m_tensor, size)
+            if g_vals:
+                g_axes = multiplet_g_axes(m_tensor)
+                g_sign = g_determinant_sign(mu_sorted, start, size)
         out.append(Multiplet(start=start, size=size,
                              energy_cm=float(np.mean(blk_e)),
                              spread_cm=float(blk_e.max() - blk_e.min()),
                              m_tensor=m_tensor, g_values=g_vals,
+                             g_axes=g_axes, g_sign=g_sign,
                              non_kramers=gap is not None, tunnelling_gap_cm=gap))
     log.debug("analysed SOC spectrum: %d states -> %d multiplets (tol=%.3g cm-1, %d "
               "non-Kramers pair(s))", e.size, len(out), tol_cm,
@@ -407,4 +568,5 @@ __all__ = [
     "G_ELECTRON", "HARTREE_TO_CM", "Multiplet", "analyse_spectrum", "block_moment_tensor",
     "degeneracy_pattern", "degenerate_blocks", "lande_g", "magnetic_moment_matrices",
     "multiplet_g_values",
+    "AXIS_DEFINED_RTOL", "PSEUDO_DOUBLET_HINT_CM", "axis_is_defined", "g_determinant_sign", "multiplet_g_axes",
 ]

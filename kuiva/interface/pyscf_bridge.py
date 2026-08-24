@@ -351,12 +351,40 @@ class PropertyIntegrals:
             .format(self.nao, self.origin_label, r[0], r[1], r[2])
 
 
-def gauge_origin_for(mol, origin=None) -> Tuple[np.ndarray, str]:
-    """Resolve a gauge origin: an explicit ``(x, y, z)`` in bohr, or a named choice.
+#: Bohr per Angstrom, for the ``("angstrom", x, y, z)`` gauge-origin form. PySCF's own
+#: constant, so a coordinate given here and the same coordinate given in the geometry land in
+#: exactly the same place — a gauge origin that misses an atom by a rounding difference is a
+#: silent shift of every ``L`` matrix in the file.
+def _bohr_per_angstrom() -> float:
+    from pyscf.data.nist import BOHR
+    return 1.0 / float(BOHR)
 
-    ``None`` and ``"mass"`` give the **centre of mass** (the default); ``"charge"`` the
-    centre of nuclear charge; ``"origin"`` the coordinate origin. Returns
-    ``(coordinates [bohr], label)``.
+
+def gauge_origin_for(mol, origin=None) -> Tuple[np.ndarray, str]:
+    """Resolve a gauge origin to ``(coordinates [bohr], label)``.
+
+    Five forms, and the units are the whole point of three of them:
+
+    ``None`` / ``"mass"``
+        The **centre of mass** — the default.
+    ``"charge"`` / ``"origin"``
+        The centre of nuclear charge, or the coordinate origin.
+    ``("atom", k)``
+        **On an atom.** ``k`` is a 1-based atom number, an element symbol, or an atom label
+        (``"Ti2"``) — the same addressing per-atom bases and reference configurations use
+        (:func:`kuiva.basis.atommap.parse_atom_key`), so there is one way to name an atom in
+        this program. An element symbol is accepted only where the molecule has exactly one
+        such atom; otherwise it names several places at once and is refused rather than
+        resolved to the first.
+    ``("bohr", x, y, z)`` / ``("angstrom", x, y, z)``
+        An explicit point, **saying which unit it is in**.
+    ``(x, y, z)``
+        The same, in **bohr**. ⚠ This is the historical form and it keeps its meaning, so no
+        stored number moves — but the geometry is in *Angstrom* by default, and a coordinate
+        copied from there into here lands 1.89x too far out with no error and no clue. It is
+        a shift of the origin ``L`` is defined about, so every orbital moment in the file is
+        wrong and every one of them looks perfectly reasonable. Hence: it **warns**, once,
+        naming the two united forms. Passing ``("bohr", ...)`` says the same thing silently.
     """
     coords = np.asarray(mol.atom_coords(), dtype=float)
     if origin is None or (isinstance(origin, str) and origin.lower() in ("mass", "com")):
@@ -369,13 +397,79 @@ def gauge_origin_for(mol, origin=None) -> Tuple[np.ndarray, str]:
             return coords.T @ z / z.sum(), "centre of nuclear charge"
         if key in ("origin", "zero"):
             return np.zeros(3), "coordinate origin"
-        raise ValueError("unknown gauge origin {!r}; expected 'mass', 'charge', 'origin' or "
-                         "three coordinates in bohr".format(origin))
+        raise ValueError(
+            "unknown gauge origin {!r}; expected 'mass', 'charge', 'origin', "
+            "('atom', k), ('bohr', x, y, z), ('angstrom', x, y, z), or three coordinates "
+            "in bohr".format(origin))
+
+    # -- the tagged forms, which are the ones that say what they mean -----------------------
+    if (isinstance(origin, (tuple, list)) and origin
+            and isinstance(origin[0], str)):
+        tag, rest = origin[0].strip().lower(), list(origin[1:])
+        if tag == "atom":
+            if len(rest) != 1:
+                raise ValueError("('atom', k) takes one atom: a 1-based number, an element "
+                                 "symbol, or a label like 'Ti2'; got {!r}".format(origin))
+            return _atom_gauge_origin(mol, coords, rest[0])
+        if tag in ("bohr", "angstrom", "ang"):
+            r = np.asarray(rest, dtype=float).ravel()
+            if r.size != 3:
+                raise ValueError("({!r}, x, y, z) takes three coordinates, got {}"
+                                 .format(tag, r.size))
+            if tag == "bohr":
+                return r, "explicit (bohr)"
+            return r * _bohr_per_angstrom(), "explicit (angstrom)"
+        raise ValueError(
+            "unknown gauge-origin form {!r}; the tagged forms are ('atom', k), "
+            "('bohr', x, y, z) and ('angstrom', x, y, z)".format(origin))
+
     r = np.asarray(origin, dtype=float).ravel()
     if r.size != 3:
-        raise ValueError("an explicit gauge origin is three coordinates in bohr, got {}"
-                         .format(np.shape(origin)))
-    return r, "explicit"
+        raise ValueError(
+            "an explicit gauge origin is three coordinates, got {}. Give ('bohr', x, y, z) "
+            "or ('angstrom', x, y, z) to say which unit you mean, or ('atom', k) to put it "
+            "on an atom".format(np.shape(origin)))
+    log.warning(
+        "the gauge origin (%.6f, %.6f, %.6f) was given as a bare tuple and is read as "
+        "BOHR, which is what it has always meant -- but this molecule's geometry is in "
+        "Angstrom, and a coordinate copied from there lands 1.89x too far out with no "
+        "error. Every L matrix in the property dump is defined about this point. Pass "
+        "('bohr', x, y, z) or ('angstrom', x, y, z) to say which you mean, or "
+        "('atom', k) to put it on an atom", r[0], r[1], r[2])
+    return r, "explicit (bohr, untagged)"
+
+
+def _atom_gauge_origin(mol, coords: np.ndarray, key) -> Tuple[np.ndarray, str]:
+    """``("atom", k)`` -> that atom's position [bohr] and a label naming it.
+
+    ⚠ An element symbol that names **several** atoms is refused rather than resolved to the
+    first: "put the origin on the chlorine" is not a statement about a molecule with three of
+    them, and picking one silently would put the gauge origin somewhere the user did not
+    choose — which no output would reveal.
+    """
+    from ..basis.atommap import parse_atom_key
+
+    # ⚠ `atom_pure_symbol`, never `atom_symbol`. The latter returns PySCF's *decorated* symbol
+    # for an atom that carries a per-atom basis or reference state ("Ti2"), and this molecule
+    # may well have some. `parse_atom_key` is given plain element symbols in molecule order
+    # everywhere else in the program and reads a label like "Ti2" as "atom 2, which is a Ti";
+    # feeding it decorated symbols would make it compare a label against a label and answer a
+    # different question for exactly the molecules the labels exist for.
+    symbols = [str(mol.atom_pure_symbol(i)) for i in range(mol.natm)]
+    kind, value = parse_atom_key(key, symbols)
+    if kind == "element":
+        matches = [i for i, s in enumerate(symbols)
+                   if s.capitalize() == str(value).capitalize()]
+        if len(matches) != 1:
+            raise ValueError(
+                "gauge_origin=('atom', {!r}) names {} atoms of this molecule ({}), so it "
+                "does not name a point. Give the 1-based atom number or a label like "
+                "{}{}".format(key, len(matches), [m + 1 for m in matches],
+                              str(value).capitalize(), matches[0] + 1 if matches else 1))
+        index = matches[0]
+    else:
+        index = int(value)
+    return coords[index], "atom {} ({})".format(index + 1, symbols[index])
 
 
 def ingest_property_integrals(mol, gauge_origin=None, *, picture_change: bool = False,

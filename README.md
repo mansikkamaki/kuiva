@@ -243,9 +243,35 @@ Options are those of `kuiva.interface.api.scalar_x2c_reference`, validated by na
 `memory_gb`, `gauge_origin`, `auxbasis`, `conv_tol`, `max_cycle`.
 
 `reference="auto"` picks RHF for a closed shell and ROHF otherwise; RHF on an open shell is
-refused rather than silently promoted. The gauge origin (default: centre of mass) is fixed
-here, not at the property dump, because `L` is defined relative to it and the multireference
-layer never calls PySCF again.
+refused rather than silently promoted.
+
+#### The gauge origin, and the one unit trap in this API
+
+It is fixed **here**, not at the property dump, because `L` is defined relative to it and the
+multireference layer never calls PySCF again. Five forms:
+
+```python
+kuiva.ScalarSCF(mol)                                     # centre of mass, the default
+kuiva.ScalarSCF(mol, gauge_origin="charge")              # or "origin"
+kuiva.ScalarSCF(mol, gauge_origin=("atom", 1))           # on atom 1 (1-based)
+kuiva.ScalarSCF(mol, gauge_origin=("atom", "Dy"))        # ...or name it, if there is one Dy
+kuiva.ScalarSCF(mol, gauge_origin=("angstrom", 0, 0, 1.5))     # explicit, in Angstrom
+kuiva.ScalarSCF(mol, gauge_origin=("bohr", 0, 0, 2.835))       # explicit, in bohr
+```
+
+`("atom", k)` takes a 1-based number, an element symbol, or a label like `"Ti2"` — the same
+addressing per-atom bases and reference configurations use, so there is one way to name an
+atom in this program. ⚠ An element symbol naming *several* atoms is refused rather than
+resolved to the first: "put the origin on the chlorine" is not a statement about a molecule
+with three of them.
+
+⚠ **A bare `(x, y, z)` tuple means bohr, and your geometry is in Angstrom.** That is the
+historical meaning and it has not changed, so no existing script breaks and no stored number
+moves — but a coordinate copied out of the geometry into `gauge_origin=` lands 1.89× too far
+out, with no error. It moves the point `L` is defined about, so every orbital moment in the
+dump is wrong and every one of them looks entirely reasonable. The bare form therefore
+**warns**, naming the two united spellings. Use `("bohr", …)` or `("angstrom", …)` and it
+says nothing.
 
 #### Point-group symmetry
 
@@ -656,6 +682,11 @@ path. Reaching for one is a deliberate step off the documented path; each is sti
 same memory limit, the same provenance records and the same state-averaging gate as a stage,
 being the same code underneath.
 
+(The `kuiva.` top level itself stays thin on purpose. Besides `Molecule` and the seven stage
+classes it carries only the *read* counterparts of what those stages write — `read_dump`,
+`read_pseudospin`, `read_checkpoint`, `PropertyMatrices`, `PseudospinModel` — because reading
+a stored product back is how two calculations get compared at all.)
+
 | call | what it is for |
 |---|---|
 | `api.casci(reference, ...)` | a full CI at **fixed** orbitals over a chosen active space — the scan primitive. Same space, same states, many orbital sets or geometries, no orbital optimization. `coeff=` runs it on converged CASSCF orbitals, or on a set read from a checkpoint. |
@@ -666,7 +697,8 @@ being the same code underneath.
 | `api.memory_plan(nao, ...)` | the phase-by-phase memory estimate the pre-flight prints, as data. Every entry is a function of dimensions only, so it answers "will this fit?" before any array — or any SCF — exists. |
 | `api.build_mole(molecule)` | the PySCF `Mole` a `Molecule` resolves to, including the decorated atom labels (`"Ti2"`) that per-atom bases and reference configurations are addressed by. |
 | `kuiva.interface.pyscf_bridge.run_scalar_aoc(element, configuration, basis=...)` | a scalar X2C SCF on **one atom or ion, averaged over a configuration** — spherical, one radial function per shell. The reference an atomic *shell* quantity has to come from, and what `kuiva.extras` is built on. ⚠ Its occupations are fractional, and the pipeline stages are not validated on such a reference. |
-| `Molecule.from_xyz_string(xyz, basis)` | a molecule from `"El x y z"` lines, in Angstrom. ⚠ Those lines **only** — an `.xyz` *file* opens with an atom count and a comment line, and neither is skipped. |
+| `Molecule.from_xyz_file(path, basis)` | a molecule from an XMol `.xyz` file — count line, comment line, then the atoms, in Angstrom. ⚠ The count is **checked, not trusted**: a file whose header disagrees with its contents is truncated or concatenated, and reading its first *n* atoms would be a different molecule. A headerless file is accepted. |
+| `Molecule.from_xyz_string(xyz, basis)` | the same from `"El x y z"` lines held in a string — those lines **only**, no header. Handed a real file it says so and names `from_xyz_file`. |
 
 ---
 
@@ -1145,7 +1177,25 @@ the human-readable output and nothing else: machine-readable matrices never ente
 record per matrix element: the effective Hamiltonian `H` and the three magnetic-moment
 components `mu_x`, `mu_y`, `mu_z` in the basis of the spin–orbit eigenstates, in µ_B. It is
 deliberately dull, because it is a contract with an external ITO / crystal-field code, and
-`kuiva.props.dump.read_dump` is a working parser of it.
+`kuiva.read_dump` is a working parser of it.
+
+**Reading one back.** Because the phases in these files are arbitrary, comparing two stored
+runs — or a stored run against a fresh one — has to go through the phase-invariant reduction,
+so both products come back as the objects that reduction lives on:
+
+```python
+before = kuiva.PropertyMatrices.from_dump("before.props").analyse()
+after  = kuiva.PropertyMatrices.from_dump("after.props").analyse()
+[(b.size, b.g_values) for b in after]              # what may be compared
+
+model = kuiva.PseudospinModel.from_file("dimer.psd")     # the same, for the export
+```
+
+⚠ **What comes back is the file, not the calculation.** The provenance, gauge origin, active
+space and picture-change record are restored, because those are what make the numbers
+interpretable; nothing else about the run is in the file and the object cannot be handed back
+to a stage. `kuiva.read_dump` / `kuiva.read_pseudospin` remain the raw form, returning the
+header verbatim as a dictionary.
 
 - ⚠ **`H` is diagonal**, unlike OpenMolcas RASSI's: this CI is already two-component, so its
   roots *are* the spin–orbit eigenstates and there is no separate spin–orbit mixing step. The
@@ -1157,6 +1207,16 @@ deliberately dull, because it is a contract with an external ITO / crystal-field
   energies, and `M_ij = Tr_block(mu_i mu_j)` with its principal g values.
   `PropertyMatrices.analyse()` is that reduction, one call away, and free ions then have
   *analytic* targets (Landé g) independent of every program involved.
+- **The principal magnetic axes come with the g values**, in a second table beside them and on
+  `Multiplet.g_axes` / `.easy_axis` / `.axiality`. ⚠ An axis is a *line*, and it is a direction
+  at all only where its g value is non-degenerate: an easy-plane or isotropic block has no easy
+  axis, and the vector printed for one is whatever the eigensolver picked inside the degenerate
+  plane. The table says which it is on every row, and `easy_axis_is_defined()` is the test.
+- **The sign of `det(g)` is reported too, and it is not a convention.** `M` is quadratic in
+  `mu`, so it fixes `|det g|` and loses the sign; the sign comes back from the third-order
+  invariant `det(g) = 2i·Tr(mu_x[mu_y,mu_z])/µ_B³`, which is just as unaffected by mixing
+  inside the block. It is defined for a Kramers doublet only, and is reported as `?` — never
+  guessed — anywhere else.
 - ⚠ **A block of one state reports no g values — `nan`, never `0`.** A single state has no
   first-order magnetic moment, and "not defined here" is a different statement from "measured
   zero". The distinction is the whole of the **non-Kramers** case below.
@@ -1430,7 +1490,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.18.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.19.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1446,7 +1506,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.18.0'
+import kuiva; kuiva.__version__          # '0.19.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

@@ -354,10 +354,107 @@ class PropertyMatrices:
             note += ("; Delta marks a non-Kramers pseudo-doublet, where g_3 is g_z and "
                      "g_1/g_2 are a residual that is zero by symmetry")
         table.end(note + " ")
+        self._report_axes(logger, multiplets)
+
+    @staticmethod
+    def _report_axes(logger, multiplets: List[Multiplet]) -> None:
+        """The principal magnetic axes, beside the g values they belong to.
+
+        ⚠ A separate table rather than three more columns on the one above, for two reasons:
+        nine numbers per block would not fit the standard width, and the g-value table is what
+        a cross-code comparison is read from — it stays exactly as wide as it was.
+
+        Each row states whether its easy axis is a **direction** at all. An easy-plane or
+        isotropic block has none, and the vector printed for one is whatever the eigensolver
+        chose inside the degenerate plane; saying so on the line is the difference between a
+        result and an artefact.
+        """
+        rows = [m for m in multiplets if m.g_axes is not None and len(m.g_values) == 3]
+        if not rows:
+            return
+        table = out.Table(logger, [
+            out.col_count("block", 7), out.Column("g_max", "{:.4f}", 9),
+            # ⚠ `{:.3g}`, not a fixed number of decimals: a strongly axial doublet reaches
+            # an axiality of 1e6 and up (measured on TiCl3), where two decimal places are
+            # both unreadable and meaningless.
+            out.Column("axiality", "{:.3g}", 10),
+            out.Column("e_x", "{:+.4f}", 9), out.Column("e_y", "{:+.4f}", 9),
+            out.Column("e_z", "{:+.4f}", 9),
+            out.Column("axis", "{}", 12, align="<"),
+            out.Column("det g", "{}", 6)])
+        table.start()
+        for i, m in enumerate(multiplets):
+            if m.g_axes is None or len(m.g_values) != 3:
+                continue
+            axis = np.asarray(m.g_axes)[:, -1]
+            defined = m.easy_axis_is_defined()
+            table.row(i, max(m.g_values), m.axiality, axis[0], axis[1], axis[2],
+                      "easy" if defined else "in a plane",
+                      "?" if m.g_sign == 0.0 else ("+" if m.g_sign > 0 else "-"))
+        table.end("the easy axis is the principal direction of the largest g; 'in a plane' "
+                  "means the top two g values coincide and the direction printed is an "
+                  "arbitrary choice within that plane. det g is the sign M cannot carry, "
+                  "'?' where it is not defined -- a block that is not a Kramers doublet, or "
+                  "one so axial that det g is numerically zero and its sign would be "
+                  "rounding ")
 
     def write(self, path, **kwargs) -> Path:
         """Write the property dump file. See :func:`write_dump`."""
         return write_dump(path, self, **kwargs)
+
+    @classmethod
+    def from_dump(cls, path) -> "PropertyMatrices":
+        """Rebuild these matrices from a file :func:`write_dump` wrote.
+
+        The counterpart of :meth:`write`, and the reason it exists is comparison: the phases
+        in this file are arbitrary, so the *only* sound way to compare two stored runs — or a
+        stored run against a fresh one — is through :meth:`analyse`, and until this existed
+        that meant re-implementing the reduction against :func:`read_dump`'s dictionary at
+        every call site that wanted it. Now::
+
+            a = PropertyMatrices.from_dump("before.props").analyse()
+            b = PropertyMatrices.from_dump("after.props").analyse()
+
+        ⚠ **What comes back is the file, not the calculation.** The header's provenance,
+        gauge origin, active space and picture-change record are restored because they are
+        what makes the numbers interpretable; nothing else about the run is here, and this
+        object cannot be handed back to a stage. :func:`read_dump` remains the raw form for
+        anyone who wants the header verbatim.
+
+        ⚠ ``L`` and ``S`` are written by ``write_dump(include_l_s=True)``, the default, but
+        are **not** part of the external contract. A file written without them comes back with
+        zero-filled ``l`` and ``s``: ``mu`` is the quantity, and it is always present.
+        """
+        raw = read_dump(path)
+        header, matrices = raw["header"], raw["matrices"]
+        energies = np.asarray(raw["energies"], dtype=float)
+        n = int(energies.size)
+
+        def stack(prefix: str) -> np.ndarray:
+            found = [matrices.get("{}_{}".format(prefix, a)) for a in "xyz"]
+            if any(m is None for m in found):
+                return np.zeros((3, n, n), dtype=np.complex128)
+            return np.ascontiguousarray(np.stack(found))
+
+        mu = stack("mu")
+        if not mu.any() and n:
+            raise ValueError(
+                "{}: no mu_x/mu_y/mu_z matrices in this file, so it is not a property dump "
+                "this class can be rebuilt from".format(path))
+        origin = np.asarray([float(x) for x in
+                             header.get("gauge_origin_bohr", "0 0 0").split()], dtype=float)
+        inactive = raw.get("inactive", {})
+        picture = header.get("picture_change_on_properties", "")
+        return cls(
+            energies=energies, mu=mu, l=stack("L"), s=stack("S"),
+            gauge_origin=origin if origin.size == 3 else np.zeros(3),
+            origin_label=header.get("gauge_origin_choice", "unspecified"),
+            g_electron=float(header.get("g_electron", G_ELECTRON)),
+            active_space=header.get("active_space", ""),
+            provenance=dict(raw.get("provenance") or {}),
+            inactive_l=np.asarray(inactive.get("L", np.zeros(3)), dtype=float),
+            inactive_s=np.asarray(inactive.get("S", np.zeros(3)), dtype=float),
+            picture_change="" if picture == "none" else picture)
 
     def __repr__(self) -> str:
         return "PropertyMatrices({} states, gauge origin {}, |dE| = {:.1f} cm^-1)".format(

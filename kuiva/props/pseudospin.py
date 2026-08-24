@@ -197,9 +197,56 @@ class PseudospinModel:
         u = self.unitary
         return np.stack([u.conj().T @ m @ u for m in self.mu])
 
-    def analyse(self, tol_cm: float = 1.0) -> List[Multiplet]:
+    def analyse(self, tol_cm: float = 1.0,
+                pseudo_doublet_tol_cm: Optional[float] = None) -> List[Multiplet]:
         """The phase-invariant reduction of the effective spectrum + moments."""
-        return analyse_spectrum(self.energies, self.mu_in_eigenbasis(), tol_cm=tol_cm)
+        return analyse_spectrum(self.energies, self.mu_in_eigenbasis(), tol_cm=tol_cm,
+                                pseudo_doublet_tol_cm=pseudo_doublet_tol_cm)
+
+    @classmethod
+    def from_file(cls, path) -> "PseudospinModel":
+        """Rebuild this model from a file :func:`write_pseudospin` wrote.
+
+        The sibling of :meth:`kuiva.props.dump.PropertyMatrices.from_dump`, and there for the
+        same reason: the phases in the file are arbitrary, so two stored exports can only be
+        compared through :meth:`analyse`, and that needs the object rather than
+        :func:`read_pseudospin`'s dictionary.
+
+        ⚠ **``g_values`` are recomputed from the site moments rather than read.** They are a
+        *reduction* of what the file stores, and recomputing keeps them in step with the
+        matrices by construction — a stored reduction is a second thing that can disagree with
+        the first. Same reasoning as the axes not being written in the first place.
+        """
+        raw = read_pseudospin(path)
+        header, matrices, site_matrices = raw["header"], raw["matrices"], raw["site_matrices"]
+
+        def stack(source, prefix, key=lambda a: a):
+            return np.ascontiguousarray(np.stack([source[key("{}_{}".format(prefix, a))]
+                                                  for a in "xyz"]))
+
+        sites = []
+        for entry in raw["sites"]:
+            i = int(entry["index"])
+            moment = np.ascontiguousarray(np.stack([site_matrices[(i, "mu_" + a)]
+                                                    for a in "xyz"]))
+            twice_s = int(entry["twice_s"])
+            m_tensor = block_moment_tensor(moment, 0, twice_s + 1)
+            sites.append(PseudospinSite(
+                index=i, twice_s=twice_s,
+                axis=np.asarray(entry["axis"], dtype=float),
+                axis_choice=str(entry["axis_choice"]), moment=moment,
+                n_electrons=entry["n_electrons"], orbitals=tuple(entry["orbitals"]),
+                g_values=multiplet_g_values(m_tensor, twice_s + 1)))
+
+        return cls(
+            sites=tuple(sites), h=np.ascontiguousarray(matrices["H"]),
+            mu=stack(matrices, "mu"),
+            energies=np.asarray(raw["energies"], dtype=float),
+            unitary=np.ascontiguousarray(matrices["U"]),
+            energy_shift=float(header.get("energy_shift", 0.0)),
+            frame=header.get("frame", "input frame"),
+            frame_rotation=np.asarray(raw["frame_rotation"], dtype=float),
+            provenance=dict(raw.get("provenance") or {}))
 
     def report(self, logger=None) -> None:
         logger = logger or log

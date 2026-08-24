@@ -354,3 +354,89 @@ def test_top_level_exports():
     assert kuiva.CASSCF is CASSCF and kuiva.Reference is Reference
     assert set(kuiva.__all__) >= {"Molecule", "ScalarSCF", "Reference", "CheapCI",
                                   "CASSCF", "NEVPT2", "PropertyDump", "PseudospinExport"}
+
+
+# --- the public surface: what a bare `import kuiva` reaches ---------------------------------
+
+def test_the_top_level_namespace_pairs_every_writer_with_a_reader():
+    """⚠ The namespace is deliberately thin, and the readers are in it on one argument: each
+    is the *read* counterpart of something the same namespace writes.
+
+    Reading a stored product back is not exotic — it is how two calculations are compared at
+    all, because the phases in those files are arbitrary and only the phase-invariant
+    reduction compares them soundly. Needing a module path for that made the documented
+    comparison start with an import nobody guesses.
+    """
+    for writer, reader in [("PropertyDump", "read_dump"),
+                           ("PseudospinExport", "read_pseudospin"),
+                           ("PropertyDump", "PropertyMatrices"),
+                           ("PseudospinExport", "PseudospinModel")]:
+        assert hasattr(kuiva, writer) and hasattr(kuiva, reader)
+    assert hasattr(kuiva, "read_checkpoint")           # CASSCF(checkpoint=) writes these
+
+    # The names resolve to the real objects, not to placeholders.
+    assert kuiva.PropertyMatrices is __import__(
+        "kuiva.props.dump", fromlist=["x"]).PropertyMatrices
+    assert kuiva.read_checkpoint is __import__(
+        "kuiva.io.checkpoint", fromlist=["x"]).read_checkpoint
+    # Every advertised name is reachable, and `__all__` advertises exactly the hook's keys.
+    # (`dir(kuiva)` is not the comparison: importing any submodule anywhere in the process
+    # binds it as an attribute here, so it grows with whatever else the suite has run.)
+    assert set(kuiva.__all__) == set(kuiva._TOP_LEVEL) | {"__version__"}
+    for name in kuiva._TOP_LEVEL:
+        assert getattr(kuiva, name) is not None
+    with pytest.raises(AttributeError):
+        kuiva.no_such_name
+
+
+def test_importing_kuiva_stays_side_effect_free():
+    """⚠ The reason the top level is a PEP 562 hook and not a pile of imports. Adding five
+    names to it must not drag PySCF, h5py or the integral machinery into every process that
+    imports this package for something that never touches the front end."""
+    import subprocess
+    import sys
+
+    probe = ("import sys, kuiva; "
+             "print(int('pyscf' in sys.modules), int('h5py' in sys.modules), "
+             "len([n for n in dir(kuiva) if not n.startswith('_')]))")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                         check=True).stdout.split()
+    assert out[0] == "0" and out[1] == "0"             # neither was imported
+    assert int(out[2]) >= 13                           # ...and every name is still there
+
+
+def test_a_molecule_can_be_read_from_an_xyz_file(tmp_path):
+    """The two-line XMol header is the whole difference from ``from_xyz_string``, and the
+    reason this exists: pointing the string form at a real file fails on the count line."""
+    path = tmp_path / "water.xyz"
+    path.write_text("3\nwater, B3LYP/6-31G*\n"
+                    "O   0.000000  0.000000  0.117300\n"
+                    "H   0.000000  0.757200 -0.469200\n"
+                    "H   0.000000 -0.757200 -0.469200\n")
+
+    mol = kuiva.Molecule.from_xyz_file(path, basis="x2c-SVPall-2c")
+    assert [s for s, _ in mol.atoms] == ["O", "H", "H"]
+    assert mol.atoms[1][1] == pytest.approx((0.0, 0.7572, -0.4692))
+    assert mol.unit == "Angstrom"
+
+    # A headerless file is accepted too -- some tools emit them. What is refused is a
+    # *disagreement*, never the absence of a header.
+    bare = tmp_path / "bare.xyz"
+    bare.write_text("\n".join(path.read_text().splitlines()[2:]))
+    assert kuiva.Molecule.from_xyz_file(bare, basis="x2c-SVPall-2c").atoms == mol.atoms
+
+
+def test_a_miscounted_xyz_file_is_refused_not_truncated(tmp_path):
+    """⚠ The count is checked, not trusted. A truncated or concatenated .xyz read as its
+    first n atoms is a different molecule, and nothing downstream would say so."""
+    path = tmp_path / "short.xyz"
+    path.write_text("5\ntruncated\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.24\n")
+    with pytest.raises(ValueError, match="declares 5 atoms and the file carries 3"):
+        kuiva.Molecule.from_xyz_file(path, basis="x2c-SVPall-2c")
+
+
+def test_the_string_form_says_what_to_use_when_handed_a_file(tmp_path):
+    """A confusing way to learn about a format is not learning about it."""
+    with pytest.raises(ValueError, match="from_xyz_file"):
+        kuiva.Molecule.from_xyz_string("3\nwater\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.24",
+                                       basis="x2c-SVPall-2c")

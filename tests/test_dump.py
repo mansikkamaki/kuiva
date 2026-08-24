@@ -38,6 +38,7 @@ from kuiva.interface.pyscf_bridge import (ao_layout, gauge_origin_for, ingest_pr
                                           ingest_spin_orbit)
 from kuiva.mcscf.orbopt import OrbitalSpaces
 from kuiva.props import dump
+from kuiva.props.dump import FORMAT_VERSION, PropertyMatrices
 from kuiva.props.multiplet import G_ELECTRON, lande_g
 from kuiva.spinor.expand import expand_scalar_mos, spin_operator, time_reverse
 
@@ -202,11 +203,77 @@ def test_gauge_origin_choices(argon):
         r, got = gauge_origin_for(argon, spec)
         assert got == label and np.asarray(r).shape == (3,)
     r, label = gauge_origin_for(argon, (1.0, 2.0, 3.0))
-    assert label == "explicit" and np.allclose(r, [1.0, 2.0, 3.0])
+    # ⚠ The bare tuple keeps its bohr meaning -- no stored number moves -- but the label now
+    # records that the unit was *assumed* rather than declared, which is what a reader of the
+    # header needs in order to know how much to trust it.
+    assert label == "explicit (bohr, untagged)" and np.allclose(r, [1.0, 2.0, 3.0])
     with pytest.raises(ValueError, match="unknown gauge origin"):
         gauge_origin_for(argon, "centroid")
     with pytest.raises(ValueError, match="three coordinates"):
         gauge_origin_for(argon, (1.0, 2.0))
+
+
+def test_a_bare_gauge_origin_tuple_warns_about_its_unit(argon, kuiva_caplog):
+    """⚠ **The trap, and why a warning on correct usage is worth it.**
+
+    The tuple has always meant bohr and still does, so nothing breaks and no stored number
+    moves. But ``Molecule`` geometry is in *Angstrom*, so a coordinate copied from the
+    geometry into ``gauge_origin=`` lands 1.89x too far out — with no error, no exception and
+    nothing in the output that looks wrong. It shifts the point ``L`` is defined about, so
+    every orbital moment in the dump is wrong and every one of them is a plausible number.
+    """
+    gauge_origin_for(argon, (1.0, 2.0, 3.0))
+    assert any("read as BOHR" in r.message and "('angstrom'" in r.message
+               for r in kuiva_caplog.records)
+
+    kuiva_caplog.clear()
+    r_b, label_b = gauge_origin_for(argon, ("bohr", 1.0, 2.0, 3.0))
+    r_a, label_a = gauge_origin_for(argon, ("angstrom", 1.0, 2.0, 3.0))
+    assert not kuiva_caplog.records                      # saying which unit silences it
+    assert np.allclose(r_b, [1.0, 2.0, 3.0])             # ...and bohr means what it did
+    assert np.allclose(r_a, np.array([1.0, 2.0, 3.0]) / 0.52917721092, rtol=1e-6)
+    assert label_b == "explicit (bohr)" and label_a == "explicit (angstrom)"
+
+
+def test_the_gauge_origin_can_sit_on_an_atom():
+    """``("atom", k)`` through the same addressing bases and configurations use, so there is
+    one way to name an atom in this program rather than three."""
+    from pyscf import gto
+
+    mol = gto.M(atom="Ti 0 0 0; Cl 2.25 0 0; Cl -1.125 1.949 0; Cl -1.125 -1.949 0",
+                basis="sto-3g", spin=1, verbose=0)
+    coords = mol.atom_coords()
+    for key in (1, "Ti", "Ti1"):
+        r, label = gauge_origin_for(mol, ("atom", key))
+        assert np.allclose(r, coords[0]) and label == "atom 1 (Ti)"
+    r, label = gauge_origin_for(mol, ("atom", "Cl3"))
+    assert np.allclose(r, coords[2]) and label == "atom 3 (Cl)"
+
+    # ⚠ An element naming several atoms names no *point*, and is refused rather than
+    # resolved to the first -- which no output would have revealed.
+    with pytest.raises(ValueError, match="names 3 atoms"):
+        gauge_origin_for(mol, ("atom", "Cl"))
+    with pytest.raises(ValueError, match="out of range"):
+        gauge_origin_for(mol, ("atom", 9))
+    with pytest.raises(ValueError, match="unknown gauge-origin form"):
+        gauge_origin_for(mol, ("centroid", 1, 2, 3))
+
+
+def test_the_atom_form_reads_pure_element_symbols_not_decorated_ones():
+    """⚠ A molecule with a per-atom basis or reference state carries PySCF *decorated*
+    symbols (``"Ti2"``), and the label ``"Ti2"`` means "atom 2, which is a Ti" everywhere
+    else in this program. Handing the decorated symbols to the shared parser would compare a
+    label against a label and answer a different question — for exactly the molecules the
+    labels exist for."""
+    from pyscf import gto
+
+    mol = gto.M(atom="Ti2 0 0 0; O 0 0 2.0", basis={"Ti2": "sto-3g", "O": "sto-3g"},
+                spin=2, verbose=0)
+    assert mol.atom_symbol(0) == "Ti2"                   # decorated, and not what we address by
+    r, label = gauge_origin_for(mol, ("atom", "Ti"))
+    assert np.allclose(r, mol.atom_coords()[0]) and label == "atom 1 (Ti)"
+    r, label = gauge_origin_for(mol, ("atom", "O2"))     # atom 2, which is an O
+    assert np.allclose(r, mol.atom_coords()[1]) and label == "atom 2 (O)"
 
 
 def test_gauge_origin_changes_the_angular_momentum():
@@ -561,3 +628,72 @@ def test_orbital_spaces_partition_is_what_the_dump_uses(boron):
     spaces = outcome.active.spaces
     assert isinstance(spaces, OrbitalSpaces)
     assert spaces.n_active == 6 and spaces.n_inactive == 4
+
+
+# --- reading a stored dump back into a comparable object -----------------------------------
+
+def test_a_dump_round_trips_through_from_dump(tmp_path):
+    """⚠ **Why this exists at all.** The phases in this file are arbitrary, so the only sound
+    way to compare two stored runs is through ``analyse()`` — and until ``from_dump`` existed
+    that meant re-implementing the reduction against ``read_dump``'s dictionary at every call
+    site that wanted it. The README mandates the comparison; this is what makes it one line.
+    """
+    rng = np.random.default_rng(11)
+    n = 4
+
+    def herm(k=3):
+        a = rng.normal(size=(k, n, n)) + 1j * rng.normal(size=(k, n, n))
+        return np.stack([0.5 * (m + m.conj().T) for m in a])
+
+    original = PropertyMatrices(
+        energies=np.array([-1.0, -1.0, -0.5, -0.5]), mu=herm(), l=herm(), s=herm(),
+        gauge_origin=np.array([0.125, -0.25, 0.5]), origin_label="atom 1 (Ti)",
+        active_space="5 lowest Kramers pairs of l=2 character on 1 Ti",
+        provenance={"hamiltonian": {"method": "X2C-AMF"}}, comments=("a note",),
+        inactive_l=np.array([1.5e-14, 0.0, 0.0]))
+    path = original.write(tmp_path / "a.props", title="round trip")
+
+    back = PropertyMatrices.from_dump(path)
+    # Bitwise on the arrays: the writer prints enough digits, and a lossy round trip would
+    # make the comparison this exists for a comparison of two different things.
+    assert np.array_equal(back.mu, original.mu)
+    assert np.array_equal(back.l, original.l) and np.array_equal(back.s, original.s)
+    assert np.array_equal(back.energies, original.energies)
+    assert np.allclose(back.gauge_origin, original.gauge_origin, atol=0, rtol=1e-12)
+    assert back.origin_label == "atom 1 (Ti)"
+    assert back.active_space == original.active_space
+    assert back.provenance == original.provenance
+    assert np.allclose(back.inactive_l, original.inactive_l)
+    assert not back.picture_changed
+
+    # ...and the reduction agrees, which is the actual deliverable.
+    for a, b in zip(back.analyse(), original.analyse()):
+        assert (a.size, a.g_values) == (b.size, b.g_values)
+        assert a.g_sign == b.g_sign
+
+
+def test_from_dump_survives_a_file_written_without_l_and_s(tmp_path):
+    """``L`` and ``S`` are convenience, not the contract: ``mu`` is the quantity. A file
+    written without them comes back usable, with the two zero-filled rather than invented."""
+    rng = np.random.default_rng(12)
+    n = 2
+    mu = np.stack([(lambda a: 0.5 * (a + a.conj().T))(
+        rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))) for _ in range(3)])
+    m = PropertyMatrices(energies=np.zeros(n), mu=mu, l=np.zeros((3, n, n), complex),
+                         s=np.zeros((3, n, n), complex))
+    path = m.write(tmp_path / "b.props", include_l_s=False)
+
+    back = PropertyMatrices.from_dump(path)
+    assert np.array_equal(back.mu, mu)
+    assert not back.l.any() and not back.s.any()
+    assert back.analyse()[0].g_values == pytest.approx(m.analyse()[0].g_values, rel=1e-12)
+
+
+def test_from_dump_refuses_a_file_that_is_not_one(tmp_path):
+    """A clear refusal beats an object full of zeros that analyses to nonsense."""
+    path = tmp_path / "not.props"
+    path.write_text("[HEADER]\nformat KUIVA_PROPERTY_MATRICES\nformat_version {}\n"
+                    "n_states 2\n[END]\n[ENERGIES]\n0 -1.0\n1 -1.0\n[END]\n"
+                    .format(FORMAT_VERSION))
+    with pytest.raises(ValueError, match="not a property dump"):
+        PropertyMatrices.from_dump(path)

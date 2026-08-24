@@ -76,15 +76,60 @@ class Molecule:
 
     @classmethod
     def from_xyz_string(cls, xyz: str, basis: BasisSpec, **kw) -> "Molecule":
-        """Build from a simple ``"El x y z"`` per-line string (Angstrom)."""
+        """Build from a simple ``"El x y z"`` per-line string (Angstrom).
+
+        ⚠ **Those lines only.** A real ``.xyz`` *file* opens with an atom count and a comment
+        line, and neither is skipped here — use :meth:`from_xyz_file`, which knows about them.
+        """
         atoms: List[Atom] = []
         for line in xyz.strip().splitlines():
             parts = line.split()
             if not parts:
                 continue
-            s, x, y, z = parts[0], *map(float, parts[1:4])
+            try:
+                s, x, y, z = parts[0], *map(float, parts[1:4])
+            except ValueError:
+                raise ValueError(
+                    "cannot read {!r} as an 'El x y z' line. ⚠ If this is the header of an "
+                    "XMol .xyz file (an atom count, then a comment), use "
+                    "Molecule.from_xyz_file, which skips it".format(line.strip()[:60]))
             atoms.append((s, (x, y, z)))
         return cls(atoms=atoms, basis=basis, **kw)
+
+    @classmethod
+    def from_xyz_file(cls, path, basis: BasisSpec, **kw) -> "Molecule":
+        """Build from an XMol ``.xyz`` file — count line, comment line, then the atoms.
+
+        The two-line header is what distinguishes this from :meth:`from_xyz_string`, and it
+        is the reason this exists: pointing the string form at a real file fails on the count
+        line, which is a confusing way to learn about a format.
+
+        ⚠ **The count is checked, not trusted.** A file whose header disagrees with the atoms
+        it contains is truncated or concatenated, and reading the first ``n`` of a longer file
+        would silently compute a different molecule. Headerless files are accepted too — some
+        tools emit them — so what is refused is a *disagreement*, never the absence of a
+        header.
+
+        Coordinates are Angstrom, which is the format's convention and this class's default.
+        """
+        from pathlib import Path as _Path
+
+        text = _Path(path).read_text()
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            raise ValueError("{}: the file is empty".format(path))
+        declared = None
+        if len(lines[0].split()) == 1 and lines[0].strip().isdigit():
+            declared = int(lines[0].strip())
+            lines = lines[2:] if len(lines) > 1 else []       # count, then the comment line
+        mol = cls.from_xyz_string("\n".join(lines), basis, **kw)
+        if declared is not None and declared != len(mol.atoms):
+            raise ValueError(
+                "{}: the header declares {} atoms and the file carries {}. A truncated or "
+                "concatenated .xyz is not read as its first {} atoms, because that is a "
+                "different molecule and nothing downstream would say so"
+                .format(path, declared, len(mol.atoms), declared))
+        return mol
 
     @property
     def elements(self) -> Tuple[str, ...]:

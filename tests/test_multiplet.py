@@ -16,7 +16,8 @@ import pytest
 from kuiva.props.multiplet import (
     G_ELECTRON, HARTREE_TO_CM, PSEUDO_DOUBLET_HINT_CM, analyse_spectrum, block_moment_tensor,
     degeneracy_pattern, degenerate_blocks, lande_g, magnetic_moment_matrices,
-    multiplet_g_values,
+    multiplet_g_axes, multiplet_g_values, g_determinant_sign, axis_is_defined,
+    AXIS_DEFINED_RTOL,
 )
 
 PAULI = [np.array([[0, 1], [1, 0]], dtype=complex),
@@ -290,3 +291,118 @@ def test_distant_singlets_neither_group_nor_warn(kuiva_caplog):
     blocks = analyse_spectrum(energies)
     assert [m.size for m in blocks] == [1, 1, 1]
     assert not any("pseudo-doublet" in r.message for r in kuiva_caplog.records)
+
+
+# --- principal axes and the sign M cannot carry --------------------------------------------
+
+def doublet_with_g(g_diag, seed=0):
+    """A Kramers doublet built from a KNOWN g tensor: mu_i = -(1/2) sum_k g_ik sigma_k.
+
+    Optionally scrambled by a random unitary inside the block, which is what a different
+    program (or a different run) does to these states and what every invariant here must
+    survive.
+    """
+    g = np.diag(np.asarray(g_diag, dtype=float))
+    mu = np.stack([-0.5 * sum(g[i, k] * PAULI[k] for k in range(3)) for i in range(3)])
+    if seed:
+        u = random_unitary(2, seed)
+        mu = np.stack([u.conj().T @ m @ u for m in mu])
+    return g, mu
+
+
+def test_the_principal_axes_are_recovered_and_are_a_proper_rotation():
+    """The axes were computed inside ``multiplet_g_values`` and thrown away; they are the
+    quantity a crystal-field analysis actually wants."""
+    # An axial doublet whose easy axis is deliberately NOT a Cartesian direction.
+    theta = 0.7
+    rot = np.array([[np.cos(theta), 0.0, np.sin(theta)],
+                    [0.0, 1.0, 0.0],
+                    [-np.sin(theta), 0.0, np.cos(theta)]])
+    g = rot @ np.diag([1.0, 2.0, 18.0]) @ rot.T
+    mu = np.stack([-0.5 * sum(g[i, k] * PAULI[k] for k in range(3)) for i in range(3)])
+
+    block = analyse_spectrum([0.0, 0.0], mu)[0]
+    assert block.g_values == pytest.approx((1.0, 2.0, 18.0), rel=1e-10)
+    assert block.easy_axis_is_defined()
+    # The easy axis is a LINE, so compare up to sign.
+    assert abs(float(np.dot(block.easy_axis, rot[:, 2]))) == pytest.approx(1.0, abs=1e-10)
+    assert np.linalg.det(block.g_axes) == pytest.approx(1.0, abs=1e-12)   # proper rotation
+    assert block.axiality == pytest.approx(18.0 / 1.5, rel=1e-10)
+
+
+def test_an_easy_axis_is_refused_where_two_g_values_coincide():
+    """⚠ The check that stops an arbitrary vector being quoted as an easy axis. An easy-plane
+    or isotropic block has no easy *direction*: the eigensolver returns some pair spanning the
+    degenerate plane, self-consistently and meaninglessly."""
+    _, isotropic = doublet_with_g([2.0, 2.0, 2.0])
+    _, easy_plane = doublet_with_g([9.0, 9.0, 0.5])
+    _, axial = doublet_with_g([0.5, 0.6, 9.0])
+
+    assert not analyse_spectrum([0.0, 0.0], isotropic)[0].easy_axis_is_defined()
+    assert not analyse_spectrum([0.0, 0.0], easy_plane)[0].easy_axis_is_defined()
+    assert analyse_spectrum([0.0, 0.0], axial)[0].easy_axis_is_defined()
+
+
+def test_the_axis_tolerance_is_loose_enough_for_a_real_isotropic_doublet():
+    """⚠ **Why the threshold is 1% and not machine epsilon.**
+
+    A free ion's ``j = 1/2`` doublet is isotropic *by symmetry*, and a real calculation still
+    returns it anisotropic in the last few digits — measured on example 2's boron 2p1:
+    ``g = (0.6656, 0.6656, 0.6665)``, a 1.3e-3 relative spread from basis and picture-change
+    anisotropy rather than from physics. At a tight tolerance that block would be reported as
+    having an easy axis, and the direction printed beside it would be an artefact of those
+    digits — next to an axiality of 1.00, which says the opposite.
+    """
+    boron_like = (0.66557, 0.66557, 0.66646)             # example 2, to the printed precision
+    assert not axis_is_defined(boron_like)
+
+    # ...while a genuinely axial SMM doublet, and even a merely rhombic one, keep theirs.
+    assert axis_is_defined((0.01, 0.02, 19.0))           # Ising-like
+    assert axis_is_defined((1.5, 2.0, 2.5))              # rhombic, 20% separation
+    assert not axis_is_defined((0.5, 9.0, 9.0))          # easy plane: no easy *axis*
+
+    # The boundary is where it says it is, and it is a *relative* one.
+    assert axis_is_defined((1.0, 1.0, 1.0 + 2.0 * AXIS_DEFINED_RTOL))
+    assert not axis_is_defined((1.0, 1.0, 1.0 + 0.5 * AXIS_DEFINED_RTOL))
+
+
+@pytest.mark.parametrize("g_diag, sign", [([2.0, 2.0, 2.0], +1), ([-2.0, 2.0, 2.0], -1),
+                                          ([1.0, 3.0, 18.0], +1), ([1.0, 3.0, -18.0], -1)])
+def test_the_sign_of_det_g_is_recovered_from_a_third_order_invariant(g_diag, sign):
+    """⚠ ``M = Tr(mu_i mu_j)`` is **quadratic** in mu, so it fixes |det g| and loses the sign.
+
+    The sign is a property of the states rather than a convention, and it comes back from
+    ``det(g) = 2i Tr(mu_x [mu_y, mu_z]) / mu_B^3`` — a trace of block-restricted operators,
+    hence invariant under any mixing inside the block, exactly like M itself.
+    """
+    g, mu = doublet_with_g(g_diag)
+    assert np.sign(np.linalg.det(g)) == sign
+    assert g_determinant_sign(mu, 0, 2) == pytest.approx(float(sign))
+
+
+def test_the_sign_survives_the_scrambling_that_makes_it_worth_having():
+    """The point of an invariant: it is the same after the arbitrary unitary mixing that a
+    different program's eigensolver applies to a degenerate block. The |g| values agree too —
+    which is what shows M genuinely cannot see the sign, rather than merely not reporting it."""
+    plain = analyse_spectrum([0.0, 0.0], doublet_with_g([1.0, 3.0, -18.0])[1])[0]
+    for seed in (2, 3, 4):
+        mixed = analyse_spectrum([0.0, 0.0], doublet_with_g([1.0, 3.0, -18.0], seed)[1])[0]
+        assert mixed.g_values == pytest.approx(plain.g_values, rel=1e-10)
+        assert mixed.g_sign == plain.g_sign == -1.0
+    # ...and the positive-determinant tensor with the SAME |g| is indistinguishable in M.
+    positive = analyse_spectrum([0.0, 0.0], doublet_with_g([1.0, 3.0, 18.0])[1])[0]
+    assert positive.g_values == pytest.approx(plain.g_values, rel=1e-10)
+    assert np.allclose(positive.m_tensor, plain.m_tensor)          # M cannot tell them apart
+    assert positive.g_sign == +1.0 and plain.g_sign == -1.0        # the third-order one can
+
+
+def test_the_sign_is_not_reported_where_it_is_not_defined():
+    """⚠ Never a guess. Only a two-dimensional block has a ``det(g)``; for a larger multiplet
+    the three-fold product is not the determinant of anything."""
+    j = 2.5
+    jx, jy, jz = angular_momentum_matrices(j)
+    mu = -np.stack([jx, jy, jz]) * (6.0 / 7.0)
+    quartet = analyse_spectrum([0.0] * int(2 * j + 1), mu)[0]
+    assert quartet.size == 6 and quartet.g_values          # g values, yes
+    assert quartet.g_sign == 0.0                           # a sign, no
+    assert g_determinant_sign(mu, 0, 6) == 0.0
