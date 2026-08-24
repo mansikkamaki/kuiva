@@ -10,7 +10,9 @@ be converged cheaply in a small basis and continued in the production one.
 """
 from .canonical import (OrthonormalBasis, canonical_orthogonalization, orthogonalize,
                         DEFAULT_THRESHOLD)
-from .project import BasisProjection, SCHEMES, project_spinors
+from .project import (BasisProjection, SCHEMES, project_scalar_orbitals,
+                      project_spinors)
 
 __all__ = ["OrthonormalBasis", "canonical_orthogonalization", "orthogonalize",
-           "DEFAULT_THRESHOLD", "BasisProjection", "project_spinors", "SCHEMES"]
+           "DEFAULT_THRESHOLD", "BasisProjection", "project_spinors",
+           "project_scalar_orbitals", "SCHEMES"]

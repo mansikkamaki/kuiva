@@ -145,6 +145,12 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                          configuration=None,
                          decoupling_options: Optional[Dict[str, object]] = None,
                          conv_tol: float = 1e-10, max_cycle: int = 200,
+                         level_shift: float = 0.0, damp: float = 0.0,
+                         init_guess: Optional[str] = None, diis=None,
+                         diis_space: Optional[int] = None,
+                         diis_start_cycle: Optional[int] = None,
+                         second_order: bool = False, stability: Optional[str] = None,
+                         guess_from=None, allow_unconverged_scf: bool = False,
                          memory_gb: Optional[float] = None, n_active: Optional[int] = None,
                          cholesky_tol: float = DEFAULT_CHOLESKY_TOL,
                          orbit_pivots: bool = True, one_centre: bool = True,
@@ -173,6 +179,15 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
     and reusable across every geometry and every job. ``"none"`` skips it and leaves atomic
     j-splittings 5-30% too large.
 
+    The SCF's convergence controls — ``level_shift``, ``damp``, ``init_guess``, ``diis``
+    (``"cdiis"``/``"adiis"``/``"ediis"``), ``diis_space``, ``diis_start_cycle``,
+    ``second_order`` and ``stability`` — are documented on
+    :func:`~kuiva.interface.pyscf_bridge.run_scalar_x2c`. ``guess_from`` starts the SCF from a
+    previous calculation's scalar orbitals, projecting them if the basis differs.
+
+    ⚠ **An SCF that does not converge refuses**, because everything downstream is built on its
+    orbitals; ``allow_unconverged_scf=True`` continues on them deliberately.
+
     ``memory_gb`` sets the working-memory limit for this calculation and overrides the
     configured default; with neither, the calculation refuses to start rather than guess.
     """
@@ -193,7 +208,12 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                           screening=screening, screening_options=screening_options,
                           configuration=configuration,
                           decoupling_options=decoupling_options, conv_tol=conv_tol,
-                          max_cycle=max_cycle, memory_gb=memory_gb, n_active=n_active,
+                          max_cycle=max_cycle, level_shift=level_shift, damp=damp,
+                          init_guess=init_guess, diis=diis, diis_space=diis_space,
+                          diis_start_cycle=diis_start_cycle, second_order=second_order,
+                          stability=stability, guess_from=guess_from,
+                          allow_unconverged_scf=allow_unconverged_scf,
+                          memory_gb=memory_gb, n_active=n_active,
                           cholesky_tol=cholesky_tol, orbit_pivots=orbit_pivots,
                           one_centre=one_centre, gauge_origin=gauge_origin,
                           property_picture_change=property_picture_change,
@@ -524,7 +544,10 @@ def active_space_for(reference: SpinorReference, *, active=None, character=None,
         A **list** means a union of per-fragment selections — *"6 spinors of d character on
         the Ti plus 14 of f character on the Dy"* — refused rather than shared when two
         fragments claim the same pair (:func:`kuiva.mcscf.casci.active_space_by_characters`).
-        A fragment may omit its count (``(atom, l)``) when ``n_active`` fixes the remainder.
+        A fragment may omit its count (``(atom, l)``) when ``n_active`` fixes the remainder,
+        or carry a fourth element ``skip_pairs`` — the ordinal window that names a **double
+        shell**: ``[("Ti", "d", 10), ("Ti", "d", 10, 5)]`` is the five lowest d pairs plus
+        the next five, two same-``l`` fragments over disjoint pairs.
 
     ``n_active_elec`` is optional in all forms: without it the count follows from aufbau. See
     :func:`kuiva.mcscf.casci.active_space` for the electron-count and Kramers-pair traps this
@@ -559,13 +582,14 @@ def active_space_for(reference: SpinorReference, *, active=None, character=None,
             entry = tuple(entry)
             if len(entry) == 2:
                 unspecified.append(len(entries))
-                entries.append([entry[0], entry[1], None])
-            elif len(entry) == 3:
-                entries.append([entry[0], entry[1], int(entry[2])])
+                entries.append([entry[0], entry[1], None, 0])
+            elif len(entry) in (3, 4):
+                entries.append([entry[0], entry[1], int(entry[2]),
+                                int(entry[3]) if len(entry) == 4 else 0])
                 n_explicit += int(entry[2])
             else:
-                raise ValueError("a fragment is (atom, l, n_spinors) or (atom, l); got {!r}"
-                                 .format(entry))
+                raise ValueError("a fragment is (atom, l, n_spinors), (atom, l), or "
+                                 "(atom, l, n_spinors, skip_pairs); got {!r}".format(entry))
         if unspecified:
             if n_active is None:
                 raise ValueError(
@@ -902,14 +926,9 @@ def property_matrices(reference: SpinorReference, source, *, comments=(),
     degenerate states mix arbitrarily — compare only through
 :meth:`~kuiva.props.dump.PropertyMatrices.analyse`.
     """
-    from ..mcscf.casci import CASSCFOutcome
     from ..props.dump import property_matrices as _matrices
 
-    if isinstance(source, CASSCFOutcome):
-        ci, coeff, spaces = source.ci, source.coeff, source.active.spaces
-        description = source.active.description or ci.description
-    else:
-        ci, coeff, spaces, description = source, source.coeff, source.spaces, source.description
+    ci, coeff, spaces, description = _states_of(source)
     if coeff is None or spaces is None:
         raise ValueError(
             "this CASCI result does not know which orbitals or which orbital-space partition "
@@ -956,7 +975,135 @@ def property_dump(reference: SpinorReference, source, path, *, title: str = "",
     return matrices
 
 
+def _states_of(source):
+    """``(ci, coeff, spaces, description)`` from a CASSCF outcome or a bare CASCI result.
+
+    One resolution shared by :func:`property_matrices` and :func:`spin_analysis`, since both
+    need the same trio and the trap they must not fall into is the same: a quantity built
+    from one orbital set and a state set solved at another is Hermitian, plausible and wrong.
+    """
+    from ..mcscf.casci import CASSCFOutcome
+
+    if isinstance(source, CASSCFOutcome):
+        return (source.ci, source.coeff, source.active.spaces,
+                source.active.description or source.ci.description)
+    return source, source.coeff, source.spaces, source.description
+
+
+def spin_analysis(reference: SpinorReference, source, *, tol_cm: float = 1.0,
+                  energies=None, report: bool = False):
+    """``<S^2>`` of a converged spectrum, per degenerate block.
+
+    ``source`` is a :class:`~kuiva.mcscf.casci.CASSCFOutcome` or
+    :class:`~kuiva.mcscf.casci.CASCIResult`, as :func:`property_matrices` takes.
+
+    With spin-orbit coupling **off** the block value is ``S(S+1)`` and ``2S+1`` is the term
+    multiplicity; with it **on** ``S`` is not conserved and the same number reads as spin
+    purity. ⚠ Per *block*, never per state — inside a degenerate block the individual value
+    depends on the eigensolver's arbitrary basis. See :mod:`kuiva.props.spin`.
+
+    ⚠ ``energies=`` overrides the spectrum the **blocking** is taken from, and exists for one
+    case: a NEVPT2-corrected file, whose ``H`` is the perturbed spectrum while its states are
+    still the CASSCF ones. The ``<S^2>`` values belong to those states either way; what would
+    otherwise go wrong is that this and :func:`kuiva.props.multiplet.analyse_spectrum` would
+    group *different* spectra into blocks and the two could not be paired at all. Passing the
+    same array to both makes them the same blocking by construction rather than by luck.
+    """
+    from ..props.spin import spin_analysis as _spin
+
+    ci, coeff, spaces, _ = _states_of(source)
+    if coeff is None or spaces is None:
+        raise ValueError(
+            "this CASCI result does not know which orbitals or which orbital-space partition "
+            "it belongs to, so <S^2> cannot be built from it. Use api.casci/api.casscf, "
+            "which record both")
+    result = _spin(ci.solver, coeff, spaces, reference.data.s_ao,
+                   ci.total_energies if energies is None else energies,
+                   vectors=ci.vectors, tol_cm=tol_cm, has_soc=reference.data.has_soc)
+    if report:
+        result.report(log)
+    return result
+
+
+def assign_states(reference: SpinorReference, source, *, matrices=None,
+                  tol_cm: float = 1.0, report: bool = True):
+    """Offer a ``^{2S+1}L_J`` (or ``^{2S+1}L``) label for each degenerate block.
+
+    Assembles the evidence — the degeneracy pattern and g values
+    (:func:`kuiva.props.multiplet.analyse_spectrum`), the block ``<S^2>``
+    (:func:`spin_analysis`) and the symmetry labels where the run carries them — and hands
+    them to :func:`kuiva.props.assign.assign_terms`.
+
+    ⚠ **Every label it returns is an inference**, printed with the measurements behind it and
+    a fit residual, and withheld as ``"?"`` where they do not add up. It is deliberately its
+    own report and never a column of the state table.
+
+    ``matrices`` is a finished :class:`~kuiva.props.dump.PropertyMatrices`; without one, the
+    moment matrices are built here when the Hamiltonian carries spin-orbit coupling (they are
+    what the Landé inversion needs) and skipped when it does not.
+    """
+    from ..props.assign import assign_terms
+    from ..props.multiplet import analyse_spectrum
+
+    ci, _, _, _ = _states_of(source)
+    if matrices is None and reference.data.has_soc:
+        matrices = property_matrices(reference, source)
+    # ⚠ One spectrum, blocked once. With a NEVPT2-corrected `matrices` its `H` is the
+    # perturbed spectrum while the states are still the CASSCF ones, so taking the blocking
+    # from the CASSCF energies here would group a different set of levels than
+    # `matrices.analyse()` does and the two could not be paired at all.
+    energies = None if matrices is None else matrices.energies
+    spin = spin_analysis(reference, source, tol_cm=tol_cm, energies=energies)
+    multiplets = (matrices.analyse(tol_cm=tol_cm) if matrices is not None
+                  else analyse_spectrum(ci.total_energies, tol_cm=tol_cm))
+    result = assign_terms(multiplets, spin, irreps=ci.multiplets or ci.irreps)
+    if report:
+        spin.report(log)
+        result.report(log)
+    return result
+
+
+def avas_active_space(reference: SpinorReference, *, atom, l, coeff=None,
+                      occupation=None, report: bool = True, **kwargs):
+    """An active space (and the rotated orbitals) from an AVAS projection.
+
+    The route to an active space when the target orbitals are **covalent mixtures** and no
+    canonical orbital carries enough ``(atom, l)`` character to be selected by
+    :func:`active_space_for`. Projects onto the free-atom orbitals the front end computed
+    with ``atomic_reference=True`` and rotates *within* the occupied and virtual spaces, so
+    the reference density does not move. ``n_shells=2`` asks for the **double shell**.
+
+    Defaults to the reference's own guess spinors and occupations; pass ``coeff`` (AO basis)
+    with ``occupation=`` to project an already-optimized set. Returns a
+    :class:`~kuiva.mcscf.avas.AVASResult`, whose ``coeff`` — not the input — is what a
+    subsequent CASSCF must start from. See :mod:`kuiva.mcscf.avas` for every option and for
+    what this implementation does differently from the published method.
+
+    ⚠ **An AVAS space carries no symmetry labels**, deliberately. The labels belong to the
+    *guess* spinors and AVAS has rotated them; carrying them across would attach a label to
+    an orbital it no longer describes, and per-irrep state selection built on that would be
+    counting the wrong thing. Per-irrep ``n_states`` is therefore unavailable after AVAS —
+    select the space by character if the symmetry labels are what the run needs.
+    """
+    from ..mcscf.avas import avas as _avas
+
+    if coeff is None:
+        coeff = reference.spinors_in_ao()
+        if occupation is None:
+            occupation = reference.spinors.occ
+    if occupation is None:
+        raise ValueError("give occupation= alongside coeff=: AVAS rotates within groups of "
+                         "equal occupation and cannot infer them from the orbitals")
+    result = _avas(coeff, reference.data.s_ao, reference.ao_layout,
+                   reference.data.atomic_reference, reference.data.nelec_total,
+                   atom=atom, l=l, occupation=occupation, **kwargs)
+    if report:
+        result.report(log)
+    return result
+
+
 __all__ = ["Molecule", "ScalarX2CData", "SpinorReference", "scalar_x2c_reference",
            "spinor_reference", "build_mole", "memory_plan",
            "project_to_basis", "projected_active_space",
-           "active_space_for", "casci", "casscf", "property_matrices", "property_dump"]
+           "active_space_for", "avas_active_space", "casci", "casscf",
+           "property_matrices", "property_dump", "spin_analysis", "assign_states"]

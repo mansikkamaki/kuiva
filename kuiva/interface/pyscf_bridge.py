@@ -910,6 +910,12 @@ class ScalarX2CData:
     unrestricted: bool = False
     #: <S^2> minus its exact value; unrestricted references only, None otherwise.
     s2_deviation: Optional[float] = None
+    #: Internal stability verdict of the converged SCF, or ``None`` when it was not measured
+    #: (the default — the analysis costs a Davidson over the orbital Hessian). ⚠ ``False``
+    #: means the orbitals everything downstream is built on are a **saddle point** of the SCF
+    #: energy: a lower solution of the same reference exists. ⚠ ``None`` is not ``True``; a
+    #: consumer that treats the two alike reports "stable" for every run that never asked.
+    scf_stable: Optional[bool] = None
     # provenance
     basis_meta: Dict[str, str] = field(default_factory=dict)
     e_nuc: float = 0.0
@@ -2290,6 +2296,333 @@ def _build_scf(mol, reference: str):
     return builders[ref](mol).sfx2c1e(), ref
 
 
+#: The initial-guess names the SCF accepts, and the list is **exhaustive on purpose**.
+#: ⚠ PySCF's ``get_init_guess`` falls back to ``minao`` for any key it does not recognize and
+#: says nothing, so an unvalidated passthrough runs a different guess from the one that was
+#: asked for — a silent substitution of exactly the kind this project refuses. ``"chk"`` is
+#: absent deliberately: reading orbitals from a previous calculation is ``guess_from=``, which
+#: is kuiva-native and needs no PySCF file format.
+SCF_INIT_GUESSES = ("minao", "atom", "1e", "hcore", "huckel", "mod_huckel", "sap")
+
+#: DIIS variants, by name. ``"cdiis"`` is Pulay's commutator DIIS (PySCF's default);
+#: ``"adiis"`` and ``"ediis"`` are the energy-based variants that behave far better in the
+#: first iterations of a hard open-shell case, which is where an oscillating ROHF lives.
+SCF_DIIS_VARIANTS = ("cdiis", "adiis", "ediis")
+
+#: How many times a stability follow may re-run the SCF before giving up. It is a constant
+#: rather than a knob because the useful values are one and two: an SCF that is still
+#: internally unstable after three re-solves is not going to be fixed by a fourth, and the
+#: honest report at that point is a warning naming the state it stopped in.
+STABILITY_MAX_FOLLOW = 3
+
+#: What ``stability=`` accepts. ``"check"`` measures and reports; ``"follow"`` also rotates
+#: into the unstable mode and re-solves. Booleans are refused rather than mapped onto one of
+#: them, because "stability=True" reads as either and the difference is a re-run.
+STABILITY_MODES = ("check", "follow")
+
+
+def validate_scf_controls(*, level_shift=0.0, damp=0.0, init_guess=None, diis=None,
+                          diis_space=None, diis_start_cycle=None, second_order=False,
+                          stability=None):
+    """Check the SCF convergence controls and return them normalized.
+
+    Split out of :func:`apply_scf_controls` so the class API can validate a stage's options
+    **eagerly**, at construction, without building a ``Mole`` or touching PySCF: every one of
+    these is a user statement that can be wrong, and finding out after a four-component atomic
+    solve has run is finding out too late.
+    """
+    level_shift = float(level_shift or 0.0)
+    if level_shift < 0.0:
+        raise ValueError("level_shift is an energy added to the virtual orbitals and must be "
+                         ">= 0; got {}".format(level_shift))
+    damp = float(damp or 0.0)
+    if not 0.0 <= damp < 1.0:
+        raise ValueError("damp mixes the previous Fock matrix in with weight damp and must be "
+                         "in [0, 1); got {}".format(damp))
+    if init_guess is not None:
+        if not isinstance(init_guess, str):
+            raise TypeError("init_guess is the name of an initial guess ({}); got {!r}"
+                            .format(", ".join(SCF_INIT_GUESSES), type(init_guess).__name__))
+        init_guess = init_guess.lower()
+        if init_guess.startswith("chk"):
+            raise ValueError(
+                "init_guess='chk' reads orbitals from a PySCF checkpoint file, which this "
+                "front end does not own. Starting an SCF from a previous calculation's "
+                "orbitals is guess_from=, which takes a finished ScalarSCF (or its "
+                "ScalarX2CData) and projects it if the basis differs.")
+        if init_guess not in SCF_INIT_GUESSES:
+            raise ValueError("unknown init_guess {!r}; expected one of {}"
+                             .format(init_guess, ", ".join(SCF_INIT_GUESSES)))
+    if diis is not None and diis is not False:
+        if not isinstance(diis, str):
+            raise TypeError("diis is a variant name ({}), False to switch DIIS off, or None "
+                            "for the default; got {!r}"
+                            .format(", ".join(SCF_DIIS_VARIANTS), type(diis).__name__))
+        diis = diis.lower()
+        if diis == "off":
+            diis = False
+        elif diis not in SCF_DIIS_VARIANTS:
+            raise ValueError("unknown diis {!r}; expected one of {}, False, or None for the "
+                             "default".format(diis, ", ".join(SCF_DIIS_VARIANTS)))
+    if diis_space is not None and int(diis_space) < 1:
+        raise ValueError("diis_space is the number of Fock matrices kept and must be >= 1; "
+                         "got {}".format(diis_space))
+    if diis_start_cycle is not None and int(diis_start_cycle) < 1:
+        raise ValueError("diis_start_cycle is 1-based (PySCF counts the first cycle as 1) and "
+                         "must be >= 1; got {}".format(diis_start_cycle))
+    if stability is not None and stability is not False:
+        if not isinstance(stability, str):
+            raise TypeError(
+                "stability is 'check' (measure and report) or 'follow' (also rotate into the "
+                "unstable mode and re-solve); a boolean is refused because it reads as either "
+                "and the difference is a re-run of the SCF. Got {!r}"
+                .format(type(stability).__name__))
+        stability = stability.lower()
+        if stability not in STABILITY_MODES:
+            raise ValueError("unknown stability {!r}; expected {}"
+                             .format(stability, " or ".join(repr(m) for m in STABILITY_MODES)))
+    else:
+        stability = None
+    return dict(level_shift=level_shift, damp=damp, init_guess=init_guess, diis=diis,
+                diis_space=(None if diis_space is None else int(diis_space)),
+                diis_start_cycle=(None if diis_start_cycle is None
+                                  else int(diis_start_cycle)),
+                second_order=bool(second_order), stability=stability)
+
+
+def apply_scf_controls(mf, *, level_shift=0.0, damp=0.0, init_guess=None, diis=None,
+                       diis_space=None, diis_start_cycle=None, second_order=False,
+                       stability=None):
+    """Install the convergence controls on a PySCF SCF object. Returns ``(mf, note)``.
+
+    One implementation for every SCF this bridge drives — the molecular one and the
+    average-of-configuration atomic one — because two would drift on which knob means what.
+    ``note`` is the human-readable summary of everything that is not a default, empty when
+    nothing was asked for, and it is what the output block prints.
+
+    ⚠ ``second_order=True`` (the CIAH second-order solver, Sun, J. Chem. Phys. 144, 034102
+    (2016)) replaces the iteration entirely: DIIS, damping and the level shift are inputs to
+    the first-order iteration and are **not used** by it, so asking for both warns rather than
+    silently dropping one of them. The wrap must come last — it copies the object's attributes
+    at construction, so ``conv_tol``, ``max_cycle`` and the density fitting must already be on
+    ``mf``.
+    """
+    from pyscf.scf import diis as pyscf_diis
+
+    opts = validate_scf_controls(
+        level_shift=level_shift, damp=damp, init_guess=init_guess, diis=diis,
+        diis_space=diis_space, diis_start_cycle=diis_start_cycle,
+        second_order=second_order, stability=stability)
+
+    notes = []
+    first_order = []
+    if opts["level_shift"]:
+        mf.level_shift = opts["level_shift"]
+        first_order.append("level_shift={:.3g}".format(opts["level_shift"]))
+    if opts["damp"]:
+        mf.damp = opts["damp"]
+        first_order.append("damp={:.3g}".format(opts["damp"]))
+    if opts["diis"] is False:
+        mf.diis = None
+        first_order.append("DIIS off")
+    elif opts["diis"] is not None:
+        mf.DIIS = {"cdiis": pyscf_diis.CDIIS, "adiis": pyscf_diis.ADIIS,
+                   "ediis": pyscf_diis.EDIIS}[opts["diis"]]
+        first_order.append(opts["diis"].upper())
+    if opts["diis_space"] is not None:
+        mf.diis_space = opts["diis_space"]
+        first_order.append("diis_space={}".format(opts["diis_space"]))
+    if opts["diis_start_cycle"] is not None:
+        mf.diis_start_cycle = opts["diis_start_cycle"]
+        first_order.append("diis_start_cycle={}".format(opts["diis_start_cycle"]))
+    if opts["init_guess"] is not None:
+        mf.init_guess = opts["init_guess"]
+        notes.append("init_guess={}".format(opts["init_guess"]))
+
+    if opts["second_order"]:
+        if first_order:
+            log.warning("second_order=True selects the CIAH second-order solver, which does "
+                        "not use the first-order iteration's controls: %s %s ignored.",
+                        ", ".join(first_order),
+                        "is" if len(first_order) == 1 else "are")
+        else:
+            notes.extend(first_order)
+        mf = mf.newton()
+        notes.append("second-order (CIAH)")
+    else:
+        notes.extend(first_order)
+    return mf, ", ".join(notes)
+
+
+def _stability_follow(mf, mode: str):
+    """Run the internal stability analysis, and under ``"follow"`` re-solve out of it.
+
+    Returns ``(mf, e_scf, stable, n_follow)``; ``e_scf`` is ``None`` when the SCF was not
+    re-run, so the caller keeps the energy it already has.
+
+    ⚠ **Internal stability only.** The external analysis asks a different question — whether
+    the solution is unstable towards *breaking a constraint* (RHF -> UHF, real -> complex) —
+    and the answer to it is to run a different reference, which is the user's decision and not
+    something to do to them mid-run. It is also not cheap: a second Davidson over a larger
+    space.
+
+    ⚠ A follow is a **re-solve, not a rotation**: the rotated orbitals are only a direction
+    downhill, so the density built from them is fed back as a starting guess and the SCF is run
+    again from it. Following at most :data:`STABILITY_MAX_FOLLOW` times, since an SCF still
+    unstable after three re-solves is a statement about the system rather than about the
+    iteration.
+
+    References: R. Seeger, J. A. Pople, J. Chem. Phys. 66, 3045 (1977),
+    doi:10.1063/1.434318 (SCF stability conditions).
+    """
+    e_scf = None
+    n_follow = 0
+    mo_i, _mo_e, stable, _stable_e = mf.stability(internal=True, external=False,
+                                                  return_status=True)
+    while not stable and mode == "follow" and n_follow < STABILITY_MAX_FOLLOW:
+        n_follow += 1
+        # DEBUG, not INFO: the INFO stream is the output file and takes no unstructured
+        # prose. What the run reports is the verdict and the follow count, as a standard row.
+        log.debug("internal instability found; re-solving from the unstable mode "
+                  "(follow %d of %d)", n_follow, STABILITY_MAX_FOLLOW)
+        dm = mf.make_rdm1(mo_i, mf.mo_occ)
+        e_scf = mf.kernel(dm0=dm)
+        mo_i, _mo_e, stable, _stable_e = mf.stability(internal=True, external=False,
+                                                      return_status=True)
+    if not stable:
+        log.warning("the converged SCF is internally UNSTABLE%s: a lower solution of the same "
+                    "reference exists, and the orbitals every later stage is built on are a "
+                    "saddle point of the SCF energy. stability='follow' re-solves from it.",
+                    "" if mode == "check" else
+                    " after {} follow(s)".format(STABILITY_MAX_FOLLOW))
+    return mf, e_scf, bool(stable), n_follow
+
+
+def _guess_density(source, mol, ref_name: str, layout, target_spec: "MoleculeSpec"):
+    """Build an SCF starting density from a previous calculation's scalar orbitals.
+
+    Returns ``(dm0, note)``. ``dm0`` has the shape the target reference wants: one matrix for
+    RHF, ``(2, nao, nao)`` for ROHF and UHF, because handing a restricted total density to an
+    unrestricted reference throws away the spin polarization that was the reason to reuse the
+    orbitals at all.
+
+    Two routes, and which one runs is decided by the AO basis rather than by the caller:
+
+    * **the same AO basis** (same functions in the same order — the geometry may differ, which
+      is the potential-energy-surface case) uses the orbitals directly;
+    * **a different basis** projects them, through :func:`kuiva.orth.project.
+      project_scalar_orbitals`, i.e. through the same equation the CASSCF basis projection
+      uses. There is one projector in this project and this is a second consumer of it, not a
+      second implementation.
+
+    ⚠ The occupied orbitals are what is carried, and the density is built from the occupation
+    numbers rather than from a count: an ROHF singly occupied orbital holds one electron while
+    ``mo_occ > 0`` is true of it, and counting instead of summing puts an extra electron into
+    the guess.
+    """
+    from ..orth.canonical import canonical_orthogonalization
+    from ..orth.project import MIN_BLOCK_EIGENVALUE as PROJECT_MIN_BLOCK_EIGENVALUE
+    from ..orth.project import project_scalar_orbitals
+
+    data = getattr(source, "data", source)          # a finished ScalarSCF stage, or the data
+    if not isinstance(getattr(data, "mo_coeff", None), np.ndarray):
+        raise TypeError("guess_from takes a finished ScalarSCF stage or the ScalarX2CData it "
+                        "produced; got {!r}".format(type(source).__name__))
+
+    # (1) the source occupations, split into alpha and beta. For integral occupations this is
+    #     exactly the ROHF split (2 -> 1 + 1, 1 -> 1 + 0); a fractional set (an
+    #     average-of-configuration reference) has no spin polarization to preserve and is
+    #     halved, which is what its own spin-restricted definition says it is.
+    sets = data.mo_sets()
+    if len(sets) == 2:
+        occ_a, occ_b = np.asarray(data.mo_occ[0]), np.asarray(data.mo_occ[1])
+        c_a, c_b = sets
+    else:
+        occ = np.asarray(data.mo_occ, dtype=float)
+        integral = bool(np.all(np.abs(occ - np.round(occ)) < 1e-8))
+        occ_a = np.minimum(occ, 1.0) if integral else 0.5 * occ
+        occ_b = occ - occ_a
+        c_a = c_b = sets[0]
+
+    # (2) the two routes.
+    same_basis = _same_ao_basis(data, mol, layout)
+    if same_basis:
+        note = "orbitals reused directly (same AO basis)"
+        carried = [np.asarray(c_a, dtype=float), np.asarray(c_b, dtype=float)]
+    else:
+        if data.molecule is None:
+            raise ValueError(
+                "guess_from was given orbitals over a different AO basis ({} functions "
+                "against this calculation's {}), and projecting them needs the molecule and "
+                "basis they were computed in. The source container carries no MoleculeSpec, "
+                "so it cannot be rebuilt; run the source through run_scalar_x2c (or the "
+                "ScalarSCF stage), which records one."
+                .format(int(data.nao), int(mol.nao)))
+        target = canonical_orthogonalization(mol.intor("int1e_ovlp"))
+        s_cross = cross_overlap(data.molecule, target_spec)
+        carried = []
+        worst, floor = 1.0, 1.0
+        for c, occ in ((c_a, occ_a), (c_b, occ_b)):
+            keep = np.asarray(occ, dtype=float) > 0.0
+            c_t, retained, block_floor = project_scalar_orbitals(
+                np.asarray(c, dtype=float)[:, keep], s_cross, target)
+            full = np.zeros((int(mol.nao), int(np.asarray(occ).size)), dtype=float)
+            # Only the occupied columns are carried; the rest never enter a density.
+            full[:, np.flatnonzero(keep)] = c_t
+            carried.append(full)
+            floor = min(floor, float(block_floor))
+            if retained.size:
+                worst = min(worst, float(np.min(retained)))
+        note = ("orbitals projected from {} AO functions (smallest retained norm {:.4f})"
+                .format(int(data.nao), worst))
+        if worst < 0.9:
+            log.warning("the projected starting guess keeps only %.3f of its worst occupied "
+                        "orbital: the target basis does not contain that orbital, and the "
+                        "guess is correspondingly poor. It is still a legal starting point.",
+                        worst)
+        if floor <= PROJECT_MIN_BLOCK_EIGENVALUE:
+            # ⚠ The one case where the guess is not merely poor but wrong: the projected
+            # occupied set is linearly dependent, so it could not be orthonormalized and the
+            # density built from it does not have N electrons in it. Say so rather than let
+            # the SCF start from a guess for a different number of electrons.
+            log.warning("the projected occupied orbitals are linearly dependent in the "
+                        "target basis (smallest Gram eigenvalue %.2e): they could not be "
+                        "orthonormalized, so the starting density does not integrate to the "
+                        "electron count. Project onto a larger basis, or start cold.", floor)
+
+    # (3) the densities, in the shape this reference wants.
+    dm_a = (carried[0] * occ_a) @ carried[0].T
+    dm_b = (carried[1] * occ_b) @ carried[1].T
+    dm0 = dm_a + dm_b if ref_name == "rhf" else np.array([dm_a, dm_b])
+    return dm0, note
+
+
+def _same_ao_basis(data, mol, layout) -> bool:
+    """Is ``data`` expressed over exactly this molecule's AO basis, function for function?
+
+    Compared through the :class:`~kuiva.basis.layout.AOLayout` columns rather than through
+    basis *names*: two spellings of one family, or a per-atom assignment written two ways,
+    are the same basis, and the only thing that actually has to match is the functions and
+    their order. ⚠ The geometry is deliberately **not** compared — carrying orbitals along a
+    scan is the ordinary use of this — so a match here means "the same AO functions", not
+    "the same molecule".
+    """
+    if int(data.nao) != int(mol.nao):
+        return False
+    src = data.ao_layout
+    if src is None or layout is None:
+        log.warning("guess_from: the source orbitals cover the same number of AO functions "
+                    "(%d) but carry no AO layout to check the basis against; they are being "
+                    "used as they are.", int(mol.nao))
+        return True
+    for column in ("ao_l", "ao_atom", "ao_shell"):
+        a = np.asarray(getattr(src, column, None))
+        b = np.asarray(getattr(layout, column, None))
+        if a.shape != b.shape or not np.array_equal(a, b):
+            return False
+    return True
+
+
 def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] = None,
                    auxbasis: Optional[object] = None, with_soc: bool = True,
                    method: Optional[str] = None,
@@ -2298,6 +2631,12 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                    configuration=None,
                    decoupling_options: Optional[Dict[str, object]] = None,
                    conv_tol: float = 1e-10, max_cycle: int = 200,
+                   level_shift: float = 0.0, damp: float = 0.0,
+                   init_guess: Optional[str] = None, diis=None,
+                   diis_space: Optional[int] = None,
+                   diis_start_cycle: Optional[int] = None,
+                   second_order: bool = False, stability: Optional[str] = None,
+                   guess_from=None, allow_unconverged_scf: bool = False,
                    memory_gb: Optional[float] = None, n_active: Optional[int] = None,
                    cholesky_tol: float = DEFAULT_CHOLESKY_TOL, orbit_pivots: bool = True,
                    one_centre: bool = True,
@@ -2421,6 +2760,49 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         bases) get decorated symbols (``"Ti2"``) throughout output and provenance, and the
         charge report warns that non-default references are not comparable with default
         ones.
+    conv_tol, max_cycle : float, int
+        The SCF's convergence threshold [Eh] and its iteration budget.
+    level_shift, damp, init_guess, diis, diis_space, diis_start_cycle : optional
+        Convergence controls, passed to PySCF (:func:`apply_scf_controls`). ⚠ **This is where
+        a real open-shell complex fails**: an ROHF on a metal ion with several shells within
+        an eV of each other oscillates between occupations, and no amount of ``max_cycle``
+        fixes it. ``level_shift`` (an energy added to the virtual orbitals) and ``damp``
+        (mixing in the previous Fock matrix) break the oscillation; ``diis="adiis"`` replaces
+        Pulay's commutator DIIS with the energy-based variant, which is far better in the
+        first iterations of exactly that case. ``init_guess`` is one of
+        :data:`SCF_INIT_GUESSES`, checked by name because PySCF silently substitutes
+        ``minao`` for anything it does not recognize.
+    second_order : bool
+        Solve with the CIAH second-order (Newton) solver instead of the DIIS iteration. It
+        converges the near-degenerate open-shell cases the first-order iteration cannot, at a
+        higher cost per iteration and with a much smaller iteration count. ⚠ It does not use
+        ``level_shift``/``damp``/``diis`` at all, and asking for both warns.
+    stability : str, optional
+        ``"check"`` runs the **internal** stability analysis on the converged solution and
+        reports it; ``"follow"`` also rotates into the unstable mode and re-solves, up to
+        :data:`STABILITY_MAX_FOLLOW` times. ⚠ Off by default, because it costs a Davidson
+        over the orbital Hessian. An unstable SCF is a *saddle point* of the SCF energy —
+        the orbitals every later stage is built on are then not even a local minimum of the
+        stage that produced them — so it is worth the cost on any system where the reference
+        is in doubt. External (RHF -> UHF, real -> complex) stability is deliberately not run:
+        the answer to it is to choose a different ``reference``, which is the user's decision.
+    guess_from : optional
+        Start the SCF from a previous calculation's scalar orbitals: a finished
+        :class:`~kuiva.interface.stages.ScalarSCF` stage, or the :class:`ScalarX2CData` it
+        produced. Over the **same AO basis** the orbitals are used directly, which is the
+        potential-energy-surface case (the geometry may differ and is not compared); over a
+        **different** basis they are projected through
+        :func:`kuiva.orth.project.project_scalar_orbitals` — the same projector the CASSCF
+        basis projection uses, so there is one implementation of it in the project and this is
+        a second consumer. ⚠ It is a *guess*: it changes the number of iterations and, on a
+        surface with more than one SCF solution, which one is found. It cannot be combined
+        with ``init_guess``, which names a different starting point.
+    allow_unconverged_scf : bool
+        Continue after an SCF that did not converge. ⚠ **Off by default: an unconverged SCF
+        refuses.** Everything downstream is built on these orbitals, and while the CASSCF
+        re-optimizes them, "the multireference step will fix it" is a hope rather than a
+        property — an oscillating SCF returns whichever iterate the budget stopped on. Set
+        this to run diagnostically on orbitals that are known not to be converged.
     memory_gb : float, optional
         Working-memory limit for this calculation, overriding the configured default.
         Without a default *and* without this, the calculation refuses to start.
@@ -2471,6 +2853,10 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     atom_basis = mol.__dict__["_kuiva_atom_basis"]
     meta = mol.__dict__["_kuiva_basis_meta"]
     fit_route, aux = _choose_fit(atom_basis, fitting, auxbasis)
+    # Both are pure functions of the built molecule, and both are needed *before* the SCF when
+    # guess_from= has to decide whether a previous calculation's orbitals are over this basis.
+    data_layout = ao_layout(mol)
+    mol_spec = MoleculeSpec.from_molecule(molecule, configuration)
 
     # The AO count is the first thing that is known and it fixes every large array of
     # the front-end, so the whole plan is printed and judged here, before the SCF — and it
@@ -2502,11 +2888,51 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         mf = mf.density_fit(auxbasis=aux_spec)
     mf.conv_tol = conv_tol
     mf.max_cycle = max_cycle
+    # Normalized once, here, and the driver reads the normalized values from then on —
+    # otherwise `stability=False` would reach the run as a string operation on a bool.
+    controls = validate_scf_controls(
+        level_shift=level_shift, damp=damp, init_guess=init_guess, diis=diis,
+        diis_space=diis_space, diis_start_cycle=diis_start_cycle,
+        second_order=second_order, stability=stability)
+    stability = controls["stability"]
+    # ⚠ After conv_tol/max_cycle and after density_fit: the second-order wrap copies the
+    # object's attributes at construction, so anything set afterwards would be set on a
+    # different object than the one that iterates.
+    mf, control_note = apply_scf_controls(mf, **controls)
+
+    dm0 = None
+    guess_note = ""
+    if guess_from is not None:
+        if init_guess is not None:
+            raise ValueError(
+                "guess_from= and init_guess= are two different statements about where the SCF "
+                "starts, and only one of them can be true. guess_from re-uses a previous "
+                "calculation's orbitals; init_guess names one of PySCF's built-in guesses.")
+        dm0, guess_note = _guess_density(guess_from, mol, ref_name, data_layout, mol_spec)
+
     with timer("scalar X2C SCF") as t_scf:
-        e_scf = mf.kernel()
+        e_scf = mf.kernel(dm0=dm0)
+        stable = None
+        n_follow = 0
+        if stability is not None:
+            mf, e_followed, stable, n_follow = _stability_follow(mf, stability)
+            if e_followed is not None:
+                e_scf = e_followed
     if not mf.converged:
-        log.error("scalar X2C SCF did not converge in %d cycles (E = %.8f Eh); everything "
-                  "downstream is built on these orbitals", max_cycle, e_scf)
+        # ⚠ A refusal, not a message: everything downstream is built on these orbitals, and an
+        # SCF that ran out of cycles returns whichever iterate the budget stopped on. The
+        # CASSCF re-optimizing the orbitals afterwards is a hope, not a property.
+        if not allow_unconverged_scf:
+            raise RuntimeError(
+                "the scalar X2C SCF did not converge in {} cycles (E = {:.8f} Eh, conv_tol = "
+                "{:.1e}). Everything downstream is built on these orbitals, so the run stops "
+                "here. Try level_shift= and damp=, or diis='adiis', or second_order=True; "
+                "raise max_cycle=; start from another calculation's orbitals with guess_from=; "
+                "or pass allow_unconverged_scf=True to continue on them deliberately."
+                .format(max_cycle, e_scf, conv_tol))
+        log.warning("scalar X2C SCF did not converge in %d cycles (E = %.8f Eh) and "
+                    "allow_unconverged_scf=True; everything downstream is built on these "
+                    "orbitals", max_cycle, e_scf)
 
     mo_coeff = np.asarray(mf.mo_coeff)
     unrestricted = mo_coeff.ndim == 3
@@ -2575,8 +3001,6 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     # per (element, basis) and needs the integral library, which nothing downstream has.
     atomic_ref = _atomic_reference_set(mol) if atomic_reference else None
 
-    data_layout = ao_layout(mol)
-
     # Standard output block: the front-end's contribution to the output file.
     rows = [
         ("SCF reference", ref_name.upper() + (" (unrestricted)" if unrestricted else "")),
@@ -2592,6 +3016,15 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         ("scalar X2C SCF energy", float(e_scf), "Eh", "", out.E_FMT),
         ("SCF converged", bool(mf.converged)),
     ]
+    # ⚠ Only when they were asked for. A row per knob would change every output file in the
+    # project to say that six things are at their defaults, which is not information.
+    if control_note:
+        rows.append(("SCF convergence controls", control_note))
+    if guess_note:
+        rows.append(("SCF starting guess", guess_note))
+    if stable is not None:
+        rows.append(("internal stability", "stable" if stable else "UNSTABLE", "",
+                     "{} follow(s)".format(n_follow) if n_follow else ""))
     if s2_dev is not None:
         rows.append(("<S^2> deviation from exact", s2_dev, "", "", "{:.4f}"))
     rows += [
@@ -2635,9 +3068,10 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         fit_route=fit_route, eri=eri, df_cderi=df_cderi, factors=factors,
         aux_name=aux if isinstance(aux, str) else ("custom" if aux is not None else None),
         soc=soc, reference=ref_name, unrestricted=unrestricted, s2_deviation=s2_dev,
+        scf_stable=stable,
         basis_meta=meta, e_nuc=float(mol.energy_nuc()), ao_layout=data_layout,
         properties=props, atomic_reference=atomic_ref, symmetry=symmetry,
-        molecule=MoleculeSpec.from_molecule(molecule, configuration),
+        molecule=mol_spec,
     )
     return data
 
@@ -2781,7 +3215,9 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
                    decoupling_options: Optional[Dict[str, object]] = None,
                    conv_tol: float = 1e-10, max_cycle: int = 200,
                    level_shift: float = 0.0, damp: float = 0.0,
-                   init_guess: Optional[str] = None,
+                   init_guess: Optional[str] = None, diis=None,
+                   diis_space: Optional[int] = None,
+                   diis_start_cycle: Optional[int] = None,
                    spherical: bool = True,
                    memory_gb: Optional[float] = None,
                    cholesky_tol: float = DEFAULT_CHOLESKY_TOL, orbit_pivots: bool = True,
@@ -2820,11 +3256,11 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
         :func:`kuiva.amf.configuration.default_configuration`.
     basis : str or dict
         As :func:`run_scalar_x2c`, through the same registry.
-    level_shift, damp, init_guess
-        Convergence aids, passed to PySCF. ⚠ **An open-shell atom with several shells within
-        an eV of each other is where an SCF actually fails to converge** — the lanthanides
-        this function exists for are exactly that case — so these are exposed rather than
-        left to be rediscovered.
+    level_shift, damp, init_guess, diis, diis_space, diis_start_cycle
+        Convergence aids, passed to PySCF through :func:`apply_scf_controls`. ⚠ **An
+        open-shell atom with several shells within an eV of each other is where an SCF
+        actually fails to converge** — the lanthanides this function exists for are exactly
+        that case — so these are exposed rather than left to be rediscovered.
     spherical : bool
         Constrain the SCF to spherically symmetric solutions by projecting the Fock operator
         onto its rank-zero part each cycle
@@ -2917,10 +3353,13 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
         mf = mf.density_fit(auxbasis=aux_spec)
     mf.conv_tol = conv_tol
     mf.max_cycle = max_cycle
-    mf.level_shift = level_shift
-    mf.damp = damp
-    if init_guess is not None:
-        mf.init_guess = init_guess
+    # The same controls, through the same implementation the molecular path uses. ⚠ No
+    # second_order here: the CIAH solver owns the occupation and the Fock build, and this SCF
+    # replaces both (fractional average-of-configuration occupations, and a Fock projected
+    # onto its rank-zero part each cycle).
+    mf, _control_note = apply_scf_controls(
+        mf, level_shift=level_shift, damp=damp, init_guess=init_guess, diis=diis,
+        diis_space=diis_space, diis_start_cycle=diis_start_cycle)
     with timer("scalar AOC X2C SCF") as t_scf:
         e_scf, state = _run_aoc_scf(mf, mol, config, layout, element, spherical=spherical)
 
@@ -3031,4 +3470,7 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
 __all__ = ["ScalarX2CData", "SpinOrbitX2C", "PropertyIntegrals", "MoleculeSpec",
            "build_mole", "cross_overlap",
            "run_scalar_x2c", "run_scalar_aoc", "ingest_spin_orbit",
-           "ingest_property_integrals", "gauge_origin_for", "eri_memory_gb", "ao_layout"]
+           "ingest_property_integrals", "gauge_origin_for", "eri_memory_gb", "ao_layout",
+           "apply_scf_controls", "validate_scf_controls",
+           "SCF_INIT_GUESSES", "SCF_DIIS_VARIANTS", "STABILITY_MODES",
+           "STABILITY_MAX_FOLLOW"]

@@ -13,7 +13,7 @@ cheap enough to run while you read the file.
 
     ScalarSCF -> Reference -> CASSCF -> the spin-orbit spectrum
 
-Four things are worth watching, and each of them is a decision you will have to make in
+Eight things are worth watching, and each of them is a decision you will have to make in
 any real calculation:
 
 1. **The active space is stated as orbital character, not as indices.** "The five lowest
@@ -21,6 +21,26 @@ any real calculation:
    reproduce; "spinors 68 to 77" is not, and it silently follows the basis set around.
    Kuiva refuses a principal quantum number here on purpose: PySCF's principal-quantum
    labels count shells *within the basis*, which is not the same thing.
+
+   The space is then constructed a second way, by an **AVAS** projection onto the free-atom
+   Ti 3d orbitals, and the comparison is more interesting than agreement. A selection can
+   only pick orbitals that already *are* the target shell; AVAS rotates several partly-d
+   orbitals into it, which is the only route when the metal-ligand bond is covalent. Run
+   twice here:
+
+   * at the default threshold 0.20 it takes **seven** Kramers pairs -- the five 3d ones and
+     the two Cl sigma combinations that carry 27 per cent of themselves in the Ti 3d span,
+     giving CAS(5, 14);
+   * above that group (0.40) it reproduces the character selection's CAS(1, 10) exactly.
+
+   Neither is wrong. One is the covalency-aware active space and the other the pure
+   ligand-field one, and the eigenvalue table is what that choice is made from -- which is
+   why the threshold is documented as a *selection knob* and never as a tolerance, and why
+   the gap at the cut is printed beside the answer. ⚠ The rotation stays inside the occupied
+   space and inside the virtual space, so the SCF density does not move; that is checked
+   here rather than assumed, because a rotation that mixed occupations would change the
+   reference silently. The double shell (3d plus its diffuse 4d correlating partner) is the
+   same call with `n_shells=2`, and it is the case no character threshold can find.
 
 2. **Which states the orbitals are optimized for.** The CASSCF here averages over the
    ground Kramers doublet only -- that is the state whose orbitals are wanted -- and the
@@ -82,6 +102,21 @@ any real calculation:
    returns ten -- the five and their time-reversed partners in 2E1/2 -- which is the same
    spectrum again, reached with both symmetries imposed.
 
+8. **Trying to NAME the levels, and being told they have no free-ion name.** ``<S^2>`` is
+   0.7511 on every doublet, and the excess over 3/4 is the interesting part: one active
+   electron cannot mix spins, so spin-pure orbitals would give 3/4 exactly (boron does, in
+   example 2). These orbitals are not spin-pure -- a converged general-complex CASSCF mixes
+   spin, which is what spin-orbit coupling is -- so ``S`` reaches out of the active space,
+   and that contribution is computed and included rather than assumed away. It goes as the
+   square of the leakage, and the run prints both so the excess can be checked against its
+   own cause. The term assignment then **refuses**: a
+   free-ion level is a 2J+1 manifold whose g is the Lande factor, and a crystal-field
+   doublet is neither, so every label comes back "?" with the evidence saying why. That is
+   the correct answer, and it is the half of this feature worth seeing -- example 2 runs
+   the same call on a free atom, where the inference succeeds. ⚠ Every label is an
+   inference either way, which is why it prints in its own report with the evidence and a
+   fit residual beside it, and never as a column of the state table.
+
 THE ANSWER YOU SHOULD SEE
 -------------------------
 D3h splits the d shell into a1' + e'' + e', so the ten spinors of the 3d shell give **five
@@ -117,7 +152,8 @@ from typing import List
 import numpy as np
 
 import kuiva
-from kuiva.interface.api import casci
+from kuiva.interface.api import (assign_states, avas_active_space, casci,
+                                 spin_analysis)
 from kuiva.props.multiplet import HARTREE_TO_CM
 from kuiva.props.population import orbital_populations
 from kuiva.util import output as out
@@ -143,6 +179,12 @@ N_STATES_SCF, N_STATES_CI = 2, 10
 
 #: Budgets, explicit so that termination never depends on convergence.
 MAX_ITER, CONV_GRAD = 40, 1.0e-4
+
+#: AVAS projection cut that isolates the Ti 3d shell alone. ⚠ A *selection* knob, not a
+#: tolerance: the default 0.20 also takes the two Cl sigma combinations that carry 27% of
+#: themselves in the Ti 3d span, and 0.40 sits in the gap between those two groups. The
+#: eigenvalue table printed beside it is what a value like this is chosen from.
+AVAS_TIGHT = 0.40
 
 #: The band reserved for numerical Kramers splitting in the general two-component CI. See
 #: the module docstring on why this is an upper bound rather than an expected value.
@@ -254,6 +296,65 @@ def main() -> int:
     ])
 
     # ----------------------------------------------------------------------------------
+    # 1b. The second route to the same active space: AVAS.
+    # ----------------------------------------------------------------------------------
+    # The character selection above takes the five lowest Kramers pairs whose Loewdin
+    # population is at least half on Ti d. That works here because TiCl3 is ionic enough
+    # for five canonical orbitals to *be* the d shell. Where the metal-ligand bond is
+    # covalent, no single orbital carries enough d character to clear any threshold and
+    # the useful active space is a rotation of several -- which a selection cannot produce.
+    #
+    # AVAS builds that rotation: project every orbital onto the free-atom Ti 3d orbitals
+    # (the ones atomic_reference=True already computed, at the same per-element reference
+    # state the atomic mean field uses), diagonalize the projector, and take the
+    # combinations of large eigenvalue. The rotation stays inside the occupied space and
+    # inside the virtual space, so the SCF density -- and the reference everything below is
+    # built on -- does not move at all.
+    #
+    # The eigenvalues are the real output: each says how much of that rotated pair lies in
+    # the Ti 3d span, and the gap at the cut says whether the electronic structure or the
+    # threshold is what chose the space. It is run here at TWO thresholds, because on this
+    # molecule the two answers are different and the difference is the whole lesson.
+    #
+    # In production it would be written as CASSCF(reference, avas=dict(atom="Ti", l="d")),
+    # which also hands the CASSCF the rotated orbitals; avas=dict(..., n_shells=2) asks for
+    # the double shell, the 3d plus its correlating 4d partner, which is the case no
+    # character threshold finds because the correlating shell is diffuse and covalent.
+    out.section(log, "The active space, chosen a second way (AVAS)")
+    avas = avas_active_space(reference.reference, atom="Ti", l="d")
+    avas_tight = avas_active_space(reference.reference, atom="Ti", l="d",
+                                   threshold=AVAS_TIGHT, report=False)
+    character_active = list(kuiva.CASSCF(reference, character=("Ti", "d"),
+                                         n_active=N_ACTIVE,
+                                         n_active_elec=N_ACTIVE_ELEC).space.spaces.active)
+    avas_active = list(avas.space.spaces.active)
+    tight_active = list(avas_tight.space.spaces.active)
+    # ⚠ The property the occupation grouping exists for, checked rather than assumed: a
+    # rotation that mixed orbitals of different occupation would move the SCF density that
+    # every stage below is built on, and nothing else in this file would notice.
+    guess = reference.reference.spinors_in_ao()
+    occ = reference.reference.spinors.occ
+    avas_density_shift = float(np.abs((guess * occ) @ guess.conj().T
+                                      - (avas.coeff * occ) @ avas.coeff.conj().T).max())
+    out.entries(log, [
+        ("character selection picks", str(character_active)),
+        ("AVAS at the default threshold 0.20 picks", str(avas_active)),
+        ("AVAS at threshold {:.2f} picks".format(AVAS_TIGHT), str(tight_active)),
+        ("the tighter AVAS and the character selection agree",
+         tight_active == character_active),
+        ("eigenvalue gap at the cut, 0.20 / {:.2f}".format(AVAS_TIGHT),
+         "{:.3f} / {:.3f}".format(avas.gap, avas_tight.gap)),
+        ("change in the SCF density", avas_density_shift, "", "the rotation is inside the "
+         "occupied and virtual spaces", out.SCI_FMT),
+    ])
+    out.note(log, "the default threshold takes two MORE pairs than the character selection:")
+    out.note(log, "the two Cl sigma combinations that carry 27% of themselves in the Ti 3d")
+    out.note(log, "span. Neither answer is wrong -- CAS(5,14) is the covalency-aware space")
+    out.note(log, "and CAS(1,10) the pure ligand-field one -- and the eigenvalue table above")
+    out.note(log, "is what the choice is made from. That is what the threshold means, and")
+    out.note(log, "why the gap is printed beside it rather than left to be assumed.")
+
+    # ----------------------------------------------------------------------------------
     # 2. The CASSCF.
     # ----------------------------------------------------------------------------------
     # The orbital optimizer is shared by every CI method in the program: RDMs in, orbital
@@ -309,6 +410,36 @@ def main() -> int:
     out.note(log, "the CI is already two-component, so these roots ARE the spin-orbit")
     out.note(log, "eigenstates. There is no separate spin-orbit mixing step and no")
     out.note(log, "spin-free intermediate to interpret.")
+
+    # ----------------------------------------------------------------------------------
+    # 3b. Trying to NAME the levels, and being told they have no free-ion name.
+    # ----------------------------------------------------------------------------------
+    # Two measurements per degenerate block: <S^2>, from applying S to the CI vectors, and
+    # the isotropic g.
+    #
+    # <S^2> comes out at 0.7511 rather than exactly 3/4, and the small excess is the point
+    # rather than an error. One active electron cannot mix spins, so a doublet built on
+    # spin-PURE orbitals would give 3/4 exactly -- as the boron atom of example 2 does. These
+    # orbitals are not spin-pure: a converged general-complex CASSCF mixes spin, which is
+    # what spin-orbit coupling IS, so the spin operator connects the active space to the
+    # inactive and virtual ones (measured here at 9e-03) and S|I> leaves the CAS space. That
+    # contribution is COMPUTED AND INCLUDED, never assumed away, and it goes as the square of
+    # the leakage: 9e-03 here gives 1.7e-03, and boron's 8e-05 gives 4e-08. Both are printed
+    # so the excess can be checked against its own cause instead of being taken on trust.
+    #
+    # The assignment is the interesting half, because of what it REFUSES. A free-ion level
+    # is a 2J+1 manifold and its g is the Lande factor, which can be inverted for L; a
+    # crystal-field doublet of a complex is neither. So the labels come back "?" with the
+    # evidence saying why, and that is the correct answer -- a labeller that produced
+    # "^2D_5/2" here would be reading a ligand-field state as something it is not. Example 2
+    # runs the same call on a free atom, where the inference succeeds and the residual is
+    # the picture-change error of the bare L and S operators.
+    #
+    # ⚠ Every label is an inference either way, which is why it lives in its own report with
+    # the evidence and a fit residual beside it, and never as a column of the state table.
+    out.section(log, "Naming the levels, and what a ligand field does to the question")
+    assignment = assign_states(reference.reference, spectrum)
+    spin = spin_analysis(reference.reference, spectrum)
 
     # ----------------------------------------------------------------------------------
     # 3a. The same spectrum, solved with the time-reversal-adapted (Kramers-restricted) CI.
@@ -554,6 +685,41 @@ def main() -> int:
         "the boundary gap exceeds {:.0e} cm^-1 at both ends".format(BOUNDARY_MIN_CM):
             min(cas.boundary.gap_cm, cas.boundary_initial.gap_cm) > BOUNDARY_MIN_CM,
         "the converged active space really is Ti d": ti_d_fraction > 0.5,
+        # Two independent constructions of one active space. Once AVAS is asked for the
+        # d shell ALONE, they must agree element for element; if they did not, one of them
+        # would be wrong, which is the only reason to run both.
+        "AVAS above the covalent group picks the character selection exactly":
+            tight_active == character_active,
+        # And the default threshold's larger space must CONTAIN it: the extra pairs are the
+        # ligand sigma combinations, not a different d shell.
+        "the default AVAS space contains it, plus the two ligand sigma pairs":
+            set(character_active) < set(avas_active) and len(avas_active) == 14,
+        # The projector's trace is the number of reference orbitals it projects onto, so
+        # this is a check on the projection, the Kramers-pair fold and the per-occupation
+        # diagonalization together -- not on the selection.
+        "the AVAS projections account for the whole 3d reference shell":
+            abs(float(avas.eigenvalues.sum()) - 5.0) < 1e-8,
+        # ⚠ Contiguity is what the per-occupation ordering exists for: the active block has
+        # to straddle the occupied/virtual boundary, not sit below the core.
+        "the AVAS space is one contiguous block of spinors":
+            avas_active == list(range(min(avas_active), max(avas_active) + 1)),
+        "a decisive eigenvalue gap at the tighter cut": avas_tight.gap > 0.3,
+        "the AVAS rotation left the SCF density where it was": avas_density_shift < 1e-12,
+        # ⚠ Not 3/4 to machine precision, and it should not be: these orbitals are not
+        # spin-pure (see above), so the doublet carries a little spin contamination. The bar
+        # is set at 5e-3 because the excess is bounded by the measured out-of-CAS-space
+        # contribution, which the second check states directly -- a residual accounted for by
+        # its own cause is a different thing from one that is merely small.
+        "every ligand-field doublet is a doublet to 5e-3 in <S^2>":
+            float(np.max(np.abs(np.asarray(spin.block_s_squared) - 0.75))) < 5.0e-3,
+        "and the excess over 3/4 is accounted for by the measured spin leakage":
+            float(np.max(np.abs(np.asarray(spin.block_s_squared) - 0.75)))
+            <= float(np.max(np.abs(np.asarray(spin.block_leak)))) + 1.0e-9,
+        # ⚠ The refusal is the point. A crystal-field doublet is not a 2J+1 manifold and its
+        # g is not a Lande factor, so no free-ion level is offered -- and a labeller that
+        # offered one here would be reading a ligand-field state as something it is not.
+        "no free-ion term is offered for a crystal-field level":
+            set(assignment.labels()) == {"?"},
         "the atomic-reference charge is Ti(III)-like positive": q_scf.charge[0] > 1.5,
         "the correlated density moves the charge smoothly, not qualitatively":
             abs(float(q_cas.charge[0] - q_scf.charge[0])) < 0.3,

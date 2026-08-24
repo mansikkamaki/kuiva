@@ -35,7 +35,26 @@ WHAT TO LOOK FOR IN THE OUTPUT
 * the principal g values of each level, matching Lande to a few units in the fourth
   decimal;
 * the state average reported as *complete*: all six determinants are used, so no root was
-  left out of it.
+  left out of it;
+* <S^2> per level, and the term assignment built on it. Boron has one active electron, so
+  <S^2> is 3/4 exactly and the two levels come out named 2P1/2 and 2P3/2 -- with L
+  recovered from the measured g by inverting the Lande formula, which is a real check
+  rather than a restatement. ⚠ Read the assignment table as what it says it is: every
+  label in it is an INFERENCE from the block dimension, <S^2> and g, printed with its
+  evidence and its fit residual, and withheld as "?" where they do not add up. It is a
+  separate report and never a column of the state table, so nothing computed can be
+  confused with something inferred.
+
+⚠ WHAT <S^2> MEANS WITH SPIN-ORBIT COUPLING ON
+-----------------------------------------------
+It is not a quantum number. S stops being conserved the moment the Hamiltonian is
+two-component, so 2S+1 is a measure of how pure the spin of a level still is, not a
+multiplicity. It reads as a multiplicity here only because one electron cannot mix spins;
+in a many-electron lanthanide it will not be integral, and how far it is from integral is
+exactly how much a "6H15/2" label is worth. Every value is reported per degenerate BLOCK
+and never per state, for the same reason the g values are: inside a block the eigensolver
+may return any mixture of the members, so a single state's value belongs to that arbitrary
+choice while the block trace does not.
 
 READING THE COMPARISON WITH EXPERIMENT
 --------------------------------------
@@ -98,6 +117,11 @@ DEGENERACY_CM = 0.1
 #: 2e-3, which is above the residual anisotropy this small basis leaves (~1e-3) and far
 #: below anything physical.
 G_TOL = 2.0e-3
+
+#: One active electron has S = 1/2 exactly -- there is no second spin for spin-orbit
+#: coupling to mix it with -- so <S^2> = 3/4 is a *theorem* here, not a fitted tolerance.
+#: 1e-8 is the numerical bar; the value comes out at 1e-15.
+S2_TOL = 1.0e-8
 
 
 def prepare_output() -> Path:
@@ -233,6 +257,39 @@ def main() -> int:
     table.end("experiment: {:.3f} cm^-1 (NIST). An anchor, not a target -- see the "
               "file header".format(EXPERIMENT_CM))
 
+    # ----------------------------------------------------------------------------------
+    # Naming the levels: <S^2> and the assignment offer.
+    # ----------------------------------------------------------------------------------
+    # Everything above identifies the two levels by their degeneracies, which is how it is
+    # done by hand. Two measurements make the naming explicit.
+    #
+    # <S^2> is evaluated by applying S to the CI vectors. With spin-orbit coupling ON --
+    # which it is here -- S is NOT a good quantum number, so 2S+1 is a measure of how pure
+    # the spin still is rather than a multiplicity. Boron has one active electron and one
+    # electron cannot mix spins, so it comes out at exactly 3/4 and the label 2S+1 = 2 is
+    # safe. In a many-electron lanthanide it will not, and the number is then the thing
+    # that says how much a "6H15/2" label is really worth.
+    #
+    # ⚠ It is reported per DEGENERATE BLOCK, never per state. Inside a degenerate block the
+    # eigensolver may return any unitary mixture of the members, so an individual state's
+    # <S^2> belongs to that arbitrary choice; the block trace does not. Same discipline as
+    # the g values above, and for the same reason.
+    #
+    # The assignment then inverts the Lande formula for L, using the g value already
+    # measured and the J the block dimension gives:
+    #
+    #     g_J = 3/2 + [S(S+1) - L(L+1)] / [2 J(J+1)]   ->   L(L+1)
+    #
+    # ⚠ Every label it prints is an INFERENCE, which is why it lives in its own report with
+    # the evidence and a fit residual beside it, and never as a column of the state table.
+    # A block whose evidence does not add up is labelled "?" rather than given the nearest
+    # plausible term -- and that is the normal outcome for the crystal-field levels of a
+    # complex, which are not 2J+1 manifolds at all. Here the free-ion picture is exact and
+    # the residual is the ~1e-3 picture-change error of the bare L and S operators.
+    out.section(log, "Naming the levels")
+    assignment = results["x2camf"][1].assign()
+    spin = results["x2camf"][0].spin_analysis()
+
     reduction = 100.0 * (1.0 - splittings["x2camf"] / splittings["none"])
     out.entries(log, [
         ("two-electron screening reduces the splitting by", reduction, "%", "", "{:.1f}"),
@@ -266,6 +323,17 @@ def main() -> int:
             results[screening][0].boundary.gap_cm is None)
     checks["two-electron screening reduces the splitting"] = (
         splittings["x2camf"] < splittings["none"])
+    # One active electron is S = 1/2 exactly, whatever the spin-orbit coupling does to it:
+    # there is no second spin to mix with. A value that is not 3/4 here would be a defect,
+    # not a physical effect, which is what makes this assertable rather than a tolerance.
+    checks["<S^2> = 3/4 on both levels (one electron cannot mix spins)"] = bool(
+        np.max(np.abs(np.asarray(spin.block_s_squared) - 0.75)) < S2_TOL)
+    # The assignment is an inference, so what is asserted is that the inference lands on
+    # the level the theorems above already identified -- not that a label appeared.
+    checks["the levels are assigned 2P1/2 and 2P3/2"] = (
+        assignment.labels() == ("^2P_1/2", "^2P_3/2"))
+    checks["the assignment recovers L = 1 from the Lande factor"] = all(
+        term.orbital == 1 for term in assignment.terms)
 
     failures = report(checks)
     timing.summary(log)

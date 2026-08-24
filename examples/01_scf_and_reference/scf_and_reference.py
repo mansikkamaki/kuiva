@@ -38,6 +38,11 @@ WHAT TO LOOK FOR IN THE OUTPUT
 * the same front end run a second time with ``fitting="cholesky-direct"``, which evaluates
   the integrals as the decomposition asks for them and never builds the array -- compare the
   two pre-flight tables, and note that the answers are identical;
+* the SCF's convergence controls, which is where a real calculation first stops: an SCF that
+  runs out of cycles **refuses** (everything downstream is built on its orbitals), the
+  internal stability analysis says whether the converged solution is a minimum at all, and
+  ``guess_from=`` starts one SCF from another's orbitals -- projecting them when the basis
+  differs, through the same projector the CASSCF basis projection uses;
 * a table of checks, all of which must pass, and the timing and memory summaries.
 """
 from __future__ import annotations
@@ -288,11 +293,82 @@ def main() -> int:
     out.note(log, "wrong sign on ionic textbook compounds, and was withdrawn from the report.")
 
     # ----------------------------------------------------------------------------------
-    # 5. Assert. An example that only prints numbers cannot fail, and one that cannot fail
+    # 5. When the SCF will not converge -- which on a real open-shell metal complex is
+    #    where a calculation first stops, and neon is far too well behaved to show it. What
+    #    is demonstrated here is the surface, on a system where the answers are known.
+    # ----------------------------------------------------------------------------------
+    out.section(log, "The SCF's convergence controls")
+
+    # (a) An SCF that runs out of cycles REFUSES. Everything downstream is built on these
+    #     orbitals, and an unconverged iteration returns whichever step the budget stopped
+    #     on -- so "the CASSCF will re-optimize them anyway" is a hope, not a property. The
+    #     message names the levers; `allow_unconverged_scf=True` proceeds deliberately.
+    #
+    #     The levers themselves, in the order worth trying them: `level_shift=` (an energy
+    #     added to the virtual orbitals, which stops the occupations swapping back and
+    #     forth), `damp=` (mix in the previous Fock matrix), `diis="adiis"` (the energy-based
+    #     DIIS variant, much better in the first iterations of a hard open-shell case), and
+    #     `second_order=True` (the CIAH Newton solver, which converges cases the first-order
+    #     iteration cannot -- at a higher cost per iteration and far fewer of them).
+    refused = ""
+    try:
+        kuiva.ScalarSCF(neon, memory_gb=2.0, max_cycle=2).run()
+    except RuntimeError as exc:
+        refused = str(exc).split("(")[0].strip()     # not split(".") -- the energy has one
+
+    out.subsection(log, "An SCF that did not converge")
+    out.entries(log, [("max_cycle", 2, "", "deliberately far too few"),
+                      ("outcome", "refused"),
+                      ("message", refused)])
+
+    # (b) Is the converged solution a minimum at all? `stability="check"` runs the internal
+    #     stability analysis; `stability="follow"` rotates into the unstable mode and
+    #     re-solves. A closed-shell neon atom is stable, and saying so costs one Davidson --
+    #     but an open-shell transition metal can converge, report every diagnostic clean and
+    #     still be sitting on a saddle point of the SCF energy, tenths of an Eh above the
+    #     solution one rotation away. Nothing else in the front end can see that.
+    #
+    #     It rides along on the larger-basis calculation below rather than costing an SCF of
+    #     its own -- which is how it is meant to be used: on the run you were doing anyway.
+    large = kuiva.Molecule(atoms=[("Ne", (0.0, 0.0, 0.0))], basis="x2c-TZVPall-2c")
+    cold = kuiva.ScalarSCF(large, memory_gb=2.0, stability="check").run()
+
+    out.subsection(log, "Internal stability of the converged solution")
+    out.entries(log, [
+        ("stability analysis", "internal", "", "external is a different question"),
+        ("verdict", "stable" if cold.stable else "UNSTABLE"),
+        ("energy", cold.energy, "Eh", "unchanged by the check", out.E_FMT),
+    ])
+    out.note(log, "`stable` is None when the analysis was not asked for, which is not the")
+    out.note(log, "same as True -- compare against True and False rather than truthiness.")
+
+    # (c) Starting from another calculation's orbitals. Over the same AO basis they are used
+    #     as they are (the potential-energy-surface case: the geometry may differ); over a
+    #     different basis they are projected onto it, through the same projector the CASSCF
+    #     basis projection uses. It is a guess: it changes the cost, and it may not change
+    #     the answer -- which is what the check below asserts, rather than the saving.
+    warm = kuiva.ScalarSCF(large, memory_gb=2.0, guess_from=scf).run()
+
+    out.subsection(log, "The same SCF from a smaller basis' orbitals")
+    out.entries(log, [
+        ("small-basis energy (SVP)", scf.energy, "Eh", "the orbitals being carried",
+         out.E_FMT),
+        ("cold start (TZVP)", cold.energy, "Eh", "", out.E_FMT),
+        ("from the projected guess", warm.energy, "Eh", "", out.E_FMT),
+        ("difference", abs(warm.energy - cold.energy), "Eh",
+         "a guess may change the cost and may not change the answer", out.SCI_FMT),
+    ])
+
+    # ----------------------------------------------------------------------------------
+    # 6. Assert. An example that only prints numbers cannot fail, and one that cannot fail
     #    demonstrates nothing.
     # ----------------------------------------------------------------------------------
     checks = {
         "the SCF converged": bool(scf.converged),
+        "an unconverged SCF refuses": bool(refused),
+        "the neon SCF solution is internally stable": cold.stable is True,
+        "a projected guess reaches the same solution as a cold start":
+            abs(warm.energy - cold.energy) < 1e-9,
         "the working basis is orthonormal": ortho_err < 1e-12,
         "orbitals survive the AO -> working -> AO round trip": roundtrip < 1e-10,
         "the spinor guess is exactly Kramers paired": spinors.partner_deviation() < 1e-14,

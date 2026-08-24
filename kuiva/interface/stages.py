@@ -54,6 +54,7 @@ import numpy as np
 
 from ..util import output as out
 from ..util.logging import get_logger
+from .pyscf_bridge import ScalarX2CData, validate_scf_controls
 from .api import (Molecule, SpinorReference as _SpinorData, active_space_for,
                   project_to_basis as _project_to_basis, projected_active_space,
                   property_matrices as _property_matrices, scalar_x2c_reference,
@@ -154,10 +155,24 @@ class ScalarSCF(_Stage):
     (``"X2C-AMF"`` is the default Hamiltonian), ``screening``, ``reference``, ``memory_gb``,
     ``gauge_origin``, ``conv_tol``, ... — validated eagerly by name.
 
+    **When the SCF will not converge**, which on a real open-shell metal complex is where a
+    calculation first stops: ``level_shift=``, ``damp=``, ``diis="adiis"`` and
+    ``second_order=True`` are the levers, ``stability="check"`` says whether the solution that
+    came back is a minimum at all, and ``guess_from=`` starts from another finished
+    ``ScalarSCF`` (projecting its orbitals if the basis differs). ⚠ An SCF that does not
+    converge **refuses**; ``allow_unconverged_scf=True`` continues on it deliberately.
+
     After :meth:`run`: :attr:`data`, :attr:`energy` [Eh], :attr:`converged`.
     """
 
     _EXCLUDE = ("molecule",)
+
+    #: Options this stage validates itself, beyond the by-name check: the SCF convergence
+    #: controls, checked through the same implementation the driver applies them with, so a
+    #: misspelled DIIS variant or an out-of-range damping fails at construction rather than
+    #: after the memory pre-flight and a four-component atomic solve.
+    _CONTROL_OPTIONS = ("level_shift", "damp", "init_guess", "diis", "diis_space",
+                        "diis_start_cycle", "second_order", "stability")
 
     def __init__(self, molecule: Molecule, **options) -> None:
         super().__init__()
@@ -170,8 +185,21 @@ class ScalarSCF(_Stage):
         if reference not in ("auto", "rhf", "rohf", "uhf"):
             raise ValueError("reference must be 'auto', 'rhf', 'rohf' or 'uhf'; got {!r}"
                              .format(reference))
+        validate_scf_controls(**{k: options[k] for k in self._CONTROL_OPTIONS
+                                 if k in options})
+        options = dict(options)
+        guess = options.get("guess_from")
+        if guess is not None:
+            # A stage is unwrapped here and nowhere else: api/ and the bridge take data, not
+            # stages, and a stage that has not run has no orbitals to give.
+            if isinstance(guess, ScalarSCF):
+                options["guess_from"] = self._finished(guess, ScalarSCF, "ScalarSCF").data
+            elif not isinstance(guess, ScalarX2CData):
+                raise TypeError(
+                    "guess_from takes a finished ScalarSCF stage or the ScalarX2CData it "
+                    "produced; got {!r}".format(type(guess).__name__))
         self.molecule = molecule
-        self.options = dict(options)
+        self.options = options
 
     def _execute(self) -> None:
         self.data = scalar_x2c_reference(self.molecule, **self.options)
@@ -187,14 +215,29 @@ class ScalarSCF(_Stage):
         self._check_ran()
         return bool(self.data.converged)
 
+    @property
+    def stable(self) -> Optional[bool]:
+        """Internal stability of the converged solution, or ``None`` if it was not measured.
+
+        ⚠ ``None`` is not ``True``: it means ``stability=`` was not asked for, and a check
+        written as ``if not scf.stable`` reads a run that never measured as unstable while
+        ``if scf.stable`` reads it as stable. Compare against ``True``/``False`` explicitly.
+        """
+        self._check_ran()
+        return self.data.scf_stable
+
     def _summary_entries(self):
         soc = self.data.soc
-        return [
+        entries = [
             ("E(SCF) [Eh]", out.E_FMT.format(self.energy)),
             ("converged", str(self.converged)),
             ("reference", self.data.reference),
             ("hamiltonian", "spin-free" if soc is None else soc.provenance()["method"]),
         ]
+        if self.stable is not None:
+            entries.append(("internal stability",
+                            "stable" if self.stable else "UNSTABLE (saddle point)"))
+        return entries
 
 
 # --- 2. the multireference starting point ----------------------------------------------------
@@ -264,13 +307,60 @@ def _resolve_space(reference: Reference, *, active, character, n_active, n_activ
     """Resolve a stage's active-space request against a finished :class:`Reference`."""
     if active is None and character is None:
         raise ValueError(
-            "{} needs an active space: give active=[spinor indices] or "
-            "character=(atom, l) with n_active= (or a list of (atom, l, n_spinors) "
-            "fragments); an active space is a physical statement, so there is no default"
-            .format(what))
+            "{} needs an active space: give active=[spinor indices], character=(atom, l) "
+            "with n_active= (or a list of (atom, l, n_spinors) fragments), or "
+            "avas=dict(atom=..., l=...) where the target orbitals are covalent mixtures no "
+            "single orbital carries; an active space is a physical statement, so there is "
+            "no default".format(what))
     return active_space_for(reference.reference, active=active, character=character,
                             n_active=n_active, n_active_elec=n_active_elec,
                             threshold=threshold)
+
+
+def _resolve_avas(reference: Reference, upstream, avas, *, active, character,
+                  n_active, threshold, what: str):
+    """Run an ``avas=`` request eagerly, returning ``(AVASResult, rotated orbitals)``.
+
+    ⚠ **AVAS runs against the reference's own SCF orbitals and their integer occupations**,
+    which is why it refuses a :class:`CheapCI` upstream. The rotation is only density-
+    preserving inside groups of *equal* occupation; the cheap CI's natural occupations are
+    all distinct, so every group would hold one pair and the "rotation" would be the
+    identity — an AVAS that silently did nothing. Put ``avas=`` on the :class:`CheapCI`
+    instead and let the CASSCF inherit the space.
+    """
+    from .api import avas_active_space
+
+    if active is not None or character is not None:
+        raise ValueError("give exactly one of active=, character= and avas=: they are three "
+                         "ways of answering the same question, and a run that silently "
+                         "preferred one would not be reproducible")
+    if not isinstance(upstream, Reference):
+        raise ValueError(
+            "{} cannot run AVAS on a {} upstream: AVAS rotates within groups of equal "
+            "occupation and the cheap CI's natural occupations are all distinct, so the "
+            "rotation would be the identity. Put avas= on the CheapCI stage instead"
+            .format(what, type(upstream).__name__))
+    if not isinstance(avas, dict):
+        raise ValueError("avas= takes a dict of options for "
+                         "api.avas_active_space, e.g. avas=dict(atom='Ti', l='d'); got {!r}"
+                         .format(avas))
+    options = dict(avas)
+    if threshold is not None and "threshold" not in options:
+        raise ValueError("threshold= is the character-selection Loewdin cut and does not "
+                         "apply to AVAS; put AVAS's projection cut inside avas= as "
+                         "avas=dict(..., threshold=...)")
+    if n_active is not None:
+        raise ValueError("AVAS chooses the number of orbitals from the projection spectrum, "
+                         "so n_active= does not apply; bound it with "
+                         "avas=dict(..., max_pairs=...) if a size limit is wanted")
+    from ..mcscf.avas import avas as _avas_fn
+    _check_options(options,
+                   _allowed_options(avas_active_space, _avas_fn,
+                                    exclude=("reference", "coeff", "occupation", "report",
+                                             "coeff_ao", "s_ao", "layout", "n_elec_total")),
+                   "{} avas".format(what))
+    result = avas_active_space(reference.reference, report=False, **options)
+    return result, result.coeff
 
 
 # --- 3. the cheap pre-optimization -----------------------------------------------------------
@@ -290,10 +380,17 @@ class CheapCI(_Stage):
     truncated cheap CI drifts off it and the state-averaging gate downstream assumes it — so
     chaining a pre-optimization into a CASSCF through this stage needs no repair of its own.
 
+    The active space is stated as ``active=``, ``character=`` or ``avas=`` — exactly one, as
+    on :class:`CASSCF`, and ``avas=`` additionally rotates the orbitals this stage starts
+    from onto the atomic valence set (:func:`kuiva.interface.api.avas_active_space`). ⚠ This
+    is the stage AVAS belongs on when a pre-optimization is wanted: it works from the
+    reference's integer occupations, which the cheap CI's natural occupations are not.
+
     After :meth:`run`: :attr:`orbitals`, :attr:`occupations`, :attr:`natural_occupation`,
     :attr:`entropy`, :attr:`mutual_information`, :meth:`suggested_active`,
-    :meth:`dmrg_ordering`, and the full :class:`~kuiva.mcscf.preopt.PreoptResult` as
-    :attr:`result`.
+    :meth:`dmrg_ordering`, the full :class:`~kuiva.mcscf.preopt.PreoptResult` as
+    :attr:`result`, and (with ``avas=``) the :class:`~kuiva.mcscf.avas.AVASResult` as
+    :attr:`avas`.
     """
 
     _EXCLUDE = ("factors", "h_ao", "c_spinor", "spaces", "n_active_elec", "e_nuc",
@@ -301,22 +398,34 @@ class CheapCI(_Stage):
 
     def __init__(self, reference: Reference, *, active=None, character=None,
                  n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
-                 threshold: Optional[float] = None, **options) -> None:
+                 threshold: Optional[float] = None, avas=None, **options) -> None:
         super().__init__()
         from ..mcscf.preopt import cheap_ci, preoptimize
         self.reference_stage = self._finished(reference, Reference, "CheapCI")
         _check_options(options, _allowed_options(preoptimize, cheap_ci,
                                                  exclude=self._EXCLUDE), "CheapCI")
-        self.space = _resolve_space(reference, active=active, character=character,
-                                    n_active=n_active, n_active_elec=n_active_elec,
-                                    threshold=threshold, what="CheapCI")
+        self.avas, self._orbitals = None, None
+        if avas is not None:
+            if n_active_elec is not None:
+                avas = dict(avas, n_active_elec=n_active_elec)
+            self.avas, self._orbitals = _resolve_avas(
+                reference, reference, avas, active=active, character=character,
+                n_active=n_active, threshold=threshold, what="CheapCI")
+            self.space = self.avas.space
+        else:
+            self.space = _resolve_space(reference, active=active, character=character,
+                                        n_active=n_active, n_active_elec=n_active_elec,
+                                        threshold=threshold, what="CheapCI")
         self.options = dict(options)
 
     def _execute(self) -> None:
         from ..mcscf.preopt import preoptimize
         from ..spinor.expand import nearest_kramers_paired, spin_block_diagonal, time_reverse
         ref = self.reference_stage.reference
-        self.result = preoptimize(ref.factors, ref.h_one_electron(), ref.spinors_in_ao(),
+        start = self._orbitals if self._orbitals is not None else ref.spinors_in_ao()
+        if self.avas is not None:
+            self.avas.report(log)
+        self.result = preoptimize(ref.factors, ref.h_one_electron(), start,
                                   self.space.spaces, self.space.n_elec,
                                   e_nuc=ref.data.e_nuc, **self.options)
         # ⚠ Restore exact Kramers pairing before anything downstream consumes the orbitals.
@@ -422,6 +531,26 @@ class CASSCF(_Stage):
     ``repair_pairing``; that function's docstring is where each is explained and
     :mod:`kuiva.orth.project` is where the defaults are argued.
 
+    Choosing the active space
+    -------------------------
+    ``active=`` (spinor indices), ``character=`` (the lowest pairs of an ``(atom, l)``
+    character — the form a reference calculation must use) and ``avas=`` are three ways of
+    answering one question, and exactly one may be given.
+
+    ``avas=dict(atom="Ti", l="d")`` runs an AVAS projection
+    (:func:`kuiva.interface.api.avas_active_space`): it rotates the reference's orbitals onto
+    the free-atom valence orbitals and takes the combinations that carry the character. Use
+    it where the target orbitals are **covalent mixtures** that no single canonical orbital
+    carries, which is where a character threshold fails. ``avas=dict(..., n_shells=2)`` is
+    the double shell. ⚠ It needs ``atomic_reference=True`` on the front end, needs a
+    :class:`Reference` upstream (not a :class:`CheapCI` — put ``avas=`` on that stage
+    instead), and its space carries no symmetry labels.
+
+    After a run, :meth:`spin_analysis` gives ``<S^2>`` per degenerate block and
+    :meth:`assign` offers a term label per block with the evidence behind it. ⚠ The
+    assignment is an inference and prints as its own report, never as a column of the state
+    table.
+
     With point-group symmetry on (``point_group=`` at the front end), ``n_states`` may be a
     mapping ``{irrep: n}`` instead of a count — each irrep is then solved in its own sector of
     the determinant space, which is a request "lowest n" cannot express — and
@@ -445,7 +574,7 @@ class CASSCF(_Stage):
 
     def __init__(self, upstream, *, active=None, character=None,
                  n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
-                 threshold: Optional[float] = None, n_states=1, weights=None,
+                 threshold: Optional[float] = None, avas=None, n_states=1, weights=None,
                  solver: str = "ci", solver_options: Optional[Dict[str, Any]] = None,
                  graph=None, checkpoint=None, restart=None,
                  checkpoint_options: Optional[Dict[str, Any]] = None,
@@ -491,18 +620,32 @@ class CASSCF(_Stage):
                            "CASSCF projection")
 
         # -- the active space and the starting orbitals, resolved now (fail fast) ----------
+        self.avas = None
+        if avas is not None:
+            if project_from is not None or restart is not None:
+                raise ValueError("avas= chooses an active space and rotates the orbitals it "
+                                 "is chosen from; project_from= and restart= each bring "
+                                 "their own orbitals and their own space")
+            if n_active_elec is not None:
+                avas = dict(avas, n_active_elec=n_active_elec)
+            self.avas, self._orbitals = _resolve_avas(
+                self.reference_stage, upstream, avas, active=active, character=character,
+                n_active=n_active, threshold=threshold, what="CASSCF")
+            self.space = self.avas.space
         requested = active is not None or character is not None
-        if project_from is not None:
+        if avas is None and project_from is not None:
             self._setup_projection(upstream, requested, active=active, character=character,
                                    n_active=n_active, n_active_elec=n_active_elec,
                                    threshold=threshold, restart=restart)
-        elif restart is not None:
+        elif avas is None and restart is not None:
             if solver == "dmrg":
                 raise ValueError("restart= is the conventional-CI checkpoint route; the "
                                  "network state is not checkpointed by this layer")
             if not Path(restart).exists():
                 raise ValueError("restart checkpoint {!r} does not exist".format(restart))
-        if project_from is None:
+        if avas is not None:
+            pass                                     # space and orbitals both set above
+        elif project_from is None:
             self.space = (_resolve_space(self.reference_stage, active=active,
                                          character=character, n_active=n_active,
                                          n_active_elec=n_active_elec, threshold=threshold,
@@ -655,6 +798,8 @@ class CASSCF(_Stage):
     # -- execution --------------------------------------------------------------------------
 
     def _execute(self) -> None:
+        if self.avas is not None and self.report:
+            self.avas.report(log)
         if self.project_from is not None:
             self._run_projection()
         if self.solver_kind == "ci":
@@ -782,6 +927,40 @@ class CASSCF(_Stage):
         self._check_ran()
         return bool(self.orbital.converged)
 
+    def spin_analysis(self, *, tol_cm: float = 1.0, report: bool = False):
+        """``<S^2>`` per degenerate block — the multiplicity, or the spin-purity diagnostic.
+
+        Spin-orbit coupling off: ``2S+1`` is the term multiplicity, read straight off. On:
+        ``S`` is not conserved and the number measures how pure the spin still is. ⚠ Per
+        block and never per state (:mod:`kuiva.props.spin`), and available on the
+        ``solver="ci"`` route only — it applies ``S`` to the CI vectors.
+        """
+        self._check_ran()
+        from .api import spin_analysis as _spin
+        if self.solver_kind != "ci":
+            raise ValueError("<S^2> is evaluated through the determinant excitation map, so "
+                             "it needs solver='ci'; the tensor-network route does not carry "
+                             "the equivalent contraction")
+        return _spin(self.reference_stage.reference, self.outcome, tol_cm=tol_cm,
+                     report=report)
+
+    def assign(self, *, matrices=None, tol_cm: float = 1.0, report: bool = True):
+        """Offer a term/level label per degenerate block, with the evidence behind it.
+
+        ⚠ **Inference, not a computed quantity**, which is why it is its own report and
+        never a column of the state table. See :func:`kuiva.interface.api.assign_states`.
+        Building the moment matrices it needs on the spin-orbit route costs one transition-
+        density pass; pass ``matrices=`` (from a finished :class:`PropertyDump`) to reuse
+        one already built.
+        """
+        self._check_ran()
+        from .api import assign_states
+        if self.solver_kind != "ci":
+            raise ValueError("the assignment needs <S^2> and the moment matrices, both of "
+                             "which come from the conventional-CI route; use solver='ci'")
+        return assign_states(self.reference_stage.reference, self.outcome,
+                             matrices=matrices, tol_cm=tol_cm, report=report)
+
     def _summary_entries(self):
         entries = [
             ("active space", "CAS({}, {})  {}".format(self.active.n_elec,
@@ -804,6 +983,11 @@ class CASSCF(_Stage):
         if self.project_from is not None:
             entries.append(("projected active-space overlap",
                             "{:.6f}".format(self.projection.fidelity)))
+        if self.avas is not None:
+            # ⚠ Beside the space, not instead of it: the gap says whether the projection
+            # spectrum or the threshold is what chose these orbitals.
+            entries.append(("AVAS eigenvalue gap at the cut",
+                            "{:.3f}".format(self.avas.gap)))
         return entries
 
 
@@ -919,6 +1103,16 @@ class PropertyDump(_Stage):
             matrices.report(log)
         self.matrices = matrices
         matrices.write(self.path, title=self.title, include_l_s=self.include_l_s)
+
+    def assign(self, *, tol_cm: float = 1.0, report: bool = True):
+        """The term assignment of these states, reusing the moment matrices already built.
+
+        ⚠ Inference; see :meth:`CASSCF.assign`, which this forwards to with ``matrices=``
+        already filled in — so it costs one ``<S^2>`` pass and no second transition-density
+        pass.
+        """
+        self._check_ran()
+        return self.casscf.assign(matrices=self.matrices, tol_cm=tol_cm, report=report)
 
     def _summary_entries(self):
         return [

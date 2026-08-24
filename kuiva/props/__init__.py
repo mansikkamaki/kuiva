@@ -10,14 +10,21 @@
   and spin, and the reduced AO populations that identify an active spinor *without* a picture.
 * ``molden.py`` — spinor densities as exact real components, in a format standard
   visualization software reads.
+* ``spin.py`` — ``<S^2>`` over converged CI states, per degenerate block: the term
+  multiplicity with spin-orbit coupling off, the spin-purity diagnostic with it on.
+* ``assign.py`` — a ``^{2S+1}L_J`` label per block, offered with the evidence behind it and
+  withheld where the evidence does not add up. ⚠ Inference, never a computed quantity: it has
+  its own report and never enters a state table or a stored file.
 * ``pseudospin.py`` — the multi-site counterpart of ``dump.py``: pseudospin assignment of
   the local-multiplet model and the formatted file the external Ouluspin code
   reads. Validation goes through ``multiplet.py``'s invariants, exactly like the dump.
 
-The last two are the two halves of "is this active space the one I meant?", and they share the
-The invariance discipline: an individual spinor inside a degenerate manifold is not a well-defined
-object, so both default to summing over Kramers pairs.
+``population.py`` and ``molden.py`` are the two halves of "is this active space the one I
+meant?", and they share the invariance discipline every module here follows: an individual
+spinor -- or an individual state -- inside a degenerate manifold is not a well-defined object,
+so everything defaults to summing over the block.
 """
+from .assign import Assignment, TermAssignment, assign_terms, term_letter
 from .dump import (FORMAT_VERSION, PropertyMatrices, inactive_moment, property_matrices,
                    read_dump, spinor_operators, state_operator_matrices, write_dump)
 from .molden import MoldenOrbital, SpinorMoldenReport, write_molden, write_spinor_molden
@@ -34,6 +41,7 @@ from .population import (
 )
 from .pseudospin import (PseudospinModel, PseudospinSite, assign_pseudospin,
                          pseudospin_from_model, read_pseudospin, write_pseudospin)
+from .spin import SpinAnalysis, spin_analysis, spin_from_s_squared, spin_squared_states
 
 __all__ = [
     "FORMAT_VERSION", "PropertyMatrices", "property_matrices", "spinor_operators",
@@ -48,4 +56,6 @@ __all__ = [
     "MoldenOrbital", "SpinorMoldenReport", "write_molden", "write_spinor_molden",
     "PseudospinModel", "PseudospinSite", "assign_pseudospin", "pseudospin_from_model",
     "read_pseudospin", "write_pseudospin",
+    "SpinAnalysis", "spin_analysis", "spin_from_s_squared", "spin_squared_states",
+    "Assignment", "TermAssignment", "assign_terms", "term_letter",
 ]

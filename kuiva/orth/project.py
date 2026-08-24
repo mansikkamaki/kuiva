@@ -328,6 +328,71 @@ def plan_columns(inactive, active, virtual, n_target: int) -> ColumnPlan:
                       virtual=remap[kept_virtual], n_source=n_source, n_target=n_target)
 
 
+# --- the projector itself -------------------------------------------------------------------
+
+def target_projector(target: OrthonormalBasis, s_cross: np.ndarray) -> np.ndarray:
+    """``X^T <AO(target)|AO(source)>`` — equation (1) of this module, and its only statement.
+
+    The map from source AO-basis orbital *coefficients* to the target's orthonormal working
+    basis. Every projection in the project goes through this one expression: the spinor
+    projection below applies it to each spin block, and the scalar SCF guess
+    (:func:`project_scalar_orbitals`) applies it to a real orbital set. ⚠ It is deliberately
+    **not** ``S_tt^-1 <AO(t)|AO(s)>``: see the module docstring for why the working-basis form
+    is the one that survives a near-linearly-dependent target basis.
+    """
+    return target.x.T @ np.asarray(s_cross, dtype=float)
+
+
+def project_scalar_orbitals(c_source: np.ndarray, s_cross: np.ndarray,
+                            target: OrthonormalBasis) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Carry a **real scalar** orbital set onto the target AO basis, orthonormalized.
+
+    The scalar counterpart of :func:`project_spinors`, through the same projector and with no
+    orbital partition, no Kramers structure and no completion: what asks for it is an SCF
+    *starting guess* (``run_scalar_x2c(guess_from=...)``), which needs one block of occupied
+    orbitals and nothing else. Keeping it here rather than in the front end is the point —
+    two implementations of equation (1) would pass every numerical test and still be two
+    conventions.
+
+    The projected set is Loewdin-orthonormalized **inside the working basis**, where the metric
+    is the identity. ⚠ That is not cosmetic: a projector is not unitary, so the raw projected
+    orbitals lose norm, and a density built from them has ``Tr(D S) < N``. An SCF handed a
+    guess with the wrong number of electrons in it builds its first Fock operator for a
+    different system.
+
+    Parameters
+    ----------
+    c_source : ndarray ``(nao_source, n)`` real
+        Orbital coefficients in the source AO basis, orthonormal in the source overlap.
+    s_cross : ndarray ``(nao_target, nao_source)``
+        ``<AO(target)|AO(source)>``, from :func:`kuiva.interface.pyscf_bridge.cross_overlap`.
+    target : :class:`~kuiva.orth.canonical.OrthonormalBasis`
+        The target's working basis, whose linear-dependence removal the projection inherits.
+
+    Returns
+    -------
+    (c_target, retained, gram_floor)
+        ``c_target`` is ``(nao_target, n)`` in the **target AO basis**; ``retained`` is the
+        squared norm each source orbital keeps under the projection (1.0 when the target basis
+        contains it exactly), which is the diagnostic saying whether the guess is worth
+        anything; ``gram_floor`` is the smallest Gram eigenvalue of the projected block, below
+        :data:`MIN_BLOCK_EIGENVALUE` of which the block is linearly dependent after projection
+        and is handed back *without* orthonormalization rather than amplified by ``s^-1/2``.
+    """
+    c_source = np.ascontiguousarray(c_source, dtype=float)
+    if c_source.ndim != 2:
+        raise ValueError("a scalar orbital set is a 2-D (nao, n) array; got shape {}"
+                         .format(c_source.shape))
+    p = target_projector(target, s_cross)
+    if p.shape[1] != c_source.shape[0]:
+        raise ValueError("the cross overlap has {} source columns and the orbital set has {} "
+                         "rows".format(p.shape[1], c_source.shape[0]))
+    work = p @ c_source
+    retained = np.einsum("ij,ij->j", work, work)
+    work, floor = _lowdin(work)
+    return target.x @ work, retained, floor
+
+
 # --- orthonormalization schemes -------------------------------------------------------------
 
 def _lowdin(b: np.ndarray) -> Tuple[np.ndarray, float]:
@@ -575,7 +640,7 @@ def project_spinors(c_source: np.ndarray, s_cross: np.ndarray, target: Orthonorm
 
     with timer("basis projection"):
         # (1) the projector, applied to each spin block: 1_2 (x) X^T <AO(t)|AO(s)>.
-        p = target.x.T @ s_cross                                    # (nwork, nao_source)
+        p = target_projector(target, s_cross)                       # (nwork, nao_source)
         nw = p.shape[0]
         raw = np.empty((2 * nw, n_source), dtype=np.complex128)
         raw[:nw] = p @ c_source[:nao_s]
@@ -803,5 +868,6 @@ def _warn(result: BasisProjection, carried, retained_all: np.ndarray,
 
 
 __all__ = ["BasisProjection", "ColumnPlan", "plan_columns", "project_spinors",
+           "project_scalar_orbitals", "target_projector",
            "SCHEMES", "DEFAULT_SCHEME", "CARRY", "DEFAULT_CARRY", "MIN_BLOCK_EIGENVALUE",
            "FIDELITY_WARN", "RETAINED_WARN", "COMPLETION_GROUP_RTOL"]

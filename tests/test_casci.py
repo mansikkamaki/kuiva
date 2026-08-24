@@ -368,6 +368,63 @@ def test_character_selection_returns_whole_kramers_pairs(character_system):
     assert np.array_equal(active[0::2] + 1, active[1::2])       # 2p and 2p+1 together
 
 
+def test_the_ordinal_window_names_a_second_shell_of_the_same_l(character_system):
+    """⚠ How a **double shell** is stated. ``skip_pairs`` steps over qualifying pairs in the
+    same character-ordered list the plain form takes its lowest from, so *"the 3rd and 4th
+    lowest d pairs on Ti"* is a statement an independent implementation reproduces — and it
+    makes no claim about a principal quantum number, which stays refused (the fixture's Ti d
+    pairs are 1, 2, 4, 5, 6 with Cl p at 0, 3 and 7).
+    """
+    space = active_space_by_character(*character_system[:3], n_elec_total=4, atom="Ti",
+                                      l="d", n_pairs=2, skip_pairs=2, n_active_elec=2)
+    assert list(space.spaces.active) == [8, 9, 10, 11]         # pairs 4 and 5
+    assert "3-4" in space.description
+
+
+def test_the_window_and_the_plain_form_partition_the_same_list(character_system):
+    """The two halves of a double shell must be disjoint and must cover the plain selection —
+    which is the property that makes the union form's overlap refusal meaningful."""
+    coeff, s_ao, layout = character_system[:3]
+    low = active_space_by_character(coeff, s_ao, layout, n_elec_total=4, atom="Ti", l="d",
+                                    n_pairs=2, n_active_elec=2)
+    high = active_space_by_character(coeff, s_ao, layout, n_elec_total=4, atom="Ti", l="d",
+                                     n_pairs=2, skip_pairs=2, n_active_elec=2)
+    both = active_space_by_character(coeff, s_ao, layout, n_elec_total=4, atom="Ti", l="d",
+                                     n_pairs=4, n_active_elec=2)
+    assert not set(low.spaces.active) & set(high.spaces.active)
+    assert sorted(set(low.spaces.active) | set(high.spaces.active)) == list(both.spaces.active)
+
+
+def test_two_same_l_fragments_are_disjoint_only_through_the_window(character_system):
+    """Without the window two ``(Ti, d)`` fragments claim exactly the same pairs, so the
+    refusal fires — and its message names the fix."""
+    from kuiva.mcscf.casci import active_space_by_characters
+    coeff, s_ao, layout = character_system[:3]
+    with pytest.raises(ValueError, match="skip_pairs"):
+        active_space_by_characters(coeff, s_ao, layout, n_elec_total=4,
+                                   fragments=[("Ti", "d", 4), ("Ti", "d", 4)],
+                                   n_active_elec=2)
+    space = active_space_by_characters(coeff, s_ao, layout, n_elec_total=4,
+                                       fragments=[("Ti", "d", 4), ("Ti", "d", 4, 2)],
+                                       n_active_elec=2)
+    assert list(space.spaces.active) == [2, 3, 4, 5, 8, 9, 10, 11]
+    assert len(space.fragments) == 2 and space.fragments[0] == (2, 3, 4, 5)
+
+
+def test_a_window_past_the_end_reports_the_skip_in_the_refusal(character_system):
+    coeff, s_ao, layout = character_system[:3]
+    with pytest.raises(ValueError, match="after skipping 4"):
+        active_space_by_character(coeff, s_ao, layout, n_elec_total=4, atom="Ti", l="d",
+                                  n_pairs=2, skip_pairs=4, n_active_elec=2)
+
+
+def test_a_negative_window_is_refused(character_system):
+    coeff, s_ao, layout = character_system[:3]
+    with pytest.raises(ValueError, match="cannot be negative"):
+        active_space_by_character(coeff, s_ao, layout, n_elec_total=4, atom="Ti", l="d",
+                                  n_pairs=1, skip_pairs=-1, n_active_elec=2)
+
+
 def test_asking_for_more_pairs_than_exist_says_what_the_candidates_look_like(
         character_system):
     coeff, s_ao, layout, _, _ = character_system

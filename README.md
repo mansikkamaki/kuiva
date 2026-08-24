@@ -240,10 +240,89 @@ set_verbosity("DEBUG")                  # per-macro-iteration detail; "TRACE" fo
 Options are those of `kuiva.interface.api.scalar_x2c_reference`, validated by name:
 `method` (the Hamiltonian, `"X2C-AMF"` by default), `x2c_approx`, `screening`,
 `screening_options`, `decoupling_options`, `reference` (`"auto"`, `"rhf"`, `"rohf"`, `"uhf"`),
-`memory_gb`, `gauge_origin`, `auxbasis`, `conv_tol`, `max_cycle`.
+`memory_gb`, `gauge_origin`, `auxbasis`, `conv_tol`, `max_cycle`, and the convergence
+controls below.
 
 `reference="auto"` picks RHF for a closed shell and ROHF otherwise; RHF on an open shell is
 refused rather than silently promoted.
+
+#### When the SCF will not converge
+
+This is where a real calculation first stops. An ROHF on a metal ion with several shells
+within an eV of each other oscillates between occupations, and no amount of `max_cycle` fixes
+it — so ⚠ **an SCF that runs out of cycles refuses**, rather than handing on whichever iterate
+the budget stopped at. Everything downstream is built on those orbitals, and while the CASSCF
+re-optimizes them, that is a hope and not a property. `allow_unconverged_scf=True` proceeds
+deliberately and warns.
+
+The levers, roughly in the order worth trying them:
+
+| option | what it does |
+|---|---|
+| `level_shift=0.2` | adds an energy to the virtual orbitals, so the occupations stop swapping back and forth |
+| `damp=0.5` | mixes the previous Fock matrix in; slower, steadier |
+| `diis="adiis"` | the energy-based DIIS variant instead of Pulay's commutator one (`"cdiis"`, the default); much better in the first iterations of a hard open-shell case. `"ediis"` and `diis=False` also exist, with `diis_space=` and `diis_start_cycle=` |
+| `init_guess="atom"` | a different starting density (`"minao"` default, plus `"atom"`, `"1e"`/`"hcore"`, `"huckel"`, `"mod_huckel"`, `"sap"`) |
+| `second_order=True` | the CIAH Newton solver: converges cases the DIIS iteration cannot, at more cost per iteration and far fewer of them. ⚠ It does not use the four options above, and asking for both warns |
+
+```python
+scf = kuiva.ScalarSCF(complex_, level_shift=0.2, diis="adiis").run()
+scf = kuiva.ScalarSCF(complex_, second_order=True).run()      # when that is not enough
+```
+
+⚠ **An unrecognized `init_guess` is refused, not substituted.** PySCF falls back to `minao`
+silently for a name it does not know, which would run a different calculation from the one you
+asked for.
+
+#### Is the converged solution a minimum at all?
+
+`stability="check"` runs the **internal** stability analysis on the converged SCF and reports
+the verdict; `stability="follow"` also rotates into the unstable mode and re-solves, up to
+three times. Off by default, because it costs a Davidson over the orbital Hessian.
+
+It is worth that cost whenever the reference is in doubt. ⚠ **An unstable SCF is a saddle
+point of the SCF energy** — a converged flag, a small gradient and a plausible energy are all
+present, and a lower solution of the same reference exists one rotation away. Measured on a
+Ni atom in `x2c-SVPall-2c`: the ROHF converges cleanly at −1518.501 Eh, and `stability=
+"follow"` lands 0.30 Eh lower at −1518.805 Eh.
+
+```python
+scf = kuiva.ScalarSCF(metal, stability="follow").run()
+scf.stable          # True / False, or None when the analysis was not asked for
+```
+
+⚠ `stable is None` is **not** `False`, and it is not `True` either: `if not scf.stable` reads a
+run that never measured as unstable, and `if scf.stable` reads it as stable. Compare
+explicitly. External stability (RHF → UHF, real → complex) is deliberately not run: the answer
+to it is to choose a different `reference=`, which is your decision and not something to do to
+you mid-run.
+
+#### Starting from another calculation's orbitals
+
+`guess_from=` takes a finished `ScalarSCF` (or the `ScalarX2CData` it produced) and starts the
+SCF from its orbitals. Over the **same AO basis** they are used as they are — the
+potential-energy-surface case, where the geometry differs and the basis does not — and over a
+**different** basis they are projected onto it, through the same projector `CASSCF(project_from=)`
+uses.
+
+```python
+small = kuiva.ScalarSCF(mol_svp).run()
+big   = kuiva.ScalarSCF(mol_tzvp, guess_from=small).run()      # projected onto the larger basis
+```
+
+⚠ **It buys nothing on a closed shell** — measured on Ne, HF and H₂O from `x2c-SVPall-2c` into
+`x2c-TZVPall-2c`, the count of Fock builds moves by ±2, which is noise. The saving is real only
+where the SCF is hard, and there it comes with a caveat: on TiCl₃ the same projection cut 35
+Fock builds to 21 **and landed on a different SCF solution**, 9.7 mEh above the cold start's.
+
+⚠ **So pair it with `stability=` on anything open-shell.** In that TiCl₃ case the solution the
+warm start found is internally unstable, and `stability="follow"` walks back to the cold-start
+solution to every printed digit. A guess decides *which* stationary point you find; the
+stability analysis is what tells you whether it is the one you want.
+
+⚠ It cannot be combined with `init_guess=`, which names a different starting point; and the two
+calculations must be the same molecule (elements and their order are checked, the geometry is
+not — carrying orbitals along a scan is the ordinary use).
 
 #### The gauge origin, and the one unit trap in this API
 
@@ -416,19 +495,23 @@ the five d pairs. The fragments are resolved independently and unioned, and a pa
 two of them is **refused rather than shared**: a pair clearing two thresholds at once means the
 fragments were not the disjoint physical statement they were written as.
 
-⚠ **A second shell of the *same* `l` is a different case, and the union form cannot express
-it.** Two fragments with the same `(atom, l)` select the same lowest pairs and are refused for
-overlapping. The only way to say "3d plus 4d" is the single form, asking for more pairs of that
-character:
+⚠ **A second shell of the *same* `l` is a different case**, because two fragments with the
+same `(atom, l)` select the same lowest pairs and are refused for overlapping. Either pool
+them into one selection, or offset the second fragment with an **ordinal window**:
 
 ```python
-character=("Ti", "d"), n_active=20               # the lowest TEN d pairs: 3d + 4d
+character=("Ti", "d"), n_active=20                    # the lowest TEN d pairs: 3d + 4d
+character=[("Ti", "d", 10), ("Ti", "d", 10, 5)]       # the same twenty, named as two shells
 ```
 
-That reads *"the lowest ten Kramers pairs of d character on Ti"*, and which shells those are is
-whatever the orbitals put there — a weaker statement than naming the shell, and deliberately so:
-a principal quantum number is refused everywhere in this API because such labels count shells
-*within the basis*. Check what you actually got with the populations below.
+The fourth element of a fragment is `skip_pairs`: how many qualifying pairs to step over
+before taking its own. The second form therefore reads *"the five lowest d pairs on Ti, plus
+the next five"* — the same twenty spinors as the first, but recorded as two fragments, which
+is what a later per-fragment report or a localization step needs. ⚠ Neither form names a
+*principal quantum number*, and that refusal is not softened: an `n` label counts shells
+within the basis, while an ordinal within a stated character-and-threshold ordering is
+something another program can reproduce. Which shells you actually got is still a question
+for the populations below — or for AVAS, which answers it by construction.
 
 ⚠ **The pre-optimizer will never suggest a double shell.** `CheapCI.suggested_active()` selects
 on fractional *occupation*, and the correlating shell of a double-shell active space is empty at
@@ -436,9 +519,87 @@ that level of treatment — its members come back at ~1e-4 and are not returned.
 structural blindness, not a threshold to lower, and it is the concrete reason the suggestion is
 documented as a lower bound: a double shell has to be asked for.
 
+#### `avas=` — when no single orbital *is* the target shell
+
+A character selection can only pick orbitals that already carry the character. Where the
+metal–ligand bond is covalent the d (or f) weight is spread over several bonding and
+antibonding combinations, none of which clears any threshold, and the active space you want is
+a **rotation** of them. That is what AVAS constructs:
+
+```python
+scf = kuiva.ScalarSCF(mol, atomic_reference=True).run()      # AVAS projects onto these
+cas = kuiva.CASSCF(kuiva.Reference(scf).run(),
+                   avas=dict(atom="Ti", l="d")).run()
+cas.avas.report()          # the projection eigenvalues, and the gap at the cut
+```
+
+Every orbital is projected onto the free-atom valence orbitals of `(atom, l)`, the projector is
+diagonalized within the occupied and within the virtual space, and the combinations of large
+eigenvalue become the active space. `active=`, `character=` and `avas=` are three ways of
+answering one question and exactly one may be given.
+
+* `threshold=` (default 0.2) is the projection eigenvalue a Kramers pair must carry. ⚠ It is a
+  **selection knob, not a tolerance**: the right value is the one that falls in the gap of the
+  eigenvalue spectrum, which the report prints for exactly that reason. A small gap is warned
+  about, because it means the threshold and not the electronic structure chose the space.
+* `n_shells=2` is the **double shell** — the target shell plus its correlating partner. This is
+  the case a character threshold cannot find at all, the correlating shell being diffuse and
+  covalent.
+* `max_pairs=` refuses rather than returning more than you expected. Worth setting: a threshold
+  slightly too low gives a perfectly plausible space one or two pairs too large, and the cost of
+  that is discovered when the CI runs.
+
+⚠ **Three things to know.** Kuiva projects onto the free-atom orbitals `atomic_reference=True`
+already computed, at the same per-element reference state the atomic mean field uses (neutral;
+M(3+) on the f block) — **not** onto the published method's minimal MINAO basis. The orbitals
+selected agree; the eigenvalues are not numerically comparable with another program's AVAS.
+The rotation stays inside groups of *equal occupation*, so the SCF density and energy do not
+move at all. And an AVAS space carries **no symmetry labels**: they belong to the guess spinors
+and AVAS has rotated them, so per-irrep `n_states` is unavailable after it — select by
+character if the labels are what the run needs.
+
+Put `avas=` on a `CheapCI` if a pre-optimization is wanted; it is refused on a `CheapCI`
+*upstream*, because the cheap CI's natural occupations are all distinct and the rotation would
+be the identity.
+
 The states: `n_states`, `weights`. The optimizer: `mode` (`"auto"`, `"quasi-newton"`,
 `"second-order"`), `max_iter`, `conv_grad`, `conv_energy`, `max_step`, `callback`.
 Checkpointing: `checkpoint=path`, `restart=path`, `checkpoint_options`.
+
+#### After the run: `<S^2>`, and a term label with its evidence
+
+```python
+cas.spin_analysis().report()      # <S^2> per degenerate block
+cas.assign()                      # the label, the evidence, the fit residual
+```
+
+`spin_analysis()` applies `S` to the CI vectors — one contraction of the excitation map the CI
+already builds, not a 2-RDM per state. With spin–orbit coupling **off** the block value is
+`S(S+1)` exactly and `2S+1` is the term multiplicity, read straight off. With it **on** `S` is
+not conserved, and the same number measures how pure the spin of a level still is: how much a
+`^6H_{15/2}` label is really worth. ⚠ It is reported **per degenerate block and never per
+state** — inside a block the eigensolver may return any mixture of the members, so one state's
+value belongs to that arbitrary choice while the block trace does not. The report also states
+how much of the value came from `S` reaching *out* of the active space, which is computed and
+included rather than assumed away.
+
+⚠ **Do not expect an exactly integral `2S+1` from a spin–orbit run, even for a one-electron
+active space.** A converged general-complex CASSCF has orbitals that are not spin-pure —
+mixing spin is what spin–orbit coupling does — so the state carries a little contamination and
+`S` reaches out of the active space. TiCl₃'s `3d¹` doublets come out at `⟨S²⟩ = 0.7511` rather
+than 0.7500, with the out-of-space contribution measured at 1.7e-03 beside them; a free boron
+atom, whose orbitals are very nearly spin-pure, gives 0.7500 to six figures. The excess is a
+measurement of the mixing, which is exactly what the number is for on this path — read it
+against the leakage line printed with it, not against an integer.
+
+`assign()` offers a `^{2S+1}L_J` label per block, inferred from the block dimension (`2J+1`),
+`<S^2>` (`S`) and the measured isotropic g with the Landé formula inverted for `L`.
+⚠ **Every label it prints is an inference**, which is why it is its own report with the
+evidence and a fit residual beside each row, and never a column of the state table. A block
+whose evidence does not add up is labelled `?` rather than given the nearest plausible term —
+which is the normal and correct outcome for the crystal-field levels of a complex, since those
+are not `2J+1` manifolds at all. Both need `solver="ci"`; the tensor-network route carries no
+equivalent contraction.
 
 #### ⚠ Before you set `n_states`: four questions
 
@@ -692,6 +853,8 @@ a stored product back is how two calculations get compared at all.)
 | `api.casci(reference, ...)` | a full CI at **fixed** orbitals over a chosen active space — the scan primitive. Same space, same states, many orbital sets or geometries, no orbital optimization. `coeff=` runs it on converged CASSCF orbitals, or on a set read from a checkpoint. |
 | `api.property_matrices(reference, source)` | the `H` and `mu` matrices **without writing a file**, for comparing two calculations in memory through `.analyse()`. `api.property_dump` is this plus the write. |
 | `api.active_space_for(reference, character=..., n_active=...)` | resolve an active-space request into the object the drivers take, so it can be inspected or reused before a run is committed to. |
+| `api.avas_active_space(reference, atom=..., l=...)` | the AVAS space **and its rotated orbitals**, so the projection eigenvalues can be looked at before a run is committed to a threshold. The stage form is `avas=`. |
+| `api.spin_analysis(reference, source)`, `api.assign_states(reference, source)` | `<S^2>` per degenerate block, and the term-assignment offer built on it, for a bare `api.casci` result — which has no stage to call `.spin_analysis()` / `.assign()` on. |
 | `api.projected_active_space(plan, target, n_active_elec)` | the target-basis active space a projection lands on, for driving `api.project_to_basis` by hand instead of through `project_from=`. |
 | `SpinorReference.h_one_electron()` | the `(2·nao, 2·nao)` one-electron Hamiltonian in the AO basis: the full two-component X2C operator with spin–orbit coupling ingested, and the spin-free one lifted to two components without it. This is the operator the correlated energy is an expectation value of. |
 | `api.memory_plan(nao, ...)` | the phase-by-phase memory estimate the pre-flight prints, as data. Every entry is a function of dimensions only, so it answers "will this fit?" before any array — or any SCF — exists. |
@@ -980,6 +1143,10 @@ Choosing an active space means answering "are these the orbitals I meant?" — a
 cannot simply be plotted**, so Kuiva gives you two ways to answer it. Both report **degenerate
 blocks, not individual spinors**, by default: a single spinor's density and populations are
 basis-dependent inside a degenerate manifold, and block sums are not.
+
+(How the space is *stated* — `character=`, the `skip_pairs` ordinal window for a second shell
+of the same `l`, and `avas=` for the covalent case where no single orbital carries the
+character — is in [`CASSCF`](#casscfupstream-) above. What follows is how to check it.)
 
 ### Löwdin populations: what an orbital is made of, as a number
 
@@ -1306,9 +1473,9 @@ built) or `compiled kernels: native ...` (with one), and in the latter case quan
 
 | # | example | what it shows | runtime |
 |---|---|---|---|
-| 1 | `01_scf_and_reference` | the front end end to end: scalar X2C SCF → orthonormal working basis → Kramers-paired spinors → factorized integrals, each stage checked | ~1 s |
-| 2 | `02_atomic_spin_orbit` | fine structure of a free atom: the exact 2 + 4 splitting of a p shell, Landé g factors with no free parameter, and what two-electron screening changes | ~2 s |
-| 3 | `03_casscf_ligand_field` | the flagship calculation: a state-averaged two-component CASSCF on TiCl₃, its active space stated as orbital character, and the five Kramers doublets of the d¹ ligand field | ~2 min |
+| 1 | `01_scf_and_reference` | the front end end to end: scalar X2C SCF → orthonormal working basis → Kramers-paired spinors → factorized integrals, each stage checked; plus the SCF's convergence controls — the refusal, the stability analysis and `guess_from=` | ~3 s |
+| 2 | `02_atomic_spin_orbit` | fine structure of a free atom: the exact 2 + 4 splitting of a p shell, Landé g factors with no free parameter, what two-electron screening changes, and `⟨S²⟩` with the term assignment it supports | ~2 s |
+| 3 | `03_casscf_ligand_field` | the flagship calculation: a state-averaged two-component CASSCF on TiCl₃, its active space stated as orbital character **and** built a second way by AVAS, the five Kramers doublets of the d¹ ligand field, and a term assignment that correctly refuses to name them | ~3 min |
 | 4 | `04_dmrg_casscf` | the tensor-network solver: a cheap CI, a tree topology built from its entanglement, and a DMRG-CASSCF reproducing the exact CI through the same orbital optimizer | ~4 min |
 | 5 | `05_nevpt2` | dynamic correlation: SC-NEVPT2 on the oxygen atom, its eight-class decomposition, term energies moving towards experiment while the degeneracies survive | ~3 s |
 | 6 | `06_property_export` | the two products: the property-matrix dump and the OuluSpin pseudospin export, reaching the same g values by two independent routes | ~4 min |
@@ -1476,6 +1643,16 @@ The release is usable for production work **with care**, and this is what the ca
   cannot be interrupted and resumed the way a conventional-CI one can.
 - **One node, shared memory.** There is no MPI and no distributed tensor layer. Memory, not
   core count, is the scaling limit.
+- ⚠ **A term label is an inference and is printed as one.** `assign()` derives `^{2S+1}L_J`
+  from three measurements — the block dimension, `<S^2>` and the isotropic g through the
+  inverted Landé formula — and every row prints the evidence and a fit residual beside the
+  label. It is a separate report, never a column of the state table, and never written to a
+  stored file. A block whose evidence does not add up is labelled `?`, which is the normal
+  outcome for the crystal-field levels of a complex: those are not `2J+1` manifolds, so the
+  inversion has nothing to invert. Do not quote a label without the residual next to it.
+  `<S^2>` itself is a measurement and is trustworthy — but only per **degenerate block**
+  (a single state's value inside one is basis-dependent), and only on `solver="ci"`: the
+  tensor-network route carries no equivalent contraction and both calls refuse it by name.
 - **Magnetic properties themselves are out of scope.** Kuiva writes the operator matrices; the
   ITO / Stevens / crystal-field decomposition is an external code's job.
 - **Four-component methods are out of scope.** Four-component machinery exists inside the code
@@ -1490,7 +1667,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.19.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.20.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1506,7 +1683,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.19.0'
+import kuiva; kuiva.__version__          # '0.20.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
@@ -1758,6 +1935,13 @@ generate validation reference data live with that code, in `tests/`.
 - **Bitmask determinant representation**, excitation analysis by XOR/popcount. A. Scemama,
   E. Giner, arXiv:1311.6244 (2013); Y. Garniron _et al._, "Quantum Package 2.0", _J. Chem. Theory
   Comput._ **15**, 3591 (2019), DOI:10.1021/acs.jctc.9b00176.
+- **AVAS — atomic valence active space**, the projection-and-rotation route to an active space
+  where no canonical orbital carries the target character on its own. E. R. Sayfutyarova,
+  Q. Sun, G. K.-L. Chan, G. Knizia, _J. Chem. Theory Comput._ **13**, 4063 (2017),
+  DOI:10.1021/acs.jctc.7b00128. ⚠ `kuiva` follows the projection, the occupied/virtual
+  separation and the eigenvalue threshold, but projects onto its **own free-atom reference
+  orbitals** rather than a minimal MINAO basis — so the orbitals selected agree while the
+  eigenvalues are not numerically comparable with another program's AVAS.
 - **Perturbatively selected CI (CIPSI)** — the cheap CI's selection criterion. B. Huron,
   J. P. Malrieu, P. Rancurel, _J. Chem. Phys._ **58**, 5745 (1973), DOI:10.1063/1.1679199.
 - **ASCI** — selection against a bounded set of generators, as implemented here. N. M. Tubman,
@@ -1949,8 +2133,14 @@ generate validation reference data live with that code, in `tests/`.
   (2012), DOI:10.1063/1.4739763.
 - **Pseudospin / g-tensor conventions for Kramers doublets.** A. Abragam, B. Bleaney, _Electron
   Paramagnetic Resonance of Transition Ions_, Clarendon Press, Oxford (1970).
-- **Landé g factors and free-ion multiplets.** R. D. Cowan, _The Theory of Atomic Structure and
-  Spectra_, University of California Press (1981), ch. 11.
+- **Landé g factors and free-ion multiplets** — and the Russell–Saunders counting the term
+  assignment inverts them with. R. D. Cowan, _The Theory of Atomic Structure and Spectra_,
+  University of California Press (1981), ch. 4 and 11.
+- **The non-Kramers doublet**, its tunnelling splitting and the effective-spin form in which
+  the transverse g components vanish identically. J. S. Griffith, _Phys. Rev._ **132**, 316
+  (1963), DOI:10.1103/PhysRev.132.316; Abragam & Bleaney (1970), ch. 3.11 and 18.3.
+- **`⟨S²⟩` as a one- plus two-body operator** and its use as a spin-contamination diagnostic.
+  A. Szabo, N. S. Ostlund, _Modern Quantum Chemistry_, McGraw-Hill (1989), ch. 2.5 and 3.8.
 
 - **Magnetic-moment operators from spin–orbit eigenstates**, `μ = −(L + g_e S) μ_B`, evaluated
   through one-particle transition density matrices. J. Olsen, B. O. Roos, P. Jørgensen,

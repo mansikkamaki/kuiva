@@ -287,7 +287,8 @@ def active_space_by_character(coeff_ao: np.ndarray, overlap: np.ndarray, layout,
                               n_elec_total: int, *, atom, l, n_pairs: int,
                               n_active_elec: Optional[int] = None,
                               threshold: float = DEFAULT_CHARACTER_THRESHOLD,
-                              occupation: Optional[np.ndarray] = None) -> ActiveSpace:
+                              occupation: Optional[np.ndarray] = None,
+                              skip_pairs: int = 0) -> ActiveSpace:
     """The lowest ``n_pairs`` Kramers pairs of ``(atom, l)`` character.
 
     This is the selection rule the committed Tier-2 references are defined by, and the only
@@ -317,6 +318,19 @@ def active_space_by_character(coeff_ao: np.ndarray, overlap: np.ndarray, layout,
     threshold : float
         Minimum fraction of a pair's Löwdin population on ``(atom, l)``. See
         :data:`DEFAULT_CHARACTER_THRESHOLD`.
+    skip_pairs : int
+        Skip this many of the qualifying pairs before taking ``n_pairs`` — an **ordinal
+        window** into the same character-ordered list the plain form takes its lowest pairs
+        from. *"the 6th to 10th lowest d pairs on Ti"*.
+
+        It exists for the **double shell**: a correlating shell of the same ``l`` cannot be
+        named by the union form (:func:`active_space_by_characters` refuses two fragments
+        that claim one pair, and without a window two ``(Ti, d)`` fragments claim exactly
+        the same pairs), and pooling them into one ``n_pairs = 10`` selection cannot say
+        which five are which. ⚠ It is **not** a principal quantum number in disguise: ``n``
+        counts shells within the *basis* and is therefore basis-relative, while an ordinal
+        within a stated character-and-threshold ordering is something an independent
+        implementation reproduces from the description this writes.
 
     Raises
     ------
@@ -327,14 +341,16 @@ def active_space_by_character(coeff_ao: np.ndarray, overlap: np.ndarray, layout,
     """
     columns, description = _character_columns(coeff_ao, overlap, layout, atom=atom, l=l,
                                               n_pairs=n_pairs, threshold=threshold,
-                                              occupation=occupation)
+                                              occupation=occupation,
+                                              skip_pairs=_check_skip(skip_pairs))
     return active_space(columns, int(np.shape(coeff_ao)[1]), n_elec_total,
                         n_active_elec=n_active_elec, description=description)
 
 
 def _character_columns(coeff_ao: np.ndarray, overlap: np.ndarray, layout, *, atom, l,
                        n_pairs: int, threshold: float,
-                       occupation: Optional[np.ndarray]) -> Tuple[np.ndarray, str]:
+                       occupation: Optional[np.ndarray],
+                       skip_pairs: int = 0) -> Tuple[np.ndarray, str]:
     """The selection core of :func:`active_space_by_character`: ``(columns, description)``."""
     from ..props.population import orbital_populations
 
@@ -354,19 +370,29 @@ def _character_columns(coeff_ao: np.ndarray, overlap: np.ndarray, layout, *, ato
     fraction = populations.normalized()[on].sum(axis=0)      # (n_pairs_total,)
 
     clears = np.nonzero(fraction >= threshold)[0]
-    if clears.size < n_pairs:
-        order = np.argsort(-fraction)[:n_pairs + 3]
+    if clears.size < skip_pairs + n_pairs:
+        order = np.argsort(-fraction)[:skip_pairs + n_pairs + 3]
         detail = ", ".join("pair {} ({:.0%})".format(populations.labels[g], fraction[g])
                            for g in order)
         raise ValueError(
             "only {} Kramers pair(s) carry at least {:.0%} of their Loewdin population on "
-            "{} l={}, but {} were asked for. The best candidates are: {}. Lower `threshold` "
+            "{} l={}, but {} were asked for{}. The best candidates are: {}. Lower `threshold` "
             "if the orbitals are more covalent than expected, or select explicitly"
-            .format(clears.size, threshold, where, ell, n_pairs, detail))
-    chosen = clears[:n_pairs]                                # lowest pairs, in orbital order
+            .format(clears.size, threshold, where, ell, n_pairs,
+                    "" if not skip_pairs else " after skipping {}".format(skip_pairs),
+                    detail))
+    # The ordinal window. Counted over the pairs that *clear the threshold*, in orbital
+    # order, so it names a position in the same list the plain form takes its lowest
+    # `n_pairs` from -- "the 6th to 10th lowest d pairs on Ti", which an independent
+    # implementation can reproduce. ⚠ Deliberately not a principal quantum number: those
+    # count shells within the *basis* (see :func:`_angular_momentum`), and the whole reason
+    # this window exists is to say "the second d shell" without making that claim.
+    chosen = clears[skip_pairs:skip_pairs + n_pairs]          # in orbital order
     columns = np.concatenate([populations.groups[g] for g in chosen])
-    description = "{} lowest Kramers pairs of l={} character on {}".format(
-        n_pairs, ell, where)
+    description = ("{} lowest Kramers pairs of l={} character on {}".format(
+        n_pairs, ell, where) if not skip_pairs else
+        "Kramers pairs {}-{} (by ascending orbital order) of l={} character on {}".format(
+            skip_pairs + 1, skip_pairs + n_pairs, ell, where))
     log.debug("character selection: pairs %s carry %s of the (%s, l=%d) population",
               chosen.tolist(), np.round(fraction[chosen], 3).tolist(), where, ell)
     return columns, description
@@ -380,11 +406,17 @@ def active_space_by_characters(coeff_ao: np.ndarray, overlap: np.ndarray, layout
     """A union of per-fragment character selections — one active space, several centres.
 
     ``fragments`` is a sequence of ``(atom, l, n_spinors)`` triples, each the argument set of
-    :func:`active_space_by_character` (``n_spinors`` = ``2 * n_pairs``, whole Kramers pairs).
+    :func:`active_space_by_character` (``n_spinors`` = ``2 * n_pairs``, whole Kramers pairs),
+    optionally extended to ``(atom, l, n_spinors, skip_pairs)`` — the ordinal window of
+    :func:`active_space_by_character`, which is how a **double shell** is written:
+    ``[("Ti", "d", 10), ("Ti", "d", 10, 5)]`` is *"the five lowest d pairs on Ti, plus the
+    next five"*, two fragments of the same ``l`` naming disjoint sets of pairs.
+
     The selections are made independently and unioned; a Kramers pair claimed by two
     fragments is **refused, not shared**, because a pair that clears two thresholds at once
     means the fragments are not the disjoint physical statement they were written as —
-    lower the count or pool the centres into one ``(atom, l)`` selection instead.
+    lower the count, offset one of them with ``skip_pairs``, or pool the centres into one
+    ``(atom, l)`` selection instead.
 
     ⚠ On a *symmetric* polynuclear system the canonical orbitals delocalize over the
     equivalent centres and no per-centre threshold is meaningful; that case is the pooled
@@ -396,18 +428,23 @@ def active_space_by_characters(coeff_ao: np.ndarray, overlap: np.ndarray, layout
     """
     resolved: List[Tuple[np.ndarray, str]] = []
     for entry in fragments:
-        try:
-            atom, l, n_spinors = entry
-        except (TypeError, ValueError):
-            raise ValueError(
-                "each fragment is an (atom, l, n_spinors) triple; got {!r}".format(entry))
+        entry = tuple(entry)
+        if len(entry) == 3:
+            (atom, l, n_spinors), skip = entry, 0
+        elif len(entry) == 4:
+            atom, l, n_spinors, skip = entry
+        else:
+            raise ValueError("each fragment is an (atom, l, n_spinors) triple, optionally "
+                             "extended to (atom, l, n_spinors, skip_pairs); got {!r}"
+                             .format(entry))
         n_spinors = int(n_spinors)
         if n_spinors <= 0 or n_spinors % 2 != 0:
             raise ValueError("a fragment selects whole Kramers pairs, so n_spinors must be "
                              "positive and even; got {} for {!r}".format(n_spinors, entry))
         resolved.append(_character_columns(coeff_ao, overlap, layout, atom=atom, l=l,
                                            n_pairs=n_spinors // 2, threshold=threshold,
-                                           occupation=occupation))
+                                           occupation=occupation,
+                                           skip_pairs=_check_skip(skip)))
 
     for (cols_a, desc_a), (cols_b, desc_b) in itertools.combinations(resolved, 2):
         shared = np.intersect1d(cols_a, cols_b)
@@ -415,7 +452,9 @@ def active_space_by_characters(coeff_ao: np.ndarray, overlap: np.ndarray, layout
             raise ValueError(
                 "fragments '{}' and '{}' both claim spinor(s) {}: the same Kramers pair "
                 "clears both thresholds, so these are not disjoint fragments. Lower the "
-                "counts, raise `threshold`, or pool the centres into one (atom, l) selection"
+                "counts, offset one fragment with skip_pairs (the fourth element of the "
+                "fragment tuple -- how a second shell of the same l is named), raise "
+                "`threshold`, or pool the centres into one (atom, l) selection"
                 .format(desc_a, desc_b, shared.tolist()))
 
     columns = np.concatenate([cols for cols, _ in resolved])
@@ -425,6 +464,15 @@ def active_space_by_characters(coeff_ao: np.ndarray, overlap: np.ndarray, layout
     # spaces.active is the sorted union; fragments keep the caller's grouping
     return ActiveSpace(spaces=space.spaces, n_elec=space.n_elec, description=description,
                        fragments=tuple(tuple(int(c) for c in cols) for cols, _ in resolved))
+
+
+def _check_skip(skip_pairs) -> int:
+    """Validate an ordinal window offset. One implementation, both selection entry points."""
+    skip = int(skip_pairs)
+    if skip < 0:
+        raise ValueError("skip_pairs counts qualifying Kramers pairs to step over and "
+                         "cannot be negative; got {!r}".format(skip_pairs))
+    return skip
 
 
 def _atom_index(layout, atom) -> int:
@@ -1143,6 +1191,88 @@ class FullCISolver:
                 accumulate(vectors, self._sigma.f_buf, block, columns[ket])
         return np.ascontiguousarray(
             columns.transpose(1, 0, 2).reshape(n_states, n_states, n, n))
+
+    def one_body_moments(self, ops: np.ndarray,
+                         vectors: Optional[np.ndarray] = None
+                         ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """``<I|A_k|I>``, ``<I|A_k A_k|I>`` and the state 1-RDMs, in one pass.
+
+        Parameters
+        ----------
+        ops : ``(n_ops, n, n)`` complex — **Hermitian** one-electron operators over the
+            active spinors. Hermiticity is asserted, because the square is evaluated as
+            ``|| A|I> ||^2`` and that identity is what makes this cheap.
+        vectors : ``(n_states, ndet)``, optional — the stored states by default.
+
+        Returns
+        -------
+        ``(expect, square, rdm1)`` — ``(n_ops, n_states)`` real, ``(n_ops, n_states)`` real,
+        ``(n_states, n, n)`` complex.
+
+        Why the square is computed this way
+        -----------------------------------
+        ``A^2`` is a **two**-body operator, so the obvious route is one 2-RDM per state --
+        the most expensive object the CI produces, for a diagnostic. But ``A`` is one-body,
+        so ``A|I>`` is one contraction of the excitation map ``F[K,pq] = <K|E_pq|I>`` that
+        :meth:`transition_densities` and the sigma vector already build, and the square is
+        that vector's norm. This is the **fourth** consumer of the one intermediate: one
+        gather per state, then a GEMV per operator.
+
+        Everything here is **orchestration** and none of it is a port candidate: the gather
+        is the already-registered ``sigma_gather_f`` kernel and the contraction is a BLAS
+        GEMV, so this adds no kernel contract of its own.
+
+        ⚠ The norm is taken over the **CAS determinant space only**. For a spin-like
+        operator with matrix elements connecting the active space to the inactive or virtual
+        one, ``A|I>`` has a component outside that space and this undercounts the square. The
+        missing part is computable from ``rdm1`` and the off-diagonal operator blocks --
+        which is why the 1-RDMs come back from here rather than being asked for separately
+        (:func:`kuiva.props.spin.spin_analysis` is the caller that does it).
+
+        ⚠ It reuses the sigma operator's ``f_buf``, so the caller's ``F`` is destroyed --
+        the same contract, and for the same reason, as :meth:`transition_densities`.
+        """
+        if self._sigma is None:
+            raise RuntimeError("solve first: these are built from the sigma operator's "
+                               "excitation map and workspace")
+        a = np.ascontiguousarray(ops, dtype=np.complex128)
+        if a.ndim == 2:
+            a = a[None]
+        n = self.n_spinor
+        if a.ndim != 3 or a.shape[1:] != (n, n):
+            raise ValueError("the operators must be (n_ops, {0}, {0}); got {1}"
+                             .format(n, np.shape(ops)))
+        worst = float(np.max(np.abs(a - a.conj().transpose(0, 2, 1)))) if a.size else 0.0
+        if worst > 1e-10:
+            raise ValueError(
+                "one_body_moments evaluates <A^2> as ||A|I>||^2, which holds only for a "
+                "Hermitian A; the operators are non-Hermitian by {:.3e}".format(worst))
+        vectors = self.last.vectors if vectors is None else vectors
+        vectors = np.atleast_2d(np.ascontiguousarray(vectors, dtype=np.complex128))
+        n_states, n_ops = vectors.shape[0], a.shape[0]
+        arrays = self.space.excitation_arrays()
+        gather = kernels.resolve("sigma_gather_f", self.backend)
+        block = gather_block_size(self.n_elec, self.space.n_empty, self.space.ndet,
+                                  self._block)
+        flat = a.reshape(n_ops, n * n)
+        expect = np.zeros((n_ops, n_states))
+        square = np.zeros((n_ops, n_states))
+        rdm1 = np.zeros((n_states, n, n), dtype=np.complex128)
+        # One (ndet,) scratch column, reused: A|I> for one operator. Next to the f_buf it is
+        # gathered from (ndet x n^2, already reserved) this is noise, so it is a transient
+        # rather than a declared residency.
+        work = np.empty(self.space.ndet, dtype=np.complex128)
+        with timer("one-body state moments"):
+            for i in range(n_states):
+                gather(np.ascontiguousarray(vectors[i]), *arrays, n, block,
+                       self._sigma.f_buf)
+                bra = np.conj(vectors[i])
+                rdm1[i] = (bra @ self._sigma.f_buf).reshape(n, n)
+                for k in range(n_ops):
+                    np.matmul(self._sigma.f_buf, flat[k], out=work)
+                    expect[k, i] = float(np.real(bra @ work))
+                    square[k, i] = float(np.real(np.vdot(work, work)))
+        return expect, square, rdm1
 
     # -- internals -------------------------------------------------------------------------
     def _operator(self, h: np.ndarray, eri: np.ndarray) -> SigmaOperator:

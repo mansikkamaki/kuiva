@@ -12,11 +12,16 @@ are shared by both drivers.
 ``casci`` is the full CI presented as that same callback, plus the CASCI/CASSCF
 drivers and the reproducible active-space selection. It lives here rather than in ``ci/`` because
 ``preopt`` imports ``ci``, so the dependency may not run the other way.
+
+``avas`` is the other route to an active space: where no single orbital *carries* the target
+character, it rotates the ones that partly do into orbitals that fully do. Same output as a
+character selection — an ``ActiveSpace`` — plus the rotated orbitals it must be used with.
 """
 from .adaptive import (AdaptiveCISolver, Proposal, SolverFailure, StaticSolver,
                        as_adaptive_solver)
+from .avas import DEFAULT_AVAS_THRESHOLD, AVASResult, avas
 from .casci import (ActiveSpace, CASCIResult, CASSCFOutcome, FullCISolver, active_space,
-                    active_space_by_character, casci, casscf)
+                    active_space_by_character, active_space_by_characters, casci, casscf)
 from .events import EventCASSCFResult, EventRecord, optimize_orbitals_events
 from .orbopt import (AHResult, CASIntegrals, OrbitalHessian, OrbitalOptimizer, OrbitalSpaces,
                      augmented_hessian_step, averaged_fock, cas_energy, fock_diagonal,
@@ -35,4 +40,5 @@ __all__ = ["OrbitalSpaces", "CASIntegrals", "OrbitalOptimizer", "optimize_orbita
            "as_adaptive_solver", "CheapCISolver",
            "optimize_orbitals_events", "EventCASSCFResult", "EventRecord",
            "FullCISolver", "CASCIResult", "CASSCFOutcome", "ActiveSpace", "active_space",
-           "active_space_by_character", "casci", "casscf"]
+           "active_space_by_character", "active_space_by_characters", "casci", "casscf",
+           "AVASResult", "avas", "DEFAULT_AVAS_THRESHOLD"]

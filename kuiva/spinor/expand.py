@@ -224,6 +224,90 @@ def nearest_kramers_paired(c: np.ndarray, blocks) -> np.ndarray:
     return out
 
 
+def fold_to_kramers_pairs(a: np.ndarray, columns=None) -> "tuple":
+    """Fold a spinor-basis operator matrix onto its Kramers-pair space.
+
+    A **spin-free, time-even** operator ``O`` obeys ``<T p|O|T q> = <p|O|q>*``, so in the
+    interleaved layout its unbarred-unbarred and barred-barred blocks are complex conjugates
+    of each other and its unbarred-barred block vanishes. Everything such an operator says
+    about a Kramers-paired orbital set is therefore carried by one ``(npair, npair)``
+    Hermitian matrix::
+
+        A_pair[m, n] = (O[2m, 2n] + conj(O[2m+1, 2n+1])) / 2
+
+    Returns ``(a_pair, residual)`` with ``residual`` the largest of: any element of the two
+    off-diagonal (unbarred-barred) blocks, and any departure from the conjugation relation
+    between the two diagonal ones — the measure of how far the input is from being what this
+    fold assumes. ⚠ **Both** off-diagonal blocks are looked at, not just one: they are each
+    other's conjugate transpose only for a Hermitian operator, and this takes any square
+    matrix. ⚠ It is returned
+    rather than checked here: whether a given residual matters is the caller's decision, and
+    every caller of this must make it (an operator folded despite a large residual is
+    Hermitian, plausible and wrong).
+
+    ``columns`` restricts the fold to a subset of Kramers pairs, given as **spinor** indices
+    (whole pairs, ``2m`` and ``2m+1`` together); the pair ordering of the result follows the
+    ascending pair index.
+    """
+    a = np.asarray(a)
+    if a.ndim != 2 or a.shape[0] != a.shape[1]:
+        raise ValueError("expected a square spinor-basis matrix, got {}".format(a.shape))
+    if columns is None:
+        idx = np.arange(a.shape[0])
+    else:
+        idx = np.asarray(columns, dtype=int).ravel()
+    if idx.size % 2:
+        raise ValueError("a Kramers-paired selection has an even number of spinors, got {}"
+                         .format(idx.size))
+    unbarred, barred = idx[0::2], idx[1::2]
+    if np.any(unbarred % 2 != 0) or np.any(barred != unbarred + 1):
+        raise ValueError("the columns must be whole Kramers pairs (2m, 2m+1) in order; got "
+                         "{}".format(idx.tolist()))
+    uu = a[np.ix_(unbarred, unbarred)]
+    bb = a[np.ix_(barred, barred)]
+    off = (a[np.ix_(unbarred, barred)], a[np.ix_(barred, unbarred)])
+    residual = max([float(np.max(np.abs(x))) for x in off if x.size]
+                   + ([float(np.max(np.abs(uu - np.conj(bb))))] if uu.size else [0.0]))
+    return 0.5 * (uu + np.conj(bb)), residual
+
+
+def rotate_kramers_pairs(c: np.ndarray, v: np.ndarray, columns) -> np.ndarray:
+    """Rotate whole Kramers pairs of ``c`` by the pair-space unitary ``v``, preserving pairing.
+
+    ⚠ **The barred partners transform with the conjugate of ``v``, not with ``v``.** The
+    pairing convention is that column ``2m+1`` is ``T`` applied to column ``2m``, and ``T``
+    is antiunitary: ``T (sum_m v_mn |m>) = sum_m conj(v_mn) T|m>``. Rotating both sublattices
+    with ``v`` gives an orthonormal set of the right shape whose barred columns are no longer
+    the time reverses of the unbarred ones — which every consumer of the convention assumes
+    and none of them checks, so it would survive to produce a plausible wrong answer.
+
+    Parameters
+    ----------
+    c : ``(2*nbas, nspinor)`` complex — spinor coefficients in the interleaved layout.
+    v : ``(npair, npair)`` complex unitary over the selected pairs, in their given order.
+    columns : spinor indices of the pairs to rotate (whole pairs, ascending).
+
+    Returns a copy of ``c`` with those columns replaced.
+    """
+    c = np.ascontiguousarray(c, dtype=np.complex128)
+    idx = np.asarray(columns, dtype=int).ravel()
+    if idx.size % 2:
+        raise ValueError("a Kramers-paired selection has an even number of spinors, got {}"
+                         .format(idx.size))
+    unbarred, barred = idx[0::2], idx[1::2]
+    if np.any(unbarred % 2 != 0) or np.any(barred != unbarred + 1):
+        raise ValueError("the columns must be whole Kramers pairs (2m, 2m+1) in order; got "
+                         "{}".format(idx.tolist()))
+    v = np.ascontiguousarray(v, dtype=np.complex128)
+    if v.shape != (unbarred.size, unbarred.size):
+        raise ValueError("the pair rotation must be ({0}, {0}) for {0} Kramers pairs; got {1}"
+                         .format(unbarred.size, v.shape))
+    out_c = np.array(c, copy=True)
+    out_c[:, unbarred] = c[:, unbarred] @ v
+    out_c[:, barred] = c[:, barred] @ np.conj(v)
+    return out_c
+
+
 def spin_block_diagonal(a: np.ndarray) -> np.ndarray:
     """Lift a spin-free ``(m, n)`` matrix to the two-component basis: ``1_2 (x) A``.
 
@@ -728,4 +812,5 @@ __all__ = ["SpinorBasis", "expand_scalar_mos", "expand_unrestricted_mos",
            "two_component_operator", "sigma_dot", "spin_operator",
            "decompose_two_component", "time_reversal_residual",
            "is_time_reversal_even", "kramers_block_permutation",
-           "spinor_indices", "spatial_index", "barred", "unbarred", "is_barred"]
+           "spinor_indices", "spatial_index", "barred", "unbarred", "is_barred",
+           "fold_to_kramers_pairs", "rotate_kramers_pairs", "nearest_kramers_paired"]

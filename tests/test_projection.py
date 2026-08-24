@@ -119,6 +119,53 @@ def test_projecting_a_basis_onto_itself_is_the_identity(refs):
         assert np.abs(d1 - d0).max() < 1e-10
 
 
+def test_the_scalar_projector_is_the_same_map_as_the_spinor_one(refs):
+    """⚠ The scalar SCF guess and the CASSCF basis projection are two consumers of **one**
+    projector, and this is the assertion that keeps them one: expand a real scalar set into
+    the spinor convention, project it both ways, and require the same orbitals. A second
+    implementation of equation (1) would pass every test written against itself.
+    """
+    from kuiva.orth.project import project_scalar_orbitals
+
+    src, tgt = refs["small"], refs["large"]
+    s_cross = cross_overlap(src.data.molecule, tgt.data.molecule)
+    c_scalar = np.asarray(src.data.mo_coeff, dtype=float)[:, :4]
+
+    scalar, retained, _floor = project_scalar_orbitals(c_scalar, s_cross, tgt.orth)
+
+    nao_s = int(src.data.nao)
+    spinor = np.zeros((2 * nao_s, 2 * c_scalar.shape[1]), dtype=complex)
+    spinor[:nao_s, 0::2] = c_scalar                    # unbarred partners, alpha block only
+    spinor[nao_s:, 1::2] = c_scalar                    # barred partners, beta block
+    pr = project_spinors(spinor, s_cross, tgt.orth, carry="all", scheme="symmetric",
+                         repair_pairing=False, report=False)
+
+    # The carried columns come first; everything after them is the completion the larger
+    # basis adds, which the scalar routine has no counterpart for and does not build.
+    nao_t, ncar = int(tgt.data.nao), 2 * c_scalar.shape[1]
+    carried = np.asarray(pr.coeff)[:nao_t, :ncar][:, 0::2]
+    assert np.abs(carried.real - scalar).max() < 1e-10
+    assert np.abs(carried.imag).max() < 1e-12
+    assert np.allclose(retained, np.asarray(pr.retained)[:ncar][0::2], atol=1e-10)
+
+
+def test_the_scalar_projection_restores_orthonormality_in_the_target_metric(refs):
+    """⚠ The failure this exists to prevent: a projector is not unitary, so without the
+    Loewdin step the projected occupied set is not orthonormal and the density built from it
+    has the wrong trace. Onto a *larger* basis the loss is small enough to be invisible in an
+    energy and large enough to matter to a first Fock build.
+    """
+    from kuiva.orth.project import project_scalar_orbitals
+
+    src, tgt = refs["large"], refs["small"]             # large -> small: a real loss of norm
+    s_cross = cross_overlap(src.data.molecule, tgt.data.molecule)
+    c = np.asarray(src.data.mo_coeff, dtype=float)[:, :3]
+    projected, retained, _floor = project_scalar_orbitals(c, s_cross, tgt.orth)
+    gram = projected.T @ np.asarray(tgt.data.s_ao) @ projected
+    assert np.abs(gram - np.eye(3)).max() < 1e-12
+    assert np.all(retained <= 1.0 + 1e-12)
+
+
 def test_the_delivered_set_is_orthonormal_in_the_target_metric(refs):
     """⚠ In the *target's* metric. A projection that forgot the cross overlap, or applied the
     source overlap, still produces a set that is orthonormal in something."""
