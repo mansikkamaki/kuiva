@@ -12,10 +12,11 @@ Kuiva does not evaluate magnetic properties, crystal-field parameters or Stevens
 It writes the matrices an external code needs in order to do that, and this example is
 about those files.
 
-    PropertyDump        the effective Hamiltonian H and the three magnetic-moment
-                        components mu_x, mu_y, mu_z, in the basis of the spin-orbit
-                        eigenstates, as plain self-describing text with a versioned header.
-                        For an ITO / crystal-field code.
+    PropertyDump        the effective Hamiltonian H, the three magnetic-moment components
+                        mu_x, mu_y, mu_z and the three electric-dipole components
+                        d_x, d_y, d_z, in the basis of the spin-orbit eigenstates, as plain
+                        self-describing text with a versioned header. For an ITO /
+                        crystal-field code.
 
     PseudospinExport    the same physics contracted onto a local-multiplet model space:
                         H_eff, the moment operators, the ordered pseudospin product basis
@@ -35,11 +36,13 @@ THREE THINGS THE FILES SAY IN THEIR HEADERS, AND WHY
   otherwise, so the header says so. In the pseudospin file H is *not* diagonal, because
   there the basis is the pseudospin product basis rather than the eigenbasis.
 
-* **No picture-change correction is applied to L and S.** They are the bare
+* **No picture-change correction is applied to L, S or r.** They are the bare
   non-relativistic AO operators, used unchanged in the two-component basis. This matches
-  what OpenMolcas RASSI does, which keeps a cross-code comparison like for like, but the
-  size of the approximation has not been measured. Every run emits that warning and records
-  it in the file; it is not configurable, because the file outlives the session.
+  what OpenMolcas RASSI does, which keeps a cross-code comparison like for like, and the
+  size of the approximation has been measured and is small. Every run emits that warning
+  and records it in the file; it is not configurable, because the file outlives the session.
+  (property_picture_change=True on the reference turns it on for both the magnetic and the
+  electric operator -- never for only one of them.)
 
 * **Phases are arbitrary and are never canonicalized.** Degenerate spin-orbit states mix
   freely, so an element-by-element comparison of a moment matrix -- against another program,
@@ -50,6 +53,9 @@ THREE THINGS THE FILES SAY IN THEIR HEADERS, AND WHY
 WHAT TO LOOK FOR IN THE OUTPUT
 ------------------------------
 * the ten states resolving into five Kramers doublets, each with its principal g values;
+* the permanent electric dipole coming out at ZERO in all ten states, as planar D3h requires,
+  and the d-d line strengths out of the ground doublet coming out small but NOT zero -- the
+  Laporte rule is exact only in a centrosymmetric field, and D3h has no inversion centre;
 * the inactive contribution to L coming out at zero -- exact for a Kramers-paired inactive
   set, and computed rather than assumed, because a nonzero value would be a statement about
   the orbitals;
@@ -214,6 +220,50 @@ def main() -> int:
               "a D3h ligand field defines an axis, so this must be nonzero", "{:.4f}")
 
     # ----------------------------------------------------------------------------------
+    # 3b. The electric dipole, which is in the same file and is read the same way.
+    # ----------------------------------------------------------------------------------
+    # d is the TOTAL dipole: the electronic operator over all electrons, plus -- on the
+    # DIAGONAL only -- the nuclear sum_A Z_A (R_A - R_G). So a diagonal element is that
+    # state's dipole moment and an off-diagonal one is a transition dipole.
+    #
+    # Planar D3h has no dipole, so every diagonal element here must be zero. Note what that
+    # does and does not pin: with the gauge origin at the centre of mass -- which for this
+    # molecule is the Ti nucleus -- the nuclear and inactive terms are separately zero by
+    # the same symmetry, so what this checks is the ACTIVE term's sign and completeness. The
+    # three-term cancellation itself is exercised on a polar molecule in the test suite,
+    # where a wrong sign or a missing term cannot hide behind a symmetry that zeroes it.
+    permanent = np.array([np.real(np.diag(dump.matrices.d[k])) for k in range(3)])
+    largest_permanent = float(np.abs(permanent).max())
+    inactive_dipole = float(np.abs(dump.matrices.inactive_d).max())
+    nuclear_dipole = float(np.abs(dump.matrices.nuclear_dipole).max())
+
+    # Transitions are compared through the line strength and nothing else: within a Kramers
+    # doublet the two states mix arbitrarily, so an individual |d_IJ| is a phase, while the
+    # double sum over two whole doublets is invariant. d-d transitions are Laporte forbidden
+    # in a centrosymmetric field; D3h has no inversion centre and the "3d" orbitals carry
+    # ligand character, so these are small but not zero.
+    strengths = dump.matrices.line_strengths(multiplets=doublets)
+
+    out.subsection(log, "Electric dipole")
+    out.entries(log, [
+        ("molecular charge", dump.matrices.molecular_charge, "e",
+         "neutral, so every dipole here is independent of the gauge origin"),
+        ("nuclear term", nuclear_dipole, "e*a0",
+         "diagonal only; zero here because D3h puts the origin on Ti", out.SCI_FMT),
+        ("inactive electrons' term", inactive_dipole, "e*a0",
+         "generally NOT zero -- r is time even, unlike L and S -- but zero by symmetry here",
+         out.SCI_FMT),
+        ("largest permanent moment over all ten states", largest_permanent, "e*a0",
+         "planar D3h has no dipole, so the three terms must cancel", out.SCI_FMT),
+        ("strongest d-d line strength out of the ground doublet",
+         float(strengths[0, 1:].max()), "(e*a0)^2",
+         "Laporte forbidden in a centrosymmetric field; D3h is not one", out.SCI_FMT),
+    ])
+    out.note(log, "a line strength is NOT an oscillator strength and NOT a rate: this")
+    out.note(log, "program writes operators and their invariants, and turning one into an")
+    out.note(log, "intensity is the external property code's job, as the crystal field is.")
+
+    # ----------------------------------------------------------------------------------
     # 4. The pseudospin export.
     # ----------------------------------------------------------------------------------
     # `sites` partitions the ACTIVE SPINORS into the local multiplet sites, by position in
@@ -275,6 +325,13 @@ def main() -> int:
             dump.matrices.hermiticity_error() < 1e-10,
         "the Kramers-paired inactive space carries no moment":
             float(np.abs(dump.matrices.inactive_l).max()) < 1e-8,
+        "the dipole matrices are Hermitian":
+            float(np.abs(dump.matrices.d - dump.matrices.d.conj().transpose(0, 2, 1)).max())
+            < 1e-12,
+        "planar D3h has no permanent dipole, in any of the ten states":
+            largest_permanent < 1e-6,
+        "d-d transitions are weak but not zero: D3h has no inversion":
+            0.0 < float(strengths[0, 1:].max()) < 1.0,
         "the ground doublet is anisotropic, as D3h requires": anisotropy > 0.1,
         "the pseudospin file is one effective spin 1/2": tuple(export.model.dims) == (2,),
         "the pseudospin basis is OuluSpin's 2M ordering":

@@ -1,11 +1,18 @@
 """The property-matrix dump: Kuiva's actual product.
 
-Everything upstream of this file exists to produce four matrices in the basis of the
-spin-orbit eigenstates — the effective Hamiltonian ``H`` and the three magnetic-moment
-components ``mu_x``, ``mu_y``, ``mu_z`` — which an **external** ITO / Stevens / crystal-field
-code turns into the quantities an experiment measures. The project scope puts that analysis explicitly out of
+Everything upstream of this file exists to produce matrices in the basis of the spin-orbit
+eigenstates — the effective Hamiltonian ``H``, the three magnetic-moment components ``mu_x``,
+``mu_y``, ``mu_z``, and the three electric-dipole components ``d_x``, ``d_y``, ``d_z`` — which
+an **external** ITO / Stevens / crystal-field code turns into the quantities an experiment
+measures. The project scope puts that analysis explicitly out of
 scope, so this file is the boundary: a plain-text, versioned, self-describing file, entirely
 separate from the log stream (logging never contaminates machine-readable output).
+
+⚠ **That boundary is where the electric dipole stops too.** This module writes the operator
+and its phase-invariant reductions (``Tr_block(d_i d_j)`` and the block-to-block line strength
+``sum |d_IJ|^2``); it computes no oscillator strength, no Einstein coefficient and no radiative
+rate. Those need a transition energy, a refractive index and a convention for what is being
+measured, and they belong to the same external code the crystal-field analysis does.
 
 The physics in one line
 -----------------------
@@ -19,13 +26,33 @@ consumer of the *same* excitation map and the *same* intermediate the sigma vect
 RDMs are built from. ``L`` and ``S`` are one-electron operators, so nothing beyond the
 one-particle transition densities is ever needed, however large the CI.
 
-⚠ **The inactive term is computed, not assumed away.** A Kramers pair ``(psi, T psi)``
-contributes ``<psi|A|psi> + <T psi|A|T psi> = 0`` for any time-odd ``A``, and both ``L`` and
-``S`` are time odd, so a Kramers-paired inactive set contributes exactly nothing. That is a
-theorem about the *orbitals*, and a CASSCF that has broken Kramers symmetry in the inactive
-space violates it. :func:`inactive_moment` measures it and warns above a tolerance rather
-than skipping the term — the failure it guards against is a moment matrix that is silently
-missing a core contribution, which looks entirely plausible.
+The electric dipole rides on exactly the same contraction, with two differences that are
+easy to get wrong and impossible to notice afterwards:
+
+    d^{IJ}_k = -( sum_{tu} (r - R_G)_{k,tu} gamma^{IJ}_{tu}
+                  + delta_IJ sum_{i in inactive} (r - R_G)_{k,ii} )
+               + delta_IJ sum_A Z_A (R_A - R_G)_k                          [e a_0]
+
+⚠ **The nuclear term is on the diagonal only** — off the diagonal it would invent a transition
+dipole proportional to the nuclear charge — and ⚠ **the inactive term is not zero here**: ``r``
+is time *even*, so a Kramers pair contributes twice its expectation value rather than
+cancelling as it does for ``L`` and ``S``. A diagonal element of ``d`` is therefore the state's
+dipole moment and an off-diagonal one is a transition dipole. ⚠ For a **charged** molecule the
+diagonal obeys ``d(R_G) = d(0) - q R_G`` and moves with the gauge origin; transition elements
+between distinct states do not, whatever the charge. :func:`write_dump` warns, and the header
+carries the charge, the origin and the nuclear vector.
+
+⚠ **The inactive term is computed for every operator, not assumed away for any of them** —
+and what the *theorem* says about it depends on the operator's behaviour under time reversal.
+A Kramers pair ``(psi, T psi)`` contributes ``<psi|A|psi> + <T psi|A|T psi> = 0`` for any
+time-**odd** ``A``, so a Kramers-paired inactive set contributes exactly nothing to ``L`` or
+``S``. That is a theorem about the *orbitals*, and a CASSCF that has broken Kramers symmetry
+in the inactive space violates it: :func:`inactive_moment` measures it and warns above a
+tolerance rather than skipping the term, because the failure it guards against is a moment
+matrix silently missing a core contribution, which looks entirely plausible. For the
+time-**even** ``r`` the same sum is a real and generally large number, so the warning is
+switched off there (``expect_zero=False``) while the term itself is computed and used exactly
+as the others are.
 
 Four things about this file that are decisions, not details
 -----------------------------------------------------------
@@ -34,7 +61,14 @@ Four things about this file that are decisions, not details
    to leave off-diagonal elements behind. A reader coming from a two-step (scalar CASSCF +
    RASSI) workflow will expect otherwise, so the header says it.
 2. ⚠ **No picture change is applied to the property operators by default** (an explicit
-   standing decision). ``L`` and ``S`` are the bare non-relativistic AO operators used
+   standing decision), and ⚠ **when it is applied, one flag applies it to all of them**: a
+   file whose ``mu`` carried the correction and whose ``d`` did not would be a hybrid with
+   nothing in it saying which half was which. The electric operator is *even*, so its
+   four-component matrix has a small-component block where the magnetic one has none, but it
+   goes through the same ``X`` and ``R``
+   (:func:`kuiva.interface.pyscf_bridge.picture_changed_dipole`) and it is recorded in its own
+   header field, ``picture_change_on_dipole``.
+   ``L`` and ``S`` are the bare non-relativistic AO operators used
    unchanged in the two-component basis. This matches RASSI, which is what makes the
    cross-code comparison like-for-like. :func:`write_dump` emits a ``WARNING`` at the point of
    writing and records the treatment in the header, in the same way the mean field records its
@@ -104,7 +138,8 @@ import numpy as np
 
 from ..util import output as out
 from ..util.logging import get_logger
-from .multiplet import G_ELECTRON, HARTREE_TO_CM, Multiplet, analyse_spectrum
+from .multiplet import (G_ELECTRON, HARTREE_TO_CM, Multiplet, analyse_spectrum,
+                        block_line_strengths, spectrum_line_strengths)
 
 log = get_logger(__name__)
 
@@ -172,15 +207,22 @@ def spinor_operator(coeff_ao: np.ndarray, op_ao_2c: np.ndarray) -> np.ndarray:
 
 
 def inactive_moment(op_mo: np.ndarray, inactive: Sequence[int], *,
-                    name: str = "operator", tol: float = DEFAULT_INACTIVE_TOL) -> np.ndarray:
+                    name: str = "operator", tol: float = DEFAULT_INACTIVE_TOL,
+                    expect_zero: bool = True) -> np.ndarray:
     """``sum_{i in inactive} A_ii`` for each component — computed, checked, never assumed.
 
-    Returns the ``(3,)`` real trace. It **must** vanish for a Kramers-paired inactive set,
-    because ``L`` and ``S`` are time-odd and a Kramers pair contributes equal and opposite
+    Returns the ``(3,)`` real trace. For a **time-odd** operator it must vanish for a
+    Kramers-paired inactive set, because a Kramers pair contributes equal and opposite
     expectation values; a nonzero result above ``tol`` means the inactive spinors are no
     longer Kramers paired, which is a statement about the orbitals and is worth a warning.
     Nonzero or not, the value is *used*, so a broken inactive space degrades the moments
     rather than silently dropping a term.
+
+    ⚠ ``expect_zero=False`` for a **time-even** operator, and the electric dipole is the case
+    it exists for. ``r`` is time even, so a Kramers pair contributes ``2 <psi|r|psi>`` and the
+    inactive electrons carry a perfectly real share of the molecule's dipole: warning about it
+    would be warning that the core exists. The term is still computed, still used and still
+    reported — what changes is only whether a nonzero value is an anomaly.
     """
     idx = np.asarray(inactive, dtype=int).ravel()
     op = np.asarray(op_mo)
@@ -188,7 +230,7 @@ def inactive_moment(op_mo: np.ndarray, inactive: Sequence[int], *,
         return np.zeros(3)
     trace = np.array([np.real(np.trace(opk[np.ix_(idx, idx)])) for opk in op])
     worst = float(np.max(np.abs(trace)))
-    if worst > tol:
+    if expect_zero and worst > tol:
         log.warning("the inactive space contributes %.3e hbar to <%s>, which must be exactly "
                     "zero for a Kramers-paired inactive set (L and S are both time odd). The "
                     "inactive spinors are evidently no longer Kramers paired; the "
@@ -251,6 +293,23 @@ class PropertyMatrices:
         two-component basis, which is the default. ⚠ Anything else means ``mu`` was **not**
         built from :attr:`l` and :attr:`s`, and the two files are not comparable element for
         element.
+    d : ``(3, n_states, n_states)`` complex or ``None`` — the **total** electric dipole
+        [e a_0]: electronic plus, on the diagonal, the nuclear term. So ``d[k].diagonal()`` is
+        each state's dipole moment and ``d[k][I,J]`` is a transition dipole. ``None`` where the
+        reference carried no dipole integrals.
+    nuclear_dipole : ``(3,)`` — the nuclear half, ``sum_A Z_A (R_A - R_G)``, kept separately so
+        the two parts of the diagonal can still be told apart after the fact.
+    inactive_d : ``(3,)`` — the inactive electrons' share. ⚠ Unlike :attr:`inactive_l` this is
+        **not** zero and must not be: ``r`` is time *even*, so a Kramers pair contributes twice
+        its expectation value rather than cancelling.
+    molecular_charge : int — ⚠ nonzero means every diagonal element of :attr:`d`, and every
+        block-internal invariant built from it, **moves with the gauge origin** as
+        ``d(R_G) = d(0) - q R_G``. Transition elements between distinct states do not.
+    dipole_picture_change : str — the electric operator's counterpart of
+        :attr:`picture_change`, and it moves with it: one flag governs both, so these two are
+        either both ``"none"`` or both a Peng-Reiher record. It is a separate field because a
+        consumer reading only the header must be able to see what ``d`` means without parsing
+        the provenance JSON.
     """
 
     energies: np.ndarray
@@ -266,11 +325,28 @@ class PropertyMatrices:
     inactive_s: np.ndarray = field(default_factory=lambda: np.zeros(3))
     comments: Tuple[str, ...] = ()
     picture_change: str = ""
+    #: ⚠ Defaulted to ``None`` rather than to zeros: "no dipole was computed" and "the dipole
+    #: is zero" are different statements, and a symmetric molecule makes the second one true.
+    d: Optional[np.ndarray] = None
+    nuclear_dipole: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    inactive_d: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    molecular_charge: int = 0
+    dipole_picture_change: str = ""
 
     @property
     def picture_changed(self) -> bool:
         """True when ``mu`` carries the X2C picture change on the property operators."""
         return bool(self.picture_change) and not self.picture_change.startswith("none")
+
+    @property
+    def has_dipole(self) -> bool:
+        """Whether electric dipole matrices are present."""
+        return self.d is not None
+
+    @property
+    def dipole_is_origin_dependent(self) -> bool:
+        """True for a charged molecule — see :attr:`molecular_charge`."""
+        return int(self.molecular_charge) != 0
 
     @property
     def n_states(self) -> int:
@@ -299,7 +375,29 @@ class PropertyMatrices:
         :func:`kuiva.props.multiplet.analyse_spectrum`.
         """
         return analyse_spectrum(self.energies, self.mu, tol_cm=tol_cm,
-                                pseudo_doublet_tol_cm=pseudo_doublet_tol_cm)
+                                pseudo_doublet_tol_cm=pseudo_doublet_tol_cm, d=self.d)
+
+    def line_strengths(self, tol_cm: float = 1.0,
+                       multiplets: Optional[List[Multiplet]] = None) -> np.ndarray:
+        """``S_AB = sum_k sum_{I in A, J in B} |d_k[I,J]|^2`` [(e a_0)^2] over the multiplets.
+
+        The phase-invariant statement about a **transition**, and the only sound way to compare
+        this file's ``d`` between two runs or two codes: a double sum of squared moduli over two
+        whole degenerate blocks survives the arbitrary mixing inside each of them, which an
+        element-by-element comparison does not.
+
+        ⚠ **A line strength is not an oscillator strength and not a rate.** Kuiva writes
+        operators and their invariants; turning one into an intensity needs the transition
+        energy, a refractive index and a convention for what is being measured, and that
+        analysis lives in the external property code, exactly as the ITO and crystal-field
+        analysis does.
+        """
+        if self.d is None:
+            raise ValueError(
+                "these property matrices carry no electric dipole, so there are no line "
+                "strengths to compute. The reference was built without dipole integrals")
+        blocks = self.analyse(tol_cm=tol_cm) if multiplets is None else multiplets
+        return spectrum_line_strengths(self.energies, self.d, blocks)
 
     def hermiticity_error(self) -> float:
         """``max |A - A^dag|`` over the three moment components — a structural self-check."""
@@ -355,6 +453,7 @@ class PropertyMatrices:
                      "g_1/g_2 are a residual that is zero by symmetry")
         table.end(note + " ")
         self._report_axes(logger, multiplets)
+        self._report_dipole(logger, multiplets)
 
     @staticmethod
     def _report_axes(logger, multiplets: List[Multiplet]) -> None:
@@ -398,6 +497,53 @@ class PropertyMatrices:
                   "one so axial that det g is numerically zero and its sign would be "
                   "rounding ")
 
+    def _report_dipole(self, logger, multiplets: List[Multiplet]) -> None:
+        """The electric dipole, through invariants only — never element by element.
+
+        Two invariant quantities per block and nothing else: the block-averaged permanent
+        moment ``Tr_b(d_k) / size``, which survives any mixing inside the block, and the line
+        strength to the **ground** block, which survives mixing inside either. A single
+        ``d[I,J]`` printed here would be a phase, and the phases in this object are arbitrary.
+
+        ⚠ The charge line is the one that has to be read: for a charged molecule the permanent
+        column moves with the gauge origin and the strength column does not.
+        """
+        if self.d is None:
+            return
+        order = np.argsort(np.asarray(self.energies, dtype=float))
+        d_sorted = np.asarray(self.d)[:, order, :][:, :, order]
+        strengths = block_line_strengths(d_sorted, [(m.start, m.size) for m in multiplets])
+        nuc = np.asarray(self.nuclear_dipole, dtype=float).ravel()
+        inact = np.asarray(self.inactive_d, dtype=float).ravel()
+        charged = self.dipole_is_origin_dependent
+        out.subsection(logger, "Electric dipole")
+        out.entries(logger, [
+            ("molecular charge", int(self.molecular_charge), "e",
+             "the permanent moments below MOVE with the gauge origin" if charged
+             else "neutral, so every dipole below is origin independent"),
+            ("nuclear contribution", "({:+.6f}, {:+.6f}, {:+.6f})".format(*nuc), "e*a0",
+             "diagonal only; a transition dipole gets nothing from it"),
+            ("inactive contribution", "({:+.6f}, {:+.6f}, {:+.6f})".format(*inact), "e*a0",
+             "generally nonzero: r is time EVEN, unlike L and S"),
+        ])
+        table = out.Table(logger, [
+            out.col_count("block", 7),
+            out.Column("d_x", "{:+.5f}", 11), out.Column("d_y", "{:+.5f}", 11),
+            out.Column("d_z", "{:+.5f}", 11),
+            out.Column("|d|", "{:.5f}", 11),
+            out.Column("S to block 0", out.SCI_FMT, 15)])
+        table.start()
+        for i, m in enumerate(multiplets):
+            sl = slice(m.start, m.start + m.size)
+            mean = np.array([float(np.real(np.trace(dk[sl, sl]))) / m.size
+                             for dk in d_sorted])
+            table.row(i, mean[0], mean[1], mean[2], float(np.linalg.norm(mean)),
+                      float(strengths[i, 0]))
+        table.end("d is the block-averaged permanent moment Tr_b(d_k)/size [e*a0], electronic "
+                  "plus nuclear; S is the line strength sum |d_IJ|^2 to the ground block "
+                  "[(e*a0)^2]. Both are phase invariant; individual matrix elements are not. "
+                  "S is a line strength and NOT an oscillator strength or a rate ")
+
     def write(self, path, **kwargs) -> Path:
         """Write the property dump file. See :func:`write_dump`."""
         return write_dump(path, self, **kwargs)
@@ -424,6 +570,12 @@ class PropertyMatrices:
         ⚠ ``L`` and ``S`` are written by ``write_dump(include_l_s=True)``, the default, but
         are **not** part of the external contract. A file written without them comes back with
         zero-filled ``l`` and ``s``: ``mu`` is the quantity, and it is always present.
+
+        ⚠ The electric dipole comes back as ``None`` when the file has none — **not** as
+        zeros. A molecule whose symmetry forbids a dipole has a genuinely zero ``d``, so
+        zero-filling would make "this file does not carry a dipole" and "this molecule has no
+        dipole" the same object, and :meth:`line_strengths` would then answer a question the
+        file never asked.
         """
         raw = read_dump(path)
         header, matrices = raw["header"], raw["matrices"]
@@ -445,8 +597,21 @@ class PropertyMatrices:
                              header.get("gauge_origin_bohr", "0 0 0").split()], dtype=float)
         inactive = raw.get("inactive", {})
         picture = header.get("picture_change_on_properties", "")
+        # ⚠ `None`, not zeros, when the file has no dipole: a symmetric molecule's dipole IS
+        # zero, so zeros would make "not written" indistinguishable from "measured zero".
+        d_found = [matrices.get("d_" + a) for a in "xyz"]
+        d = (None if any(m is None for m in d_found)
+             else np.ascontiguousarray(np.stack(d_found)))
+        nuclear = np.asarray([float(x) for x in
+                              header.get("nuclear_dipole_ea0", "0 0 0").split()], dtype=float)
         return cls(
             energies=energies, mu=mu, l=stack("L"), s=stack("S"),
+            d=d, nuclear_dipole=nuclear if nuclear.size == 3 else np.zeros(3),
+            inactive_d=np.asarray(inactive.get("d", np.zeros(3)), dtype=float),
+            molecular_charge=int(header.get("molecular_charge", 0)),
+            dipole_picture_change=(
+                "" if header.get("picture_change_on_dipole", "none") == "none"
+                else header["picture_change_on_dipole"]),
             gauge_origin=origin if origin.size == 3 else np.zeros(3),
             origin_label=header.get("gauge_origin_choice", "unspecified"),
             g_electron=float(header.get("g_electron", G_ELECTRON)),
@@ -519,6 +684,9 @@ def property_matrices(coeff_ao: np.ndarray, spaces, tdm: np.ndarray, energies,
         # file still reports them; what changed is that mu is no longer built from them, which
         # is what the header has to say.
 
+    d_states, inact_d = _dipole_states(coeff_ao, properties, act, inactive, tdm,
+                                       inactive_tol=inactive_tol)
+
     return PropertyMatrices(
         energies=np.asarray(energies, dtype=float).ravel(), mu=mu, l=l_states, s=s_states,
         gauge_origin=np.asarray(properties.gauge_origin, dtype=float).ravel(),
@@ -531,7 +699,46 @@ def property_matrices(coeff_ao: np.ndarray, spaces, tdm: np.ndarray, energies,
         # external consumers already parse, and widening its default value would move every
         # one of them for no gain.
         picture_change=("" if moment_ao is None
-                        else str(properties.provenance().get("picture_change", ""))))
+                        else str(properties.provenance().get("picture_change", ""))),
+        d=d_states, nuclear_dipole=properties.nuclear_dipole_vector(), inactive_d=inact_d,
+        molecular_charge=int(getattr(properties, "molecular_charge", 0) or 0),
+        dipole_picture_change=("" if getattr(properties, "dipole_picture_change", None) is None
+                               else str(properties.provenance()
+                                        .get("dipole_picture_change", ""))))
+
+
+def _dipole_states(coeff_ao: np.ndarray, properties, act: np.ndarray, inactive: np.ndarray,
+                   tdm: np.ndarray, *, inactive_tol: float) -> Tuple[Optional[np.ndarray],
+                                                                     np.ndarray]:
+    """``(d^{IJ}, inactive_trace)`` — the total electric dipole in the state basis [e a_0].
+
+    ``d = -(r - R_G)`` over the electrons plus, **on the diagonal only**, the nuclear
+    ``sum_A Z_A (R_A - R_G)``. Three terms, and each of the three is a way to get a plausible
+    wrong answer on its own:
+
+    * dropping the nuclear term leaves a diagonal that is not a dipole moment, while every
+      transition element stays exactly right — so nothing looks wrong;
+    * dropping the inactive term leaves the *valence* dipole wearing the name of the total,
+      and unlike ``L`` and ``S`` that term is **not** zero here (``r`` is time even);
+    * adding the nuclear term off the diagonal would give every pair of states a spurious
+      transition dipole proportional to the nuclear charge.
+
+    The neutral-molecule symmetry check is what tests all three at once: for a molecule whose
+    point group forbids a dipole, the three terms must cancel to zero, and they only do if all
+    three are present and correctly signed.
+    """
+    if not getattr(properties, "has_dipole", False):
+        return None, np.zeros(3)
+    d_mo = spinor_operator(coeff_ao, properties.dipole_two_component())
+    # ⚠ expect_zero=False: r is time EVEN, so a Kramers-paired inactive set contributes twice
+    # its expectation value rather than cancelling. Warning here would be warning that the
+    # core electrons exist.
+    inact_d = inactive_moment(d_mo, inactive, name="d", tol=inactive_tol, expect_zero=False)
+    ix = np.ix_(act, act)
+    nuclear = properties.nuclear_dipole_vector()
+    return (state_operator_matrices(np.stack([dk[ix] for dk in d_mo]), tdm,
+                                    inact_d + nuclear),
+            inact_d)
 
 
 # --- the file ------------------------------------------------------------------------------
@@ -540,7 +747,8 @@ _ELEMENT_FMT = "{:6d} {:6d}  {:+.16e} {:+.16e}\n"
 
 
 def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
-               include_l_s: bool = True, threshold: float = 0.0) -> Path:
+               include_l_s: bool = True, include_dipole: bool = True,
+               threshold: float = 0.0) -> Path:
     """Write the property-matrix file and return its path.
 
     Parameters
@@ -549,6 +757,13 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
         Also write ``L`` and ``S`` separately. They are not part of the external contract —
         ``H`` and ``mu`` are — but they cost little and they are what an argument about a
         g factor gets settled with. Turn them off for a large state count.
+    include_dipole : bool
+        Also write the three electric dipole matrices ``d_x, d_y, d_z``. **On by default**, and
+        adding them does **not** move ``FORMAT_VERSION``: the version tracks a change in the
+        *meaning* of a stored field, not the arrival of a new one, so an existing consumer that
+        reads ``H`` and ``mu`` is unaffected. Turn it off for a large state count, or when the
+        reference carried no dipole integrals at all (in which case nothing is written either
+        way).
     threshold : float
         Skip matrix elements smaller than this in modulus. ``0.0`` (the default) writes every
         element, which keeps the file's row count predictable from ``n_states`` alone.
@@ -577,12 +792,28 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
                     "from Z=5 to Z=81, 0.02%% on a 3d complex's ground doublet, and it splits "
                     "no degeneracy at all. It is recorded in the header of %s", path.name)
 
+    write_dipole = bool(include_dipole) and matrices.has_dipole
+    if write_dipole and matrices.dipole_is_origin_dependent:
+        log.warning("this molecule carries a charge of %+d, so the ELECTRIC DIPOLE is "
+                    "origin dependent: every diagonal element of d in %s -- and every "
+                    "invariant built from within one degenerate block -- shifts by -q R_G "
+                    "with the gauge origin, which is %s at (%.6f, %.6f, %.6f) bohr. Transition "
+                    "elements between distinct states are unaffected and may be compared "
+                    "freely. The charge and the origin are both in the header",
+                    int(matrices.molecular_charge), path.name, matrices.origin_label,
+                    *np.asarray(matrices.gauge_origin).ravel())
+
     blocks: List[Tuple[str, np.ndarray, str, str]] = [
         ("H", matrices.hamiltonian, "Eh",
          "effective Hamiltonian; DIAGONAL, see the header")]
     for k, axis in enumerate("xyz"):
         blocks.append(("mu_" + axis, matrices.mu[k], "mu_B",
                        "magnetic moment, {}".format(axis)))
+    if write_dipole:
+        for k, axis in enumerate("xyz"):
+            blocks.append(("d_" + axis, matrices.d[k], "e*a0",
+                           "electric dipole, {}; electronic + nuclear (diagonal only)"
+                           .format(axis)))
     if include_l_s:
         for k, axis in enumerate("xyz"):
             blocks.append(("L_" + axis, matrices.l[k], "hbar",
@@ -610,6 +841,19 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
         ("picture_change_on_properties", matrices.picture_change or "none"),
         ("phase_convention", "arbitrary (not canonicalized)"),
     ]
+    if write_dipole:
+        header.extend([
+            ("dipole_unit", "e*a0"),
+            ("dipole_includes_nuclear", "yes (diagonal only)"),
+            ("nuclear_dipole_ea0", " ".join(
+                "{:.12f}".format(x) for x in np.asarray(matrices.nuclear_dipole).ravel())),
+            ("molecular_charge", str(int(matrices.molecular_charge))),
+            ("picture_change_on_dipole", matrices.dipole_picture_change or "none"),
+            ("dipole_origin_dependence",
+             "diagonal elements and block-internal invariants shift by -q R_G; transition "
+             "elements between distinct states do not" if matrices.dipole_is_origin_dependent
+             else "none (neutral molecule)"),
+        ])
 
     lines: List[str] = []
     w = lines.append
@@ -635,9 +879,23 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
           "# of a 3d complex, and it splits no degeneracy. It grows with Z, so treat it as a\n"
           "# bound for the elements measured and not as one for a heavier system.\n")
     w("#\n")
+    if write_dipole:
+        w("# d_x/d_y/d_z are the TOTAL electric dipole in e*a0: the electronic operator\n"
+          "# -(r - R_G) over all electrons, plus the nuclear sum_A Z_A (R_A - R_G) added to\n"
+          "# the DIAGONAL only. So a diagonal element is that state's dipole moment and an\n"
+          "# off-diagonal one is a transition dipole. The nuclear vector is in the header, so\n"
+          "# the two parts can be separated again.\n")
+        if matrices.dipole_is_origin_dependent:
+            w("#\n")
+            w("# WARNING: this molecule is CHARGED, so the electric dipole depends on the\n"
+              "# gauge origin. Diagonal elements and any invariant formed inside one\n"
+              "# degenerate block shift by -q R_G if the origin moves; transition elements\n"
+              "# between distinct states do not. Compare charged systems only at one origin.\n")
+        w("#\n")
     w("# WARNING: state phases are arbitrary and degenerate states mix arbitrarily. Compare\n"
       "# these matrices only through invariants: degeneracy patterns, relative energies, and\n"
-      "# M_ij = Tr_block(mu_i mu_j) with its principal g values.\n")
+      "# M_ij = Tr_block(mu_i mu_j) with its principal g values. For the dipole the invariants\n"
+      "# are Tr_block(d_i d_j) and the block-to-block line strength sum |d_IJ|^2.\n")
     w("#\n")
     for line in matrices.comments:
         w("# {}\n".format(line))
@@ -669,6 +927,13 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
       "# set, since L and S are both time odd. Computed, not assumed.\n")
     w("L  " + " ".join("{:+.6e}".format(x) for x in np.asarray(matrices.inactive_l)) + "\n")
     w("S  " + " ".join("{:+.6e}".format(x) for x in np.asarray(matrices.inactive_s)) + "\n")
+    if write_dipole:
+        w("# d is the ELECTRONIC inactive share of the dipole and is NOT zero: r is time\n"
+          "# EVEN, so a Kramers pair contributes twice its expectation value instead of\n"
+          "# cancelling. It is already inside the d matrices below, and is written here only\n"
+          "# so the total can be taken apart again.\n")
+        w("d  " + " ".join("{:+.6e}".format(x)
+                           for x in np.asarray(matrices.inactive_d)) + "\n")
     w("[END]\n\n")
 
     for name, mat, unit, note in blocks:

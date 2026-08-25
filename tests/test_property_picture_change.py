@@ -314,3 +314,180 @@ def test_the_dump_records_which_operator_it_used(boron_variants, tmp_path, kuiva
     assert not bare.picture_changed
     read_back = dump.read_dump(dump.write_dump(tmp_path / "bare.out", bare))
     assert read_back["header"]["picture_change_on_properties"].startswith("none")
+
+
+# --- the electric dipole: the same transformation on an EVEN operator -------------------------
+#
+# ⚠ The electric operator is the mirror image of the magnetic one and the mistakes are mirrored
+# too. `r` commutes with beta, so its four-component matrix has LS = SL = 0 and a nonzero SS
+# block — where the moment has the opposite pattern — and there is therefore no single algebraic
+# identity of the "LS + LS^dag is the bare operator" kind to lean on. Two identities do the job
+# instead (kuiva.interface.pyscf_bridge._position_block_residual), and both are exact.
+
+def _bare_position(mol, origin):
+    """``(r - R_G)_k`` in the spin-blocked layout, about ``origin``."""
+    mol.set_common_orig(np.asarray(origin, dtype=float).ravel())
+    return np.stack([spin_block_diagonal(rk)
+                     for rk in np.asarray(mol.intor("int1e_r", comp=3), dtype=float)])
+
+
+def test_the_position_identities_hold_exactly(hf_mol):
+    """Both are exact algebra, which is why the production code makes them a refusal.
+
+    The first fixes the spinor mapping and the component order; the second ties the small
+    block's ``1/(4 c^2)`` to the *metric* the decoupling is built from, so a factor written
+    twice cannot drift.
+    """
+    from kuiva.interface.pyscf_bridge import picture_changed_dipole
+
+    pc = picture_changed_dipole(hf_mol, "mass")
+    assert pc.identity_residual < 1e-13
+
+
+def test_the_position_identity_check_is_load_bearing(hf_mol, monkeypatch):
+    """Corrupt the spinor mapping and the build must **raise**. A guard that cannot fail proves
+    nothing, and this one is the only thing standing between a permuted spin block and a
+    Hermitian, time-even, plausible, wrong dipole."""
+    from kuiva.interface import pyscf_bridge
+
+    good = pyscf_bridge._even_position_blocks
+
+    def swapped(xmol, r_g):
+        ll, ss = good(xmol, r_g)
+        n = ss.shape[-1] // 2
+        out = ss.copy()
+        out[:, :n, :], out[:, n:, :] = ss[:, n:, :], ss[:, :n, :]
+        return ll, out
+
+    monkeypatch.setattr(pyscf_bridge, "_even_position_blocks", swapped)
+    with pytest.raises(RuntimeError, match="structural identities"):
+        pyscf_bridge.picture_changed_dipole(hf_mol, "mass")
+
+
+@pytest.mark.parametrize("scale, expected", [(1.0, 2.7e-5), (10.0, 2.7e-7), (100.0, 2.7e-9)])
+def test_c_to_infinity_returns_the_bare_position(hf_mol, scale, expected):
+    """The correction vanishes as ``1/c^2`` — the signature of a genuine picture change rather
+    than a normalization error, which no physical-``c`` number alone could distinguish."""
+    from pyscf import lib
+
+    from kuiva.interface.pyscf_bridge import picture_changed_dipole
+
+    pc = picture_changed_dipole(hf_mol, "mass", light_speed=lib.param.LIGHT_SPEED * scale)
+    bare = _bare_position(hf_mol, gauge_origin_for(hf_mol, "mass")[0])
+    dev = max(np.abs(pc.position[k] - bare[k]).max() / np.abs(bare[k]).max() for k in range(3))
+    assert dev == pytest.approx(expected, rel=0.25)
+
+
+def test_the_picture_changed_dipole_is_hermitian_and_time_even(hf_mol):
+    """⚠ The opposite symmetry from the moment's, and the check has to be the opposite too.
+
+    ``r`` is time **even**, so what must vanish here is the time-*odd* remainder — the part
+    :func:`decompose_two_component` discards. ⚠ The transformed operator is nevertheless **not**
+    spin free, although the bare one is: the small block carries ``(p x sigma)_k``, so a
+    consumer that lifted this with ``spin_block_diagonal`` would silently throw that away.
+    """
+    from kuiva.interface.pyscf_bridge import picture_changed_dipole
+
+    pc = picture_changed_dipole(hf_mol, "mass")
+    spin_dependent = 0.0
+    for k in range(3):
+        m = pc.position[k]
+        assert np.abs(m - m.conj().T).max() < 1e-12 * np.abs(m).max()
+        even = two_component_operator(*decompose_two_component(m))
+        assert np.abs(m - even).max() < 1e-11 * np.abs(m).max()
+        _, w = decompose_two_component(m)
+        spin_dependent = max(spin_dependent, float(np.abs(w).max()) / float(np.abs(m).max()))
+    assert spin_dependent > 1e-8, "the transformed position must acquire a spin-dependent part"
+
+
+def test_kuiva_agrees_with_pyscfs_own_dipole_picture_change(hf_mol):
+    """The one dipole check here whose two sides do **not** share an implementation.
+
+    PySCF's ``_picture_change(xmol, (v, w), None)`` is the even-operator branch of an
+    independent implementation of the same transformation, and it fixes the small block's
+    ``(0.5/c)^2`` in its own code rather than in ours.
+    """
+    from pyscf.x2c import x2c
+
+    from kuiva.interface.pyscf_bridge import (_even_position_blocks, four_component_one_electron,
+                                              picture_changed_dipole)
+
+    helper = x2c.SpinOrbitalX2CHelper(hf_mol)
+    helper.xuncontract = True
+    xmol, _ = helper.get_xmol(hf_mol)
+    fc = four_component_one_electron(hf_mol, uncontract=True)
+    ll, ss_raw = _even_position_blocks(xmol, gauge_origin_for(hf_mol, "mass")[0])
+    ss = ss_raw * (0.25 / float(fc.light_speed) ** 2)
+    theirs = np.stack([fc.contract(helper._picture_change(xmol, (ll[k], ss[k]), None))
+                       for k in range(3)])
+
+    ours = picture_changed_dipole(hf_mol, "mass")
+    dev = max(np.abs(theirs[k] - ours.position[k]).max() / np.abs(ours.position[k]).max()
+              for k in range(3))
+    assert dev < 1e-10
+
+
+def test_a_dipole_decoupling_it_cannot_do_is_refused(hf_mol):
+    """The dipole's decoupling must be the Hamiltonian's, so an unsupported one raises rather
+    than being silently substituted."""
+    from kuiva.interface.pyscf_bridge import picture_changed_dipole
+
+    with pytest.raises(NotImplementedError, match="approx"):
+        picture_changed_dipole(hf_mol, "mass", approx="atom1e")
+
+
+def test_one_flag_governs_both_property_operators(hf_mol):
+    """⚠ There is deliberately no way to picture-change one operator and not the other.
+
+    A file whose ``mu`` carries the correction and whose ``d`` does not is a hybrid: nothing in
+    it would say which half is which, and neither half would be comparable with anything.
+    """
+    bare = ingest_property_integrals(hf_mol, "mass")
+    assert bare.picture_change is None and bare.dipole_picture_change is None
+    assert bare.provenance()["dipole_picture_change"].startswith("none")
+
+    both = ingest_property_integrals(hf_mol, "mass", picture_change=True)
+    assert both.picture_change is not None and both.dipole_picture_change is not None
+    assert "Peng-Reiher" in both.provenance()["dipole_picture_change"]
+    # The accessor returns the operator to use, so it must be the transformed one here and the
+    # bare one above -- the caller never branches.
+    assert not np.allclose(both.dipole_two_component(), bare.dipole_two_component())
+
+
+@pytest.mark.slow
+def test_the_dipole_picture_change_moves_the_dipole_and_not_the_spectrum():
+    """End to end on a molecule that actually has a dipole, at the same states both ways.
+
+    ⚠ LiH rather than the boron atom: a free ion's dipole is zero by parity, so it would be
+    zero with the correction and zero without it, and the test would pass while measuring
+    nothing.
+    """
+    import dataclasses
+
+    mol = api.Molecule(atoms=[("Li", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, 1.6))],
+                       basis="x2c-SV(P)all-2c")
+    ref = api.spinor_reference(mol, screening="none", memory_gb=8,
+                               property_picture_change=True)
+    n_occ = int((np.asarray(ref.data.mo_occ) > 0).sum())
+    active = list(range(2 * (n_occ - 1), 2 * (n_occ - 1) + 4))
+    result = api.casci(ref, active=active, n_active_elec=2, n_states=3, report=False)
+    full = ref.data.properties
+    assert full.dipole_picture_change is not None
+
+    def matrices(props):
+        return dump.property_matrices(result.coeff, result.spaces,
+                                      result.transition_densities(), result.total_energies,
+                                      props, ref.data.s_ao)
+
+    pc = matrices(full)
+    bare = matrices(dataclasses.replace(full, picture_change=None,
+                                        dipole_picture_change=None))
+    # It is a property operator: the states, and so the spectrum, cannot move.
+    assert pc.energies == pytest.approx(bare.energies, rel=1e-14)
+    shift = abs(np.real(pc.d[2][0, 0]) / np.real(bare.d[2][0, 0]) - 1.0)
+    assert 1e-9 < shift < 1e-3, shift
+    # It records itself, and the record is what tells the two files apart -- in the provenance
+    # JSON and, for a consumer that parses only the header, in a header field of its own.
+    assert "Peng-Reiher" in str(pc.provenance["properties"]["dipole_picture_change"])
+    assert str(bare.provenance["properties"]["dipole_picture_change"]).startswith("none")
+    assert "Peng-Reiher" in pc.dipole_picture_change and not bare.dipole_picture_change

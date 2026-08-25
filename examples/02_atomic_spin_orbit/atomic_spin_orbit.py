@@ -167,10 +167,15 @@ def fine_structure(screening: str) -> Tuple[object, object]:
     cas = kuiva.CASSCF(ref, character=("B", "p"), n_active=N_ACTIVE,
                        n_active_elec=N_ACTIVE_ELEC, n_states=N_STATES).run()
 
-    # The property file: the effective Hamiltonian and the three magnetic-moment
-    # components in the basis of the spin-orbit eigenstates. It is the program's actual
-    # product -- an external crystal-field code reads it -- and example 6 is about the file
-    # itself. Here it is simply the route to the g values.
+    # The property file: the effective Hamiltonian, the three magnetic-moment components and
+    # the three electric-dipole components, in the basis of the spin-orbit eigenstates. It is
+    # the program's actual product -- an external crystal-field code reads it -- and example 6
+    # is about the file itself. Here it is simply the route to the g values.
+    #
+    # The dipole is written too, and for a free atom every element of it is exactly zero:
+    # all the states of 2p^1 have the same parity, so every electric-dipole matrix element
+    # between them vanishes. It is the cheapest possible check that the operator is the one
+    # it claims to be, and it costs nothing to look at.
     dump = kuiva.PropertyDump(cas, OUTPUT / "boron_{}.props".format(screening),
                               title="B 2p^1, CAS(1, 6), screening = " + screening).run()
     return cas, dump

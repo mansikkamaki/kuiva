@@ -1058,7 +1058,14 @@ class NEVPT2(_Stage):
 # --- 6. the two formatted products -----------------------------------------------------------
 
 class PropertyDump(_Stage):
-    """The property-matrix file: ``H`` and ``mu_x, mu_y, mu_z`` in the SOC eigenstate basis.
+    """The property-matrix file: ``H``, ``mu_x, mu_y, mu_z`` and ``d_x, d_y, d_z`` in the SOC
+    eigenstate basis.
+
+    The electric dipole is written by default (``include_dipole=False`` turns it off). It is
+    the **total** dipole — electronic plus, on the diagonal, nuclear — so its diagonal is each
+    state's dipole moment and its off-diagonal elements are transition dipoles. ⚠ Kuiva writes
+    the operator and its invariants; oscillator strengths and radiative rates are the external
+    property code's job, as the crystal-field analysis is.
 
     ``source`` is a finished ``solver="ci"`` :class:`CASSCF` — or a finished :class:`NEVPT2`,
     in which case the corrected energies replace the diagonal **and the header records the
@@ -1071,8 +1078,8 @@ class PropertyDump(_Stage):
     """
 
     def __init__(self, source, path, *, title: str = "", include_l_s: bool = True,
-                 comments: Sequence[str] = (), inactive_tol: Optional[float] = None,
-                 report: bool = True) -> None:
+                 include_dipole: bool = True, comments: Sequence[str] = (),
+                 inactive_tol: Optional[float] = None, report: bool = True) -> None:
         super().__init__()
         self._finished(source, (CASSCF, NEVPT2), "PropertyDump")
         self.source = source
@@ -1088,6 +1095,7 @@ class PropertyDump(_Stage):
                              "not built by the front-end")
         self.path = Path(path)
         self.title, self.include_l_s = str(title), bool(include_l_s)
+        self.include_dipole = bool(include_dipole)
         self.comments, self.inactive_tol = tuple(comments), inactive_tol
         self.report = bool(report)
 
@@ -1102,7 +1110,8 @@ class PropertyDump(_Stage):
             out.section(log, "Property matrices")
             matrices.report(log)
         self.matrices = matrices
-        matrices.write(self.path, title=self.title, include_l_s=self.include_l_s)
+        matrices.write(self.path, title=self.title, include_l_s=self.include_l_s,
+                       include_dipole=self.include_dipole)
 
     def assign(self, *, tol_cm: float = 1.0, report: bool = True):
         """The term assignment of these states, reusing the moment matrices already built.

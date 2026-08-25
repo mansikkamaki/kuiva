@@ -479,10 +479,12 @@ def test_dump_round_trip_is_exact(boron_matrices, tmp_path):
         expected["mu_" + axis] = boron_matrices.mu[k]
         expected["L_" + axis] = boron_matrices.l[k]
         expected["S_" + axis] = boron_matrices.s[k]
+        expected["d_" + axis] = boron_matrices.d[k]
     assert set(back["matrices"]) == set(expected)
     for name, want in expected.items():
         assert np.array_equal(back["matrices"][name], want), name
     assert np.allclose(back["inactive"]["L"], boron_matrices.inactive_l, atol=1e-9)
+    assert np.allclose(back["inactive"]["d"], boron_matrices.inactive_d, atol=1e-12)
 
 
 def test_dump_hamiltonian_is_diagonal(boron_matrices, tmp_path):
@@ -536,7 +538,8 @@ def test_dump_leaves_no_partial_file(boron_matrices, tmp_path):
 
 
 def test_dump_can_omit_l_and_s(boron_matrices, tmp_path):
-    back = dump.read_dump(boron_matrices.write(tmp_path / "b.prop", include_l_s=False))
+    back = dump.read_dump(boron_matrices.write(tmp_path / "b.prop", include_l_s=False,
+                                               include_dipole=False))
     assert set(back["matrices"]) == {"H", "mu_x", "mu_y", "mu_z"}
 
 

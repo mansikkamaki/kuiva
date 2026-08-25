@@ -154,6 +154,12 @@ class Multiplet:
     tunnelling_gap_cm : float or None
         ``Delta``, the splitting of the two singlets that were grouped [cm^-1]. ``None`` for
         every ordinary block.
+    d_tensor : np.ndarray, shape (3, 3)
+        The invariant ``D_ij = Tr_b(d_i d_j)`` in ``(e a_0)^2`` (:func:`block_dipole_tensor`),
+        or ``None`` if no dipole matrices were given. ⚠ It is the block's *internal* electric
+        second moment and says nothing about a transition **out** of the block — that is
+        :func:`block_line_strengths` — and for a charged molecule it moves with the gauge
+        origin.
     """
     start: int
     size: int
@@ -165,6 +171,7 @@ class Multiplet:
     g_sign: float = 0.0
     non_kramers: bool = False
     tunnelling_gap_cm: Optional[float] = None
+    d_tensor: Optional[np.ndarray] = None
 
     @property
     def j(self) -> float:
@@ -285,18 +292,80 @@ def magnetic_moment_matrices(l_matrices: np.ndarray, s_matrices: np.ndarray,
     return -(l + g_e * s)
 
 
+def block_operator_tensor(op: np.ndarray, start: int, size: int) -> np.ndarray:
+    """The invariant ``T_ij = Tr_b(A_i A_j)`` over one degenerate block, for any Hermitian
+    vector operator ``A`` given as ``(3, n, n)``.
+
+    ⚠ **One implementation, because the invariance argument is one argument.** A block trace of
+    a product of two Hermitian matrices is invariant under any unitary mixing within the block
+    and under any per-state phase; that is what makes it the only sound way to compare a stored
+    property matrix with anything, and it holds for the electric dipole exactly as it holds for
+    the magnetic moment. :func:`block_moment_tensor` and :func:`block_dipole_tensor` are the
+    two named readings of it, and they differ only in units.
+    """
+    sl = slice(start, start + size)
+    blk = np.asarray(op)[:, sl, sl]
+    m = np.einsum("iab,jba->ij", blk, blk)
+    # Tr(A_i A_j) is real for Hermitian A_i; symmetrise to kill numerical asymmetry.
+    m = np.real(m)
+    return 0.5 * (m + m.T)
+
+
 def block_moment_tensor(mu: np.ndarray, start: int, size: int) -> np.ndarray:
     """The invariant ``M_ij = Tr_b(mu_i mu_j)`` [mu_B^2] over one degenerate block.
 
     Invariant under any unitary mixing within the block and under any per-state phase, so
     this is the only sound way to compare moment matrices between codes.
     """
-    sl = slice(start, start + size)
-    blk = np.asarray(mu)[:, sl, sl]
-    m = np.einsum("iab,jba->ij", blk, blk)
-    # Tr(mu_i mu_j) is real for Hermitian mu_i; symmetrise to kill numerical asymmetry.
-    m = np.real(m)
-    return 0.5 * (m + m.T)
+    return block_operator_tensor(mu, start, size)
+
+
+def block_dipole_tensor(d: np.ndarray, start: int, size: int) -> np.ndarray:
+    """The invariant ``D_ij = Tr_b(d_i d_j)`` [(e a_0)^2] over one degenerate block.
+
+    The electric counterpart of :func:`block_moment_tensor`, and the reduction any validation
+    of the dump's ``d`` matrices must go through: the file fixes no phase convention and
+    degenerate states mix arbitrarily, so an element-by-element comparison of ``d`` compares
+    arbitrary phases and nothing else.
+
+    ⚠ **For a charged molecule this quantity moves with the gauge origin**, because the block's
+    internal elements include the diagonal and the diagonal carries ``-q R_G``. Compare two
+    charged systems' ``D`` only at the same origin — which the dump header states.
+    ⚠ **It is not an oscillator strength and must not be read as one.** It is a trace over one
+    block; what a transition needs is :func:`block_line_strengths`, between two of them.
+    """
+    return block_operator_tensor(d, start, size)
+
+
+def block_line_strengths(d: np.ndarray, blocks: Sequence[Tuple[int, int]]) -> np.ndarray:
+    """``S_AB = sum_k sum_{I in A, J in B} |d_k[I,J]|^2`` [(e a_0)^2], as ``(n_b, n_b)`` real.
+
+    The phase-invariant statement about a *transition*: a double sum of squared moduli over two
+    whole blocks is invariant under any unitary mixing inside either block and under any
+    per-state phase, which is exactly what a degenerate manifold leaves undetermined. This is
+    what a selection rule is checked against — a forbidden transition has ``S_AB = 0`` however
+    the eigensolver happened to rotate the two manifolds — and what a cross-code comparison of
+    transition dipoles compares.
+
+    ⚠ **This is a line strength and NOT an oscillator strength, a rate, or an intensity.**
+    Turning it into one requires the transition energy, the refractive index and a convention
+    for what is being measured; that analysis belongs to the external property code, as the
+    ITO and crystal-field analysis does. Nothing here divides, weights or degeneracy-averages.
+
+    ⚠ **Off-diagonal blocks (``A != B``) are origin-independent whatever the molecule's
+    charge**; the diagonal ``S_AA`` is not, for the reason
+    :func:`block_dipole_tensor` gives.
+    """
+    d = np.asarray(d)
+    if d.ndim != 3 or d.shape[0] != 3:
+        raise ValueError("the dipole matrices must be (3, n, n), got {}".format(d.shape))
+    n = len(blocks)
+    out = np.zeros((n, n))
+    for a, (sa, na) in enumerate(blocks):
+        for b, (sb, nb) in enumerate(blocks):
+            block = d[:, sa:sa + na, sb:sb + nb]
+            out[a, b] = float(np.sum(np.abs(block) ** 2))
+    return out
 
 
 def multiplet_g_axes(m_tensor: np.ndarray) -> np.ndarray:
@@ -481,7 +550,8 @@ def _warn_on_close_singlets(blocks: List[Tuple[int, int]], e_cm: np.ndarray) -> 
 def analyse_spectrum(energies_hartree: Sequence[float],
                      mu: Optional[np.ndarray] = None,
                      tol_cm: float = 1.0,
-                     pseudo_doublet_tol_cm: Optional[float] = None) -> List[Multiplet]:
+                     pseudo_doublet_tol_cm: Optional[float] = None,
+                     d: Optional[np.ndarray] = None) -> List[Multiplet]:
     """Full phase-invariant description of a SOC spectrum: blocks + moment invariants.
 
     This is the canonical reduction applied to Kuiva's own output and to the OpenMolcas /
@@ -504,6 +574,10 @@ def analyse_spectrum(energies_hartree: Sequence[float],
         wrong grouping produces a plausible g out of two unrelated states. Check
         :attr:`Multiplet.g_transverse_residual` on the result — it is zero by symmetry for a
         real pseudo-doublet, and that is the part of this that can fail.
+    d : np.ndarray, shape (3, n, n), optional
+        Electric dipole matrices in the same basis [e a_0]. Fills :attr:`Multiplet.d_tensor`
+        and nothing else; the blocks and the grouping are decided by the energies exactly as
+        before, so passing this changes no existing number.
     """
     e = np.asarray(energies_hartree, dtype=float)
     order = np.argsort(e)
@@ -511,6 +585,9 @@ def analyse_spectrum(energies_hartree: Sequence[float],
     mu_sorted = None
     if mu is not None:
         mu_sorted = np.asarray(mu)[:, order, :][:, :, order]
+    d_sorted = None
+    if d is not None:
+        d_sorted = np.asarray(d)[:, order, :][:, :, order]
 
     blocks = degenerate_blocks(e_cm, tol_cm=tol_cm)
     if pseudo_doublet_tol_cm is None:
@@ -532,16 +609,35 @@ def analyse_spectrum(energies_hartree: Sequence[float],
             if g_vals:
                 g_axes = multiplet_g_axes(m_tensor)
                 g_sign = g_determinant_sign(mu_sorted, start, size)
+        d_tensor = (None if d_sorted is None
+                    else block_dipole_tensor(d_sorted, start, size))
         out.append(Multiplet(start=start, size=size,
                              energy_cm=float(np.mean(blk_e)),
                              spread_cm=float(blk_e.max() - blk_e.min()),
                              m_tensor=m_tensor, g_values=g_vals,
                              g_axes=g_axes, g_sign=g_sign,
-                             non_kramers=gap is not None, tunnelling_gap_cm=gap))
+                             non_kramers=gap is not None, tunnelling_gap_cm=gap,
+                             d_tensor=d_tensor))
     log.debug("analysed SOC spectrum: %d states -> %d multiplets (tol=%.3g cm-1, %d "
               "non-Kramers pair(s))", e.size, len(out), tol_cm,
               sum(1 for m in out if m.non_kramers))
     return out
+
+
+def spectrum_line_strengths(energies_hartree: Sequence[float], d: np.ndarray,
+                            multiplets: Sequence[Multiplet]) -> np.ndarray:
+    """``S_AB`` over the blocks :func:`analyse_spectrum` found, ``(n_b, n_b)`` [(e a_0)^2].
+
+    ⚠ **``multiplets`` must be the result of :func:`analyse_spectrum` on the same energies**,
+    because its ``start``/``size`` are indices into the *energy-sorted* basis and the dipole
+    matrices arrive in the caller's order. The one line of sorting below is that convention
+    restated, and it is why this takes the multiplets rather than re-grouping: two independent
+    groupings of one spectrum would eventually disagree at a tolerance boundary and the mismatch
+    would be silent.
+    """
+    order = np.argsort(np.asarray(energies_hartree, dtype=float))
+    d_sorted = np.asarray(d)[:, order, :][:, :, order]
+    return block_line_strengths(d_sorted, [(m.start, m.size) for m in multiplets])
 
 
 def lande_g(l: float, s: float, j: float) -> float:
@@ -566,6 +662,8 @@ def degeneracy_pattern(multiplets: Sequence[Multiplet]) -> Tuple[int, ...]:
 
 __all__ = [
     "G_ELECTRON", "HARTREE_TO_CM", "Multiplet", "analyse_spectrum", "block_moment_tensor",
+    "block_operator_tensor", "block_dipole_tensor", "block_line_strengths",
+    "spectrum_line_strengths",
     "degeneracy_pattern", "degenerate_blocks", "lande_g", "magnetic_moment_matrices",
     "multiplet_g_values",
     "AXIS_DEFINED_RTOL", "PSEUDO_DOUBLET_HINT_CM", "axis_is_defined", "g_determinant_sign", "multiplet_g_axes",

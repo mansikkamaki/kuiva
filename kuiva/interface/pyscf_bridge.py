@@ -283,6 +283,26 @@ class PropertyIntegrals:
         How it was chosen (``"centre of mass"``, ``"centre of nuclear charge"``,
         ``"explicit"``). Provenance for the dump header, since ``L`` — and hence every
         moment matrix built from it — depends on this choice.
+    position : ndarray (3, nao, nao), real
+        ``<mu| (r - R_G) |nu>`` — PySCF's ``int1e_r`` about the **same** gauge origin, real and
+        symmetric. The electronic electric dipole operator is ``-(r - R_G)``, which is what
+        :meth:`dipole_two_component` returns; the sign is kept out of storage so this array is
+        the plain position integral it is named after.
+    nuclear_dipole : ndarray (3,)
+        ``sum_A Z_A (R_A - R_G)`` in ``e a_0`` — the nuclear half of the dipole. ⚠ It belongs
+        on the **diagonal only**: a transition element between distinct states gets nothing
+        from it, and the diagonal is not a dipole moment without it.
+    molecular_charge : int
+        The molecule's total charge, carried because it is what decides whether the dipole is
+        origin-dependent at all. ⚠ For ``q != 0`` the diagonal obeys ``d(R_G) = d(0) - q R_G``
+        exactly and the degenerate-block internals move with it; the off-diagonal elements
+        between distinct states do not. :func:`kuiva.props.dump.write_dump` warns and the
+        header records both the charge and the origin.
+    dipole_picture_change : PictureChangedDipole or None
+        The X2C picture change on the position operator, when it was asked for. Governed by
+        the **same** ``property_picture_change=`` flag as the magnetic one, deliberately: a
+        file whose ``mu`` is transformed and whose ``d`` is not is a hybrid no reader can
+        interpret.
 
     Notes
     -----
@@ -304,10 +324,22 @@ class PropertyIntegrals:
     gauge_origin: np.ndarray
     origin_label: str = "explicit"
     picture_change: Optional["PictureChangedMoment"] = None
+    #: ⚠ Defaulted, so an object built before the dipole existed — or one a test assembles by
+    #: hand from the magnetic half alone — still constructs. Every front-end route fills them,
+    #: and the accessors below refuse rather than invent a zero.
+    position: Optional[np.ndarray] = None
+    nuclear_dipole: Optional[np.ndarray] = None
+    molecular_charge: int = 0
+    dipole_picture_change: Optional["PictureChangedDipole"] = None
 
     @property
     def nao(self) -> int:
         return int(self.irxp.shape[-1])
+
+    @property
+    def has_dipole(self) -> bool:
+        """Whether the electric dipole was ingested beside the angular momentum."""
+        return self.position is not None
 
     def moment_operator(self) -> Optional[np.ndarray]:
         """``(L + 2 S)`` picture-changed, or ``None`` when the bare operators are in use.
@@ -335,14 +367,64 @@ class PropertyIntegrals:
         from ..spinor.expand import spin_block_diagonal
         return np.stack([spin_block_diagonal(lk) for lk in self.angular_momentum()])
 
+    def dipole_two_component(self) -> np.ndarray:
+        """The **electronic** electric dipole ``-(r - R_G)`` as ``(3, 2*nao, 2*nao)`` [e a_0].
+
+        ⚠ **This returns the operator to use, picture-changed or not, and the caller does not
+        branch.** That is deliberately unlike :meth:`moment_operator`, and the reason is that
+        the electric operator has no ``L``/``S`` split to keep straight: the picture change
+        replaces one operator with one operator, so a branch at every call site would be three
+        chances to use the wrong one for no gain. Which one this is, is
+        :meth:`provenance`'s ``dipole_picture_change``.
+
+        The bare operator is spin-free and lifts by
+        :func:`kuiva.spinor.expand.spin_block_diagonal`; the picture-changed one is **not** —
+        an even operator acquires a time-reversal-even spin-dependent part under the
+        transformation — which is why it is stored two-component already.
+        """
+        if self.dipole_picture_change is not None:
+            return -np.asarray(self.dipole_picture_change.position)
+        from ..spinor.expand import spin_block_diagonal
+        return np.stack([spin_block_diagonal(-rk) for rk in self.electric_dipole_ao()])
+
+    def electric_dipole_ao(self) -> np.ndarray:
+        """``(r - R_G)_k`` as ``(3, nao, nao)`` real — the raw scalar position integrals.
+
+        Refuses rather than returning zeros when the dipole was never ingested: a dump whose
+        ``d`` is silently zero is exactly the plausible-wrong file this module exists to
+        prevent.
+        """
+        if self.position is None:
+            raise ValueError(
+                "these property integrals carry no electric dipole; they were built before it "
+                "existed or by a route that skipped it. Re-ingest through "
+                "ingest_property_integrals, which always computes it")
+        return np.asarray(self.position)
+
+    def nuclear_dipole_vector(self) -> np.ndarray:
+        """``sum_A Z_A (R_A - R_G)`` as ``(3,)`` [e a_0], or zeros when none was ingested."""
+        if self.nuclear_dipole is None:
+            return np.zeros(3)
+        return np.asarray(self.nuclear_dipole, dtype=float).ravel()
+
+    def dipole_is_origin_dependent(self) -> bool:
+        """True for a charged molecule — see :attr:`molecular_charge`."""
+        return int(self.molecular_charge) != 0
+
     def provenance(self) -> Dict[str, object]:
         pc = "none (bare AO operators, used unchanged in the 2c basis)"
         if self.picture_change is not None:
             pc = self.picture_change.label()
+        dipole_pc = "none (bare AO position operator, used unchanged in the 2c basis)"
+        if self.dipole_picture_change is not None:
+            dipole_pc = self.dipole_picture_change.label()
         return {
             "gauge_origin_bohr": [float(x) for x in np.asarray(self.gauge_origin).ravel()],
             "gauge_origin_choice": self.origin_label,
             "picture_change": pc,
+            "dipole_picture_change": dipole_pc,
+            "nuclear_dipole_ea0": [float(x) for x in self.nuclear_dipole_vector()],
+            "molecular_charge": int(self.molecular_charge),
         }
 
     def __repr__(self) -> str:
@@ -476,7 +558,7 @@ def ingest_property_integrals(mol, gauge_origin=None, *, picture_change: bool = 
                               approx: str = "1e",
                               decoupling_options: Optional[Dict[str, object]] = None,
                               anomaly_picture_change: bool = False) -> PropertyIntegrals:
-    """Orbital angular momentum about a gauge origin, as plain arrays.
+    """Orbital angular momentum **and** electric dipole about a gauge origin, as plain arrays.
 
     ⚠ **The gauge origin is a real choice and it changes the answer.** ``L`` is defined
     relative to it, so for a charged system every orbital moment matrix moves with it. The
@@ -484,15 +566,34 @@ def ingest_property_integrals(mol, gauge_origin=None, *, picture_change: bool = 
     into the dump header, because a stored moment matrix that does not say where its origin
     was is not interpretable.
 
-    ``picture_change`` additionally builds the picture-changed moment operator
-    (:func:`picture_changed_moment`). ⚠ **It is off by default and it is not free**: it costs
-    a second four-component one-electron problem and its decoupling, and it changes the meaning
-    of every moment matrix built from the result.
+    ⚠ **Both operators are taken about the same point in the same call**, which is the only
+    thing that stops a file in which ``L`` refers to the centre of mass and ``r`` to the
+    coordinate origin. The nuclear half of the dipole (:func:`nuclear_dipole`) and the
+    molecular charge travel with them, because neither the diagonal of ``d`` nor the question
+    "is this origin-dependent?" can be answered downstream without them.
+
+    ``picture_change`` additionally builds the picture-changed moment **and** dipole operators
+    (:func:`picture_changed_moment`, :func:`picture_changed_dipole`). ⚠ **It is off by default
+    and it is not free**: it costs two four-component one-electron problems and their
+    decouplings, and it changes the meaning of every moment and dipole matrix built from the
+    result. ⚠ **One flag governs both operators on purpose** — a file whose ``mu`` carries the
+    correction and whose ``d`` does not would be a hybrid whose halves are not comparable with
+    anything, and nothing in it would say so.
     """
     r_g, label = gauge_origin_for(mol, gauge_origin)
+    res.require("one-electron property integrals",
+                property_integral_memory_gb(int(mol.nao)),
+                note="2 x (3, nao, nao) real, nao = {}".format(int(mol.nao)))
     with timer("angular-momentum integrals"):
         mol.set_common_orig(r_g)
         irxp = np.asarray(mol.intor("int1e_cg_irxp", comp=3), dtype=float)
+    with timer("electric dipole integrals"):
+        # Same `Mole`, same common origin, same call — so the two operators in this container
+        # can never be about different points, which is the one way this would go wrong
+        # silently (L about the centre of mass and r about the coordinate origin gives a file
+        # in which every magnetic quantity and every electric one refer to different frames).
+        position = np.asarray(mol.intor("int1e_r", comp=3), dtype=float)
+    _check_position_integrals(position)
     # <mu| r x nabla |nu> is exactly antisymmetric for real Gaussians, and L = -i(r x nabla)
     # is Hermitian only because of it. Cheap, structural, and it fails loudly if the integral
     # convention ever changes under us.
@@ -510,13 +611,64 @@ def ingest_property_integrals(mol, gauge_origin=None, *, picture_change: bool = 
             "a 2e-06 correction applied on top of an uncorrected operator, which is not a "
             "meaningful Hamiltonian; set picture_change=True as well or neither.")
     pc = None
+    dipole_pc = None
     if picture_change:
-        pc = picture_changed_moment(mol, r_g, approx=approx,
+        # ⚠ The origin is handed on in its TAGGED form. It is already resolved to bohr here,
+        # and passing the bare array makes `gauge_origin_for` warn the user about a bare tuple
+        # they never wrote -- once per operator, so the noise grew with the second one.
+        resolved = ("bohr",) + tuple(float(x) for x in np.asarray(r_g).ravel())
+        pc = picture_changed_moment(mol, resolved, approx=approx,
                                     decoupling_options=decoupling_options,
                                     anomaly_picture_change=anomaly_picture_change)
+        # ⚠ One flag, both operators. A file whose mu carries the picture change and whose d
+        # does not is a hybrid: nothing in it says which half is which, and the two halves are
+        # not comparable with anything. See PropertyIntegrals.dipole_picture_change.
+        dipole_pc = picture_changed_dipole(mol, resolved, approx=approx,
+                                           decoupling_options=decoupling_options)
+    charge = int(mol.charge)
     return PropertyIntegrals(irxp=np.ascontiguousarray(irxp),
                              gauge_origin=np.ascontiguousarray(r_g), origin_label=label,
-                             picture_change=pc)
+                             picture_change=pc,
+                             position=np.ascontiguousarray(position),
+                             nuclear_dipole=nuclear_dipole(mol, r_g),
+                             molecular_charge=charge,
+                             dipole_picture_change=dipole_pc)
+
+
+def property_integral_memory_gb(nao: int) -> float:
+    """Resident cost of the two ``(3, nao, nao)`` real one-electron property arrays."""
+    return 2.0 * res.array_gb((3, int(nao), int(nao)), np.float64)
+
+
+def nuclear_dipole(mol, gauge_origin) -> np.ndarray:
+    """``sum_A Z_A (R_A - R_G)`` as ``(3,)`` in ``e a_0`` — the nuclear half of the dipole.
+
+    ⚠ ``mol.atom_charge`` and **not** the element's atomic number: for a ghost atom or an
+    effective-core basis they differ, and the nuclear dipole has to be built from the charges
+    the *integrals* were built against or the two halves of ``d`` do not belong to one
+    molecule.
+    """
+    r_g = np.asarray(gauge_origin, dtype=float).ravel()
+    coords = np.asarray(mol.atom_coords(), dtype=float)
+    z = np.asarray([mol.atom_charge(i) for i in range(mol.natm)], dtype=float)
+    return np.ascontiguousarray((coords - r_g).T @ z)
+
+
+def _check_position_integrals(position: np.ndarray) -> None:
+    """``<mu|r_k|nu>`` is exactly symmetric for real Gaussians; a violation is structural.
+
+    The electric counterpart of the antisymmetry check on ``int1e_cg_irxp``: ``r`` is a
+    multiplicative real operator, so its matrix is real symmetric and the dipole is Hermitian
+    only because of it. Cheap, and it fails loudly if the integral convention ever moves.
+    """
+    r = np.asarray(position)
+    asym = float(np.max(np.abs(r - r.transpose(0, 2, 1)))) if r.size else 0.0
+    scale = float(np.max(np.abs(r))) or 1.0
+    if asym > 1e-12 * scale:
+        raise RuntimeError(
+            "the electric dipole integrals are not symmetric (max |A - A^T| = {:.2e}, {:.1e} "
+            "relative); d would not be Hermitian and every transition dipole built from it "
+            "would be meaningless".format(asym, asym / scale))
 
 
 # --- the picture change of the magnetic moment operator ------------------------------------
@@ -728,19 +880,7 @@ def picture_changed_moment(mol, gauge_origin=None, *, approx: str = "1e",
                 "this operator would be Hermitian, plausible and wrong."
                 .format(resid, MOMENT_IDENTITY_TOL))
 
-        if approx == "1e-dlu":
-            from ..x2c.local import local_decoupling_matrices
-            opts = dict(decoupling_options or {})
-            opts.pop("report", None)
-            x, r = local_decoupling_matrices(fc.hcore, fc.overlap, fc.light_speed,
-                                             molecular_partition(mol, fc), **opts)
-        else:
-            if decoupling_options:
-                raise ValueError(
-                    "decoupling_options={} apply only to the local (DLU) decoupling, and this "
-                    "moment operator is being built with approx={!r}"
-                    .format(sorted(decoupling_options), approx))
-            x, r = decoupling_matrices(fc.hcore, fc.overlap, fc.light_speed)
+        x, r = _property_decoupling(mol, fc, approx, decoupling_options, "moment")
 
         zero = np.zeros_like(ls[0])
         moment = np.stack([
@@ -767,6 +907,314 @@ def picture_changed_moment(mol, gauge_origin=None, *, approx: str = "1e",
                     "%.2e); the decoupling matrices are suspect", worst)
     return PictureChangedMoment(moment=np.ascontiguousarray(moment), spin=spin,
                                 decoupling=approx, identity_residual=float(resid))
+
+
+def _property_decoupling(mol, fc: "MolecularFourComponent", approx: str,
+                         decoupling_options: Optional[Dict[str, object]], what: str):
+    """``(X, R)`` for a property picture change — **one** implementation for both operators.
+
+    ⚠ Two copies of this choice would be the dangerous kind of duplication: a moment
+    transformed through the exact molecular decoupling and a dipole transformed through the
+    local one would both be Hermitian, both plausible, and would describe different
+    Hamiltonians. The decoupling a property operator is transformed with must be the one the
+    Hamiltonian uses, so options aimed at a route not being taken are refused rather than
+    ignored.
+    """
+    from ..x2c.decouple import decoupling_matrices
+
+    if approx == "1e-dlu":
+        from ..x2c.local import local_decoupling_matrices
+        opts = dict(decoupling_options or {})
+        opts.pop("report", None)
+        return local_decoupling_matrices(fc.hcore, fc.overlap, fc.light_speed,
+                                         molecular_partition(mol, fc), **opts)
+    if decoupling_options:
+        raise ValueError(
+            "decoupling_options={} apply only to the local (DLU) decoupling, and this {} "
+            "operator is being built with approx={!r}"
+            .format(sorted(decoupling_options), what, approx))
+    return decoupling_matrices(fc.hcore, fc.overlap, fc.light_speed)
+
+
+# --- the picture change of the electric dipole (position) operator -------------------------
+
+#: Relative tolerance on the two exact structural identities the position blocks must satisfy
+#: before anything is transformed. ⚠ A **refusal**, not a warning, for the same reason
+#: :data:`MOMENT_IDENTITY_TOL` is one: both identities are exact algebra, and a violation means
+#: the spinor mapping, the component order, the gauge origin or the small-component
+#: normalization is wrong — each of which yields a Hermitian, time-reversal-even, plausible and
+#: wrong dipole that no downstream check would question.
+DIPOLE_IDENTITY_TOL = 1e-10
+
+#: The probe displacement [bohr] the translation identity is measured over. Arbitrary and
+#: fixed: any vector with three distinct nonzero components does the job, and fixing it keeps
+#: the reported residual reproducible from run to run. ⚠ It must not be zero in any component,
+#: or that component's normalization would go unchecked.
+_DIPOLE_PROBE = np.array([0.75, -0.5, 0.25])
+
+
+@dataclass(frozen=True)
+class PictureChangedDipole:
+    """The electric dipole (position) operator with the X2C picture change applied to it.
+
+    ⚠ **The electric operator is EVEN, and that makes its construction the mirror image of
+    the magnetic one's.** ``r`` commutes with ``beta``, so its four-component matrix has
+    ``LS = SL = 0`` and a nonzero ``SS`` block — exactly the opposite pattern from
+    :class:`PictureChangedMoment`, whose operator is purely odd. In the restricted
+    kinetic-balance normalization :func:`four_component_one_electron` fixes::
+
+        LL_k = <chi| (r - R_G)_k |chi>
+        SS_k = <chi| (sigma.p) (r - R_G)_k (sigma.p) |chi> / (4 c^2)
+
+    and the transformation is the *same* ``R^dag (A_LL + A_LS X + X^dag A_SL + X^dag A_SS X) R``
+    the Hamiltonian and the moment go through.
+
+    ⚠ **The transformed operator is no longer spin-free**, although the bare one is: the ``SS``
+    block carries ``(p x sigma)_k`` (see :func:`_position_block_residual`), so the picture
+    change gives an even operator a time-reversal-**even** spin-dependent part. A consumer that
+    lifts this with :func:`kuiva.spinor.expand.spin_block_diagonal` would throw that part away,
+    which is why it is stored two-component already.
+
+    Attributes
+    ----------
+    position : ndarray (3, 2*nao, 2*nao) complex
+        ``(r - R_G)`` picture-changed, in ``a_0`` and in the molecule's own AO basis. The
+        electronic dipole operator is ``-`` this; the sign is applied by the consumer, exactly
+        as it is for the bare integrals.
+    decoupling : str
+        Which decoupling produced it (``"1e"``, ``"1e-dlu"``), for the stored provenance.
+    identity_residual : float
+        Worst relative residual of the two identities checked on every build.
+
+    References
+    ----------
+    * Picture change of property operators under X2C: D. Peng, M. Reiher, J. Chem. Phys. 136,
+      244108 (2012), doi:10.1063/1.4729788.
+    """
+
+    position: np.ndarray
+    decoupling: str
+    identity_residual: float
+
+    @property
+    def nao(self) -> int:
+        return int(self.position.shape[-1] // 2)
+
+    def label(self) -> str:
+        return ("Peng-Reiher X2C picture change on the electric dipole (position) operator "
+                "(decoupling={})".format(self.decoupling))
+
+
+def _even_position_blocks(xmol, r_g) -> Tuple[np.ndarray, np.ndarray]:
+    """``(LL, SS_raw)`` of ``(r - R_G)_k``, both ``(3, 2*nao, 2*nao)`` in the spin-blocked layout.
+
+    ``SS_raw`` is ``<chi| (sigma.p) (r - R_G)_k (sigma.p) |chi>`` **without** the ``1/(4 c^2)``
+    of the small-component normalization, which the caller applies — kept apart so the raw
+    block can be checked against integrals that carry no ``c`` at all.
+
+    ⚠ **The ``_spinor`` form of the integral is used deliberately**, for the same reason
+    :func:`_odd_moment_blocks` uses it: ``libcint`` returns ``int1e_sprsp`` in the spherical
+    basis as twelve components in no convention :func:`kuiva.spinor.expand.two_component_operator`
+    can assemble, while the spinor form is one unambiguous ``(3, n2c, n2c)`` object mapped into
+    this project's spin-blocked ``[alpha; beta]`` rows by the unitary ``sph2spinor_coeff``. That
+    mapping is *validated*, not assumed: it is what :func:`_position_block_residual` tests.
+    """
+    from ..spinor.expand import spin_block_diagonal
+
+    xmol.set_common_orig(np.asarray(r_g, dtype=float).ravel())
+    ll = np.stack([spin_block_diagonal(rk).astype(np.complex128)
+                   for rk in np.asarray(xmol.intor("int1e_r", comp=3), dtype=float)])
+    ua, ub = xmol.sph2spinor_coeff()
+    u = np.vstack([np.asarray(ua), np.asarray(ub)])          # (2 nao, n2c), unitary
+    raw = xmol.intor("int1e_sprsp_spinor", comp=3)
+    ss = np.stack([u @ np.asarray(a) @ u.conj().T for a in raw])
+    return ll, ss
+
+
+def _position_block_residual(xmol, r_g, ll: np.ndarray, ss: np.ndarray,
+                             overlap: "FourComponentBlocks", c: float) -> float:
+    """The two exact identities the position blocks satisfy, as one relative residual.
+
+    There is no single algebraic identity here of the kind the odd moment operator has (where
+    ``LS + LS^dag`` is the bare operator outright), because an even operator's ``LL`` and ``SS``
+    blocks are independent quantities. Two identities together do the same job, and between
+    them they pin every way this construction can go silently wrong:
+
+    **1. The spin structure of the small block.** With ``sigma_a sigma_b = delta_ab + i eps_abc
+    sigma_c`` and ``[p_a, r_k] = -i delta_ak``::
+
+        (sigma.p) r_k (sigma.p) = sum_a p_a r_k p_a  +  (p x sigma)_k
+
+    so the *entire* spin-dependent part of ``SS_raw`` is ``eps_kac p_a sigma_c``, built from
+    ``int1e_ipovlp`` alone and involving no property integral at all. This fixes the spinor →
+    spin-blocked mapping, the order of the three Cartesian components and the sign of the whole
+    block — a transposed or permuted mapping fails it immediately. (The spin-free part
+    ``sum_a <grad_a chi| r_k |grad_a chi>`` has no integral of its own and is left unchecked;
+    identity 2 is what covers it.)
+
+    **2. The translation law, which is where the normalization is pinned.** Moving the origin by
+    ``delta`` shifts a position operator by ``-delta_k`` times the *metric*::
+
+        LL_k(R + delta) - LL_k(R) = -delta_k * overlap.ll
+        SS_k(R + delta) - SS_k(R) = -delta_k * overlap.ss
+
+    with ``overlap`` the very blocks the decoupling is built from. That ties this operator's
+    ``1/(4 c^2)`` to the metric's ``T/(2 c^2)`` rather than to a factor written twice, and it
+    only holds if ``set_common_orig`` actually reached both integrals — so it also catches a
+    gauge origin that was computed and then not applied.
+
+    ``ss`` is the **scaled** small block (the ``1/(4 c^2)`` already applied), because scaling is
+    exactly what identity 2 exists to check.
+    """
+    from ..spinor.expand import decompose_two_component, two_component_operator
+
+    worst = 0.0
+
+    # -- 1. the spin structure of SS ---------------------------------------------------------
+    # <i|p_a|j> = i * <grad_a i|j>: `int1e_ipovlp` is real and antisymmetric, so this is
+    # Hermitian, and eps_kac p_a is what multiplies sigma_c. The project's decomposition
+    # writes a two-component operator as A (x) 1 + sum_c (i w_c) sigma_c with w real
+    # antisymmetric, so the expected w_c is eps_kac * int1e_ipovlp[a] with no factor of i.
+    # ⚠ `ss` arrives already carrying the small-component `1/(4 c^2)`, so the expectation has
+    # to carry it too. Comparing a scaled block against an unscaled expectation fails by
+    # exactly `4 c^2`, which looks like a catastrophically broken mapping rather than a
+    # forgotten factor.
+    ip = np.asarray(xmol.intor("int1e_ipovlp", comp=3), dtype=float) * (0.25 / float(c) ** 2)
+    for k in range(3):
+        a_sf, w = decompose_two_component(ss[k])
+        scale = float(np.max(np.abs(ss[k]))) or 1.0
+        # The round trip is part of the identity: (sigma.p) r (sigma.p) is time-reversal EVEN,
+        # so the decomposition must lose nothing. A time-odd remainder is a wrong mapping.
+        worst = max(worst,
+                    float(np.max(np.abs(two_component_operator(a_sf, w) - ss[k]))) / scale)
+        for c_index in range(3):
+            a, b = (k + 1) % 3, (k + 2) % 3      # eps_kac is +1 for (a, c) = (a, b) cyclic
+            expected = np.zeros_like(ip[0])
+            if c_index == b:
+                expected = ip[a]
+            elif c_index == a:
+                expected = -ip[b]
+            worst = max(worst, float(np.max(np.abs(w[c_index] - expected))) / scale)
+
+    # -- 2. the translation law, which pins the normalization against the metric --------------
+    ll_shift, ss_shift = _even_position_blocks(xmol, np.asarray(r_g).ravel() + _DIPOLE_PROBE)
+    ss_shift = ss_shift * (0.25 / float(c) ** 2)     # the same scaling `ss` already carries
+    scale_ll = float(np.max(np.abs(ll))) or 1.0
+    scale_ss = float(np.max(np.abs(ss))) or 1.0
+    for k in range(3):
+        worst = max(worst, float(np.max(np.abs(
+            ll_shift[k] - (ll[k] - _DIPOLE_PROBE[k] * np.asarray(overlap.ll))))) / scale_ll)
+        worst = max(worst, float(np.max(np.abs(
+            ss_shift[k] - (ss[k] - _DIPOLE_PROBE[k] * np.asarray(overlap.ss))))) / scale_ss)
+    # ⚠ The origin is restored before returning: `set_common_orig` is state on the `Mole`, and
+    # leaving it on the probe point would silently move every integral taken afterwards.
+    xmol.set_common_orig(np.asarray(r_g, dtype=float).ravel())
+    return float(worst)
+
+
+def picture_changed_dipole(mol, gauge_origin=None, *, approx: str = "1e",
+                           decoupling_options: Optional[Dict[str, object]] = None,
+                           light_speed: Optional[float] = None) -> PictureChangedDipole:
+    """Apply the X2C picture change to the electric dipole (position) operator.
+
+    The default property operators in this program are the **bare** non-relativistic ones used
+    unchanged in the two-component basis; this is the alternative for the electric operator,
+    and it is reached through the same ``property_picture_change=`` flag as the magnetic one so
+    the two cannot be mixed inside one file.
+
+    ⚠ **It is not the default and it changes the meaning of a stored ``d``.** A file whose
+    dipole matrices were built this way is not comparable element-for-element with one whose
+    were not, and its header must say so.
+
+    The construction, and the tests that it is right
+    ------------------------------------------------
+    ``r`` is an **even** operator, so its four-component matrix has ``LS = SL = 0`` and a
+    nonzero ``SS`` block — the mirror image of the purely odd magnetic moment
+    (:func:`picture_changed_moment`). See :class:`PictureChangedDipole` for the blocks and
+    :func:`_position_block_residual` for the two exact identities checked on every build:
+    the spin structure of the small block, and the translation law that ties this operator's
+    ``1/(4 c^2)`` to the metric the decoupling itself is built from. **A violation raises.**
+
+    Parameters
+    ----------
+    approx : str
+        The decoupling, which must be the Hamiltonian's: ``"1e"`` or ``"1e-dlu"``. ⚠ **A DLU
+        moment or dipole operator is unmeasured** and nothing computed from one may be quoted
+        as a spectroscopic accuracy.
+
+    References
+    ----------
+    * Picture change of property operators under X2C: D. Peng, M. Reiher, J. Chem. Phys. 136,
+      244108 (2012), doi:10.1063/1.4729788.
+    * The restricted-kinetic-balance four-component setup and the decoupling: W. Kutzelnigg,
+      W. Liu, J. Chem. Phys. 123, 241102 (2005), doi:10.1063/1.2137315.
+    """
+    from pyscf.x2c import x2c
+
+    from ..spinor.expand import decompose_two_component, two_component_operator
+    from ..x2c.decouple import FourComponentBlocks, picture_change
+
+    if approx not in ("1e", "1e-dlu"):
+        raise NotImplementedError(
+            "the property picture change is implemented for the exact molecular decoupling "
+            "(approx='1e') and the local one (approx='1e-dlu'), not for {!r}. The decoupling "
+            "used for the dipole operator must be the one the Hamiltonian uses, so this is a "
+            "refusal rather than a silent substitution.".format(approx))
+
+    r_g, _ = gauge_origin_for(mol, gauge_origin)
+    fc = four_component_one_electron(mol, uncontract=True, light_speed=light_speed)
+
+    helper = x2c.SpinOrbitalX2CHelper(mol)
+    helper.xuncontract = True
+    xmol, _ = helper.get_xmol(mol)
+    if int(xmol.nao) != int(fc.nao):
+        raise RuntimeError(
+            "the working basis of the four-component blocks ({} functions) and of the property "
+            "integrals ({}) differ; they must be the same decontracted basis or the picture "
+            "change would transform one operator in another's basis"
+            .format(fc.nao, xmol.nao))
+
+    res.require("picture-changed dipole operator", 2.0 * moment_memory_gb(int(fc.nao)),
+                note="3 x (2 nao)^2 complex, working basis nao = {}".format(fc.nao))
+
+    with timer("dipole picture change"):
+        c = float(fc.light_speed)
+        ll, ss_raw = _even_position_blocks(xmol, r_g)
+        ss = ss_raw * (0.25 / c ** 2)
+
+        resid = _position_block_residual(xmol, r_g, ll, ss, fc.overlap, c)
+        if resid > DIPOLE_IDENTITY_TOL:
+            raise RuntimeError(
+                "the four-component position operator fails its structural identities by "
+                "{:.2e} relative (tolerance {:.0e}): the small block's spin structure must be "
+                "exactly (p x sigma)_k and both blocks must translate with the metric. The "
+                "spinor mapping, the gauge origin or the small-component normalization is "
+                "wrong, and every transition dipole built from this operator would be "
+                "Hermitian, plausible and wrong.".format(resid, DIPOLE_IDENTITY_TOL))
+
+        x, r = _property_decoupling(mol, fc, approx, decoupling_options, "dipole")
+        zero = np.zeros_like(ll[0])
+        position = np.stack([
+            fc.contract(picture_change(
+                FourComponentBlocks(ll=ll[k], ls=zero, sl=zero.copy(), ss=ss[k]), x, r))
+            for k in range(3)])
+
+    scale = max(float(np.max(np.abs(position))), 1.0)
+    worst = max(float(np.max(np.abs(m - m.conj().T))) for m in position)
+    if worst > 1e-10 * scale:
+        log.warning("the picture-changed dipole operator is not Hermitian (max |A - A^dag| = "
+                    "%.2e); the decoupling matrices are suspect", worst)
+    # ⚠ The mirror of the moment's check. `r` is time-reversal EVEN, so what must vanish here
+    # is the time-ODD remainder — the part `decompose_two_component` discards. A swapped or
+    # transposed spin block shows up here and in no norm or hermiticity test.
+    odd = max(float(np.max(np.abs(m - two_component_operator(*decompose_two_component(m)))))
+              for m in position)
+    if odd > 1e-10 * scale:
+        log.warning("the picture-changed dipole operator has a time-reversal-odd part of "
+                    "%.2e; the position operator is time even, so this is a symmetry breaking "
+                    "in the decoupling matrices and not physics", odd)
+    return PictureChangedDipole(position=np.ascontiguousarray(position), decoupling=approx,
+                                identity_residual=float(resid))
 
 
 @dataclass(frozen=True)
@@ -3467,7 +3915,9 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
     )
 
 
-__all__ = ["ScalarX2CData", "SpinOrbitX2C", "PropertyIntegrals", "MoleculeSpec",
+__all__ = ["ScalarX2CData", "SpinOrbitX2C", "PropertyIntegrals", "PictureChangedDipole",
+           "picture_changed_dipole", "nuclear_dipole", "property_integral_memory_gb",
+           "MoleculeSpec",
            "build_mole", "cross_overlap",
            "run_scalar_x2c", "run_scalar_aoc", "ingest_spin_orbit",
            "ingest_property_integrals", "gauge_origin_for", "eri_memory_gb", "ao_layout",

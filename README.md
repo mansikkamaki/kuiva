@@ -10,9 +10,10 @@ systems — 5d transition metals, lanthanides, actinides, and single-molecule ma
 - **Conventional complex determinant CI or an in-house tree tensor network** (DMRG/TTNS) for the
   CI step, sharing one state-averaged orbital optimizer.
 - **SC-NEVPT2** for dynamic correlation, over all eight excitation classes.
-- **The deliverable is a file**: the effective Hamiltonian and the three magnetic-moment
-  operators in the basis of the spin–orbit eigenstates, for an external crystal-field / ITO
-  analysis code. Kuiva does not do that analysis itself.
+- **The deliverable is a file**: the effective Hamiltonian, the three magnetic-moment operators
+  and the three electric-dipole operators in the basis of the spin–orbit eigenstates, for an
+  external crystal-field / ITO analysis code. Kuiva writes the operators and their invariants
+  and does not do that analysis itself.
 
 A calculation is a short **Python script**, not a text input file: one object per pipeline
 stage, each built from the finished stage before it.
@@ -817,6 +818,7 @@ themselves.
 ```python
 kuiva.PropertyDump(cas, "ticl3.props", title="TiCl3 d1").run()
 kuiva.PropertyDump(pt, "ticl3.props").run()      # NEVPT2-corrected H; hybrid protocol recorded
+kuiva.PropertyDump(cas, "ticl3.props", include_dipole=False).run()   # H and mu only
 
 kuiva.PseudospinExport(cas, "ticl3.psd", sites=[tuple(range(10))],
                        rule="dimension", dims=2).run()
@@ -1341,10 +1343,11 @@ the human-readable output and nothing else: machine-readable matrices never ente
 
 **The property matrices** (`PropertyDump`) — the product. A plain-text, line-oriented file with
 `#` comments, a versioned `[HEADER]`, a `[PROVENANCE]` block of JSON, and one `i j Re Im`
-record per matrix element: the effective Hamiltonian `H` and the three magnetic-moment
-components `mu_x`, `mu_y`, `mu_z` in the basis of the spin–orbit eigenstates, in µ_B. It is
-deliberately dull, because it is a contract with an external ITO / crystal-field code, and
-`kuiva.read_dump` is a working parser of it.
+record per matrix element: the effective Hamiltonian `H`, the three magnetic-moment components
+`mu_x`, `mu_y`, `mu_z` in µ_B, and the three electric-dipole components `d_x`, `d_y`, `d_z` in
+e·a₀ — all in the basis of the spin–orbit eigenstates. It is deliberately dull, because it is a
+contract with an external ITO / crystal-field code, and `kuiva.read_dump` is a working parser
+of it.
 
 **Reading one back.** Because the phases in these files are arbitrary, comparing two stored
 runs — or a stored run against a fresh one — has to go through the phase-invariant reduction,
@@ -1387,7 +1390,32 @@ header verbatim as a dictionary.
 - ⚠ **A block of one state reports no g values — `nan`, never `0`.** A single state has no
   first-order magnetic moment, and "not defined here" is a different statement from "measured
   zero". The distinction is the whole of the **non-Kramers** case below.
-- ⚠ **No picture change is applied to `L` and `S`** — see [Limitations](#limitations--what-not-to-trust).
+- **The electric dipole is written by default** (`include_dipole=False` turns it off), and it
+  is the **total** dipole: the electronic operator over all electrons plus, **on the diagonal
+  only**, the nuclear `Σ_A Z_A (R_A − R_G)`. So a diagonal element is that state's dipole
+  moment and an off-diagonal one is a transition dipole. The nuclear vector is in the header,
+  so the two halves can be separated again. ⚠ The inactive electrons' share is *not* zero here
+  — `r` is time **even**, unlike `L` and `S`, so a Kramers pair contributes twice its
+  expectation value instead of cancelling — and it is written out in `[INACTIVE]` for the same
+  reason.
+- ⚠ **For a charged molecule the dipole depends on the gauge origin.** The diagonal obeys
+  `d(R_G) = d(0) − q·R_G` and every invariant formed *inside* one degenerate block moves with
+  it; transition elements between distinct states do not, whatever the charge. Writing such a
+  file emits a `WARNING` and the header carries `molecular_charge` and
+  `dipole_origin_dependence`. It is not refused — a charged lanthanide complex's transition
+  dipoles are perfectly well defined, and that is what this is for.
+- **The dipole has its own phase-invariant reductions, and they are the only sound comparison**:
+  `Tr_block(d_i d_j)` on `Multiplet.d_tensor`, and the block-to-block **line strength**
+  `S_AB = Σ_k Σ_{I∈A,J∈B} |d_k[I,J]|²` from `PropertyMatrices.line_strengths()`. ⚠ A line
+  strength is **not** an oscillator strength, a radiative rate or an intensity: Kuiva writes
+  operators and their invariants, and turning one into an intensity — which needs a transition
+  energy, a refractive index and a convention for what is measured — belongs to the same
+  external code the crystal-field analysis does.
+- ⚠ **No picture change is applied to `L`, `S` or `r` by default** — see
+  [Limitations](#limitations--what-not-to-trust). `property_picture_change=True` on the front
+  end applies it, and it applies it to **both** the magnetic and the electric operator: there is
+  deliberately no way to correct one and not the other, because nothing in such a file would say
+  which half is which.
 - The header carries the full Hamiltonian provenance, the gauge origin, and the active space as
   a physical statement rather than an index window.
 - The **inactive contribution is computed and checked, never assumed away**: a Kramers-paired
@@ -1570,6 +1598,28 @@ The release is usable for production work **with care**, and this is what the ca
   field `picture_change_on_properties` is what distinguishes them, so reading the header is
   obligatory. The `g_e - 2` anomaly's own small-component term is a further three orders down
   and is left off unless `anomaly_picture_change=True`.
+
+  ⚠ **The same flag also corrects the electric dipole, and there is no way to correct one
+  operator and not the other.** The electric operator is *even*, so its four-component matrix has
+  a small-component block where the magnetic one has none, and the transformation is otherwise
+  the same `X` and `R`. It is recorded in its own header field, `picture_change_on_dipole`. A file
+  whose `mu` carried the correction and whose `d` did not would be a hybrid with nothing in it
+  saying which half was which, which is why the two travel together.
+
+  What it is worth is **not** what it is worth for `mu`, and the difference is physics rather than
+  a defect: measured on the hydrogen halides HF → HI (`x2c-SVPall-2c`, CAS(2,2)), it moves a
+  permanent dipole by **2e-06 relative** and a line strength by twice that, and — unlike the g
+  factor — it does **not grow with Z**; the absolute shift in fact falls from HF to HI. The
+  picture change is a near-nucleus effect and the density near a heavy nucleus is core density,
+  spherical and contributing almost nothing to a dipole. It splits no degeneracy. ⚠ Those figures
+  bound a *valence* dipole of a light main-group diatomic and nothing else — an `f → d` transition
+  of a lanthanide, which is what this operator exists for, has not been measured.
+- ⚠ **The electric dipole is length gauge only, and Kuiva computes no oscillator strengths.**
+  There is no velocity-gauge second estimate, so there is no in-code number saying how converged
+  a transition dipole is — judge that by enlarging the active space. And what the file carries is
+  the operator and its invariants (`Tr_block(d_i d_j)`, the block-to-block line strength); f
+  values, Einstein coefficients and radiative rates are the external property code's job, exactly
+  as the crystal-field analysis is.
 - ⚠ **DLU is measured at the state level, and it is safe for splittings but not for the
   transverse g of an axial doublet.** Against the exact decoupling through the same code, on
   d¹ and f¹ ligand fields at SA-CASSCF: splittings move by ≤0.6 cm⁻¹ and ≤0.1%, principal g
@@ -1667,7 +1717,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.20.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.21.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1683,7 +1733,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.20.0'
+import kuiva; kuiva.__version__          # '0.21.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

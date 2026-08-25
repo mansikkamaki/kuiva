@@ -1,8 +1,9 @@
 """Property output and analysis.
 
-* ``dump.py`` — the plain-text contract with the external ITO/crystal-field code: ``H`` and
-  the three magnetic-moment components in the basis of the spin-orbit eigenstates. This is
-  what the whole program is for.
+* ``dump.py`` — the plain-text contract with the external ITO/crystal-field code: ``H``, the
+  three magnetic-moment components and the three electric-dipole components, in the basis of
+  the spin-orbit eigenstates. This is what the whole program is for. ⚠ Operators and their
+  invariants only: no oscillator strengths, no rates.
 * ``multiplet.py`` — the phase-invariant reductions that make SOC spectra and magnetic-moment
   matrices comparable at all, given that the dump fixes no phase convention. Any validation of a
   dump goes through here.
@@ -31,9 +32,10 @@ from .molden import MoldenOrbital, SpinorMoldenReport, write_molden, write_spino
 from .multiplet import (
     AXIS_DEFINED_RTOL, G_ELECTRON, HARTREE_TO_CM, PSEUDO_DOUBLET_HINT_CM, Multiplet,
     analyse_spectrum,
-    axis_is_defined, block_moment_tensor, degeneracy_pattern, degenerate_blocks,
+    axis_is_defined, block_dipole_tensor, block_line_strengths, block_moment_tensor,
+    block_operator_tensor, degeneracy_pattern, degenerate_blocks,
     g_determinant_sign, lande_g, magnetic_moment_matrices, multiplet_g_axes,
-    multiplet_g_values,
+    multiplet_g_values, spectrum_line_strengths,
 )
 from .population import (
     AtomicPopulations, AtomicReferenceCharges, OrbitalPopulations, atomic_populations,
@@ -47,6 +49,8 @@ __all__ = [
     "FORMAT_VERSION", "PropertyMatrices", "property_matrices", "spinor_operators",
     "inactive_moment", "state_operator_matrices", "write_dump", "read_dump",
     "G_ELECTRON", "HARTREE_TO_CM", "Multiplet", "analyse_spectrum", "block_moment_tensor",
+    "block_operator_tensor", "block_dipole_tensor", "block_line_strengths",
+    "spectrum_line_strengths",
     "degeneracy_pattern", "degenerate_blocks", "lande_g", "magnetic_moment_matrices",
     "multiplet_g_values",
     "AXIS_DEFINED_RTOL", "PSEUDO_DOUBLET_HINT_CM", "axis_is_defined", "g_determinant_sign", "multiplet_g_axes",

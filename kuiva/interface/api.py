@@ -910,7 +910,7 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
 
 def property_matrices(reference: SpinorReference, source, *, comments=(),
                       inactive_tol: Optional[float] = None):
-    """``H`` and the three magnetic-moment matrices in the SOC eigenstate basis.
+    """``H``, the three magnetic-moment matrices and the three electric-dipole matrices.
 
     ``source`` is what a calculation returned: a
     :class:`~kuiva.mcscf.casci.CASSCFOutcome` (from :func:`casscf`) or a
@@ -918,8 +918,11 @@ def property_matrices(reference: SpinorReference, source, *, comments=(),
     the orbitals they were solved at and the solver that owns the excitation map, which is
     everything the moment matrices need.
 
-    ⚠ **The gauge origin is fixed at ingestion**, not here: ``L`` is defined relative to it
-    and the multireference layer never calls PySCF again. Pass
+    Also carries the three electric dipole components ``d`` when the reference was built with
+    dipole integrals, which every front-end route does.
+
+    ⚠ **The gauge origin is fixed at ingestion**, not here: ``L`` and ``r`` are both defined
+    relative to it and the multireference layer never calls PySCF again. Pass
     ``gauge_origin=`` to :func:`scalar_x2c_reference` to change it.
 
     Returns a :class:`kuiva.props.dump.PropertyMatrices`. ⚠ Its phases are arbitrary and
@@ -959,19 +962,25 @@ def property_matrices(reference: SpinorReference, source, *, comments=(),
 
 
 def property_dump(reference: SpinorReference, source, path, *, title: str = "",
-                  include_l_s: bool = True, report: bool = True, **kwargs):
+                  include_l_s: bool = True, include_dipole: bool = True,
+                  report: bool = True, **kwargs):
     """Write the property-matrix file — the program's product — and return the matrices.
 
     A thin composition of :func:`property_matrices` and
     :func:`kuiva.props.dump.write_dump`. The header carries the full Hamiltonian provenance
 , the gauge origin and the active space; ⚠ a ``WARNING`` is emitted about the
-    missing picture change on ``L`` and ``S``, every time, and recorded in the file.
+    treatment of the property operators, every time, and recorded in the file.
+
+    ``include_dipole`` (default ``True``) writes ``d_x, d_y, d_z`` beside ``mu``. ⚠ For a
+    **charged** molecule the dipole's diagonal depends on the gauge origin; that warns too and
+    the header says so.
     """
     matrices = property_matrices(reference, source, **kwargs)
     if report:
         out.section(log, "Property matrices")
         matrices.report(log)
-    matrices.write(path, title=title, include_l_s=include_l_s)
+    matrices.write(path, title=title, include_l_s=include_l_s,
+                   include_dipole=include_dipole)
     return matrices
 
 
