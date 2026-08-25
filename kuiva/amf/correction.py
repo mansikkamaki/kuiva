@@ -83,7 +83,7 @@ from ..util import output as out
 from ..util import resources as res
 from ..util.logging import get_logger
 from ..util.timing import timer
-from .atomic import atomic_correction, elements_by_label
+from .atomic import atomic_correction, elements_by_label, nuclear_model_of
 from .backend import INTERACTIONS
 
 log = get_logger(__name__)
@@ -455,6 +455,12 @@ def amf_correction(mol, *, method: str = "x2camf", interaction: str = "coulomb",
         basis, then contract the correction back (decoupling belongs in the
         primitive basis). The default and the physically correct choice.
 
+    ⚠ **There is deliberately no nuclear-model parameter.** The atomic references are solved
+    over whichever nucleus ``mol`` was built with, read off the molecule itself
+    (:func:`kuiva.amf.atomic.nuclear_model_of`): a mean field over a different nucleus from
+    the integrals it corrects would be Hermitian, of plausible magnitude and wrong, and an
+    argument is something a caller can fail to pass. A ``mol`` that mixes models is refused.
+
     Returns
     -------
     AMFCorrection over ``mol.nao`` scalar basis functions.
@@ -540,6 +546,12 @@ def amf_correction(mol, *, method: str = "x2camf", interaction: str = "coulomb",
     # inference from ``mol.charge``.
     labels = elements_by_label(mol)
     configurations = _configuration_map(configuration, labels)
+    # ⚠ **Taken from the molecule, never from an argument.** The atomic mean field must be
+    # solved over the same nucleus the molecular integrals were evaluated over, and a
+    # parameter is something a caller can fail to pass: the two would then differ by a
+    # Hermitian, plausible, wrong term concentrated at the nucleus, which is exactly where
+    # this correction lives. Reading it off ``mol`` makes the agreement structural.
+    nuclear_model = nuclear_model_of(mol)
 
     blocks = {}
     with timer("atomic mean-field correction"):
@@ -547,6 +559,7 @@ def amf_correction(mol, *, method: str = "x2camf", interaction: str = "coulomb",
             block = atomic_correction(symbol, basis, configuration=configurations[label],
                                       interaction=interaction, backend=backend,
                                       light_speed=light_speed, uncontract=uncontract,
+                                      nuclear_model=nuclear_model,
                                       report=report, **solver_kwargs)
             validate_correction(block.h_sf, block.w,
                                 what="X2CAMF correction for {}".format(label))
@@ -728,6 +741,19 @@ def _external_correction(mol, *, interaction: str, configuration, light_speed,
     rather than an atoms-only bisection tool — which is worth strictly more than refusing, at
     no cost. It stays never-default all the same.
     """
+    # ⚠ The plugin runs its own four-component atomic solves and Kuiva has no way to tell it
+    # which nucleus to use, so a finite-nucleus molecule is **refused** rather than corrected
+    # with a point-nucleus mean field. It exists to bisect a disagreement against a third
+    # implementation, and a bisection tool that silently answers a different question is worse
+    # than one that is unavailable.
+    model = nuclear_model_of(mol)
+    if model != "point":
+        raise NotImplementedError(
+            "screening='x2camf-external' cannot be used with a {} nuclear model: the plugin "
+            "solves its own atomic references over a point nucleus, so the correction would "
+            "not describe the molecule it is added to. Use the built-in screening='x2camf', "
+            "or compare against the plugin with nuclear_model='point'.".format(model))
+
     import contextlib
 
     from ..spinor.expand import decompose_two_component, time_reversal_residual

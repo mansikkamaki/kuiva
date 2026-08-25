@@ -102,8 +102,13 @@ SCHEMA = 1
 #:     indistinguishable from a good one on disk. Everything with a single open
 #:     shell, and every closed shell, is numerically unchanged (max |dVeff|
 #:     5.5e-12); the bump exists for the class that is not.
+#: 4   The **nuclear charge model** joined :class:`kuiva.amf.atomic.AtomicRequest` and the
+#:     cache key. Every entry written before it describes a point nucleus and is still
+#:     numerically correct for one, so this bump costs a recomputation it did not strictly
+#:     have to — it is taken deliberately, because "the key is complete" is a claim about
+#:     code that is no longer running, and a stored quantity outlives it.
 #: ==  =========================================================================
-FORMULA_VERSION = 3
+FORMULA_VERSION = 4
 
 #: Environment override for the cache directory. ``off`` disables the cache.
 ENV_CACHE_DIR = "KUIVA_AMF_CACHE"

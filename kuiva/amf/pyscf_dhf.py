@@ -104,6 +104,7 @@ from ..basis.registry import classify_contraction
 from ..util import resources as res
 from ..util.logging import get_logger
 from ..util.timing import timer
+from ..x2c.nuclear import pyscf_nucmod, resolve_nuclear_model
 from .backend import (AtomicDiracSolution, FourComponentBlocks, INTERACTIONS,
                       METRIC_LINDEP_THRESHOLD as _METRIC_LINDEP_THRESHOLD,
                       dirac_scf_memory_gb, metric_keep_mask as _metric_keep_mask,
@@ -541,7 +542,7 @@ class PySCFDiracBackend:
 
     @staticmethod
     def _build_mole(element: str, basis: object, charge: int = 0,
-                    uncontract: bool = True):
+                    uncontract: bool = True, nuclear_model: str = "point"):
         """The ``Mole`` the four-component problem is solved in, and its contraction matrix.
 
         Deterministic in its arguments alone — which is what lets
@@ -557,7 +558,8 @@ class PySCFDiracBackend:
 
         n_electrons = int(gto.charge(element)) - int(charge)
         mol = gto.M(atom=[(element, (0.0, 0.0, 0.0))], basis={element: basis},
-                    charge=charge, spin=n_electrons % 2, verbose=0)
+                    charge=charge, spin=n_electrons % 2,
+                    nucmod=pyscf_nucmod(nuclear_model), verbose=0)
         if mol.has_ecp():
             raise NotImplementedError(
                 "the atomic mean-field correction requires an all-electron basis; {} was "
@@ -589,7 +591,8 @@ class PySCFDiracBackend:
     def solve(self, element: str, basis: object, *, charge: int = 0,
               configuration=None, interaction: str = "coulomb",
               uncontract: bool = True, conv_tol: float = 1e-10,
-              max_cycle: int = 100, spherical: bool = True) -> AtomicDiracSolution:
+              max_cycle: int = 100, spherical: bool = True,
+              nuclear_model: str = "point") -> AtomicDiracSolution:
         """Converge a four-component atomic calculation, average-of-configuration if open.
 
         Parameters
@@ -619,6 +622,13 @@ class PySCFDiracBackend:
             Solve in the fully decontracted basis and return the contraction matrix. The
             default, and the physically correct choice — X2C decoupling belongs in the
             primitive basis.
+        nuclear_model : str
+            ``"point"`` (the default) or ``"gaussian"`` — the nuclear charge distribution the
+            four-component problem is solved over (:mod:`kuiva.x2c.nuclear`). ⚠ It must match
+            the molecule the correction is going into, and the difference it makes to a
+            j-splitting grows steeply with Z: this is the one place in the atomic path where a
+            wrong value produces a mean field of entirely plausible magnitude for the wrong
+            nucleus.
         spherical : bool
             Constrain the SCF to spherically symmetric solutions by projecting the Fock
             operator onto its rank-zero part each cycle
@@ -654,7 +664,9 @@ class PySCFDiracBackend:
             log.debug("%s: reference configuration %s implies charge %+d, not the %+d asked "
                       "for; the configuration wins", element, config.canonical,
                       reference_charge, int(charge))
-        xmol, contraction = self._build_mole(element, basis, reference_charge, uncontract)
+        nuclear_model = resolve_nuclear_model(nuclear_model)
+        xmol, contraction = self._build_mole(element, basis, reference_charge, uncontract,
+                                             nuclear_model)
         nao = int(xmol.nao)
 
         # Both estimates are exact functions of nao, which is known here and nowhere
@@ -774,7 +786,8 @@ class PySCFDiracBackend:
             mo_energy=np.ascontiguousarray(np.asarray(mf.mo_energy, dtype=float)),
             mo_occ=np.ascontiguousarray(np.asarray(mf.mo_occ, dtype=float)),
             e_tot=e_tot, converged=bool(mf.converged),
-            backend=self.name, backend_version=self.version)
+            backend=self.name, backend_version=self.version,
+            nuclear_model=nuclear_model)
         log.debug("atomic 4c DHF %s (%s): E = %.10f Eh, nao %d -> %d, %s, %.4f GB resident",
                   element, config.canonical, e_tot, solution.nao, solution.nao_target,
                   interaction, reservation.gb)
@@ -795,11 +808,15 @@ class PySCFDiracBackend:
 
         The ``Mole`` is rebuilt from ``solution.basis_spec``, deterministically and in
         milliseconds, so that :class:`AtomicDiracSolution` stays free of framework objects.
+        Its nuclear model is the solution's own — this operator is built from two-electron
+        integrals alone and so does not depend on the nucleus, but "rebuilt exactly as it was
+        solved" is a claim worth keeping literally true rather than true with an exception
+        nobody wrote down.
         """
         from pyscf import scf
 
         mol, _ = self._build_mole(solution.element, solution.basis_spec, solution.charge,
-                                  solution.uncontracted)
+                                  solution.uncontracted, solution.nuclear_model)
         if int(mol.nao) != solution.nao:
             raise RuntimeError(
                 "rebuilding the atomic basis for {} gave {} functions where the solution has "

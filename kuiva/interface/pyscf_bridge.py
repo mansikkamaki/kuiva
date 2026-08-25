@@ -93,6 +93,8 @@ from ..util import resources as res
 from ..util.logging import get_logger
 from ..util.timing import timer
 from ..x2c.methods import DecouplingRecord
+from ..x2c.nuclear import NuclearRecord, nuclear_record, pyscf_nucmod, \
+    resolve_nuclear_model
 
 log = get_logger(__name__)
 
@@ -174,6 +176,12 @@ class SpinOrbitX2C:
         ⚠ It is a record of what has **already been added**, not a request. Adding
         ``amf_correction(...)`` to a Hamiltonian whose record is not ``"none"`` double-counts
         the correction. The one place it is applied is :func:`ingest_spin_orbit`.
+    nuclear : NuclearRecord
+        Which nuclear charge model the integrals underneath this operator were evaluated
+        over. ⚠ The third **contract with stored data**, beside :attr:`decoupling` and
+        :attr:`screening`, and a sibling of them rather than a field on either: the nucleus is
+        upstream of both, it has to be stated for a Hamiltonian with no screening at all, and
+        the two-electron correction is only valid if its atomic solves used the same one.
     tr_residual, tr_residual_rel : float
         Absolute [Eh] and relative size of the discarded time-reversal-odd part.
     picture_change_shift : float
@@ -189,6 +197,7 @@ class SpinOrbitX2C:
     approx: str = "1e"
     screening: ScreeningRecord = field(default_factory=ScreeningRecord)
     decoupling: DecouplingRecord = field(default_factory=DecouplingRecord)
+    nuclear: NuclearRecord = field(default_factory=NuclearRecord)
     method: str = ""
 
     tr_residual: float = 0.0
@@ -217,7 +226,7 @@ class SpinOrbitX2C:
             h_sf=x.T @ self.h_sf @ x,
             w=np.stack([x.T @ wk @ x for wk in self.w]),
             approx=self.approx, screening=self.screening,
-            decoupling=self.decoupling, method=self.method,
+            decoupling=self.decoupling, nuclear=self.nuclear, method=self.method,
             tr_residual=self.tr_residual, tr_residual_rel=self.tr_residual_rel,
             picture_change_shift=self.picture_change_shift)
 
@@ -225,6 +234,7 @@ class SpinOrbitX2C:
         logger = logger or log
         out.entry(logger, "two-component Hamiltonian", self.method or "X2C")
         self.decoupling.report(logger)
+        self.nuclear.report(logger)
         out.entry(logger, "spin-orbit operator scale, max |w|", self.soc_strength, "Eh",
                   fmt="{:.6f}")
         out.entry(logger, "picture-change shift vs sfx2c1e", self.picture_change_shift, "Eh",
@@ -237,8 +247,9 @@ class SpinOrbitX2C:
         """A JSON-serializable description of **which Hamiltonian this is**.
 
         Everything an external consumer needs to know what produced a stored matrix: the
-        decoupling approximation, the size of the projected time-reversal-odd part, and the
-        full two-electron screening record. This is the dict the property dump writes into
+        decoupling approximation, the nuclear charge model the integrals were made over, the
+        size of the projected time-reversal-odd part, and the full two-electron screening
+        record. This is the dict the property dump writes into
         its header and a Tier-2 reference record stores alongside its energies — a stored
         property matrix that does not say whether it was screened is not interpretable, and
         the difference is 15-30% on every splitting in it.
@@ -247,6 +258,7 @@ class SpinOrbitX2C:
             "method": self.method,
             "one_electron": "X2C (approx={})".format(self.approx),
             "decoupling": self.decoupling.as_dict(),
+            "nuclear": self.nuclear.as_dict(),
             "soc_strength": float(self.soc_strength),
             "picture_change_shift": float(self.picture_change_shift),
             "tr_residual": float(self.tr_residual),
@@ -1246,6 +1258,11 @@ class MoleculeSpec:
     #: The per-atom reference-configuration spec, carried so the rebuilt ``Mole`` gets the
     #: same decorated atom labels (``"Ti2"``) and therefore the same per-atom basis routing.
     configuration: object = None
+    #: Carried for the same reason: this duck-types as a ``Molecule`` for :func:`build_mole`,
+    #: and a rebuilt molecule that differs from the original in any input is not the molecule
+    #: the calculation ran on. (No overlap integral depends on it — which is exactly why it
+    #: would go unnoticed if it were dropped.)
+    nuclear_model: str = "point"
 
     @classmethod
     def from_molecule(cls, molecule, configuration=None) -> "MoleculeSpec":
@@ -1254,7 +1271,8 @@ class MoleculeSpec:
                                for sym, xyz in molecule.atoms),
                    basis=molecule.basis, charge=int(molecule.charge),
                    spin=int(molecule.spin), unit=str(getattr(molecule, "unit", "Angstrom")),
-                   configuration=configuration)
+                   configuration=configuration,
+                   nuclear_model=str(getattr(molecule, "nuclear_model", "point")))
 
     @property
     def elements(self) -> Tuple[str, ...]:
@@ -1469,7 +1487,11 @@ def build_mole(molecule, verbose: int = 0, configuration=None):
     """Build a PySCF ``Mole`` from a Kuiva ``Molecule`` (duck-typed), via the registry.
 
     ``molecule`` must expose ``atoms`` (list of ``(symbol, (x, y, z))``), ``charge``,
-    ``spin`` (2S), ``basis`` and ``unit``. ``configuration`` is the per-atom reference-state
+    ``spin`` (2S), ``basis`` and ``unit``, and may expose ``nuclear_model`` (``"point"``, the
+    default, or ``"gaussian"``) — ⚠ **the one place the nuclear charge model is stated**, so
+    that every consumer reads it off the built ``Mole`` instead of carrying its own copy.
+
+    ``configuration`` is the per-atom reference-state
     spec (element / label / 1-based number keys, values an oxidation state or a
     configuration), resolved here through the curated-table checks because the *labelling*
     of the molecule depends on it: ⚠ **an atom whose basis or reference state differs from
@@ -1519,8 +1541,13 @@ def build_mole(molecule, verbose: int = 0, configuration=None):
         atom_basis[label] = fam_name
 
     atom_str = [(label, tuple(a[1])) for label, a in zip(labels, molecule.atoms)]
+    # ⚠ Through ``pyscf_nucmod`` and never as a literal: PySCF reads any non-zero ``nucmod``
+    # as a request for a Gaussian nucleus, so the obvious spellings of "point" do the
+    # opposite of what they say (:mod:`kuiva.x2c.nuclear`).
+    nuclear_model = resolve_nuclear_model(getattr(molecule, "nuclear_model", None))
     mol = gto.M(atom=atom_str, basis=pyscf_basis, charge=molecule.charge,
-                spin=molecule.spin, unit=molecule.unit, verbose=verbose)
+                spin=molecule.spin, unit=molecule.unit,
+                nucmod=pyscf_nucmod(nuclear_model), verbose=verbose)
     mol.__dict__["_kuiva_basis_meta"] = meta
     mol.__dict__["_kuiva_atom_basis"] = atom_basis
     mol.__dict__["_kuiva_atom_labels"] = labels
@@ -2325,12 +2352,16 @@ def isolated_fragment_blocks(mol, *, uncontract: bool = True,
     """
     from pyscf import gto
 
-    from ..amf.atomic import elements_by_label
+    from ..amf.atomic import elements_by_label, nuclear_model_of
 
+    # Each isolated atom carries the molecule's own nucleus. A fragment solved over a
+    # different nuclear model than the diagonal block it approximates would make the DLU
+    # error a measurement of two things at once.
+    nucmod = pyscf_nucmod(nuclear_model_of(mol))
     blocks = {}
     for label, (symbol, basis) in elements_by_label(mol).items():
         atom = gto.M(atom=[(symbol, (0.0, 0.0, 0.0))], basis={symbol: basis},
-                     spin=None, charge=0, verbose=0, unit="Bohr")
+                     spin=None, charge=0, verbose=0, unit="Bohr", nucmod=nucmod)
         fc = four_component_one_electron(atom, uncontract=uncontract,
                                          light_speed=light_speed)
         blocks[label] = (fc.hcore, fc.overlap)
@@ -2584,6 +2615,7 @@ def ingest_spin_orbit(mol, h_sfx2c1e: Optional[np.ndarray] = None,
     # The two-electron picture change, added in the AO basis — see the
     # docstring for why here and nowhere later. ``method="none"`` returns exact zeros, so the
     # uncorrected Hamiltonian stays bitwise what it was before any of this existed.
+    from ..amf.atomic import nuclear_model_of
     from ..amf.correction import AMFCorrection, ScreeningRecord, amf_correction
     if screening == "mmf":
         # X2C-mmf: the same subtraction on a *molecular* four-component solve. It is a
@@ -2619,9 +2651,15 @@ def ingest_spin_orbit(mol, h_sfx2c1e: Optional[np.ndarray] = None,
     if h_sfx2c1e is not None:
         shift = float(np.max(np.abs(h_sf - np.asarray(h_sfx2c1e))))
 
+    # ⚠ Read off the molecule the integrals were evaluated over, not off any argument: the
+    # record has to describe the operator that is being returned. The atomic mean field
+    # reaches the same answer through the same function, which is what makes the two halves
+    # of this Hamiltonian provably one nucleus rather than two that happen to agree.
     return SpinOrbitX2C(h_sf=np.ascontiguousarray(h_sf), w=np.ascontiguousarray(w),
                         approx=approx, screening=correction.provenance(),
-                        decoupling=decoupling_record, method=resolved.name,
+                        decoupling=decoupling_record,
+                        nuclear=nuclear_record(nuclear_model_of(mol)),
+                        method=resolved.name,
                         tr_residual=residual, tr_residual_rel=rel,
                         picture_change_shift=shift)
 
@@ -2725,6 +2763,7 @@ class _SingleAtom:
     spin: int
     basis: object
     unit: str = "Bohr"
+    nuclear_model: str = "point"
 
 
 def _build_scf(mol, reference: str):
@@ -3579,7 +3618,8 @@ def _run_aoc_scf(mf, mol, config, layout, element: str, *, spherical: bool = Tru
 _ATOMIC_REFERENCE_CACHE: Dict[tuple, object] = {}
 
 
-def _atomic_reference_entry(element: str, family, config, is_default: bool):
+def _atomic_reference_entry(element: str, family, config, is_default: bool,
+                            nuclear_model: str = "point"):
     """The free-atom reference orbitals of one element, in one basis family (cached).
 
     ``config`` is an already-resolved :class:`~kuiva.amf.configuration.AtomicConfiguration`
@@ -3588,6 +3628,10 @@ def _atomic_reference_entry(element: str, family, config, is_default: bool):
     mean field's (neutral atom, trivalent ion on the f block; a user decision so each
     element has one default reference across the program), and a non-default entry is what
     makes the charge report downstream warn about comparability.
+
+    ``nuclear_model`` is the molecule's, for the same reason the basis is: the free atom and
+    the atom inside the molecule must be the same atom, or the populations are measured
+    against a reference that describes something else.
 
     The SCF is the same spherically constrained average-of-configuration assembly the AOC
     driver runs (:func:`_run_aoc_scf`), in the *molecule's own basis for this element* — the
@@ -3601,7 +3645,10 @@ def _atomic_reference_entry(element: str, family, config, is_default: bool):
 
     from ..basis.reference import AtomicReferenceEntry
 
-    key = (element.capitalize(), str(family), config)
+    # The nuclear model is in the key because it is in the physics: these orbitals are
+    # solved over the molecule's own nucleus, and one process may hold molecules with
+    # different models.
+    key = (element.capitalize(), str(family), config, nuclear_model)
     hit = _ATOMIC_REFERENCE_CACHE.get(key)
     if hit is not None:
         return hit
@@ -3613,7 +3660,8 @@ def _atomic_reference_entry(element: str, family, config, is_default: bool):
             "the reference configuration {} has {} electrons; an atomic reference needs at "
             "least one".format(config.canonical, n_elec))
     mol = build_mole(_SingleAtom(atoms=[(element, (0.0, 0.0, 0.0))], charge=z - n_elec,
-                                 spin=n_elec % 2, basis={element: family}), verbose=0)
+                                 spin=n_elec % 2, basis={element: family},
+                                 nuclear_model=nuclear_model), verbose=0)
     _set_pyscf_memory(mol)
     layout = ao_layout(mol)
     mf = pyscf_hf.RHF(mol).sfx2c1e()
@@ -3639,16 +3687,19 @@ def _atomic_reference_set(mol):
     """
     from ..basis.reference import AtomicReferenceSet
 
+    from ..amf.atomic import nuclear_model_of
+
     labels = mol.__dict__["_kuiva_atom_labels"]
     families = mol.__dict__["_kuiva_atom_families"]
     configs = _stashed_configs(mol)
+    nuclear_model = nuclear_model_of(mol)
     entries = {}
     for ia, label in enumerate(labels):
         if label in entries:
             continue
         cfg, is_default = configs[ia]
         entries[label] = _atomic_reference_entry(
-            mol.atom_pure_symbol(ia), families[ia], cfg, is_default)
+            mol.atom_pure_symbol(ia), families[ia], cfg, is_default, nuclear_model)
     return AtomicReferenceSet(
         entries=entries, atom_keys=list(labels),
         basis_label=", ".join("{}: {}".format(lab, mol.__dict__["_kuiva_atom_basis"][lab])
@@ -3666,7 +3717,7 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
                    init_guess: Optional[str] = None, diis=None,
                    diis_space: Optional[int] = None,
                    diis_start_cycle: Optional[int] = None,
-                   spherical: bool = True,
+                   spherical: bool = True, nuclear_model: Optional[str] = None,
                    memory_gb: Optional[float] = None,
                    cholesky_tol: float = DEFAULT_CHOLESKY_TOL, orbit_pivots: bool = True,
                    one_centre: bool = True, gauge_origin=None,
@@ -3717,6 +3768,11 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
         spherical solution is an *unstable* fixed point for an open shell, so without it the
         anisotropy grows from roundoff until the diagnostics below fire — or until the run
         stops just under them, which is worse. ``False`` exists to measure that and warns.
+    nuclear_model : str, optional
+        ``"point"`` (the default) or ``"gaussian"``. The atomic counterpart of
+        :attr:`kuiva.interface.api.Molecule.nuclear_model`, given here as an argument because
+        an atomic run states its own system rather than being handed a ``Molecule``. It
+        reaches the SCF integrals and the four-component mean field alike.
     with_soc, method, x2c_approx, screening, screening_options, decoupling_options, fitting,
     auxbasis, conv_tol, max_cycle, memory_gb, gauge_origin, verbose
         As :func:`run_scalar_x2c`.
@@ -3767,7 +3823,9 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
     charge = z - n_elec
 
     mol = build_mole(_SingleAtom(atoms=[(element, (0.0, 0.0, 0.0))], charge=charge,
-                                 spin=n_elec % 2, basis=basis), verbose=verbose)
+                                 spin=n_elec % 2, basis=basis,
+                                 nuclear_model=resolve_nuclear_model(nuclear_model)),
+                     verbose=verbose)
     atom_basis = mol.__dict__["_kuiva_atom_basis"]
     meta = mol.__dict__["_kuiva_basis_meta"]
     fit_route, aux = _choose_fit(atom_basis, fitting, auxbasis)

@@ -261,7 +261,12 @@ Hard-won and easy to re-lose:
   decontracts, matching Kuiva's `uncontract=True`. `**HAMILTONIAN.DOSSSS` computes the
   `(SS|SS)` integral class explicitly — without it DIRAC substitutes the Visscher point-charge
   correction while PySCF's `dhf.DHF` computes it. The nuclear model is the one that really
-  matters; it is a genuine physical effect that grows with Z.
+  matters; it is a genuine physical effect that grows with Z. ⚠ **Since v0.22.0 the pin is a
+  choice rather than a necessity**: `nuclear_model="gaussian"` makes Kuiva match DIRAC's own
+  default instead of forcing DIRAC to Kuiva's. Every reference file committed to this
+  repository was generated with a **point** nucleus on both sides, and nothing here says so
+  in the data itself — so a regeneration must decide which of the two it is and write that
+  decision beside the numbers it produces, in the same change.
 
 ---
 

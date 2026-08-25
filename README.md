@@ -977,13 +977,51 @@ the four-component metric. They agree to ~1e-13 on light molecules and to ~2e-7 
 So comparing `"1e"` against `"1e-dlu"` measures the DLU approximation *plus* that difference —
 use `decoupling_options={"partition": "single"}` for the like-for-like reference.
 
+### The nuclear charge model
+
+The nucleus is a **point charge by default**, which is what every reference number shipped with
+this program was produced with. The alternative is the finite Gaussian distribution of Visscher
+and Dyall:
+
+```python
+mol = kuiva.Molecule(atoms=[...], basis="x2c-TZVPall-2c", nuclear_model="gaussian")
+```
+
+- **One statement for the whole molecule, and every consumer inherits it** — the molecular
+  integrals, the four-component atomic solves behind `screening="x2camf"`, the free-atom
+  reference orbitals behind the atomic-reference charges, and the isolated-fragment blocks of
+  the DLU decoupling. There is deliberately no per-atom form: a molecule with one point nucleus
+  among finite ones is not a physical model, and the atomic mean field would then be corrected
+  against a nucleus the molecule does not have.
+- **What it changes.** The effect is concentrated at the nucleus and grows steeply with `Z`:
+  it shrinks j-splittings by under 1e-6 relative at neon, ~5e-4 at krypton and ~3e-3 at
+  mercury, and it is beyond the resolution of any basis for hydrogen. ⚠ Those are core-region
+  operator measurements; what a finite nucleus does to a *valence* property — a g factor, a
+  ligand-field splitting — has not been measured here, and the numbers above bound none of it.
+- **The model is recorded** in the Hamiltonian provenance, so it appears in the property dump's
+  header, in the checkpoint metadata and in the output's Hamiltonian block. A file that does
+  not say which nucleus it describes is not comparable with anything.
+- ⚠ **It is part of the Hamiltonian, so results are not comparable across settings**, and the
+  atomic mean-field cache keys on it: switching the model does not reuse cached corrections, and
+  a lanthanide will pay for its four-component solve again.
+- ⚠ `screening="x2camf-external"` **refuses** a finite nucleus. The external plugin solves its
+  own atomic references over a point nucleus, and it exists to bisect a disagreement — a
+  bisection tool that silently answers a different question is worse than one that is
+  unavailable.
+
+For an atomic average-of-configuration run there is no `Molecule`, so the model is an argument:
+`kuiva.interface.pyscf_bridge.run_scalar_aoc(..., nuclear_model="gaussian")`.
+
 ### ⚠ If you are comparing against another program
 
 Everything below is a real difference that will show up as an apparent "method error" if it is
 not matched. They are listed because they are invisible in the output otherwise.
 
-- **Point nucleus.** Kuiva inherits PySCF's default. DIRAC defaults to a **Gaussian** nuclear
-  charge distribution, and the difference is a genuine physical effect that **grows with Z**.
+- **Point nucleus by default**, and it is now selectable: `nuclear_model="gaussian"` on the
+  `Molecule` puts the Visscher–Dyall finite nucleus under every integral instead (see
+  [The nuclear charge model](#the-nuclear-charge-model)). DIRAC defaults to the Gaussian one,
+  so this is usually the first thing to match, and the difference is a genuine physical effect
+  that **grows with Z**: below 1e-6 relative on a neon j-splitting, ~3e-3 on mercury's.
 - **Speed of light.** `c = 137.03599967994` a.u., PySCF's value. Other codes ship other
   determinations; the difference is in the last digits but is not zero.
 - **The decoupling is done in the decontracted basis** and the result contracted back, which is
@@ -1717,7 +1755,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.21.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.22.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1733,7 +1771,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.21.0'
+import kuiva; kuiva.__version__          # '0.22.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
@@ -1827,6 +1865,10 @@ generate validation reference data live with that code, in `tests/`.
   DOI:10.1063/1.479958; J. Thyssen, PhD thesis, University of Southern Denmark (2001); the
   configuration-average energy functional itself, C. C. J. Roothaan, _Rev. Mod. Phys._ **32**, 179
   (1960), DOI:10.1103/RevModPhys.32.179.
+- **Finite (Gaussian) nuclear charge distribution**, `nuclear_model="gaussian"`. L. Visscher,
+  K. G. Dyall, _At. Data Nucl. Data Tables_ **67**, 207 (1997), DOI:10.1006/adnd.1997.0751 —
+  the parametrization of the rms radius from the isotope mass, which is what PySCF's
+  `dyall_nuc_mod` implements and what Kuiva selects.
 - **Restricted kinetic balance**, the small-component normalization the four-component blocks and
   the X2C equations are written in. R. E. Stanton, S. Havriliak, _J. Chem. Phys._ **81**, 1910
   (1984), DOI:10.1063/1.447865; K. G. Dyall, K. Fægri, _Chem. Phys. Lett._ **174**, 25 (1990),

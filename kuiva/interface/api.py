@@ -57,6 +57,19 @@ class Molecule:
         full point double group and labels converged states by its irreps, activating only
         where the abelian group is not the whole story. ⚠ Classification, never adaptation —
         it changes no number.
+    nuclear_model : str, optional
+        The nuclear charge distribution: ``"point"`` (**the default**, and what every
+        reference number shipped with this program was produced with) or ``"gaussian"``, the
+        finite nucleus of Visscher and Dyall (:mod:`kuiva.x2c.nuclear`). One statement for the
+        whole molecule, inherited by every consumer — the molecular integrals, the atomic
+        four-component solves behind the two-electron spin-orbit screening, and the free-atom
+        reference orbitals.
+
+        ⚠ **It is part of the Hamiltonian, so it is not comparable across settings**: the
+        finite nucleus lowers j-splittings by an amount that grows steeply with Z and is
+        negligible for light elements. It is also the first thing to check against a
+        four-component program, several of which default to a Gaussian nucleus where Kuiva
+        defaults to a point one.
     """
     atoms: List[Atom]
     basis: BasisSpec
@@ -65,14 +78,19 @@ class Molecule:
     unit: str = "Angstrom"
     point_group: Optional[str] = None
     classification: object = "auto"
+    nuclear_model: str = "point"
 
     def __post_init__(self) -> None:
         # Normalise symbols and validate the basis assignment eagerly (fail fast). The
         # resolution is the front end's (one family per atom, same addressing as the
         # reference configurations); this only runs it early so a typo fails here.
         self.atoms = [(s.capitalize(), tuple(float(x) for x in xyz)) for s, xyz in self.atoms]
+        from ..x2c.nuclear import resolve_nuclear_model
         from .pyscf_bridge import _resolve_basis
         _resolve_basis(self.atoms, self.basis)
+        # Normalized here so ``"gauss"`` and ``"gaussian"`` are one model everywhere
+        # downstream, and a misspelling fails at construction rather than after the SCF.
+        self.nuclear_model = resolve_nuclear_model(self.nuclear_model)
 
     @classmethod
     def from_xyz_string(cls, xyz: str, basis: BasisSpec, **kw) -> "Molecule":

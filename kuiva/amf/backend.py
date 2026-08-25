@@ -165,6 +165,11 @@ class AtomicDiracSolution:
     converged : bool
     backend, backend_version : str
         Which implementation produced this, and at what version.
+    nuclear_model : str
+        The nuclear charge distribution the solution was obtained over (:mod:`kuiva.x2c.nuclear`).
+        Recorded for the same reason ``light_speed`` is: it is part of what the solution *is*,
+        and a solution over one nucleus must never be mistaken for — nor cached alongside — a
+        solution over another.
     """
 
     element: str
@@ -187,6 +192,9 @@ class AtomicDiracSolution:
     converged: bool
     backend: str
     backend_version: str
+    #: Defaulted so a backend written before the model was an option still constructs, and so
+    #: that what it reports — a point nucleus — is what it actually solved.
+    nuclear_model: str = "point"
 
     def occupied_energies(self) -> np.ndarray:
         """Occupied four-component spinor energies [Eh], ascending.
@@ -324,7 +332,8 @@ class AtomicDiracBackend(Protocol):
               configuration: Optional[str] = None, interaction: str = "coulomb",
               uncontract: bool = True, light_speed: Optional[float] = None,
               conv_tol: float = 1e-11, max_cycle: int = 100,
-              spherical: bool = True) -> AtomicDiracSolution:
+              spherical: bool = True,
+              nuclear_model: str = "point") -> AtomicDiracSolution:
         """Converge a four-component atomic calculation and return it as plain arrays.
 
         ``spherical`` asks the backend to constrain the solution to spherically symmetric
@@ -333,6 +342,14 @@ class AtomicDiracBackend(Protocol):
         point of the SCF, so a backend that merely occupies the frontier shell fractionally
         will drift into a symmetry-broken solution and return a mean field with an arbitrary
         spatial orientation in it.
+
+        ``nuclear_model`` is the nuclear charge distribution to solve over (``"point"``, the
+        default, or ``"gaussian"`` — :mod:`kuiva.x2c.nuclear`). ⚠ **An implementation that
+        cannot honour it must raise rather than fall back to a point nucleus**: the correction
+        this solution produces is added to a molecular Hamiltonian built over the model the
+        caller asked for, and the difference between two nuclei is a Hermitian, plausible,
+        wrong contribution concentrated exactly where the correction matters. The model is
+        recorded on the solution for the same reason ``light_speed`` is.
         """
         ...
 

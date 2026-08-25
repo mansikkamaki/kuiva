@@ -51,6 +51,7 @@ from typing import Dict, Optional, Tuple
 from ..util import output as out
 from ..util.logging import get_logger
 from ..util.timing import timer
+from ..x2c.nuclear import pyscf_nucmod, resolve_nuclear_model
 from . import cache as disk_cache
 from .backend import AtomicDiracSolution, get_backend
 from .configuration import AtomicConfiguration
@@ -75,12 +76,21 @@ class AtomicRequest:
     backend: str
     light_speed: Optional[float]
     uncontract: bool
+    #: ⚠ **Part of the key, because it is part of the physics.** A mean field solved over a
+    #: point nucleus and one solved over a finite nucleus are different operators of the same
+    #: shape, and the difference is largest exactly where this correction matters most — so
+    #: two requests differing only in this must not share an entry. The default matches the
+    #: program's, so a request built without the argument says what it means.
+    #: (Entries written before the field existed do not need it: the same change moved
+    #: :data:`kuiva.amf.cache.FORMULA_VERSION`, which makes all of them inert.)
+    nuclear_model: str = "point"
 
     def __str__(self) -> str:
         c = "" if self.light_speed is None else ", c={:.4e}".format(self.light_speed)
-        return "{}{:+d} [{}] {} {} via {}{}".format(
+        n = "" if self.nuclear_model == "point" else ", {} nucleus".format(self.nuclear_model)
+        return "{}{:+d} [{}] {} {} via {}{}{}".format(
             self.element, self.charge, self.basis_digest[:8],
-            self.configuration.canonical, self.interaction, self.backend, c)
+            self.configuration.canonical, self.interaction, self.backend, c, n)
 
 
 def basis_digest(basis: object) -> str:
@@ -101,13 +111,19 @@ def basis_digest(basis: object) -> str:
 def make_request(element: str, basis: object, *, charge: int = 0,
                  configuration=None, interaction: str = "coulomb",
                  backend: str = "pyscf", light_speed: Optional[float] = None,
-                 uncontract: bool = True) -> AtomicRequest:
+                 uncontract: bool = True,
+                 nuclear_model: Optional[str] = None) -> AtomicRequest:
     """Build the cache key for an atomic correction.
 
     ⚠ ``configuration`` is **canonicalized here**, not stored as given. Two spellings of the
     same reference state (``"[Ar]3d1"`` and ``"1s2 2s2 2p6 3s2 3p6 3d1"``) must share a cache
     entry, and two different references must not alias — neither of which a free-form string
     can guarantee. See :mod:`kuiva.amf.configuration`.
+
+    ⚠ ``nuclear_model`` is **normalized here**, for the same reason: ``"gauss"`` and
+    ``"gaussian"`` are one model and must share an entry, and an unknown spelling is refused
+    rather than defaulted, because a typo that silently selects a point nucleus caches a
+    result under a key that does not describe it.
 
     ⚠ ``charge`` is likewise **derived from the configuration**, not taken as given, because
     that is what the backend actually solves. Keying on the requested charge instead would let
@@ -123,7 +139,8 @@ def make_request(element: str, basis: object, *, charge: int = 0,
                          configuration=config,
                          interaction=interaction, backend=backend,
                          light_speed=None if light_speed is None else float(light_speed),
-                         uncontract=bool(uncontract))
+                         uncontract=bool(uncontract),
+                         nuclear_model=resolve_nuclear_model(nuclear_model))
 
 
 # The two caches. Solutions are kept as well as corrections because a solution is the
@@ -162,27 +179,42 @@ def clear_cache() -> None:
 
 def cache_key(request: AtomicRequest) -> str:
     """A filesystem-safe identifier for a request — the natural name for an on-disk cache
-    entry, should one ever be wanted (see the module docstring)."""
+    entry, should one ever be wanted (see the module docstring).
+
+    ⚠ **This list is written out by hand and a field added to** :class:`AtomicRequest`
+    **does not join it on its own.** Two requests that differ only in a forgotten field then
+    name one file; the stored-attribute check in :func:`kuiva.amf.cache.load` catches it and
+    warns, so nothing wrong is ever *served* — but the entry is rewritten on every run and
+    the cache silently stops working. Add the field here in the same change.
+    """
     parts = (request.element, request.basis_digest[:16], str(request.charge),
              request.configuration.canonical.replace(" ", ""), request.interaction,
              request.backend,
              "c{:.6e}".format(request.light_speed) if request.light_speed else "c-physical",
-             "unc" if request.uncontract else "con")
+             "unc" if request.uncontract else "con",
+             "nuc-{}".format(request.nuclear_model))
     return "-".join(parts)
 
 
 def atomic_solution(element: str, basis: object, *, charge: int = 0,
                     configuration: Optional[str] = None, interaction: str = "coulomb",
                     backend: str = "pyscf", light_speed: Optional[float] = None,
-                    uncontract: bool = True, **solver_kwargs) -> AtomicDiracSolution:
+                    uncontract: bool = True, nuclear_model: Optional[str] = None,
+                    **solver_kwargs) -> AtomicDiracSolution:
     """A converged four-component atomic solution, from the cache if it is there.
 
     ``light_speed`` is applied for the whole of the solve (see
     :func:`kuiva.amf.pyscf_dhf.light_speed` — it is a PySCF process-global, not an argument).
+
+    ``nuclear_model`` (``"point"``, the default, or ``"gaussian"``) is the charge distribution
+    the nucleus is solved over. ⚠ It must be the **same** model the molecule this solution
+    will correct was built with; :func:`kuiva.amf.correction.amf_correction` is where that is
+    checked rather than assumed.
     """
     request = make_request(element, basis, charge=charge, configuration=configuration,
                            interaction=interaction, backend=backend,
-                           light_speed=light_speed, uncontract=uncontract)
+                           light_speed=light_speed, uncontract=uncontract,
+                           nuclear_model=nuclear_model)
     cached = _SOLUTIONS.get(request)
     if cached is not None:
         _STATS["solution_hits"] += 1
@@ -196,6 +228,7 @@ def atomic_solution(element: str, basis: object, *, charge: int = 0,
         solution = impl.solve(element, basis, charge=charge,
                               configuration=request.configuration,
                               interaction=interaction, uncontract=uncontract,
+                              nuclear_model=request.nuclear_model,
                               **solver_kwargs)
     _SOLUTIONS[request] = solution
     _STATS["solves"] += 1
@@ -205,8 +238,8 @@ def atomic_solution(element: str, basis: object, *, charge: int = 0,
 def atomic_correction(element: str, basis: object, *, charge: int = 0,
                       configuration: Optional[str] = None, interaction: str = "coulomb",
                       backend: str = "pyscf", light_speed: Optional[float] = None,
-                      uncontract: bool = True, report: bool = False,
-                      **solver_kwargs) -> AtomicAMF:
+                      uncontract: bool = True, nuclear_model: Optional[str] = None,
+                      report: bool = False, **solver_kwargs) -> AtomicAMF:
     """The atomic mean-field correction ``(delta h_sf, delta w)`` for one element.
 
     Everything from the four-component solve to the subtraction happens inside a **single**
@@ -216,7 +249,8 @@ def atomic_correction(element: str, basis: object, *, charge: int = 0,
     """
     request = make_request(element, basis, charge=charge, configuration=configuration,
                            interaction=interaction, backend=backend,
-                           light_speed=light_speed, uncontract=uncontract)
+                           light_speed=light_speed, uncontract=uncontract,
+                           nuclear_model=nuclear_model)
     if request.configuration.n_electrons <= 1:
         # ⚠ Hydrogen, and every one-electron reference. There is no second electron to screen,
         # so there is no two-electron mean field and no picture change of one: the correction
@@ -229,7 +263,8 @@ def atomic_correction(element: str, basis: object, *, charge: int = 0,
         # Deliberately **not** cached: it costs nothing to rebuild and caching it would put an
         # entry in the statistics that no solve corresponds to, which is exactly what the
         # unique-element caching test reads.
-        return _zero_correction(element, basis, request.configuration)
+        return _zero_correction(element, basis, request.configuration,
+                                request.nuclear_model)
     cached = _CORRECTIONS.get(request)
     if cached is not None:
         _STATS["correction_hits"] += 1
@@ -261,7 +296,9 @@ def atomic_correction(element: str, basis: object, *, charge: int = 0,
                 solution = impl.solve(element, basis, charge=charge,
                                       configuration=request.configuration,
                                       interaction=interaction,
-                                      uncontract=uncontract, **solver_kwargs)
+                                      uncontract=uncontract,
+                                      nuclear_model=request.nuclear_model,
+                                      **solver_kwargs)
             _SOLUTIONS[request] = solution
             _STATS["solves"] += 1
         else:
@@ -284,21 +321,24 @@ def atomic_correction(element: str, basis: object, *, charge: int = 0,
     return correction
 
 
-def _zero_correction(element: str, basis: object,
-                     configuration: AtomicConfiguration) -> AtomicAMF:
+def _zero_correction(element: str, basis: object, configuration: AtomicConfiguration,
+                     nuclear_model: str = "point") -> AtomicAMF:
     """An exactly-zero :class:`~kuiva.amf.decouple.AtomicAMF` over ``basis``'s functions.
 
     The size is taken from a probe ``Mole`` built exactly as
     :meth:`kuiva.amf.pyscf_dhf.PySCFDiracBackend._build_mole` builds the target basis, so the
     zero block has the same shape a computed one would have had and the molecular assembly
-    cannot tell the two apart.
+    cannot tell the two apart. The nuclear model changes no dimension and is passed for that
+    reason alone — so "built exactly as" stays a true statement rather than one with an
+    exception nobody wrote down.
     """
     import numpy as np
     from pyscf import gto
 
     probe = gto.M(atom=[(element, (0.0, 0.0, 0.0))], basis={element: basis},
                   charge=int(gto.charge(element)) - configuration.n_electrons,
-                  spin=configuration.n_electrons % 2, verbose=0)
+                  spin=configuration.n_electrons % 2,
+                  nucmod=pyscf_nucmod(nuclear_model), verbose=0)
     nao = int(probe.nao)
     return AtomicAMF(h_sf=np.zeros((nao, nao)), w=np.zeros((3, nao, nao)),
                      configuration=configuration, scale=0.0, tr_residual=0.0,
@@ -349,6 +389,38 @@ def _report(request: AtomicRequest, correction: AtomicAMF,
         ("persistent cache", disk_cache.describe(), "", "geometry-independent; "
          "${}".format(disk_cache.ENV_CACHE_DIR)),
     ])
+
+
+def nuclear_model_of(mol) -> str:
+    """Which nuclear charge model a built ``Mole`` actually uses.
+
+    ⚠ **Read off the molecule's own atom table, never off a value someone carried alongside
+    it.** The nuclear model belongs to whatever produced the integrals, exactly as the speed
+    of light does (:mod:`kuiva.x2c.nuclear`): an atomic mean field solved over one nucleus and
+    a molecular Hamiltonian built over another differ by a Hermitian, plausible, wrong amount
+    that no output field would mention. The atom table is what the integral engine reads, so
+    it is what this reads.
+
+    ⚠ **A molecule with a mixed nuclear model is refused, not summarized.** Kuiva states the
+    model once per molecule, so a mixture can only come from a ``Mole`` built elsewhere; there
+    is no honest single answer to return, and every caller here is about to use the answer for
+    an *atomic* calculation that has to match.
+    """
+    from pyscf import gto
+
+    flags = {int(mol._atm[ia, gto.mole.NUC_MOD_OF]) for ia in range(mol.natm)}
+    models = {gto.mole.NUC_GAUSS: "gaussian"}
+    named = {models.get(f, "point") for f in flags}
+    if len(named) > 1:
+        mixed = ", ".join(
+            "{} ({})".format(mol.atom_symbol(ia),
+                             models.get(int(mol._atm[ia, gto.mole.NUC_MOD_OF]), "point"))
+            for ia in range(mol.natm))
+        raise NotImplementedError(
+            "this molecule mixes nuclear charge models — {}. Kuiva states the model once for "
+            "the whole molecule, and an atomic mean-field correction has to be solved over "
+            "the same nucleus as the molecular integrals it corrects.".format(mixed))
+    return named.pop() if named else "point"
 
 
 def elements_by_label(mol) -> Dict[str, Tuple[str, object]]:
@@ -412,4 +484,4 @@ def elements_and_bases(mol) -> Tuple[Tuple[str, object], ...]:
 
 __all__ = ["AtomicRequest", "atomic_correction", "atomic_solution", "basis_digest",
            "cache_key", "cache_statistics", "clear_cache", "elements_and_bases",
-           "elements_by_label", "make_request"]
+           "elements_by_label", "make_request", "nuclear_model_of"]

@@ -38,6 +38,9 @@ WHAT TO LOOK FOR IN THE OUTPUT
 * the same front end run a second time with ``fitting="cholesky-direct"``, which evaluates
   the integrals as the decomposition asks for them and never builds the array -- compare the
   two pre-flight tables, and note that the answers are identical;
+* the nuclear charge model, the third choice behind the Hamiltonian's name: a point charge
+  by default, a finite (Gaussian) distribution on request, and what the difference is worth
+  on an atom as light as neon;
 * the SCF's convergence controls, which is where a real calculation first stops: an SCF that
   runs out of cycles **refuses** (everything downstream is built on its orbitals), the
   internal stability analysis says whether the converged solution is a minimum at all, and
@@ -360,7 +363,52 @@ def main() -> int:
     ])
 
     # ----------------------------------------------------------------------------------
-    # 6. Assert. An example that only prints numbers cannot fail, and one that cannot fail
+    # 6. The nuclear charge model. The Hamiltonian's name ("X2C-AMF") fixes two things --
+    #    how the four-component problem is decoupled and which two-electron screening is in
+    #    it -- and says nothing about the third: what the nucleus is. Kuiva's default is a
+    #    point charge, which is what every reference number shipped with it was produced
+    #    with; the alternative is the finite Gaussian distribution of Visscher and Dyall
+    #    (At. Data Nucl. Data Tables 67, 207 (1997)).
+    # ----------------------------------------------------------------------------------
+    # One statement for the whole molecule, and every consumer inherits it: the molecular
+    # integrals, the four-component atomic solve behind the spin-orbit screening, the
+    # free-atom reference orbitals, the fragments of a local decoupling. Each of them reads
+    # the model off the built molecule rather than being handed it separately -- an atomic
+    # mean field solved over a different nucleus from the integrals it corrects would be
+    # Hermitian, of entirely plausible size, and wrong.
+    #
+    # It costs an atomic four-component solve again, because the model is part of the cache
+    # key: a lanthanide will pay its tens of minutes a second time. Neon does not notice.
+    finite = kuiva.Molecule(atoms=[("Ne", (0.0, 0.0, 0.0))], basis="x2c-SVPall-2c",
+                            charge=0, spin=0, nuclear_model="gaussian")
+    fscf = kuiva.ScalarSCF(finite, memory_gb=2.0).run()
+
+    out.section(log, "The nuclear charge model")
+    h_point = scf.data.soc.h_sf
+    h_shift = (np.max(np.abs(h_point - fscf.data.soc.h_sf))
+               / np.max(np.abs(h_point)))
+    w_shift = (np.max(np.abs(scf.data.soc.w - fscf.data.soc.w))
+               / np.max(np.abs(scf.data.soc.w)))
+
+    out.entries(log, [
+        ("default model", scf.data.soc.nuclear.label()),
+        ("this run's model", fscf.data.soc.nuclear.label()),
+        ("point-nucleus SCF energy", scf.energy, "Eh", "", out.E_FMT),
+        ("finite-nucleus SCF energy", fscf.energy, "Eh", "", out.E_FMT),
+        ("difference", fscf.energy - scf.energy, "Eh",
+         "positive: a spread-out nucleus attracts less", out.SCI_FMT),
+        ("shift in the spin-free operator", h_shift, "", "relative", out.SCI_FMT),
+        ("shift in the spin-orbit operator", w_shift, "", "relative", out.SCI_FMT),
+    ])
+    out.note(log, "The effect is concentrated at the nucleus and grows steeply with Z: it is")
+    out.note(log, "beyond any comparison at neon and reaches ~3e-3 of a mercury j-splitting.")
+    out.note(log, "It is the first thing to match against a four-component program, several")
+    out.note(log, "of which default to a Gaussian nucleus where Kuiva defaults to a point.")
+    out.note(log, "The model is written into the Hamiltonian's provenance, so a property")
+    out.note(log, "file made from this run says which nucleus it describes.")
+
+    # ----------------------------------------------------------------------------------
+    # 7. Assert. An example that only prints numbers cannot fail, and one that cannot fail
     #    demonstrates nothing.
     # ----------------------------------------------------------------------------------
     checks = {
@@ -382,6 +430,12 @@ def main() -> int:
         "the two factorization routes give the same integrals": direct_vs_stored < 1e-12,
         "the two-component Hamiltonian is Hermitian": herm_err < 1e-10,
         "spin-orbit coupling was ingested": bool(data.has_soc),
+        "the default nuclear model is a point charge":
+            scf.data.soc.nuclear.model == "point",
+        "a finite nucleus is recorded in the Hamiltonian's provenance":
+            fscf.data.soc.provenance()["nuclear"]["model"] == "gaussian",
+        "a finite nucleus raises a light atom's energy, slightly":
+            0.0 < fscf.energy - scf.energy < 1e-4,
     }
     failures = report(checks)
 
