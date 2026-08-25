@@ -1,0 +1,433 @@
+================================================================================
+                                   K U I V A                                    
+                 relativistic multireference quantum chemistry                  
+                example 10: environment, ghosts and custom bases                
+                                 version 0.23.0                                 
+                compiled kernels: disabled (KUIVA_KERNELS=numpy)                
+           threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
+================================================================================
+   output file                                   output/environment_and_input.out
+
+================================================================================
+ Scalar-relativistic X2C reference                                    t = 0.13 s
+================================================================================
+   atoms                                                          1   (Ne)
+   charge                                                         0
+   spin (2S)                                                      0
+
+ -- Memory pre-flight ----------------------------------------------------------
+   phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF                                                       external 
+   two-electron integrals            0.000           0.000       0.000  ok       
+   spinor MO transform               0.001           0.001       0.001  ok       
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
+     mol.max_memory = the rest of the limit
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     three-index AO factors                                   0.000  GB   (naux ~ 168)
+     three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
+   memory limit                                               2.000  GB   (set for this calculation)
+   planned peak                                               0.001  GB
+   machine available                                         12.886  GB
+   SCF reference                                                RHF
+   SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
+   AO basis functions                                            14
+   molecular orbitals                                            14
+   electrons (alpha, beta)                                     5, 5
+   two-electron route                                  conventional
+   gauge origin (property operators)             (0.0000, 0.0000, 0.0000) bohr   (centre of mass)
+   nuclear repulsion                                 0.000000000000  Eh
+   scalar X2C SCF energy                          -128.512061726104  Eh
+   SCF converged                                                yes
+   SCF time                                                    0.03  s wall   (0.10 s cpu)
+   AO integral time                                            0.00  s wall   (0.01 s cpu)
+
+ -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
+   two-component Hamiltonian                                 X2C-1e
+   one-electron decoupling                                       1e   (exact molecular decoupling, pyscf)
+   nuclear charge model                                       point
+   spin-orbit operator scale, max |w|                      0.002460  Eh
+   picture-change shift vs sfx2c1e                        2.500e-06  Eh   (guess orbitals only)
+   discarded time-reversal-odd part                       1.136e-11  Eh   (2.3e-13 relative)
+   two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
+
+================================================================================
+ Scalar-relativistic X2C reference                                    t = 0.41 s
+================================================================================
+   atoms                                                          1   (Ne)
+   charge                                                         0
+   spin (2S)                                                      0
+
+ -- Memory pre-flight ----------------------------------------------------------
+   phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF                                                       external 
+   two-electron integrals            0.000           0.000       0.000  ok       
+   spinor MO transform               0.001           0.001       0.002  ok       
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
+     mol.max_memory = the rest of the limit
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     three-index AO factors                                   0.000  GB   (naux ~ 168)
+     three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
+   memory limit                                               2.000  GB   (set for this calculation)
+   planned peak                                               0.002  GB
+   machine available                                         12.886  GB
+   SCF reference                                                RHF
+   SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
+   AO basis functions                                            14
+   molecular orbitals                                            14
+   electrons (alpha, beta)                                     5, 5
+   two-electron route                                  conventional
+   gauge origin (property operators)             (0.0000, 0.0000, 0.0000) bohr   (centre of mass)
+   nuclear repulsion                                 0.000000000000  Eh
+   charge-nucleus interaction                        0.729179606750  Eh   (environment; not included in the nuclear repulsion above)
+   embedding potential, max |V|                           7.667e-02  Eh   (bare)
+   scalar X2C SCF energy                          -128.512623004639  Eh
+   SCF converged                                                yes
+   SCF time                                                    0.03  s wall   (0.10 s cpu)
+   AO integral time                                            0.00  s wall   (0.01 s cpu)
+
+ -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
+   two-component Hamiltonian                                 X2C-1e
+   one-electron decoupling                                       1e   (exact molecular decoupling, pyscf)
+   nuclear charge model                                       point
+   environment                                      2 point charges   (two charges, illustrative)
+   net environment charge                                 +0.400000  e
+   closest charge to a nucleus                                4.472  bohr
+   embedding potential                           bare (non-relativistic operator in the 2c basis)
+   spin-orbit operator scale, max |w|                      0.002460  Eh
+   picture-change shift vs sfx2c1e                        2.500e-06  Eh   (guess orbitals only)
+   discarded time-reversal-odd part                       1.136e-11  Eh   (2.3e-13 relative)
+   two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
+
+================================================================================
+ A molecule in a field of point charges                               t = 0.44 s
+================================================================================
+   vacuum SCF energy                              -128.512061726104  Eh
+   embedded SCF energy                            -128.512623004639  Eh
+   difference                                            -5.613e-04  Eh   (the field's effect on the electrons and the nuclei together)
+   charge-nucleus interaction                        0.729179606750  Eh   (reported separately, never folded into the nuclear repulsion)
+   field digest                                    7f8644d0dbe69a51   (identifies the field in every stored product's header)
+   The charges' interaction with each other is a constant of the lattice and
+   not of this calculation: it is neither computed nor reported here.
+
+================================================================================
+ Scalar-relativistic X2C reference                                    t = 0.44 s
+================================================================================
+   atoms                                                          1   (Ne)
+   charge                                                         0
+   spin (2S)                                                      0
+
+ -- Memory pre-flight ----------------------------------------------------------
+   phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF                                                       external 
+   two-electron integrals            0.000           0.000       0.000  ok       
+   spinor MO transform               0.001           0.001       0.002  ok       
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
+     mol.max_memory = the rest of the limit
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     three-index AO factors                                   0.000  GB   (naux ~ 168)
+     three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
+   memory limit                                               2.000  GB   (set for this calculation)
+   planned peak                                               0.002  GB
+   machine available                                         12.886  GB
+   SCF reference                                                RHF
+   SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
+   AO basis functions                                            14
+   molecular orbitals                                            14
+   electrons (alpha, beta)                                     5, 5
+   two-electron route                                  conventional
+   gauge origin (property operators)             (0.0000, 0.0000, 0.0000) bohr   (centre of mass)
+   nuclear repulsion                                 0.000000000000  Eh
+   charge-nucleus interaction                        0.800000000000  Eh   (environment; not included in the nuclear repulsion above)
+   embedding potential, max |V|                           8.369e-02  Eh   (bare)
+   scalar X2C SCF energy                          -128.512147003583  Eh
+   SCF converged                                                yes
+   SCF time                                                    0.03  s wall   (0.10 s cpu)
+   AO integral time                                            0.00  s wall   (0.01 s cpu)
+
+ -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
+   two-component Hamiltonian                                 X2C-1e
+   one-electron decoupling                                       1e   (exact molecular decoupling, pyscf)
+   nuclear charge model                                       point
+   environment                                      1 point charges
+   net environment charge                                 +0.400000  e
+   closest charge to a nucleus                                5.000  bohr
+   embedding potential                           bare (non-relativistic operator in the 2c basis)
+   spin-orbit operator scale, max |w|                      0.002460  Eh
+   picture-change shift vs sfx2c1e                        2.500e-06  Eh   (guess orbitals only)
+   discarded time-reversal-odd part                       1.136e-11  Eh   (2.3e-13 relative)
+   two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
+ *** WARNING [interface.pyscf_bridge] the non-abelian classification of multiplets is switched off because this calculation is embedded in a field of point charges: the layer verifies the *molecule's* full point group, which the field may break in ways it does not test for. The abelian labels below are restricted to what the field also has.
+i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are not used for labelling
+
+ -- Molecular symmetry ---------------------------------------------------------
+   point group requested                                       auto
+   operations detected                                        C2(z)
+   label group                                                C2(z)   (generators C2(z)(order 4))
+   frame                                             input geometry   (the molecule is never reoriented)
+   degenerate blocks adapted                                      0   (rotated inside a degenerate block; no observable changes)
+   largest block mixing removed                            0.00e+00
+   worst off-diagonal residual                             1.51e-08   (of C^T S U(g) C)
+   character table of C2(z) (lab frame; the group used in the math)
+   irrep             E      C2(z)       Ebar   C2(z)bar
+   --------  ---------  ---------  ---------  ---------
+   A                 1          1          1          1
+   B                 1         -1          1         -1
+   1E1/2             1          i         -1         -i
+   2E1/2             1         -i         -1          i
+   --------  ---------  ---------  ---------  ---------
+   rows above the fermion block are single-valued (boson) irreps; the rows with chi(Ebar) = -1 are the spinor irreps
+   spinors per fermion irrep
+   irrep        spinors   conjugate
+   ----------  --------  ----------
+   1E1/2             14       2E1/2
+   2E1/2             14       1E1/2
+   ----------  --------  ----------
+
+================================================================================
+ Scalar-relativistic X2C reference                                    t = 0.48 s
+================================================================================
+   atoms                                                          1   (Ne)
+   charge                                                         0
+   spin (2S)                                                      0
+
+ -- Memory pre-flight ----------------------------------------------------------
+   phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF                                                       external 
+   two-electron integrals            0.000           0.000       0.000  ok       
+   spinor MO transform               0.001           0.001       0.002  ok       
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
+     mol.max_memory = the rest of the limit
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     three-index AO factors                                   0.000  GB   (naux ~ 168)
+     three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
+   memory limit                                               2.000  GB   (set for this calculation)
+   planned peak                                               0.002  GB
+   machine available                                         12.886  GB
+   SCF reference                                                RHF
+   SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
+   AO basis functions                                            14
+   molecular orbitals                                            14
+   electrons (alpha, beta)                                     5, 5
+   two-electron route                                  conventional
+   gauge origin (property operators)             (0.0000, 0.0000, 0.0000) bohr   (centre of mass)
+   nuclear repulsion                                 0.000000000000  Eh
+   charge-nucleus interaction                        1.600000000000  Eh   (environment; not included in the nuclear repulsion above)
+   embedding potential, max |V|                           1.674e-01  Eh   (bare)
+   scalar X2C SCF energy                          -128.512080642893  Eh
+   SCF converged                                                yes
+   SCF time                                                    0.03  s wall   (0.10 s cpu)
+   AO integral time                                            0.00  s wall   (0.01 s cpu)
+
+ -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
+   two-component Hamiltonian                                 X2C-1e
+   one-electron decoupling                                       1e   (exact molecular decoupling, pyscf)
+   nuclear charge model                                       point
+   environment                                      2 point charges
+   net environment charge                                 +0.800000  e
+   closest charge to a nucleus                                5.000  bohr
+   embedding potential                           bare (non-relativistic operator in the 2c basis)
+   spin-orbit operator scale, max |w|                      0.002460  Eh
+   picture-change shift vs sfx2c1e                        2.500e-06  Eh   (guess orbitals only)
+   discarded time-reversal-odd part                       1.136e-11  Eh   (2.3e-13 relative)
+   two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
+ *** WARNING [interface.pyscf_bridge] the non-abelian classification of multiplets is switched off because this calculation is embedded in a field of point charges: the layer verifies the *molecule's* full point group, which the field may break in ways it does not test for. The abelian labels below are restricted to what the field also has.
+
+ -- Molecular symmetry ---------------------------------------------------------
+   point group requested                                       auto
+   operations detected                           C2(z), i, sigma(xy)
+   label group                                               C2h(z)   (generators C2(z)(order 4), i(order 2))
+   frame                                             input geometry   (the molecule is never reoriented)
+   degenerate blocks adapted                                      0   (rotated inside a degenerate block; no observable changes)
+   largest block mixing removed                            0.00e+00
+   worst off-diagonal residual                             7.54e-09   (of C^T S U(g) C)
+   character table of C2h(z) (lab frame; the group used in the math)
+   irrep                 E          C2(z)              i      sigma(xy)           Ebar       C2(z)bar           ibar   sigma(xy)bar
+   --------  -------------  -------------  -------------  -------------  -------------  -------------  -------------  -------------
+   Ag                    1              1              1              1              1              1              1              1
+   Au                    1              1             -1             -1              1              1             -1             -1
+   Bg                    1             -1              1             -1              1             -1              1             -1
+   Bu                    1             -1             -1              1              1             -1             -1              1
+   1E1/2g                1              i              1              i             -1             -i             -1             -i
+   1E1/2u                1              i             -1             -i             -1             -i              1              i
+   2E1/2g                1             -i              1             -i             -1              i             -1              i
+   2E1/2u                1             -i             -1              i             -1              i              1             -i
+   --------  -------------  -------------  -------------  -------------  -------------  -------------  -------------  -------------
+   rows above the fermion block are single-valued (boson) irreps; the rows with chi(Ebar) = -1 are the spinor irreps
+   spinors per fermion irrep
+   irrep        spinors   conjugate
+   ----------  --------  ----------
+   1E1/2g             8      2E1/2g
+   1E1/2u             6      2E1/2u
+   2E1/2g             8      1E1/2g
+   2E1/2u             6      1E1/2u
+   ----------  --------  ----------
+
+ -- What the field does to the symmetry ----------------------------------------
+   one charge on +z                                           C2(z)
+   two charges, +z and -z                        C2(z), i, sigma(xy)
+   The nuclei alone have all three operations in both runs. The molecule is
+   not the whole system, and the labels say what the whole system has.
+
+================================================================================
+ Scalar-relativistic X2C reference                                    t = 0.52 s
+================================================================================
+   atoms                                                          2   (Ne ghost-Ar)
+   charge                                                         0
+   spin (2S)                                                      0
+
+ -- Memory pre-flight ----------------------------------------------------------
+   phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF                                                       external 
+   two-electron integrals            0.004           0.000       0.004  ok       
+   spinor MO transform               0.008           0.006       0.014  ok       
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
+     mol.max_memory = the rest of the limit
+     conventional AO ERI array                                0.001  GB   (nao = 35; grows as nao^4)
+     three-index AO factors                                   0.002  GB   (naux ~ 420)
+     three-index MO block B^P_p,occ                           0.004  GB   (70 spinors x 10 occupied)
+   memory limit                                               2.000  GB   (set for this calculation)
+   planned peak                                               0.014  GB
+   machine available                                         12.884  GB
+   SCF reference                                                RHF
+   SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
+   AO basis functions                                            35
+   molecular orbitals                                            35
+   electrons (alpha, beta)                                     5, 5
+   two-electron route                                  conventional
+   gauge origin (property operators)             (0.0000, 0.0000, 0.0000) bohr   (centre of mass)
+   nuclear repulsion                                 0.000000000000  Eh
+   scalar X2C SCF energy                          -128.513440818043  Eh
+   SCF converged                                                yes
+   SCF time                                                    0.07  s wall   (0.27 s cpu)
+   AO integral time                                            0.04  s wall   (0.15 s cpu)
+
+ -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
+   two-component Hamiltonian                                 X2C-1e
+   one-electron decoupling                                       1e   (exact molecular decoupling, pyscf)
+   nuclear charge model                                       point
+   spin-orbit operator scale, max |w|                      0.002460  Eh
+   picture-change shift vs sfx2c1e                        2.500e-06  Eh   (guess orbitals only)
+   discarded time-reversal-odd part                       1.204e-11  Eh   (7.7e-14 relative)
+   two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
+
+================================================================================
+ Ghost atoms and the superposition error they measure                 t = 0.69 s
+================================================================================
+   neon alone, AO functions                                      14
+   neon + ghost argon, AO functions                              35
+   electrons, both runs                                        5, 5   (a ghost brings none)
+   nuclear repulsion, both runs                      0.000000000000  Eh   (a ghost has no nucleus)
+   basis-set superposition error                         -1.379e-03  Eh   (negative by construction: more functions, same electrons)
+   density on the ghost's functions                       1.228e-03  e
+
+================================================================================
+ Scalar-relativistic X2C reference                                    t = 0.69 s
+================================================================================
+   atoms                                                          1   (Ne)
+   charge                                                         0
+   spin (2S)                                                      0
+
+ -- Memory pre-flight ----------------------------------------------------------
+   phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF                                                       external 
+   two-electron integrals            0.002           0.000       0.002  ok       
+   spinor MO transform               0.003           0.001       0.003  ok       
+   ------------------------  -------------  --------------  ----------  ---------
+   scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
+     mol.max_memory = the rest of the limit
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     three-index AO factors                                   0.000  GB   (naux ~ 168)
+     three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
+   memory limit                                               2.000  GB   (set for this calculation)
+   planned peak                                               0.003  GB
+   machine available                                         12.872  GB
+   SCF reference                                                RHF
+   SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
+   AO basis functions                                            14
+   molecular orbitals                                            14
+   electrons (alpha, beta)                                     5, 5
+   two-electron route                                  conventional
+   gauge origin (property operators)             (0.0000, 0.0000, 0.0000) bohr   (centre of mass)
+   nuclear repulsion                                 0.000000000000  Eh
+   scalar X2C SCF energy                          -128.512061726104  Eh
+   SCF converged                                                yes
+   SCF time                                                    0.03  s wall   (0.10 s cpu)
+   AO integral time                                            0.00  s wall   (0.01 s cpu)
+
+ -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
+   two-component Hamiltonian                                 X2C-1e
+   one-electron decoupling                                       1e   (exact molecular decoupling, pyscf)
+   nuclear charge model                                       point
+   spin-orbit operator scale, max |w|                      0.002460  Eh
+   picture-change shift vs sfx2c1e                        2.500e-06  Eh   (guess orbitals only)
+   discarded time-reversal-odd part                       1.136e-11  Eh   (2.3e-13 relative)
+   two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
+
+================================================================================
+ A user-supplied basis set                                            t = 0.73 s
+================================================================================
+   registry family                                    x2c-SVPall-2c
+   the same shells, supplied by hand             custom:svpall-copy [x2c-2c, segmented, fit=cholesky, conditioning=unknown]   (contraction measured from the data)
+   registered SCF energy                          -128.512061726104  Eh
+   custom SCF energy                              -128.512061726104  Eh
+   difference                                             0.000e+00  Eh
+   without relativistic_treatment                           refused
+   message                                       a custom basis must declare relativistic_treatment= ('x2c-2c', 'x2c-1c', 'dkh' or 'nonrel')
+
+================================================================================
+ Result                                                               t = 0.73 s
+================================================================================
+   check                                                           verdict   
+   --------------------------------------------------------------  ----------
+   the field changes the energy                                    ok        
+   the charge-nucleus term is reported separately                  ok        
+   the embedding is recorded in the Hamiltonian's provenance       ok        
+   a vacuum run records no environment                             ok        
+   a lopsided field removes inversion from the labelling           ok        
+   a symmetric field keeps all three operations                    ok        
+   a ghost adds functions                                          ok        
+   a ghost adds no electrons                                       ok        
+   a ghost adds no nuclear repulsion                               ok        
+   the superposition error is negative and small                   ok        
+   the leaked density is attributed to the ghost                   ok        
+   a custom basis reproduces the family it copies                  ok        
+   the contraction type is measured                                ok        
+   an undeclared relativistic treatment is refused                 ok        
+   --------------------------------------------------------------  ----------
+   checks                                             all 14 passed
+
+================================================================================
+ Timings                                                              t = 0.73 s
+================================================================================
+   region                            calls     wall [s]       cpu [s]   cpu/wall   % wall
+   -------------------------------  ------  -----------  ------------  ---------  -------
+   scalar X2C SCF                        6         0.20          0.79       4.00     62.4
+   AO integrals                          6         0.05          0.20       3.99     16.0
+     angular-momentum integrals          6         0.00          0.01       3.99      0.4
+     electric dipole integrals           6         0.00          0.00       4.02      0.2
+   X2C spin-orbit integrals              6         0.04          0.16       4.00     12.4
+   environment embedding potential       3         0.00          0.00       3.99      0.2
+   symmetry labelling                    2         0.00          0.01       4.00      0.7
+   atomic reference orbitals             1         0.03          0.10       4.00      8.2
+   -------------------------------  ------  -----------  ------------  ---------  -------
+   total (top-level regions)                                   0.32  s wall
+   total CPU                                                   1.27  s cpu
+   cost is cpu [s]; wall [s] also reflects thread count and, on a
+   thermally clamped machine, time the CPU was forced to stay idle.
+
+ -- Memory ---------------------------------------------------------------------
+   limit                                                      2.000  GB   (set for this calculation)
+   pre-flight estimate                                        0.014  GB
+   declared peak (Kuiva arrays)                               0.002  GB
+   peak resident set (VmHWM)                                  0.157  GB

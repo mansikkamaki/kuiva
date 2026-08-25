@@ -614,15 +614,20 @@ def check_consistency(atom_basis, *, emit: bool = True) -> ConsistencyReport:
     """
     errors, warnings = [], []
     pairs = atom_basis.items() if isinstance(atom_basis, dict) else list(atom_basis)
-    fams: List[BasisFamily] = []
+    fams: List[object] = []
     for sym, bname in pairs:
         try:
-            fam = get_family(bname)
+            # A user-supplied set (kuiva.basis.custom.CustomBasis) arrives as the object
+            # itself rather than as a name. It answers ``covers``, ``name`` and
+            # ``rel_treatment`` like a registered family, so every check below is the same
+            # check — which is the point: the escape hatch keeps the discipline.
+            fam = get_family(bname) if isinstance(bname, str) else bname
         except KeyError as exc:
             errors.append(str(exc))
             continue
         if not fam.covers(sym):
             errors.append(f"{sym}: basis {fam.name!r} does not cover this element")
+            continue
         fams.append(fam)
 
     if fams:

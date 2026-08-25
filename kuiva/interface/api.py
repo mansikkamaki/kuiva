@@ -21,6 +21,7 @@ from ..spinor.expand import SpinorBasis
 from ..util import output as out
 from ..util import resources as res
 from ..util.logging import get_logger
+from .environment import Environment
 from .pyscf_bridge import (ScalarX2CData, build_mole, cross_overlap, memory_plan,
                            run_scalar_x2c)
 
@@ -37,6 +38,10 @@ class Molecule:
     Parameters
     ----------
     atoms : list of ``(symbol, (x, y, z))``
+        An entry written ``("ghost-Cl", pos)`` is a **ghost**: chlorine's basis functions with
+        no nucleus, no electrons and no mass (:mod:`kuiva.basis.ghosts`). It is addressed by
+        that label everywhere — in ``basis``, in the output, in every per-atom map — and never
+        by the element it carries the basis of.
     basis : str or dict
         One registry family name applied to all atoms, or a mapping whose keys are element
         symbols (``"O"``), atom labels (``"O3"``), or 1-based atom numbers (``3``), most
@@ -57,6 +62,13 @@ class Molecule:
         full point double group and labels converged states by its irreps, activating only
         where the abelian group is not the whole story. ⚠ Classification, never adaptation —
         it changes no number.
+    environment : Environment, optional
+        What surrounds the molecule (:mod:`kuiva.interface.environment`): today a field of
+        classical **point charges**, which is what makes a crystal-embedded calculation
+        different from a gas-phase one. ⚠ The field's coordinates are in the molecule's own
+        ``unit`` unless the environment states its own, it does not move the gauge origin, and
+        it **does** take part in symmetry detection — a field of lower symmetry than the nuclei
+        is a real symmetry breaking, not a labelling detail.
     nuclear_model : str, optional
         The nuclear charge distribution: ``"point"`` (**the default**, and what every
         reference number shipped with this program was produced with) or ``"gaussian"``, the
@@ -79,18 +91,25 @@ class Molecule:
     point_group: Optional[str] = None
     classification: object = "auto"
     nuclear_model: str = "point"
+    environment: object = None
 
     def __post_init__(self) -> None:
         # Normalise symbols and validate the basis assignment eagerly (fail fast). The
         # resolution is the front end's (one family per atom, same addressing as the
         # reference configurations); this only runs it early so a typo fails here.
-        self.atoms = [(s.capitalize(), tuple(float(x) for x in xyz)) for s, xyz in self.atoms]
+        from ..basis.ghosts import normalize_symbol
+        self.atoms = [(normalize_symbol(s), tuple(float(x) for x in xyz))
+                      for s, xyz in self.atoms]
         from ..x2c.nuclear import resolve_nuclear_model
         from .pyscf_bridge import _resolve_basis
         _resolve_basis(self.atoms, self.basis)
         # Normalized here so ``"gauss"`` and ``"gaussian"`` are one model everywhere
         # downstream, and a misspelling fails at construction rather than after the SCF.
         self.nuclear_model = resolve_nuclear_model(self.nuclear_model)
+        # Coerced eagerly, so a malformed charge field fails at construction rather than
+        # after the memory pre-flight and a four-component atomic solve.
+        if self.environment is not None and not isinstance(self.environment, Environment):
+            self.environment = Environment(point_charges=self.environment)
 
     @classmethod
     def from_xyz_string(cls, xyz: str, basis: BasisSpec, **kw) -> "Molecule":

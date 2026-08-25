@@ -206,6 +206,7 @@ def analyze(layout, mo_sets: Sequence[np.ndarray], s_ao: np.ndarray, *,
             point_group: str = "auto", mo_energy=None, classification="auto",
             tol: float = DEFAULT_LABEL_TOL, rtol: float = DEFAULT_GROUP_RTOL,
             atom_tol: float = DEFAULT_ATOM_TOL,
+            restrict_operations: Optional[Sequence[str]] = None,
             ) -> Tuple[MolecularSymmetry, Tuple[np.ndarray, ...]]:
     """Label a scalar reference. Returns ``(symmetry, mo_sets)``.
 
@@ -216,8 +217,25 @@ def analyze(layout, mo_sets: Sequence[np.ndarray], s_ao: np.ndarray, *,
     ``point_group="auto"`` uses whatever the geometry has in its own frame. A named group is
     **verified**, not assumed: an operation the molecule does not have is refused rather than
     quietly dropped, because a label read off a non-symmetry is a number with no meaning.
+
+    ``restrict_operations`` narrows what counts as detected: only operations in that list
+    survive, whatever the nuclei have. ⚠ It exists because **the molecule is not always the
+    whole system** — an embedding field of point charges breaks symmetry as effectively as an
+    atom does (:func:`kuiva.symm.operators.point_set_operations` measures which operations a
+    field has), and a reference labelled by the nuclei alone while sitting in a field of lower
+    symmetry would carry irreps its states do not have. It is a list of operation names and
+    nothing else: this module knows nothing about what produced the restriction.
     """
     detected = detect_operations(layout, tol=atom_tol)
+    if restrict_operations is not None:
+        allowed = set(restrict_operations)
+        dropped = tuple(op for op in detected if op not in allowed)
+        detected = tuple(op for op in detected if op in allowed)
+        if dropped:
+            log.info("%s %s a symmetry of the nuclei but not of the whole system, and %s not "
+                     "used for labelling", ", ".join(dropped),
+                     "is" if len(dropped) == 1 else "are",
+                     "is" if len(dropped) == 1 else "are")
     requested = str(point_group)
     reduced_from = None
     if requested.lower() == "auto":

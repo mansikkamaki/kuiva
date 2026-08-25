@@ -36,7 +36,7 @@ from .classify import (Classification, StateClassifier, apply_orbital_rotation,
 from .double import DoubleGroup, detect_point_group, double_group
 from .groups import GROUPS, REDUCTION, Generator, Group, resolve_group
 from .operators import (AOOperation, ao_operation, ao_signs, atom_permutation,
-                        detect_operations, group_operations, label_scalar_orbitals)
+                        detect_operations, point_set_operations, group_operations, label_scalar_orbitals)
 from .report import (character_table, correspondence_table, double_character_table,
                      report, sector_table)
 from .sectors import (SectorTable, assert_sector_symmetry, determinant_labels,
@@ -47,7 +47,7 @@ __all__ = ["AOOperation", "Classification", "DoubleGroup", "GROUPS", "Generator"
            "Group", "MolecularSymmetry", "StateClassifier",
            "OrbitalLabels", "REDUCTION", "SectorTable", "analyze", "apply_orbital_rotation",
            "assert_multiplet_boundary", "assert_sector_symmetry", "ao_operation", "ao_signs",
-           "atom_permutation", "character_table", "correspondence_table", "detect_operations",
+           "atom_permutation", "character_table", "correspondence_table", "detect_operations", "point_set_operations",
            "determinant_labels", "detect_point_group", "double_character_table", "double_group",
            "group_from_operations", "group_operations", "label_scalar_orbitals",
            "mode_bases", "report", "sector_charge",

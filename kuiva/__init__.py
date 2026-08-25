@@ -20,7 +20,7 @@ the module drivers) is public and unchanged; ``README.md`` is the manual.
 #: ``[tool.setuptools.dynamic]``, the run banner prints it, every stored product records it,
 #: and the documents quoting it are held in step by test. Keep it a plain literal: setuptools parses this file
 #: statically and a computed version would not be readable without importing the package.
-__version__ = "0.22.0"
+__version__ = "0.23.0"
 
 #: The class API (kuiva/interface/stages.py) and the Molecule container, re-exported at the
 #: top level so a user script reads ``kuiva.CASSCF(...)``. Resolved lazily (PEP 562): the
@@ -34,8 +34,16 @@ __version__ = "0.22.0"
 #: calculations are compared at all, since the phases in those files are arbitrary and only
 #: :meth:`~kuiva.props.dump.PropertyMatrices.analyse` compares them soundly. Anything that is
 #: *not* half of a write/read pair stays where it lives.
+#:
+#: ⚠ **The third group is here on a narrower argument still**: ``Environment`` and
+#: ``CustomBasis`` exist for no purpose other than to be arguments of ``Molecule``. They are
+#: part of the same statement a user writes on one line, so requiring a module path for them
+#: would put half of one sentence in the namespace and half outside it. Nothing that can be
+#: used on its own qualifies under this.
 _TOP_LEVEL = {
     "Molecule": "kuiva.interface.api",
+    "Environment": "kuiva.interface.environment",
+    "CustomBasis": "kuiva.basis.custom",
     "ScalarSCF": "kuiva.interface.stages",
     "Reference": "kuiva.interface.stages",
     "CheapCI": "kuiva.interface.stages",

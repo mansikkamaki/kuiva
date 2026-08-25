@@ -200,6 +200,43 @@ def ao_operation(layout, spatial: Tuple[int, int], *,
                        sign=ao_signs(layout, spatial), atom_image=atom_image)
 
 
+def point_set_operations(coords, weights=None, *,
+                         tol: float = DEFAULT_ATOM_TOL) -> Tuple[str, ...]:
+    """Which of the three spatial operations a **weighted set of points** maps onto itself.
+
+    Points, not atoms: no basis, no shells, no elements — only positions and a weight that two
+    points must share to be images of each other. It exists because the molecule is not always
+    the whole of what breaks a symmetry. A field of embedding point charges
+    (:mod:`kuiva.interface.environment`) has exactly this shape, and a calculation that read
+    its point group off the nuclei while sitting in a field of lower symmetry would label its
+    states with irreps they do not have.
+
+    ⚠ **Frame-dependent, like everything here**, and tested in the same input frame for the
+    same reason: the geometry is never reoriented.
+    """
+    coords = np.asarray(coords, dtype=float).reshape(-1, 3)
+    if coords.shape[0] == 0:
+        return tuple(SPATIAL_NAMES[s] for s in ((1, 0), (0, 1), (1, 1)))
+    w = (np.ones(coords.shape[0]) if weights is None
+         else np.asarray(weights, dtype=float).ravel())
+    if w.size != coords.shape[0]:
+        raise ValueError("{} points and {} weights".format(coords.shape[0], w.size))
+
+    found = []
+    for spatial in ((1, 0), (0, 1), (1, 1)):
+        moved = _transform_coords(coords, spatial)
+        ok = True
+        for i in range(coords.shape[0]):
+            d = np.linalg.norm(coords - moved[i][None, :], axis=1)
+            j = int(np.argmin(d))
+            if d[j] > tol or abs(w[j] - w[i]) > tol:
+                ok = False
+                break
+        if ok:
+            found.append(SPATIAL_NAMES[spatial])
+    return tuple(found)
+
+
 def detect_operations(layout, *, tol: float = DEFAULT_ATOM_TOL) -> Tuple[str, ...]:
     """Which of ``C2(z)``, ``i``, ``sigma(xy)`` the geometry has **in the input frame**.
 

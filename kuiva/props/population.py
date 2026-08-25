@@ -118,6 +118,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from ..basis.ghosts import is_ghost
 from ..basis.layout import AOLayout
 from ..orth.canonical import sqrt_overlap
 from ..spinor.expand import spinor_indices
@@ -523,7 +524,20 @@ def atomic_reference_charges(c_ao: np.ndarray, s_ao: np.ndarray, layout: AOLayou
     all_converged = True
     for ia in range(layout.natm):
         idx = np.asarray(layout.atom_indices(ia))
-        sym = str(layout.atom_symbols[ia]).capitalize()
+        sym = str(layout.atom_symbols[ia])
+        if is_ghost(sym):
+            # ⚠ A ghost has no free atom, so it has no *occupied* reference to project onto —
+            # and that is exactly what makes its population worth reporting. Its functions
+            # enter as atomic virtuals only (tier 2 below), so the density that lands on them
+            # is density the real atoms borrowed from a basis that carries no electrons of
+            # its own: the basis-set superposition error, as a number, per centre. Its
+            # nuclear charge is zero, so the reported "charge" of a ghost is minus that
+            # leaked population.
+            t[np.ix_(idx, idx)] = np.eye(idx.size)
+            owner[idx] = ia
+            configurations[str(sym)] = "ghost (no nucleus, no reference)"
+            continue
+        sym = sym.capitalize()
         try:
             entry = reference.entry_for_atom(ia, sym) \
                 if hasattr(reference, "entry_for_atom") else reference[sym]
@@ -544,7 +558,8 @@ def atomic_reference_charges(c_ao: np.ndarray, s_ao: np.ndarray, layout: AOLayou
         occupied[idx[:n_occ]] = True
         weight[idx[:n_occ]] = occ_sorted[:n_occ]
         owner[idx] = ia
-        key = reference.atom_keys[ia] if getattr(reference, "atom_keys", None) else sym
+        keys = getattr(reference, "atom_keys", None)
+        key = keys[ia] if keys and keys[ia] else sym
         configurations[key] = entry.configuration
         all_converged = all_converged and entry.converged
 

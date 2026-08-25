@@ -8,6 +8,13 @@ syntax, resolved here so the two cannot drift apart. A mapping key is one of
   titanium: a label naming the wrong element is refused, never reinterpreted;
 * a **plain integer** (``3``, or the string ``"3"``) — atom number 3 whatever its element.
 
+A **ghost** (:mod:`kuiva.basis.ghosts`) is addressed by its own label — ``"ghost-Cl"`` for
+every ghost chlorine, ``"ghost-Cl2"`` for one of them — and never by the element it carries
+the basis of. ⚠ That is the point rather than a detail: ``basis={"Cl": ...}`` must not reach
+a ghost chlorine, because a ghost and a real atom of one element are two different things to
+every consumer downstream, and a key that covered both would be a way to state one basis and
+get two.
+
 ⚠ **Numbering is 1-based in all input and output** (user decision: the quantum-chemistry
 convention). Internally everything is 0-based NumPy indexing; this module is the boundary
 where the two meet, so no other module converts.
@@ -22,9 +29,11 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from .ghosts import normalize_symbol
+
 __all__ = ["parse_atom_key", "resolve_atom_assignments"]
 
-_LABEL = re.compile(r"^([A-Za-z]{1,2})([0-9]+)$")
+_LABEL = re.compile(r"^((?:ghost-)?[A-Za-z]{1,2})([0-9]+)$")
 
 
 def parse_atom_key(key, symbols: Sequence[str]):
@@ -34,7 +43,7 @@ def parse_atom_key(key, symbols: Sequence[str]):
     anything that names no atom of this molecule.
     """
     n = len(symbols)
-    caps = [s.capitalize() for s in symbols]
+    caps = [normalize_symbol(s) for s in symbols]
     if isinstance(key, int) and not isinstance(key, bool):
         if not 1 <= key <= n:
             raise ValueError(
@@ -45,9 +54,10 @@ def parse_atom_key(key, symbols: Sequence[str]):
         text = key.strip()
         if text.isdigit():
             return parse_atom_key(int(text), symbols)
+        text = normalize_symbol(text) if not text.isdigit() else text
         m = _LABEL.match(text)
-        if m and m.group(1).capitalize() in caps:
-            sym, num = m.group(1).capitalize(), int(m.group(2))
+        if m and normalize_symbol(m.group(1)) in caps:
+            sym, num = normalize_symbol(m.group(1)), int(m.group(2))
             if not 1 <= num <= n:
                 raise ValueError(
                     "atom label {!r} is out of range: this molecule has atoms 1..{} "
@@ -58,8 +68,8 @@ def parse_atom_key(key, symbols: Sequence[str]):
                     "label is refused rather than reinterpreted".format(
                         text, sym, num, caps[num - 1]))
             return "atom", num - 1
-        if text.capitalize() in caps:
-            return "element", text.capitalize()
+        if text in caps:
+            return "element", text
         raise ValueError(
             "the key {!r} names no atom of this molecule (elements: {}; atoms 1..{}). "
             "Use an element symbol, a label like {}2, or a 1-based atom number.".format(
@@ -84,7 +94,7 @@ def resolve_atom_assignments(spec, symbols: Sequence[str], *, what: str,
     atoms must keep their own label downstream.
     """
     n = len(symbols)
-    caps = [s.capitalize() for s in symbols]
+    caps = [normalize_symbol(s) for s in symbols]
     if spec is None:
         return [default] * n, [False] * n
 

@@ -92,6 +92,10 @@ from ..util import output as out
 from ..util import resources as res
 from ..util.logging import get_logger
 from ..util.timing import timer
+from ..basis import custom as custom_mod
+from ..basis.custom import is_custom, is_custom_name
+from .environment import EmbeddingRecord, Environment, embedding_operator
+from ..basis.ghosts import ghost_element, is_ghost, normalize_symbol
 from ..x2c.methods import DecouplingRecord
 from ..x2c.nuclear import NuclearRecord, nuclear_record, pyscf_nucmod, \
     resolve_nuclear_model
@@ -176,6 +180,10 @@ class SpinOrbitX2C:
         ⚠ It is a record of what has **already been added**, not a request. Adding
         ``amf_correction(...)`` to a Hamiltonian whose record is not ``"none"`` double-counts
         the correction. The one place it is applied is :func:`ingest_spin_orbit`.
+    embedding : EmbeddingRecord
+        What environment this Hamiltonian was built in — a point-charge field, or nothing.
+        ⚠ The fourth **contract with stored data**: a property matrix computed in a crystal
+        field and one computed in vacuum are different physics wearing the same shape.
     nuclear : NuclearRecord
         Which nuclear charge model the integrals underneath this operator were evaluated
         over. ⚠ The third **contract with stored data**, beside :attr:`decoupling` and
@@ -198,6 +206,7 @@ class SpinOrbitX2C:
     screening: ScreeningRecord = field(default_factory=ScreeningRecord)
     decoupling: DecouplingRecord = field(default_factory=DecouplingRecord)
     nuclear: NuclearRecord = field(default_factory=NuclearRecord)
+    embedding: EmbeddingRecord = field(default_factory=EmbeddingRecord)
     method: str = ""
 
     tr_residual: float = 0.0
@@ -226,7 +235,8 @@ class SpinOrbitX2C:
             h_sf=x.T @ self.h_sf @ x,
             w=np.stack([x.T @ wk @ x for wk in self.w]),
             approx=self.approx, screening=self.screening,
-            decoupling=self.decoupling, nuclear=self.nuclear, method=self.method,
+            decoupling=self.decoupling, nuclear=self.nuclear,
+            embedding=self.embedding, method=self.method,
             tr_residual=self.tr_residual, tr_residual_rel=self.tr_residual_rel,
             picture_change_shift=self.picture_change_shift)
 
@@ -235,6 +245,7 @@ class SpinOrbitX2C:
         out.entry(logger, "two-component Hamiltonian", self.method or "X2C")
         self.decoupling.report(logger)
         self.nuclear.report(logger)
+        self.embedding.report(logger)
         out.entry(logger, "spin-orbit operator scale, max |w|", self.soc_strength, "Eh",
                   fmt="{:.6f}")
         out.entry(logger, "picture-change shift vs sfx2c1e", self.picture_change_shift, "Eh",
@@ -259,6 +270,7 @@ class SpinOrbitX2C:
             "one_electron": "X2C (approx={})".format(self.approx),
             "decoupling": self.decoupling.as_dict(),
             "nuclear": self.nuclear.as_dict(),
+            "embedding": self.embedding.as_dict(),
             "soc_strength": float(self.soc_strength),
             "picture_change_shift": float(self.picture_change_shift),
             "tr_residual": float(self.tr_residual),
@@ -483,11 +495,25 @@ def gauge_origin_for(mol, origin=None) -> Tuple[np.ndarray, str]:
     coords = np.asarray(mol.atom_coords(), dtype=float)
     if origin is None or (isinstance(origin, str) and origin.lower() in ("mass", "com")):
         w = np.asarray(mol.atom_mass_list(), dtype=float)
+        # ⚠ A ghost has no mass and no charge, so it moves neither the centre of mass nor the
+        # centre of charge — which is the wanted behaviour, and the reason a counterpoise
+        # pair shares one gauge origin. A molecule of *nothing but* ghosts has neither centre
+        # and is refused here rather than dividing by zero into a NaN that every moment in
+        # the file would then carry.
+        if w.sum() <= 0.0:
+            raise ValueError(
+                "this molecule has no mass: every atom is a ghost, so there is no centre of "
+                "mass to put the gauge origin at. State one explicitly — ('atom', k), "
+                "('bohr', x, y, z), ('angstrom', x, y, z) or 'origin'.")
         return coords.T @ w / w.sum(), "centre of mass"
     if isinstance(origin, str):
         key = origin.lower()
         if key in ("charge", "conc"):
             z = np.asarray([mol.atom_charge(i) for i in range(mol.natm)], dtype=float)
+            if z.sum() <= 0.0:
+                raise ValueError(
+                    "this molecule has no nuclear charge: every atom is a ghost, so there is "
+                    "no centre of nuclear charge. State the gauge origin explicitly.")
             return coords.T @ z / z.sum(), "centre of nuclear charge"
         if key in ("origin", "zero"):
             return np.zeros(3), "coordinate origin"
@@ -1263,6 +1289,10 @@ class MoleculeSpec:
     #: the calculation ran on. (No overlap integral depends on it — which is exactly why it
     #: would go unnoticed if it were dropped.)
     nuclear_model: str = "point"
+    #: The environment this calculation ran in. Carried for completeness of the statement —
+    #: ⚠ it reaches no integral through :func:`build_mole`, because point charges are not part
+    #: of the ``Mole``; they are a one-electron term added afterwards.
+    environment: object = None
 
     @classmethod
     def from_molecule(cls, molecule, configuration=None) -> "MoleculeSpec":
@@ -1272,7 +1302,8 @@ class MoleculeSpec:
                    basis=molecule.basis, charge=int(molecule.charge),
                    spin=int(molecule.spin), unit=str(getattr(molecule, "unit", "Angstrom")),
                    configuration=configuration,
-                   nuclear_model=str(getattr(molecule, "nuclear_model", "point")))
+                   nuclear_model=str(getattr(molecule, "nuclear_model", "point")),
+                   environment=getattr(molecule, "environment", None))
 
     @property
     def elements(self) -> Tuple[str, ...]:
@@ -1385,6 +1416,14 @@ class ScalarX2CData:
     # provenance
     basis_meta: Dict[str, str] = field(default_factory=dict)
     e_nuc: float = 0.0
+    #: The classical charge-nucleus interaction of an embedding field [Eh], **not** included
+    #: in :attr:`e_nuc`. ⚠ It *is* included in :attr:`e_scf`, because it is part of the energy
+    #: the SCF minimized; keeping the two apart in storage is what lets an embedded total be
+    #: compared with a gas-phase one at all.
+    e_embedding: float = 0.0
+    #: What environment this reference was computed in (:mod:`kuiva.interface.environment`).
+    #: The default record describes a molecule in vacuum.
+    embedding: EmbeddingRecord = field(default_factory=EmbeddingRecord)
     #: AO basis layout — geometry, shells and per-AO labels. Mostly *analysis* metadata
     #: (Loewdin populations, the molden dump), ⚠ **but no longer only that**: its ``ao_shell``
     #: and ``ao_atom`` columns build the symmetry-orbit labelling the Cholesky decomposition
@@ -1464,11 +1503,16 @@ def _resolve_basis(atoms, basis) -> Tuple[list, list]:
     the reference configurations use). Without a ``"default"`` the assignment must be
     complete, exactly as before. Registry coverage and compatibility run over the whole
     per-atom assignment, so two families on one element are checked as the pair they are.
+
+    A value may be a registry name **or** a :class:`kuiva.basis.custom.CustomBasis`, and the
+    two mix freely atom by atom: a custom set answers the coverage and relativistic-treatment
+    questions the check asks, so it goes through the same check rather than around it.
     """
     from ..basis.atommap import resolve_atom_assignments
+    from ..basis.ghosts import ghost_element, normalize_symbol
 
-    symbols = [a[0].capitalize() for a in atoms]
-    if isinstance(basis, str):
+    symbols = [normalize_symbol(a[0]) for a in atoms]
+    if isinstance(basis, str) or is_custom(basis):
         families, specific = [basis] * len(symbols), [False] * len(symbols)
     else:
         families, specific = resolve_atom_assignments(basis, symbols, what="basis")
@@ -1477,7 +1521,14 @@ def _resolve_basis(atoms, basis) -> Tuple[list, list]:
             raise ValueError("no basis assigned for atom(s) {} — add element entries or a "
                              "\"default\" entry".format(missing))
 
-    report = reg.check_consistency(sorted({(s, f) for s, f in zip(symbols, families)}))
+    # ⚠ Coverage and compatibility are asked about the **element**, not the label: the
+    # registry knows nothing about ghosts, and a ghost chlorine needs chlorine's functions.
+    pairs = []
+    for sym, fam in zip(symbols, families):
+        entry = (ghost_element(sym), fam)
+        if entry not in pairs:
+            pairs.append(entry)
+    report = reg.check_consistency(sorted(pairs, key=lambda e: (e[0], str(e[1]))))
     if not report.ok:
         raise ValueError("basis consistency check failed:\n  " + "\n  ".join(report.errors))
     return families, specific
@@ -1505,8 +1556,9 @@ def build_mole(molecule, verbose: int = 0, configuration=None):
 
     from ..amf.oxidation import resolve_reference_configuration
     from ..basis.atommap import resolve_atom_assignments
+    from ..basis.ghosts import ghost_element, is_ghost, normalize_symbol
 
-    symbols = [a[0].capitalize() for a in molecule.atoms]
+    symbols = [normalize_symbol(a[0]) for a in molecule.atoms]
     families, _ = _resolve_basis(molecule.atoms, molecule.basis)
 
     spec_values, _ = resolve_atom_assignments(configuration, symbols,
@@ -1515,14 +1567,33 @@ def build_mole(molecule, verbose: int = 0, configuration=None):
     resolved: Dict[tuple, tuple] = {}
     atom_configs = []
     for sym, value in zip(symbols, spec_values):
+        if is_ghost(sym):
+            # ⚠ A ghost has no nucleus, so it has no reference state to resolve — and an
+            # explicit configuration for one is a statement about chemistry that is not
+            # there. It is refused rather than ignored, because ignoring it would run a
+            # different calculation from the one that was asked for.
+            if value is not None:
+                raise ValueError(
+                    "a reference configuration ({!r}) was given for {}, which is a ghost: it "
+                    "carries basis functions and no nucleus, so it has no reference state, no "
+                    "atomic mean field and no oxidation state.".format(value, sym))
+            atom_configs.append((None, True))
+            continue
         key = (sym, repr(value))
         if key not in resolved:          # one resolution (and one warning) per unique spec
             resolved[key] = resolve_reference_configuration(sym, value)
         atom_configs.append(resolved[key])
 
     # Decoration: every atom of an element whose atoms are not all alike gets its own label.
+    def _family_key(f):
+        """What makes two atoms' bases "the same" for labelling purposes. ⚠ A custom set is
+        keyed on the **content** of its shells, not on the object: two equal sets built
+        separately must not decorate the molecule into two labels that mean one thing."""
+        return f.digest() if is_custom(f) else str(f)
+
     varies = {s for s in set(symbols)
-              if len({(f, c[0]) for s2, f, c in zip(symbols, families, atom_configs)
+              if len({(_family_key(f), c[0].canonical if c[0] is not None else "")
+                      for s2, f, c in zip(symbols, families, atom_configs)
                       if s2 == s}) > 1}
     labels = [("{}{}".format(s, i + 1) if s in varies else s)
               for i, s in enumerate(symbols)]
@@ -1533,8 +1604,18 @@ def build_mole(molecule, verbose: int = 0, configuration=None):
     for label, sym, fam_name in zip(labels, symbols, families):
         if label in pyscf_basis:
             continue
+        element = ghost_element(sym)
+        if is_custom(fam_name):
+            # ⚠ The shells go to the integral library as parsed data, and the contraction
+            # type in the provenance is **measured** from exactly those shells rather than
+            # declared — the same rule a registered family's data obeys. ⚠ What is *stashed*
+            # is the name, never the object: see kuiva.basis.custom.stash.
+            pyscf_basis[label] = fam_name.shells_for(element)
+            meta[label] = fam_name.label(element)
+            atom_basis[label] = custom_mod.CUSTOM_PREFIX + fam_name.name
+            continue
         fam = reg.get_family(fam_name)
-        pyscf_basis[label] = reg.resolve_for_pyscf(fam_name, [sym])[sym] \
+        pyscf_basis[label] = reg.resolve_for_pyscf(fam_name, [element])[element] \
             if fam.provider is reg.Provider.BSE else fam.provider_name
         meta[label] = f"{fam.name} [{fam.rel_treatment.value}, {fam.contraction.value}, " \
                       f"fit={fam.fit_route().value}]"
@@ -1551,14 +1632,29 @@ def build_mole(molecule, verbose: int = 0, configuration=None):
     mol.__dict__["_kuiva_basis_meta"] = meta
     mol.__dict__["_kuiva_atom_basis"] = atom_basis
     mol.__dict__["_kuiva_atom_labels"] = labels
-    mol.__dict__["_kuiva_atom_families"] = list(families)
+    # ⚠ Plain data only (the SCF checkpoint JSON-serializes ``mol.__dict__``): a custom set
+    # is stashed as its JSON-safe form and rebuilt by ``_stashed_families``.
+    mol.__dict__["_kuiva_atom_families"] = [
+        custom_mod.stash(f) if is_custom(f) else f for f in families]
     # ⚠ Plain data only: PySCF's SCF checkpoint JSON-serializes ``mol.__dict__``, so the
     # resolved configurations are stashed as (occupations, label, is_default) and rebuilt
     # by _stashed_configs() — equality (and therefore every cache key) is by occupations.
     mol.__dict__["_kuiva_atom_configs"] = [
-        (list(cfg.occupations), cfg.label, bool(d)) for cfg, d in atom_configs]
+        ([] if cfg is None else list(cfg.occupations),
+         "" if cfg is None else cfg.label, bool(d)) for cfg, d in atom_configs]
     mol.__dict__["_kuiva_config_given"] = configuration is not None
     return mol
+
+
+def _stashed_families(mol):
+    """The per-atom basis families of a built molecule, custom sets rebuilt as objects.
+
+    The counterpart of :func:`_stashed_configs`, and it exists for the same reason: what is
+    parked on a ``Mole`` has to survive a JSON round trip, so an object goes on as plain data
+    and comes back here.
+    """
+    return [custom_mod.unstash(f) if isinstance(f, dict) else f
+            for f in mol.__dict__["_kuiva_atom_families"]]
 
 
 def _stashed_configs(mol):
@@ -1570,7 +1666,7 @@ def _stashed_configs(mol):
             for occ, label, d in mol.__dict__["_kuiva_atom_configs"]]
 
 
-def _choose_fit(atom_basis: Dict[str, str], fitting: Optional[str],
+def _choose_fit(atom_basis: Dict[str, object], fitting: Optional[str],
                 auxbasis: Optional[object] = None) -> Tuple[str, Optional[object]]:
     """Decide the two-electron route and auxiliary. Returns ``(fit_route, aux)``.
 
@@ -1610,7 +1706,11 @@ def _choose_fit(atom_basis: Dict[str, str], fitting: Optional[str],
     if fitting == "df":
         # No auxiliary given: fall back on the registry's recommendation, which is a Coulomb
         # fitting set. from_df() warns about exactly this when the factors are used.
-        auxes = {reg.recommended_auxiliary(b) for b in atom_basis.values()}
+        # ⚠ A custom set recommends no auxiliary — nothing is known about its conditioning,
+        # which is exactly why its own fit route is Cholesky. Asking for density fitting over
+        # one is still the user's call; it lands on the universal fallback below.
+        auxes = {reg.recommended_auxiliary(b) for b in atom_basis.values()
+                 if not is_custom_name(b)}
         auxes.discard(None)
         aux = auxes.pop() if len(auxes) == 1 else "def2-universal-jkfit"
         log.warning("density fitting requested without an auxiliary basis; falling back on "
@@ -2532,7 +2632,7 @@ def molecular_mean_field(mol, *, interaction: str = "coulomb", uncontract: bool 
 def ingest_spin_orbit(mol, h_sfx2c1e: Optional[np.ndarray] = None,
                       approx: str = "1e", *, screening: str = "x2camf",
                       decoupling_options: Optional[Dict[str, object]] = None,
-                      **screening_kwargs) -> SpinOrbitX2C:
+                      embedding=None, **screening_kwargs) -> SpinOrbitX2C:
     """Extract the two-component X2C Hamiltonian and decompose it (see :class:`SpinOrbitX2C`).
 
     PySCF returns it in the spin-blocked ``[alpha; beta]`` AO basis, which is already Kuiva's
@@ -2553,6 +2653,13 @@ def ingest_spin_orbit(mol, h_sfx2c1e: Optional[np.ndarray] = None,
         under a second for a light element and ~35 minutes for a lanthanide, paid once ever
         per (element, basis, configuration). ``screening="none"`` is the escape hatch, and it
         is a statement about cost, not about correctness.
+    embedding : EmbeddingOperator, optional
+        The environment's one-electron term (:mod:`kuiva.interface.environment`), already
+        built over this molecule's AO basis. ⚠ Added **here**, in the AO basis, for the same
+        reason the two-electron picture change is: a term added after a change of basis is a
+        term some caller can forget to transform. It is a *spin-free* operator unless it was
+        picture-changed, in which case it carries a spin-dependent part too and both halves
+        are added together.
     **screening_kwargs
         Passed to :func:`kuiva.amf.correction.amf_correction`: ``interaction``, ``backend``,
         ``configuration`` (a mapping for a heteronuclear molecule), ``uncontract``,
@@ -2644,6 +2751,17 @@ def ingest_spin_orbit(mol, h_sfx2c1e: Optional[np.ndarray] = None,
         h_sf = h_sf + correction.h_sf
         w = w + correction.w
 
+    # The environment, added in the AO basis beside the two-electron picture change and for
+    # the same reason. ⚠ The **bare** operator is spin-free, so it moves ``h_sf`` and leaves
+    # ``w`` bitwise alone; a picture-changed one carries a spin-orbit part as well, which is
+    # the whole difference between the two and is why the record says which was used.
+    embedding_record = EmbeddingRecord()
+    if embedding is not None:
+        h_sf = h_sf + np.asarray(embedding.h_sf)
+        if embedding.w is not None:
+            w = w + np.asarray(embedding.w)
+        embedding_record = embedding.record
+
     # Measured on the operator that is actually returned, so that it describes the difference
     # between the Hamiltonian the SCF ran with and the one the multireference step will use —
     # correction included. With screening off this is bitwise the number it always was.
@@ -2659,6 +2777,7 @@ def ingest_spin_orbit(mol, h_sfx2c1e: Optional[np.ndarray] = None,
                         approx=approx, screening=correction.provenance(),
                         decoupling=decoupling_record,
                         nuclear=nuclear_record(nuclear_model_of(mol)),
+                        embedding=embedding_record,
                         method=resolved.name,
                         tr_residual=residual, tr_residual_rel=rel,
                         picture_change_shift=shift)
@@ -2764,6 +2883,32 @@ class _SingleAtom:
     basis: object
     unit: str = "Bohr"
     nuclear_model: str = "point"
+
+
+def _embed_scf(mf, embedding):
+    """Add the environment's terms to an SCF object: its potential and its classical energy.
+
+    ⚠ **Both, or neither.** The one-electron potential without the charge-nucleus energy is a
+    total that is wrong by a constant nobody would notice, and the constant is the larger of
+    the two for a distant field. They are attached together, here, so there is no order of
+    operations in which one arrives and the other does not.
+
+    ⚠ **Only the spin-free half reaches the SCF**, and that is not a truncation: the front-end
+    SCF *is* scalar (``sfx2c1e``), so a spin-dependent embedding term has nowhere to go in it.
+    A picture-changed field's spin-orbit part is added where every other spin-orbit term is —
+    :func:`ingest_spin_orbit`, in the AO basis, on the two-component Hamiltonian the
+    multireference step actually uses.
+    """
+    v = np.asarray(embedding.h_sf)
+    base_hcore, base_enuc = mf.get_hcore, mf.energy_nuc
+
+    def get_hcore(mol=None, *args, **kwargs):
+        h = np.asarray(base_hcore() if mol is None else base_hcore(mol, *args, **kwargs))
+        return h + v
+
+    mf.get_hcore = get_hcore
+    mf.energy_nuc = lambda *a, **k: float(base_enuc()) + float(embedding.e_nuclear)
+    return mf
 
 
 def _build_scf(mol, reference: str):
@@ -3373,6 +3518,19 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                 reg.get_family(aux).provider is reg.Provider.BSE:
             aux_spec = reg.resolve_for_pyscf(aux, list(atom_basis.keys()))
         mf = mf.density_fit(auxbasis=aux_spec)
+
+    # The environment, before the convergence controls: the second-order wrap copies the
+    # object's attributes at construction, so a hook installed afterwards would be installed
+    # on a different object from the one that iterates.
+    embedding = None
+    env = getattr(molecule, "environment", None)
+    if env is not None and not env.is_empty:
+        embedding = embedding_operator(
+            mol, env.resolved(str(getattr(molecule, "unit", "Angstrom"))),
+            approx=chosen.decoupling, decoupling_options=decoupling_options)
+    if embedding is not None:
+        mf = _embed_scf(mf, embedding)
+
     mf.conv_tol = conv_tol
     mf.max_cycle = max_cycle
     # Normalized once, here, and the driver reads the normalized values from then on —
@@ -3481,7 +3639,7 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
             lab: cfg for lab, (cfg, _d) in zip(mol.__dict__["_kuiva_atom_labels"],
                                                _stashed_configs(mol))}
     soc = (ingest_spin_orbit(mol, h_x2c, chosen.decoupling, screening=chosen.screening,
-                             decoupling_options=decoupling_options,
+                             decoupling_options=decoupling_options, embedding=embedding,
                              **screen_opts) if with_soc else None)
 
     # ⚠ Must run here for the same reason the direct decomposition does: the reference is
@@ -3500,6 +3658,18 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         ("gauge origin (property operators)", "({:.4f}, {:.4f}, {:.4f}) bohr".format(
             *np.asarray(props.gauge_origin).ravel()), "", props.origin_label),
         ("nuclear repulsion", float(mol.energy_nuc()), "Eh", "", out.E_FMT),
+    ]
+    if embedding is not None:
+        # ⚠ Its own line, never folded into the nuclear repulsion: an embedded total and a
+        # gas-phase one are then still separable into the part that is chemistry and the part
+        # that is the field it sits in, and no other program's total is silently comparable
+        # with a number that mixes them.
+        rows.append(("charge-nucleus interaction", float(embedding.e_nuclear), "Eh",
+                     "environment; not included in the nuclear repulsion above", out.E_FMT))
+        rows.append(("embedding potential, max |V|", embedding.scale, "Eh",
+                     "picture-changed" if embedding.record.picture_change else "bare",
+                     out.SCI_FMT))
+    rows += [
         ("scalar X2C SCF energy", float(e_scf), "Eh", "", out.E_FMT),
         ("SCF converged", bool(mf.converged)),
     ]
@@ -3535,12 +3705,36 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     if point_group is not None:
         from ..symm import analyze as _analyze_symmetry
         from ..symm import report as _report_symmetry
+        # ⚠ The molecule is not always the whole system. An embedding field breaks symmetry as
+        # effectively as an atom does, so what the *nuclei* have is intersected with what the
+        # **field** has before anything is labelled — otherwise a state would carry an irrep
+        # of a group the calculation is not actually in.
+        restrict = None
+        classification_here = classification
+        if embedding is not None:
+            from ..symm.operators import point_set_operations
+            resolved_env = env.resolved(str(getattr(molecule, "unit", "Angstrom")))
+            restrict = point_set_operations(resolved_env.point_charges.coords,
+                                            resolved_env.point_charges.charges)
+            # ⚠ **The non-abelian classification layer is switched off in a field**, and this
+            # is a refusal rather than a restriction. That layer detects the molecule's *full*
+            # point group — rotations of any order, not the three operations a field can be
+            # tested against here — so with an embedding present it would name multiplets by a
+            # group the calculation is not in. Classification changes no number, so declining
+            # to do it costs nothing; naming a state by the wrong group does not.
+            if classification_here not in (False, None, "off", "none"):
+                log.warning("the non-abelian classification of multiplets is switched off "
+                            "because this calculation is embedded in a field of point "
+                            "charges: the layer verifies the *molecule's* full point group, "
+                            "which the field may break in ways it does not test for. The "
+                            "abelian labels below are restricted to what the field also has.")
+                classification_here = False
         with timer("symmetry labelling"):
             symmetry, adapted = _analyze_symmetry(
                 data_layout, tuple(np.asarray(c) for c in
                                    (mo_coeff if unrestricted else (mo_coeff,))),
                 s_ao, point_group=point_group, mo_energy=mf.mo_energy,
-                classification=classification)
+                classification=classification_here, restrict_operations=restrict)
         mo_coeff = np.asarray(adapted) if unrestricted else adapted[0]
         _report_symmetry(symmetry, log, spinor_labels=symmetry.spinor_labels())
 
@@ -3557,6 +3751,8 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         soc=soc, reference=ref_name, unrestricted=unrestricted, s2_deviation=s2_dev,
         scf_stable=stable,
         basis_meta=meta, e_nuc=float(mol.energy_nuc()), ao_layout=data_layout,
+        e_embedding=0.0 if embedding is None else float(embedding.e_nuclear),
+        embedding=EmbeddingRecord() if embedding is None else embedding.record,
         properties=props, atomic_reference=atomic_ref, symmetry=symmetry,
         molecule=mol_spec,
     )
@@ -3690,18 +3886,21 @@ def _atomic_reference_set(mol):
     from ..amf.atomic import nuclear_model_of
 
     labels = mol.__dict__["_kuiva_atom_labels"]
-    families = mol.__dict__["_kuiva_atom_families"]
+    families = _stashed_families(mol)
     configs = _stashed_configs(mol)
     nuclear_model = nuclear_model_of(mol)
     entries = {}
     for ia, label in enumerate(labels):
-        if label in entries:
+        # ⚠ A ghost has no free atom to compare against: there is no nucleus, so there is no
+        # neutral reference state and no charge to partition. Atoms mapped to no entry are
+        # what the partition reads as "not a centre".
+        if label in entries or is_ghost(label):
             continue
         cfg, is_default = configs[ia]
         entries[label] = _atomic_reference_entry(
             mol.atom_pure_symbol(ia), families[ia], cfg, is_default, nuclear_model)
     return AtomicReferenceSet(
-        entries=entries, atom_keys=list(labels),
+        entries=entries, atom_keys=[("" if is_ghost(lab) else lab) for lab in labels],
         basis_label=", ".join("{}: {}".format(lab, mol.__dict__["_kuiva_atom_basis"][lab])
                               for lab in sorted(entries)))
 
@@ -3857,6 +4056,11 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
                 reg.get_family(aux).provider is reg.Provider.BSE:
             aux_spec = reg.resolve_for_pyscf(aux, list(atom_basis.keys()))
         mf = mf.density_fit(auxbasis=aux_spec)
+
+    # ⚠ No environment here: this driver computes **one atom**, and an atomic
+    # average-of-configuration reference in a field of point charges is not a spherical
+    # solution — the whole construction assumes it is. An embedding is a property of a
+    # Molecule and reaches only the molecular path.
     mf.conv_tol = conv_tol
     mf.max_cycle = max_cycle
     # The same controls, through the same implementation the molecular path uses. ⚠ No

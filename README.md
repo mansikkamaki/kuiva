@@ -977,6 +977,102 @@ the four-component metric. They agree to ~1e-13 on light molecules and to ~2e-7 
 So comparing `"1e"` against `"1e-dlu"` measures the DLU approximation *plus* that difference —
 use `decoupling_options={"partition": "single"}` for the like-for-like reference.
 
+### The environment: point charges
+
+A single-molecule magnet is measured in a crystal, and a bare gas-phase 3+ ion has a
+qualitatively different ligand field from the one in the lattice. Point charges are the
+smallest honest way to say what surrounds the molecule:
+
+```python
+env = kuiva.Environment(
+    point_charges=[(+2.0, (0.0, 0.0, 5.4)), (-1.0, (0.0, 3.1, -2.2))],  # (q, (x, y, z))
+    label="two shells of the lattice, Ewald-fitted elsewhere")
+mol = kuiva.Molecule(atoms=[...], basis="x2c-TZVPall-2c", environment=env)
+```
+
+A whole lattice is given as arrays rather than as tuples:
+`Environment(point_charges=(charges, coords))`.
+
+- **Coordinates are in the molecule's own `unit`** unless the environment states its own
+  (`Environment(..., unit="bohr")`). ⚠ A charge field copied from a crystallographic file is
+  in Angstrom; the same numbers read as bohr put the lattice 1.9x too far away and produce a
+  perfectly plausible ligand field for the wrong crystal.
+- **What it changes is exactly two things**: the one-electron Hamiltonian gains the charges'
+  potential, and the classical charge–nucleus energy is added to the total. Everything after
+  the front end is untouched — the multireference layer is handed a one-electron Hamiltonian,
+  as it always was, so every invariant and every stored product means what it meant before.
+- **The charge–nucleus energy is reported on its own line** and is *not* folded into the
+  nuclear repulsion, so an embedded total stays separable into the part that is chemistry and
+  the part that is the field. ⚠ The charges' interaction with *each other* is a constant of the
+  lattice, not of this calculation, and is neither computed nor reported.
+- ⚠ **The gauge origin does not move**: charges have no mass and no nucleus, so a complex in
+  vacuum and the same complex embedded share one origin and their property files stay
+  comparable.
+- ⚠ **Symmetry sees the field.** A field of lower symmetry than the nuclei restricts the labels
+  (and says which operations it removed), and it switches the non-abelian classification off —
+  that layer verifies the *molecule's* full point group, which a field can break in ways the
+  three tested operations do not cover.
+- **The potential is added bare** — the non-relativistic operator, used unchanged in the
+  two-component basis. `Environment(..., picture_change=True)` transforms it through the
+  Hamiltonian's own X2C decoupling instead; measured at ~1e-5 relative and **not** growing
+  with Z, at the cost of an integral per charge (a lattice makes that the expensive route).
+- **The field is recorded in the provenance** by count, net charge, extent and a **digest** —
+  a lattice does not belong in a file header, but two files carrying the same digest were
+  embedded in the same field.
+- ⚠ A charge closer than 0.5 bohr to a nucleus is **refused**: the density polarizes onto it
+  without bound and the SCF converges to a number that means nothing.
+
+Generating a charge field — an Ewald fit from a crystal structure — is **not** part of Kuiva;
+the list is the input.
+
+### Ghost atoms
+
+An atom written `("ghost-Cl", pos)` carries chlorine's basis functions and nothing else: no
+nucleus, no electrons, no mass. It is what a counterpoise correction is made of.
+
+```python
+alone   = kuiva.Molecule(atoms=[("Ne", (0, 0, 0))], basis=B)
+ghosted = kuiva.Molecule(atoms=[("Ne", (0, 0, 0)), ("ghost-Ar", (0, 0, 4))],
+                         basis={"Ne": B, "ghost-Ar": B})       # same electrons, more functions
+```
+
+- **The label is the address.** `basis={"ghost-Ar": ...}` reaches it and `basis={"Ar": ...}`
+  does not — a ghost and a real atom of one element are different things to everything
+  downstream. Two ghosts of one element get decorated labels (`ghost-Ar1`, `ghost-Ar2`) and can
+  carry different bases, exactly as two real atoms can. `X-Cl` and `ghost:Cl` are accepted and
+  normalized to `ghost-Cl`.
+- **It has no chemistry**: no atomic mean field (the two-electron spin-orbit correction skips
+  it, and its block is exactly zero), no free-atom reference, no oxidation state — stating a
+  reference configuration for one is refused rather than ignored.
+- **It costs what its functions cost.** A ghost enters the working basis, the integrals, the
+  memory plan and the symmetry detection like any other centre.
+- **The atomic-reference charge report gives it a "charge"** equal to minus the density that
+  leaked onto its functions — the superposition error resolved per centre.
+
+### A basis the registry does not have
+
+```python
+custom = kuiva.CustomBasis(open("my-set.nwchem").read(),      # or {"Ce": parsed_shells}
+                           relativistic_treatment="x2c-2c",
+                           name="modified-SVP", notes="from Table 2 of the paper")
+mol = kuiva.Molecule(atoms=[...], basis={"Ce": custom, "Cl": "x2c-SVPall-2c"})
+```
+
+Both an NWChem-format string (what Basis Set Exchange emits) and an already-parsed
+specification are accepted, per atom, mixable with registered families.
+
+- ⚠ **`relativistic_treatment=` is required**, because it is the one property that cannot be
+  measured from a list of exponents and the one whose absence stays invisible until it reaches
+  a heavy element. It takes part in the same cross-atom compatibility check registered
+  families go through, so a non-relativistic set alongside an X2C one is still refused.
+- **Contraction type is measured from the data**, never declared, and appears in the output as
+  what it actually is.
+- **Conditioning is unknown and says so**, which routes the two-electron integrals to Cholesky
+  — the error bound the user sets rather than an unbounded fitting error.
+- Everything else applies unchanged: the set is decontracted for the four-component atomic
+  solve, its mean field is cached on the **content** of the shells rather than on the name, and
+  a Cartesian basis is still refused.
+
 ### The nuclear charge model
 
 The nucleus is a **point charge by default**, which is what every reference number shipped with
@@ -1017,6 +1113,10 @@ For an atomic average-of-configuration run there is no `Molecule`, so the model 
 Everything below is a real difference that will show up as an apparent "method error" if it is
 not matched. They are listed because they are invisible in the output otherwise.
 
+- **Gas phase unless you say otherwise.** Kuiva computes an isolated molecule; a reference
+  number measured in a crystal, or computed by a program with an embedding switched on, is a
+  different system. `Environment(point_charges=...)` is how to say so, and the header of every
+  stored product says whether it was used.
 - **Point nucleus by default**, and it is now selectable: `nuclear_model="gaussian"` on the
   `Molecule` puts the Visscher–Dyall finite nucleus under every integral instead (see
   [The nuclear charge model](#the-nuclear-charge-model)). DIRAC defaults to the Gaussian one,
@@ -1755,7 +1855,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.22.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.23.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1771,7 +1871,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.22.0'
+import kuiva; kuiva.__version__          # '0.23.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

@@ -51,6 +51,7 @@ from typing import Dict, Optional, Tuple
 from ..util import output as out
 from ..util.logging import get_logger
 from ..util.timing import timer
+from ..basis.ghosts import is_ghost
 from ..x2c.nuclear import pyscf_nucmod, resolve_nuclear_model
 from . import cache as disk_cache
 from .backend import AtomicDiracSolution, get_backend
@@ -408,14 +409,18 @@ def nuclear_model_of(mol) -> str:
     """
     from pyscf import gto
 
-    flags = {int(mol._atm[ia, gto.mole.NUC_MOD_OF]) for ia in range(mol.natm)}
+    # ⚠ Ghosts are skipped: an atom with no nucleus has no nuclear model, and letting one
+    # carry a flag of its own would be a way for a molecule to look "mixed" over a nucleus
+    # that is not there.
+    real = [ia for ia in range(mol.natm) if mol.atom_charge(ia) != 0]
+    flags = {int(mol._atm[ia, gto.mole.NUC_MOD_OF]) for ia in real}
     models = {gto.mole.NUC_GAUSS: "gaussian"}
     named = {models.get(f, "point") for f in flags}
     if len(named) > 1:
         mixed = ", ".join(
             "{} ({})".format(mol.atom_symbol(ia),
                              models.get(int(mol._atm[ia, gto.mole.NUC_MOD_OF]), "point"))
-            for ia in range(mol.natm))
+            for ia in real)
         raise NotImplementedError(
             "this molecule mixes nuclear charge models — {}. Kuiva states the model once for "
             "the whole molecule, and an atomic mean-field correction has to be solved over "
@@ -441,7 +446,12 @@ def elements_by_label(mol) -> Dict[str, Tuple[str, object]]:
     seen = {}
     for ia in range(mol.natm):
         symbol = mol.atom_symbol(ia)
-        if symbol in seen:
+        if symbol in seen or is_ghost(symbol):
+            # ⚠ A ghost carries basis functions and no nucleus, so there is no atomic mean
+            # field to solve for it and no element to ask the registry about — its own
+            # ``atom_pure_symbol`` is the ghost label, not an element symbol. It is skipped
+            # here and left as an exactly-zero block by the assembly, which is what a
+            # two-electron picture change of nothing is.
             continue
         pure = mol.atom_pure_symbol(ia)
         basis = mol._basis.get(symbol, mol._basis.get(pure))
@@ -462,7 +472,9 @@ def elements_by_label(mol) -> Dict[str, Tuple[str, object]]:
         probe = gto.M(atom=[(pure, (0.0, 0.0, 0.0))], basis={pure: basis},
                       spin=int(gto.charge(pure)) % 2, verbose=0)
         per_element[symbol] = int(probe.nao)
-    total = sum(per_element[mol.atom_symbol(ia)] for ia in range(mol.natm))
+    slices = mol.aoslice_by_atom()
+    total = sum(per_element[mol.atom_symbol(ia)] if not is_ghost(mol.atom_symbol(ia))
+                else int(slices[ia][3] - slices[ia][2]) for ia in range(mol.natm))
     if total != int(mol.nao):
         raise ValueError(
             "the basis recorded on this molecule rebuilds to {} functions but the molecule "

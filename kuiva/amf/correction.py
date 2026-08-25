@@ -658,6 +658,11 @@ def _assemble(mol, labels: Dict[str, Tuple[str, object]], blocks
     ranges = []
     for ia in range(mol.natm):
         label = mol.atom_symbol(ia)
+        if label not in blocks:
+            # A ghost: no nucleus, so no two-electron picture change of one. Its diagonal
+            # block stays exactly zero, and it is deliberately absent from ``ranges`` so the
+            # off-atom check below reads it as what it is.
+            continue
         block = blocks[label]
         p0, p1 = int(slices[ia][2]), int(slices[ia][3])
         if block.h_sf.shape[0] != p1 - p0:
