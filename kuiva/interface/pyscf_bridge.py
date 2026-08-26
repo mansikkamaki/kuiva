@@ -1840,22 +1840,27 @@ def _auto_factor_residence(nao: int, *, nelec: int, fit_route: str,
                        .format(peak, limit, spilled))
 
 
-def _nevpt2_block_split(n: int, n_occ: int, n_active: int) -> Tuple[int, int, int]:
+def _nevpt2_block_split(n: int, n_occ: int, n_active: int,
+                        n_active_elec: Optional[int] = None) -> Tuple[int, int, int]:
     """``(inactive, active, virtual)`` spinor counts a memory plan must assume.
 
     The perturbation holds four three-index blocks at once, totalling
     ``naux * (n_virtual + n_active) * (n_inactive + n_active)``, and with ``n_virtual =
-    n - n_inactive - n_active`` the only unknown left at pre-flight is the inactive count:
-    it is the electron count minus however many electrons the active space takes, and the
-    active electron count is not part of the plan's input.
+    n - n_inactive - n_active`` the only unknown left at pre-flight is the inactive count.
+    With ``n_active_elec`` stated it is not unknown at all: ``n_inactive = nelec -
+    n_active_elec`` exactly, and the plan uses that split.
 
-    That product is **concave** in ``n_inactive``, with its maximum at ``(n - n_active)/2``.
-    The plan therefore assumes the admissible split closest to that maximum — ``n_inactive``
-    can never exceed the number of occupied spinors, which is the electron count — so the
-    estimate bounds every split the calculation could turn out to have, without the safety
-    factor that a padded sizing function would be. On any real system the occupied count is
-    far below ``n/2`` and the bound is simply "every occupied spinor is inactive".
+    Without it, the product is **concave** in ``n_inactive``, with its maximum at
+    ``(n - n_active)/2``. The plan then assumes the admissible split closest to that maximum
+    — ``n_inactive`` can never exceed the number of occupied spinors, which is the electron
+    count — so the estimate bounds every split the calculation could turn out to have,
+    without the safety factor that a padded sizing function would be. On any real system the
+    occupied count is far below ``n/2`` and the bound is simply "every occupied spinor is
+    inactive".
     """
+    if n_active_elec is not None:
+        n_inactive = max(0, min(int(n_occ) - int(n_active_elec), n - int(n_active)))
+        return n_inactive, int(n_active), n - n_inactive - int(n_active)
     hi = max(0, min(int(n_occ), n - int(n_active)))
     n_inactive = min(hi, max(0, (n - int(n_active)) // 2))
     return n_inactive, int(n_active), n - n_inactive - int(n_active)
@@ -1875,12 +1880,15 @@ def memory_plan(nao: int, *, conventional: bool = True, direct: bool = False,
     :class:`kuiva.util.resources.PhaseEstimate` for :func:`kuiva.util.resources.preflight`.
 
     ``n_active`` adds the multireference phases when the active space is already known;
-    ``nevpt2`` adds the 4-RDM, which is ``n_active^8`` and is by a wide margin the largest
-    array in the program (direct contraction was chosen over a cumulant approximation, so
-    there is no cheaper route to it). ``screening`` adds the two-electron picture change
-    (one four-component atomic solve per unique element). ``nelec`` is the electron count,
-    which is what bounds the transformed three-index blocks (see below) and is known as soon
-    as the molecule is built.
+    ``nevpt2`` adds the perturbation's phase — the four cached three-index space-pair
+    blocks, and (with ``n_active_elec``) the shifted-space sigma workspace and the cached
+    ladder-string vector sets, which are what the implemented label route actually holds.
+    ⚠ Deliberately **no stored 3- or 4-RDM line**: the perturbation refuses to build either,
+    and budgeting the ``n_active^8`` array of a formulation nobody runs would refuse every
+    perturbation past ~12 active spinors on a phantom. ``screening`` adds the two-electron
+    picture change (one four-component atomic solve per unique element). ``nelec`` is the
+    electron count, which is what bounds the transformed three-index blocks (see below) and
+    is known as soon as the molecule is built.
 
     ``n_active_elec`` (with ``n_active``) adds the conventional-CI residency — the sigma
     workspace ``F``/``G``, the excitation map, the kept CI vectors and the Davidson subspace
@@ -2113,26 +2121,63 @@ def memory_plan(nao: int, *, conventional: bool = True, direct: bool = False,
                                             allocations=hessian_allocations,
                                             advice=hessian_advice))
     if nevpt2 and n_active:
-        n_i, n_a, n_v = _nevpt2_block_split(n, n_occ, int(n_active))
-        phases.append(res.PhaseEstimate(name="SC-NEVPT2", allocations=[
-            res.PlannedAllocation("4-RDM", res.rdm_gb(n_active, 4),
-                                  note="n_active^8; 6.4 GB at 12 spinors, 382 GB at 20"),
-            res.PlannedAllocation("3-RDM", res.rdm_gb(n_active, 3)),
-            # The space-pair blocks the perturbation caches, all live at once and all live
-            # beside the RDMs. ⚠ Summed by the identity
-            # ``sum over the four pairs = naux (n_v + n_a) (n_i + n_a)`` rather than by asking
-            # the perturbation for the list, because **nothing on the calculation path may
-            # import the perturbation layer** and the front-end is on it. The pair list stays
-            # the perturbation's own; the suite cross-checks this forecast against it, so a
-            # class that starts requesting a fifth pair fails a test rather than quietly
-            # leaving the plan describing a different calculation.
+        n_i, n_a, n_v = _nevpt2_block_split(n, n_occ, int(n_active), n_active_elec)
+        nevpt2_allocations = [
+            # The space-pair blocks the perturbation caches, all live at once. ⚠ Summed by
+            # the identity ``sum over the four pairs = naux (n_v + n_a) (n_i + n_a)`` rather
+            # than by asking the perturbation for the list, because **nothing on the
+            # calculation path may import the perturbation layer** and the front-end is on
+            # it. The pair list stays the perturbation's own; the suite cross-checks this
+            # forecast against it, so a class that starts requesting a fifth pair fails a
+            # test rather than quietly leaving the plan describing a different calculation.
             res.PlannedAllocation("three-index MO blocks B^P_(bra|ket)",
                                   mo_block_memory_gb(naux, n_v + n_a, n_i + n_a),
                                   note="{} inactive / {} active / {} virtual".format(
                                       n_i, n_a, n_v)),
-        ], advice=["reduce the active space: the 4-RDM grows as its eighth power",
-                   "freeze core spinors or delete high virtuals, which shortens the label "
-                   "ranges of the three-index blocks"]))
+        ]
+        nevpt2_advice = ["freeze core spinors or delete high virtuals, which shortens the "
+                        "label ranges of the three-index blocks"]
+        # ⚠ There is deliberately NO stored 3- or 4-RDM line. The implemented SC-NEVPT2
+        # refuses to build either (the label route holds one perturber vector per external
+        # label instead), and a plan that budgets the n_active^8 array of a formulation
+        # nobody runs refuses every perturbation past ~12 active spinors on a phantom — the
+        # same credibility failure as the B^P_pq square, in its PT2 instance.
+        if n_active_elec is not None:
+            from ..ci.sigma import sigma_workspace_gb
+            from ..ci.strings import cas_dimension
+            na, k = int(n_active), int(n_active_elec)
+            shifts = [d for d in (-2, -1, 0, 1, 2) if 0 <= k + d <= na]
+            shifted_gb = max(sigma_workspace_gb(na, k + d) for d in shifts)
+            # The cached ladder-string vector sets, per state: annihilated (na x C(k-1)),
+            # created (na x C(k+1)), pair-annihilated (na^2 x C(k-2)) and the augmented
+            # excitation set ((na^2+1) x C(k)) — the identity mirrored from the
+            # perturbation's own sizing for the import-direction reason above, and
+            # cross-checked by the suite against the arrays it actually caches.
+            def _dim(kk):
+                return cas_dimension(na, kk) if 0 <= kk <= na else 0
+            sets_gb = 16.0 * (na * (_dim(k - 1) + _dim(k + 1)) + na * na * _dim(k - 2)
+                              + (na * na + 1) * _dim(k)) / res.BYTES_PER_GB
+            nevpt2_allocations += [
+                res.PlannedAllocation(
+                    "shifted-space sigma workspace", shifted_gb,
+                    note="largest of the {} shifted electron spaces; at most one live "
+                         "at a time".format(len(shifts))),
+                res.PlannedAllocation(
+                    "ladder-string vector sets", sets_gb,
+                    note="cached per state, released between states"),
+                res.PlannedAllocation(
+                    "pair-created vectors", 16.0 * na * na * _dim(k + 2) / res.BYTES_PER_GB,
+                    resident=False, note="transient of the pair-creation class"),
+            ]
+            nevpt2_advice.insert(0, "reduce the active space: the shifted-space workspaces "
+                                    "and vector sets grow with C(n_active, k)")
+        else:
+            nevpt2_advice.insert(0, "state the active electron count (n_active_elec=): the "
+                                    "plan then carries the shifted-space workspaces and the "
+                                    "ladder-vector sets, which are what the perturbation "
+                                    "actually holds")
+        phases.append(res.PhaseEstimate(name="SC-NEVPT2", allocations=nevpt2_allocations,
+                                        advice=nevpt2_advice))
     return phases
 
 
@@ -3444,7 +3489,7 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                    guess_from=None, allow_unconverged_scf: bool = False,
                    memory_gb: Optional[float] = None, n_active: Optional[int] = None,
                    n_active_elec: Optional[int] = None, n_states: Optional[int] = None,
-                   factors: Optional[str] = None,
+                   nevpt2: bool = False, factors: Optional[str] = None,
                    cholesky_tol: float = DEFAULT_CHOLESKY_TOL, orbit_pivots: bool = True,
                    one_centre: bool = True,
                    gauge_origin=None, property_picture_change: bool = False,
@@ -3627,6 +3672,12 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         request is refused *here*, before the SCF and the decomposition are paid for, rather
         than at its first CI solve. Planning only, exactly like ``n_active``: nothing
         downstream reads them, and the CASSCF still states its own space.
+    nevpt2 : bool
+        Plan the SC-NEVPT2 phase too (planning only, like the three above): the four cached
+        three-index space-pair blocks, and — with ``n_active_elec`` — the shifted-space
+        sigma workspace and the per-state ladder-vector sets. Off by default because the
+        perturbation is opt-in downstream; a run that will end in a NEVPT2 should say so
+        here, so the refusal (if any) comes before the SCF rather than after the CASSCF.
     factors : str, optional
         Where the three-index factor rows live after the decomposition: ``"in-core"`` (RAM,
         the historical behaviour), ``"scratch"`` (spilled to a scratch file and streamed in
@@ -3721,7 +3772,7 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                               direct=fit_route == "direct",
                               shell_ao_max=_shell_ao_max(mol), n_shells=int(mol.nbas),
                               n_active=n_active, n_active_elec=n_active_elec,
-                              n_states=n_states, nelec=mol.nelectron,
+                              n_states=n_states, nelec=mol.nelectron, nevpt2=nevpt2,
                               factors_scratch=factor_residence == "scratch",
                               screening=with_soc and chosen.screening != "none"))
     if fit_route == "conventional":

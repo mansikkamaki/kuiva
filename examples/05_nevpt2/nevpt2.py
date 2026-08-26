@@ -104,9 +104,15 @@ def main() -> int:
     # mode="second-order" rather than the default: fifteen equally weighted roots make the
     # orbital problem harder than the CI, and it is the orbital problem that decides the
     # mode. A caller decision, deliberately not inferred from the CI cost.
+    # conv_grad below the default: the E2 denominators amplify whatever asymmetry the
+    # converged orbitals still carry across a degenerate term (about fifty-fold here), so
+    # the landing quality of the reference -- not the correction -- is what decides whether
+    # the 0.1 cm^-1 physics check below can pass. An optimizer stopping at |g| = 1e-4 is
+    # converged for an energy; it is not necessarily converged for a degeneracy a
+    # perturbation is about to magnify.
     cas = kuiva.CASSCF(reference, character=("O", "p"), n_active=N_ACTIVE,
                        n_active_elec=N_ACTIVE_ELEC, n_states=N_STATES,
-                       mode="second-order", max_iter=60).run()
+                       mode="second-order", max_iter=60, conv_grad=1e-6).run()
 
     out.section(log, "The reference")
     log.info("%s", cas.summary())

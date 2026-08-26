@@ -358,25 +358,32 @@ class SigmaOperator:
         self.n_spinor = n
         self.ndet = space.ndet
 
-        res.reserve("full-CI sigma workspace ({} spinors, {} electrons)"
-                    .format(n, space.n_elec),
-                    sigma_workspace_gb(n, space.n_elec),
-                    note="F/G (one shared buffer) of {} determinants x {} orbital pairs, "
-                         "plus the GEMM tile".format(self.ndet, n * n),
-                    advice=[
-                        "reduce the active space: the workspace grows as C(n,k) * n^2",
-                        "this kernel keeps the whole F/G intermediate resident so that both "
-                        "gathers own their output row (no atomics in a threaded port); above "
-                        "~24 spinors that is no longer possible and the answer is a batched, "
-                        "scattering kernel that does not exist yet -- not a larger run of "
-                        "this one",
-                        "the Kramers-restricted CI mode does NOT help here: it halves the "
-                        "Davidson subspace, not this workspace, which is gathered over the "
-                        "whole determinant space in either mode",
-                        "above the conventional-CI ceiling, use DMRG"])
+        alloc = res.reserve("full-CI sigma workspace ({} spinors, {} electrons)"
+                            .format(n, space.n_elec),
+                            sigma_workspace_gb(n, space.n_elec),
+                            note="F/G (one shared buffer) of {} determinants x {} orbital "
+                                 "pairs, plus the GEMM tile".format(self.ndet, n * n),
+                            advice=[
+                                "reduce the active space: the workspace grows as "
+                                "C(n,k) * n^2",
+                                "this kernel keeps the whole F/G intermediate resident so "
+                                "that both gathers own their output row (no atomics in a "
+                                "threaded port); above ~24 spinors that is no longer "
+                                "possible and the answer is a batched, scattering kernel "
+                                "that does not exist yet -- not a larger run of this one",
+                                "the Kramers-restricted CI mode does NOT help here: it "
+                                "halves the Davidson subspace, not this workspace, which is "
+                                "gathered over the whole determinant space in either mode",
+                                "above the conventional-CI ceiling, use DMRG"])
         self.f_buf = np.empty((self.ndet, n * n), dtype=np.complex128)
         self.tile_buf = np.empty((min(self.ndet, GEMM_TILE_ROWS), n * n),
                                  dtype=np.complex128)
+        # The reservation dies with the buffer: an operator is long-lived in a CASSCF (one
+        # per active space, its integrals swapped in place), but the perturbation builds one
+        # per shifted electron space and keeps at most one alive — a reservation that
+        # outlived the dropped operator would charge the budget for every shift at once,
+        # which is exactly the aggregate the one-live policy exists to avoid.
+        res.owned_by(self.f_buf, alloc)
         self.block = gather_block_size(space.n_elec, space.n_empty, self.ndet, block)
         self.n_apply = 0
         self.set_integrals(h, eri, check_symmetry=check_symmetry)

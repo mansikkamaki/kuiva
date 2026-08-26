@@ -247,3 +247,25 @@ def test_the_refusal_names_the_algorithmic_ceiling(monkeypatch):
     assert "sigma workspace" in message
     assert "batched" in message and "not a larger run" in message
     assert "dmrg" in message
+
+
+def test_the_workspace_reservation_dies_with_the_operator():
+    """⚠ The perturbation's one-live shifted family depends on this: dropping a
+    SigmaOperator must return its workspace to the ledger, or a reservation per shift
+    accumulates into exactly the aggregate the policy exists to avoid. The reservation is
+    owned by the buffer, so a consumer still holding ``f_buf`` (the RDM builder) keeps the
+    reservation too — the truthful accounting either way."""
+    import gc
+
+    from kuiva.util import resources as res
+
+    space = CASSpace(8, 4)
+    space.build_excitation_map()               # the space's own reservations, out of the way
+    h, eri = random_spinor_integrals(8, seed=5)
+    res.ensure_configured()
+    base = res.BUDGET.resident_gb()
+    operator = SigmaOperator(space, h, eri)
+    assert res.BUDGET.resident_gb() == pytest.approx(base + sigma_workspace_gb(8, 4))
+    del operator
+    gc.collect()
+    assert res.BUDGET.resident_gb() == pytest.approx(base)

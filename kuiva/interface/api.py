@@ -191,6 +191,7 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                          memory_gb: Optional[float] = None, n_active: Optional[int] = None,
                          n_active_elec: Optional[int] = None,
                          n_states: Optional[int] = None,
+                         nevpt2: bool = False,
                          factors: Optional[str] = None,
                          cholesky_tol: float = DEFAULT_CHOLESKY_TOL,
                          orbit_pivots: bool = True, one_centre: bool = True,
@@ -230,11 +231,13 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
 
     ``memory_gb`` sets the working-memory limit for this calculation and overrides the
     configured default; with neither, the calculation refuses to start rather than guess.
-    ``n_active`` — and, one step further, ``n_active_elec`` with ``n_states`` — sharpen the
-    memory pre-flight when the multireference stage is already decided: with the space fully
-    stated the plan carries the conventional-CI residency too, so a request the CI cannot
-    hold is refused here, before the SCF is paid for. Planning only; the CASSCF still states
-    its own space.
+    ``n_active`` — and, one step further, ``n_active_elec`` with ``n_states``, and
+    ``nevpt2=True`` for a run that will end in the perturbation — sharpen the memory
+    pre-flight when the multireference stage is already decided: with the space fully
+    stated the plan carries the conventional-CI residency (and the perturbation's
+    shifted-space workspace and vector sets) too, so a request those stages cannot hold is
+    refused here, before the SCF is paid for. Planning only; the CASSCF still states its
+    own space.
     ``factors`` is where the three-index factor rows live after the decomposition:
     ``"in-core"``, ``"scratch"`` (spilled to a scratch file and streamed back in sequential
     blocks), or ``"auto"`` (the default — in-core wherever that fits the memory limit,
@@ -264,7 +267,8 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                           stability=stability, guess_from=guess_from,
                           allow_unconverged_scf=allow_unconverged_scf,
                           memory_gb=memory_gb, n_active=n_active,
-                          n_active_elec=n_active_elec, n_states=n_states, factors=factors,
+                          n_active_elec=n_active_elec, n_states=n_states, nevpt2=nevpt2,
+                          factors=factors,
                           cholesky_tol=cholesky_tol, orbit_pivots=orbit_pivots,
                           one_centre=one_centre, gauge_origin=gauge_origin,
                           property_picture_change=property_picture_change,

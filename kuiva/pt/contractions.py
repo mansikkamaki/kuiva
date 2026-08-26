@@ -294,10 +294,13 @@ class ShiftedSpace:
     """
 
     def __init__(self, n_spinor: int, n_elec: int, h_act: np.ndarray, eri_act: np.ndarray,
-                 *, label: str = "") -> None:
+                 *, label: str = "", family: Optional["ShiftedSpaces"] = None) -> None:
         self.n_spinor = int(n_spinor)
         self.n_elec = int(n_elec)
         self.label = label
+        #: The :class:`ShiftedSpaces` this space belongs to, if any — consulted before a
+        #: sigma operator is built, so the family holds at most one workspace at a time.
+        self._family = family
         self.h_act = h_act
         self.eri_act = eri_act
         self.empty = not (0 <= self.n_elec <= self.n_spinor)
@@ -320,6 +323,15 @@ class ShiftedSpace:
         if self.empty or self.n_elec == 0:
             return np.zeros_like(vectors)
         if self._sigma is None:
+            # ⚠ One live workspace per family: the sibling spaces' operators are dropped —
+            # and with them their ledger reservations, which die with the buffers — before
+            # this one allocates, so the family's peak is the *largest* shifted workspace,
+            # never the sum over the five shifts (measured at 4.6 GB against 1.15 at a
+            # 20-spinor half-filled active space). What survives the drop is what is worth
+            # keeping: the CASSpace with its excitation map; a rebuilt operator is one
+            # buffer allocation and two small integral reshapes.
+            if self._family is not None:
+                self._family.make_room(self)
             # check_symmetry is off: the same integrals were validated when the reference CI
             # was built, and re-checking an n^4 array once per shifted space is pure cost.
             self._sigma = SigmaOperator(self.space, self.h_act, self.eri_act,
@@ -350,6 +362,12 @@ class ShiftedSpace:
                 0.5 * (koopmans + koopmans.conj().T))
 
     def release(self) -> None:
+        """Drop the sigma operator — and, through its buffer, its ledger reservation.
+
+        The :class:`~kuiva.ci.strings.CASSpace` (masks, excitation map) is kept: it is what
+        cost something to build and it is small; the workspace is the large part and is
+        rebuilt in one allocation when this space is next applied.
+        """
         self._sigma = None
 
     def __repr__(self) -> str:
@@ -360,13 +378,21 @@ class ShiftedSpace:
 class ShiftedSpaces:
     """The ``0, +-1, +-2`` electron spaces of one active space, built once and **shared**.
 
-    ⚠ **Shared across states on purpose, and it is an accounting requirement rather than an
-    optimization.** A :class:`~kuiva.ci.sigma.SigmaOperator` reserves its workspace against the
-    memory budget and, like every other long-lived reservation in the project, never releases it;
-    building one per state would charge the budget ``n_states`` times for one array. The active
-    Hamiltonian is the same for every state anyway — the pseudo-canonicalization never rotates
-    the active block, so ``h_act`` and ``eri_act`` do not depend on the state or on which Fock
-    built them — so there is nothing state-specific to rebuild.
+    **Shared across states** because there is nothing state-specific in them: the
+    pseudo-canonicalization never rotates the active block, so ``h_act`` and ``eri_act`` do
+    not depend on the state or on which Fock built them, and the determinant machinery (the
+    masks and the excitation maps, which are what cost something to build) serves every
+    state alike.
+
+    ⚠ **At most one sigma workspace is live across the whole family** (:meth:`make_room`,
+    consulted by every member before it builds one). The workspaces are the family's only
+    large arrays — ``C(n, k+delta) * n^2`` complex each — and their reservations die with
+    the operators' buffers, so dropping a sibling really returns its memory to the ledger.
+    Holding all five at once was measured at 4.6 GB against the largest single one's 1.15 at
+    a 20-spinor half-filled active space, for operators the class loop only ever applies one
+    at a time; the price of the policy is one buffer allocation and two small reshapes per
+    shift *switch*, of which a state's evaluation has about a dozen — class boundaries, not
+    inner loops, because each cached vector set and each class works a single shift.
     """
 
     def __init__(self, n_spinor: int, n_elec: int, h_act: np.ndarray,
@@ -376,17 +402,30 @@ class ShiftedSpaces:
         self.h_act = h_act
         self.eri_act = eri_act
         self._spaces = {}
+        #: Sigma-operator builds across the family's lifetime — the observable the one-live
+        #: policy is judged by: it must stay near (shifts touched) x (state count), and a
+        #: test pins that it does not explode into the inner loops.
+        self.n_sigma_builds = 0
+
+    def make_room(self, keep: "ShiftedSpace") -> None:
+        """Drop every sibling's sigma operator before ``keep`` builds its own."""
+        for space in self._spaces.values():
+            if space is not keep:
+                space.release()
+        self.n_sigma_builds += 1
 
     def get(self, delta: int) -> ShiftedSpace:
         space = self._spaces.get(int(delta))
         if space is None:
             space = ShiftedSpace(self.n_spinor, self.n_elec + int(delta),
                                  self.h_act, self.eri_act,
-                                 label="N{:+d}".format(delta) if delta else "N")
+                                 label="N{:+d}".format(delta) if delta else "N",
+                                 family=self)
             self._spaces[int(delta)] = space
         return space
 
     def release(self) -> None:
+        """Drop every space, operator and workspace; the ledger follows the buffers."""
         for space in self._spaces.values():
             space.release()
         self._spaces.clear()
@@ -438,8 +477,9 @@ class CIContractionProvider:
         self.h_act = np.ascontiguousarray(h_act, dtype=np.complex128)
         self.eri_act = np.ascontiguousarray(eri_act, dtype=np.complex128)
         self._check = bool(check)
-        #: The shifted electron-number spaces. ⚠ Pass the driver's, shared across states — see
-        #: :class:`ShiftedSpaces` for why that is a budget requirement and not a speed one.
+        #: The shifted electron-number spaces. Pass the driver's, shared across states, so
+        #: the determinant machinery is built once — see :class:`ShiftedSpaces`, which also
+        #: holds at most one sigma workspace across the family at any moment.
         self.spaces = spaces if spaces is not None else ShiftedSpaces(
             self.n_active, space.n_elec, self.h_act, self.eri_act)
         self.civec = np.ascontiguousarray(civec, dtype=np.complex128).ravel()

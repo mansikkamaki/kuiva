@@ -1764,3 +1764,35 @@ def test_a_class_with_no_denominators_says_nothing(kuiva_caplog):
 
     _warn_on_intruder(0, "Sij", ClassResult(name="Sij", norm=1.0), shifted=False)
     assert not [r for r in kuiva_caplog.records if r.levelname == "WARNING"]
+
+
+def test_the_shifted_family_holds_one_workspace_at_a_time():
+    """⚠ The aggregate this kills: five shifted SigmaOperators, each with its own
+    workspace, all live at once — measured at 4.6 GB against the largest single one's
+    1.15 GB at a 20-spinor half-filled active space, for operators the classes only ever
+    apply one at a time. At most one lives now; a sibling's reservation dies with its
+    dropped buffer; and the build counter pins that switches happen at class boundaries,
+    not in inner loops."""
+    from kuiva.pt.contractions import ShiftedSpaces
+    from test_ci_strings import random_spinor_integrals
+
+    na, k = 6, 3
+    h, eri = random_spinor_integrals(na, seed=2)
+    family = ShiftedSpaces(na, k, h, eri)
+    rng = np.random.default_rng(0)
+
+    def vec(delta):
+        m = family.get(delta).ndet
+        v = rng.standard_normal(m) + 1j * rng.standard_normal(m)
+        return v / np.linalg.norm(v)
+
+    family.get(-1).apply_h(vec(-1))
+    assert family.get(-1)._sigma is not None
+    family.get(0).apply_h(vec(0))
+    assert family.get(-1)._sigma is None       # the sibling made room
+    assert family.get(0)._sigma is not None
+    family.get(-1).apply_h(vec(-1))            # and comes back on demand
+    assert family.get(0)._sigma is None
+    assert family.n_sigma_builds == 3          # one per switch, never per application
+    family.release()
+    assert all(s._sigma is None for s in family._spaces.values())

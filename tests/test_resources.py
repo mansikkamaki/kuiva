@@ -656,10 +656,54 @@ def test_memory_plan_is_ordered_and_flags_the_ungoverned_scf():
     assert names[0] == "scalar X2C SCF"
     assert not plan[0].governed and plan[0].external_note
     assert all(p.governed for p in plan[1:])
-    # The 4-RDM must be in the plan: it is the largest array in the program and it is
-    # knowable from the active-space size alone.
+    # ⚠ No stored 3- or 4-RDM line, ever: the implemented perturbation refuses to build
+    # either, and a plan budgeting the n_active^8 array of a formulation nobody runs would
+    # refuse every perturbation past ~12 active spinors on a phantom — the B^P_pq square's
+    # credibility failure, in its PT2 instance. Without the electron count the phase's
+    # advice says what stating it would add.
     nevpt2 = [p for p in plan if p.name == "SC-NEVPT2"][0]
-    assert max(a.gb for a in nevpt2.allocations) == pytest.approx(res.rdm_gb(12, 4))
+    assert not any("RDM" in a.label for a in nevpt2.allocations)
+    assert any("n_active_elec" in a for a in nevpt2.advice)
+
+
+def test_the_nevpt2_plan_carries_what_the_label_route_actually_holds():
+    """With the electron count, the SC-NEVPT2 phase carries the label route's real
+    objects: the largest shifted-space sigma workspace (one live at a time across the
+    family) and the cached ladder-string vector sets — the latter cross-checked here
+    against the ``nbytes`` of the arrays a real provider actually caches, because the plan
+    mirrors the perturbation's sizing by identity (nothing on the calculation path may
+    import the perturbation layer) and a mirrored identity is exactly the thing that can
+    drift."""
+    from kuiva.ci.sigma import sigma_workspace_gb
+    from kuiva.ci.strings import CASSpace
+    from kuiva.pt.contractions import CIContractionProvider
+    from test_ci_strings import random_spinor_integrals
+
+    na, k = 6, 2
+    plan = br.memory_plan(nao=20, nelec=8, n_active=na, n_active_elec=k, nevpt2=True)
+    phase = [p for p in plan if p.name == "SC-NEVPT2"][0]
+    assert not any("RDM" in a.label for a in phase.allocations)
+
+    shifted = [a for a in phase.allocations if "shifted-space" in a.label][0]
+    assert shifted.resident
+    assert shifted.gb == pytest.approx(max(sigma_workspace_gb(na, k + d)
+                                           for d in (-2, -1, 0, 1, 2)
+                                           if 0 <= k + d <= na))
+
+    h, eri = random_spinor_integrals(na, seed=4)
+    space = CASSpace(na, k)
+    rng = np.random.default_rng(0)
+    civec = rng.standard_normal(space.ndet) + 1j * rng.standard_normal(space.ndet)
+    civec /= np.linalg.norm(civec)
+    provider = CIContractionProvider(space, civec, h, eri, check=False)
+    actual = sum(arr.nbytes for arr in (provider.annihilated(), provider.created(),
+                                        provider.pair_annihilated(),
+                                        provider.excitation_vectors()))
+    sets = [a for a in phase.allocations if "ladder-string" in a.label][0]
+    assert sets.resident
+    assert sets.gb == pytest.approx(actual / 1024.0 ** 3, rel=1e-12)
+    pair_created = [a for a in phase.allocations if "pair-created" in a.label][0]
+    assert not pair_created.resident
 
 
 def test_memory_plan_errs_high_on_the_cholesky_dimension():
@@ -809,6 +853,9 @@ def test_the_planned_nevpt2_blocks_bound_every_split_they_could_turn_out_to_be()
     for n_active_elec in range(0, n_active + 1):
         n_i = nelec - n_active_elec
         assert planned >= nevpt2_blocks_memory_gb(naux, n_i, n_active, n - n_i - n_active)
+    # With the electron count stated the split is exact, not bounded.
+    n_i, n_a, n_v = br._nevpt2_block_split(n, nelec, n_active, 4)
+    assert (n_i, n_a) == (nelec - 4, n_active) and n_i + n_a + n_v == n
 
 
 # --- Scratch disk -------------------------------------------------------------------------
