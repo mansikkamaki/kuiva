@@ -453,6 +453,20 @@ pin a route regardless of the plan. ⚠ On the direct route the decomposition ha
 stage, so `cholesky_tol` and `orbit_pivots` belong to `ScalarSCF` rather than to `Reference`;
 passing a different threshold to `Reference` afterwards is reported and not silently applied.
 
+**Where the finished factor rows live is a second, independent choice** (`factors=` on the
+SCF stage: `"in-core"`, `"scratch"`, or `"auto"`, the default). `"scratch"` spills the rows
+to a file in the configured scratch directory right after the decomposition and streams them
+back in the same sequential blocks every consumer already reads — freeing their memory for
+the CI workspace and orbital-optimization blocks of the later stages, at no measured cost per
+pass on a machine whose spare RAM holds the file in the page cache (and at file-size over
+disk-bandwidth per pass where it does not). `"auto"` spills exactly when the in-core plan
+exceeds the memory limit and a scratch directory is configured, announced on its own output
+line; both residences produce identical results. ⚠ The spill frees the rows *after* the
+decomposition builds them, so the decomposition itself is the direct route's remaining memory
+peak — a factorization too large to build in RAM at all is still refused, with the plan
+saying so. ⚠ Density-fitting factors never spill (they are the ingested container's own
+array; the request is declined with a warning).
+
 ⚠ An unrestricted spinor set is orthonormal but **not Kramers paired**. With `reference="uhf"`
 an active space may therefore not be chosen as a contiguous spinor range; select by orbital
 character per spin set.
@@ -685,6 +699,15 @@ cas = kuiva.CASSCF(pre, solver="dmrg", n_states=4, graph="mutual-information",
   are adopted only when they lower the energy at fixed integrals. `graph=` seeds the topology:
   a `NetworkGraph`, or `"mutual-information"` / `"fiedler"` to build one from a `CheapCI`
   upstream. ⚠ Checkpoint/restart of the network state is not wired into this layer.
+
+  **The environment cache pages to scratch under memory pressure** (default on). The cache —
+  one `D^2 x D_op` tensor per directed bond — is the solver's dominant memory object at
+  large bond dimension, while a two-site update only ever touches a handful; when an
+  environment's reservation would be refused, the coldest entries move to a scratch file
+  and stream back on demand, bit for bit. A solve whose environments fit never touches
+  scratch, and a machine with no scratch directory configured gets the refusal it always
+  got, naming the knob. `environment_resident_gb` (on `solve_ttn`) additionally caps the
+  resident set below the memory limit.
 
   ⚠ **Read `w_disc`.** The iteration table gains a column carrying the largest discarded
   weight of that macro-iteration's sweeps, and the stage report gives the final value; both
@@ -1415,6 +1438,10 @@ allow_overcommit = false  # downgrade every memory refusal to a warning
 # checkpoint_cost_fraction = 0.05              # of the compute since the last one
 
 [scratch]
+# Like memory_gb, scratch_dir has NO built-in default and no $TMPDIR/cwd fallback: any
+# scratch use (a factor spill) refuses until it is set here or with $KUIVA_SCRATCH — pick a
+# real disk with room, never a RAM-backed tmpfs. Calculations that never touch scratch do
+# not need it. setup.sh asks for it beside the memory limit.
 # scratch_dir = /scratch/$USER
 # scratch_gb = 100.0
 ```
@@ -1428,7 +1455,7 @@ allow_overcommit = false  # downgrade every memory refusal to a warning
 | `KUIVA_NUM_THREADS` | the **total** number of threads the calculation may use |
 | `KUIVA_KERNELS` | `auto` (default), `numpy`, or `native` |
 | `KUIVA_AMF_CACHE` | directory for the atomic mean-field cache, or `off` |
-| `KUIVA_SCRATCH`, `KUIVA_SCRATCH_GB` | scratch directory and the space Kuiva may use there |
+| `KUIVA_SCRATCH`, `KUIVA_SCRATCH_GB` | scratch directory (no built-in default; scratch use refuses without one) and the space Kuiva may use there |
 | `KUIVA_CHECKPOINT_GB` | largest checkpoint file |
 
 Anything passed explicitly to a call overrides the environment, which overrides the
@@ -1774,11 +1801,13 @@ The release is usable for production work **with care**, and this is what the ca
   is for. **The supported charge is the atomic-reference one** (see the populations section):
   measured stable in sign and to ~0.1 e across bases where Löwdin fails qualitatively, at the
   cost of one cached atomic SCF per element (`atomic_reference=True` on the SCF stage).
-- **The conventional CI ceiling is about 20 spinors at half filling.** It is a memory bound on
-  the *determinant count*, not on the spinor count, so it moves with the memory limit and is
-  enforced before the first allocation — dilute or nearly-full spaces well past 20 spinors run
-  comfortably. The hard limit is 64 spinors (a single 64-bit occupation mask). Beyond the
-  ceiling, the tensor-network solver takes over.
+- **The conventional CI ceiling is 20–22 spinors at half filling at an 8 GB limit.** It is a
+  memory bound on the *determinant count*, not on the spinor count, so it moves with the
+  memory limit and is enforced before the first allocation — dilute or nearly-full spaces
+  well past it run comfortably, and past 20 spinors the **state count co-decides**: a
+  few-root CAS(11,22) fits an 8 GB limit while a large state average does not, and 24
+  half-filled spinors refuse at any root count. The hard limit is 64 spinors (a single
+  64-bit occupation mask). Beyond the ceiling, the tensor-network solver takes over.
 - **The integral factorization is memory-bound, and the memory plan picks the route.**
   The stored route materializes the conventional two-electron integral array, which grows as
   the fourth power of the basis and is reserved against the memory limit before the SCF. This,
@@ -1855,7 +1884,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.23.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.25.1.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1871,7 +1900,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.23.0'
+import kuiva; kuiva.__version__          # '0.25.1'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

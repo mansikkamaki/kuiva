@@ -251,6 +251,79 @@ def test_optimizer_lowers_the_energy_and_converges(system):
     assert np.max(np.abs(res.coeff.conj().T @ res.coeff - np.eye(spaces.n_orb))) < 1e-10
 
 
+def test_rejection_retry_recomputes_nothing(system):
+    """After reject(), the next step() at the same iterate reuses the cached gradient,
+    Hessian and Krylov subspace: zero new Hessian-vector products, zero active-Fock
+    builds (the expensive half of a gradient), and a step that respects the shrunken
+    trust radius."""
+    import kuiva.mcscf.orbopt as orbopt_module
+    factors, h_ao, coeff, spaces, nelec = system
+    energy, gamma, gamma2, ints = solve_cas(factors, h_ao, coeff, spaces, nelec)
+    opt = OrbitalOptimizer(spaces, mode="second-order")
+
+    n_grad = [0]
+    original_fock = orbopt_module._active_fock_ao
+
+    def counting_fock(*args, **kwargs):
+        n_grad[0] += 1
+        return original_fock(*args, **kwargs)
+
+    orbopt_module._active_fock_ao = counting_fock
+    try:
+        step1 = opt.step(ints, gamma, gamma2, factors, coeff, energy=energy, h_ao=h_ao)
+        hvp_after_first = opt.n_hessian_matvec
+        assert n_grad[0] == 1 and hvp_after_first > 0
+        opt.reject()
+        trust = opt.trust
+        step2 = opt.step(ints, gamma, gamma2, factors, coeff, energy=energy, h_ao=h_ao)
+        assert n_grad[0] == 1                           # gradient reused, not rebuilt
+        assert opt.n_hessian_matvec == hvp_after_first  # subspace reused: zero products
+        assert step2.max_rotation <= trust * (1.0 + 1e-12)
+        assert step2.max_rotation < step1.max_rotation  # the trust shrink actually bit
+        # A fresh iterate must miss the cache: accept clears it.
+        opt.accept()
+        c2 = np.ascontiguousarray(coeff @ step2.unitary)
+        _, g1b, g2b, ints2 = solve_cas(factors, h_ao, c2, spaces, nelec)
+        opt.step(ints2, g1b, g2b, factors, c2, energy=energy, h_ao=h_ao)
+        assert n_grad[0] == 2
+    finally:
+        orbopt_module._active_fock_ao = original_fock
+
+
+def test_gradient_is_built_once_per_iterate(system):
+    """The driver evaluates the gradient at an accepted iterate for L-BFGS, and the next
+    step() needs it at the same iterate: the memo must make that one build, not two.
+    Counted on the active-Fock J/K build, the expensive half of a gradient."""
+    import kuiva.mcscf.orbopt as orbopt_module
+    factors, h_ao, coeff, spaces, nelec = system
+
+    def ci_solver(ints):
+        occ = list(itertools.combinations(range(spaces.n_active), nelec))
+        dets = Determinants.from_occupations(occ, spaces.n_active)
+        w, v = np.linalg.eigh(hamiltonian_matrix(dets, ints.h_active_effective(),
+                                                 ints.active_eri()).toarray())
+        g1, g2 = rdm12(dets, v[:, 0])
+        return w[0] + ints.e_core, g1, g2
+
+    n_fock = [0]
+    original_fock = orbopt_module._active_fock_ao
+
+    def counting_fock(*args, **kwargs):
+        n_fock[0] += 1
+        return original_fock(*args, **kwargs)
+
+    orbopt_module._active_fock_ao = counting_fock
+    try:
+        res = optimize_orbitals(factors, h_ao, coeff, spaces, ci_solver, max_iter=6,
+                                conv_grad=1e-9, mode="quasi-newton", report=False)
+    finally:
+        orbopt_module._active_fock_ao = original_fock
+    # One build per distinct iterate: the starting one plus one per accepted step.
+    accepted = res.n_iterations - res.n_rejected
+    assert n_fock[0] == accepted + 1, \
+        "{} active-Fock builds for {} accepted iterations".format(n_fock[0], accepted)
+
+
 def test_optimizer_is_stationary_at_its_own_solution(system):
     """Restarting from the converged orbitals must take a vanishing step."""
     factors, h_ao, coeff, spaces, nelec = system
@@ -370,6 +443,168 @@ def test_hessian_quadratic_form_matches_the_second_derivative(system):
     assert abs(np.real(np.vdot(hess(d), d)) - numeric) < 1e-4 * max(abs(numeric), 1.0)
 
 
+def test_hessian_square_route_matches_the_ao_route(system):
+    """The fixed-factor (MO-square) product against the blocked AO product.
+
+    The two routes are one operator through two formulations; nothing but roundoff may
+    separate them, on the products and on the exact diagonal alike. This is what keeps
+    the AO fallback honest now that the small-system default is the square route.
+    """
+    factors, h_ao, coeff, spaces, nelec = system
+    energy, gamma, gamma2, ints = solve_cas(factors, h_ao, coeff, spaces, nelec)
+    rows, cols = spaces.rotation_pairs()
+    hess_sq = OrbitalHessian(ints, factors, h_ao, coeff, gamma, gamma2, rows, cols,
+                             mo_square=True)
+    hess_ao = OrbitalHessian(ints, factors, h_ao, coeff, gamma, gamma2, rows, cols,
+                             mo_square=False)
+    assert hess_sq.mo_square and not hess_ao.mo_square
+    rng = np.random.default_rng(59)
+    for _ in range(3):
+        v = (rng.standard_normal(rows.size) + 1j * rng.standard_normal(rows.size))
+        out_sq = hess_sq.matvec(v)
+        out_ao = hess_ao.matvec(v)
+        scale = float(np.max(np.abs(out_ao))) + 1.0
+        assert np.max(np.abs(out_sq - out_ao)) < 1e-10 * scale
+    d_sq = hess_sq.exact_diagonal()
+    d_ao = hess_ao.exact_diagonal()
+    assert np.max(np.abs(d_sq - d_ao)) < 1e-10 * (float(np.max(np.abs(d_ao))) + 1.0)
+
+
+def test_square_route_sparse_and_dense_kappa_forms_agree(system):
+    """The kappa-sparse product forms against the dense general forms, and the
+    active-active guard: with active-active rotations as parameters the sparse active
+    form's zero-block assumption fails, so the guard must route around it — checked by
+    comparing against the AO route, which knows nothing of either."""
+    factors, h_ao, coeff, spaces, nelec = system
+    energy, gamma, gamma2, ints = solve_cas(factors, h_ao, coeff, spaces, nelec)
+    rng = np.random.default_rng(60)
+    rows, cols = spaces.rotation_pairs()
+    hess = OrbitalHessian(ints, factors, h_ao, coeff, gamma, gamma2, rows, cols,
+                          mo_square=True)
+    assert hess._occ_prefix and not hess._has_act_act    # the fast forms are live
+    v = rng.standard_normal(rows.size) + 1j * rng.standard_normal(rows.size)
+    fast = hess.matvec(v)
+    hess._occ_prefix = False                             # force the dense general forms
+    dense = hess.matvec(v)
+    scale = float(np.max(np.abs(dense))) + 1.0
+    assert np.max(np.abs(fast - dense)) < 1e-11 * scale
+    # Active-active rotations: the guard must detect them and take the dense active form.
+    rows2, cols2 = spaces.rotation_pairs(active_active=True)
+    h_sq = OrbitalHessian(ints, factors, h_ao, coeff, gamma, gamma2, rows2, cols2,
+                          mo_square=True)
+    h_ao_route = OrbitalHessian(ints, factors, h_ao, coeff, gamma, gamma2, rows2, cols2,
+                                mo_square=False)
+    assert h_sq._has_act_act
+    v2 = rng.standard_normal(rows2.size) + 1j * rng.standard_normal(rows2.size)
+    out_sq = h_sq.matvec(v2)
+    out_ao = h_ao_route.matvec(v2)
+    scale = float(np.max(np.abs(out_ao))) + 1.0
+    assert np.max(np.abs(out_sq - out_ao)) < 1e-10 * scale
+
+
+def test_hessian_square_sizing_is_exact(system):
+    """Two-sided pin of the fixed-factor route's sizing against the arrays it holds."""
+    from kuiva.mcscf.orbopt import hessian_square_memory_gb
+    factors, h_ao, coeff, spaces, nelec = system
+    energy, gamma, gamma2, ints = solve_cas(factors, h_ao, coeff, spaces, nelec)
+    rows, cols = spaces.rotation_pairs()
+    hess = OrbitalHessian(ints, factors, h_ao, coeff, gamma, gamma2, rows, cols,
+                          mo_square=True)
+    held = (hess.b_full.nbytes + hess.b_occ_t.nbytes
+            + hess.b_i_occ_flat.nbytes + hess.b_a_occ_flat.nbytes
+            + hess.b_p_i_flat.nbytes + hess.b_p_a_flat.nbytes)
+    n_occ = spaces.n_inactive + spaces.n_active
+    got = hessian_square_memory_gb(factors.naux, spaces.n_orb, n_occ) * 1024.0 ** 3
+    assert got == pytest.approx(held, rel=0.0, abs=0.5)
+
+
+def test_exact_diagonal_matches_the_matvec_diagonal(system):
+    """The analytic Hessian diagonal against the one extracted from matvec.
+
+    The matvec is verified independently against the numerical Hessian, so this pins the
+    per-class formulas in :meth:`OrbitalHessian.exact_diagonal` — an error there cannot
+    pass. The complex-linear diagonal is extracted as
+    ``(matvec(e_j)_j + (-i) matvec(i e_j)_j) / 2``, which cancels the anti-linear part
+    exactly; the preconditioner is that mean curvature by construction.
+    """
+    factors, h_ao, coeff, spaces, nelec = system
+    energy, gamma, gamma2, ints = solve_cas(factors, h_ao, coeff, spaces, nelec)
+    rows, cols = spaces.rotation_pairs()
+    hess = OrbitalHessian(ints, factors, h_ao, coeff, gamma, gamma2, rows, cols)
+    hd = hess.exact_diagonal()
+    assert hd.shape == rows.shape and hd.dtype == np.float64
+    scale = float(np.max(np.abs(hd))) + 1.0
+    for j in range(rows.size):
+        e_j = np.zeros(rows.size, dtype=np.complex128)
+        e_j[j] = 1.0
+        mv1 = hess.matvec(e_j)[j]
+        mv2 = hess.matvec(1j * e_j)[j]
+        diag_num = 0.5 * (mv1 + (-1j) * mv2)
+        assert abs(diag_num.imag) < 1e-9 * scale
+        assert abs(hd[j] - diag_num.real) < 1e-9 * scale, \
+            "pair ({}, {}) [j = {}]: exact {} vs matvec {}".format(
+                rows[j], cols[j], j, hd[j], diag_num.real)
+    # Cached: a second call is the same object, not a recomputation.
+    assert hess.exact_diagonal() is hd
+
+
+def test_ritz_recycling_mechanics():
+    """The recycling machinery: Ritz vectors come back normalized, a seeded solve reaches
+    the same Newton step, and a redundant seed is dropped for free.
+
+    Whether recycling *pays* is a property of the trajectory, not of the mechanics, and is
+    measured on the real benchmark — a synthetic problem here would be exactly the
+    over-tuning the module's own validation record warns against.
+    """
+    rng = np.random.default_rng(58)
+    m = 24
+    q, _ = np.linalg.qr(rng.standard_normal((2 * m, 2 * m)))
+    hmat = q @ np.diag(np.geomspace(0.05, 50.0, 2 * m)) @ q.T
+
+    def to_c(v):
+        return v[:m] + 1j * v[m:]
+
+    def to_r(v):
+        return np.concatenate([v.real, v.imag])
+
+    hdiag = np.abs(np.diag(hmat))[:m]
+    grad = to_c(rng.standard_normal(2 * m))
+
+    calls = [0]
+
+    def hvp(x):
+        calls[0] += 1
+        return to_c(hmat @ to_r(x))
+
+    first = augmented_hessian_step(grad, hvp, hdiag, tol=1e-8, max_iter=200,
+                                   max_subspace=200, n_ritz_out=4)
+    assert first.converged
+    assert first.ritz_vectors and len(first.ritz_vectors) <= 4
+    for vec in first.ritz_vectors:
+        assert abs(float(np.real(np.vdot(vec, vec))) - 1.0) < 1e-10   # normalized
+    # A seeded solve of a nearby problem converges to the same shifted-model solution.
+    grad2 = grad + 0.05 * to_c(rng.standard_normal(2 * m))
+    cold = augmented_hessian_step(grad2, hvp, hdiag, tol=1e-8, max_iter=200,
+                                  max_subspace=200)
+    seeded = augmented_hessian_step(grad2, hvp, hdiag, tol=1e-8, max_iter=200,
+                                    max_subspace=200, recycle=first.ritz_vectors)
+    assert seeded.converged and cold.converged
+    assert np.linalg.norm(seeded.step - cold.step) < 1e-5 * np.linalg.norm(cold.step)
+    # A seed the basis already contains costs nothing: recycling the warm-start vector
+    # itself must not change the product count of a guess-only solve.
+    calls[0] = 0
+    guess_only = augmented_hessian_step(grad2, hvp, hdiag, tol=1e-8, max_iter=200,
+                                        max_subspace=200, guess=first.step)
+    n_guess = calls[0]
+    calls[0] = 0
+    with_dup = augmented_hessian_step(grad2, hvp, hdiag, tol=1e-8, max_iter=200,
+                                      max_subspace=200, guess=first.step,
+                                      recycle=[first.step /
+                                               np.linalg.norm(first.step)])
+    assert calls[0] == n_guess
+    assert np.linalg.norm(with_dup.step - guess_only.step) < 1e-8
+
+
 def test_augmented_hessian_solves_a_known_quadratic():
     """Against a dense reference: the AH step must match the Newton step of an explicit
     positive-definite quadratic model."""
@@ -478,7 +713,11 @@ def test_augmented_hessian_respects_the_trust_radius_by_shifting():
     hdiag = np.abs(np.diag(hmat))[:m]
     free = augmented_hessian_step(grad, hvp, hdiag, tol=1e-8, max_iter=80)
     trust = 0.1 * float(np.max(np.abs(free.step)))
-    capped = augmented_hessian_step(grad, hvp, hdiag, tol=1e-8, max_iter=80, trust=trust)
+    # step_tol=0 asks for the fully resolved shifted step; the default trust-aware
+    # truncation deliberately trades that exactness for Hessian-vector products and is
+    # tested separately below.
+    capped = augmented_hessian_step(grad, hvp, hdiag, tol=1e-8, max_iter=80, trust=trust,
+                                    step_tol=0.0)
     assert float(np.max(np.abs(capped.step))) <= trust * 1.05
     assert capped.shift > 0.0 and free.shift == 0.0     # shortened by shifting, not scaling
     # ... and it is still the *exact* solution of the shifted model, i.e. second-order
@@ -487,6 +726,75 @@ def test_augmented_hessian_respects_the_trust_radius_by_shifting():
     resid = hmat @ x + capped.shift * x - capped.eigenvalue * x + to_r(grad)
     assert np.linalg.norm(resid) < 1e-4 * np.linalg.norm(to_r(grad))
     assert float(np.real(np.vdot(capped.step, grad))) < 0.0
+
+
+def test_augmented_hessian_trust_truncation_saves_products():
+    """The default step_tol stops a trust-capped solve once the shifted step stabilizes.
+
+    The shifted step is what the caller takes, so refining the subspace past the point
+    where it has stopped moving only polishes the part of the direction the shift then
+    discards. The truncated solve must cost fewer Hessian-vector products, stay inside the
+    trust radius, stay downhill, and land near the fully resolved shifted step.
+    """
+    rng = np.random.default_rng(56)
+    m = 40
+    a = rng.standard_normal((2 * m, 2 * m))
+    hmat = a @ a.T + 0.05 * np.eye(2 * m)
+
+    def to_c(v):
+        return v[:m] + 1j * v[m:]
+
+    def to_r(v):
+        return np.concatenate([v.real, v.imag])
+
+    grad = 10.0 * to_c(rng.standard_normal(2 * m))     # far from convergence: capped regime
+    hvp = lambda x: to_c(hmat @ to_r(x))               # noqa: E731
+    hdiag = np.abs(np.diag(hmat))[:m]
+    exact = augmented_hessian_step(grad, hvp, hdiag, tol=1e-10, max_iter=150,
+                                   max_subspace=150, trust=1e-3, step_tol=0.0)
+    truncated = augmented_hessian_step(grad, hvp, hdiag, tol=1e-10, max_iter=150,
+                                       max_subspace=150, trust=1e-3)
+    assert truncated.n_matvec < exact.n_matvec
+    assert float(np.max(np.abs(truncated.step))) <= 1e-3 * 1.05
+    assert float(np.real(np.vdot(truncated.step, grad))) < 0.0
+    # Within the advertised tolerance of the resolved shifted step.
+    diff = np.linalg.norm(truncated.step - exact.step)
+    assert diff <= 0.35 * np.linalg.norm(exact.step)
+
+
+def test_augmented_hessian_subspace_reuse_costs_no_products():
+    """A rejection retry re-solves in the returned subspace with zero Hessian-vector
+    products, and its trust-shifted step matches a fresh solve at the same trust radius to
+    the accuracy the subspace supports."""
+    rng = np.random.default_rng(57)
+    m = 16
+    a = rng.standard_normal((2 * m, 2 * m))
+    hmat = a @ a.T + 0.5 * np.eye(2 * m)
+
+    def to_c(v):
+        return v[:m] + 1j * v[m:]
+
+    def to_r(v):
+        return np.concatenate([v.real, v.imag])
+
+    grad = to_c(rng.standard_normal(2 * m))
+    calls = [0]
+
+    def hvp(x):
+        calls[0] += 1
+        return to_c(hmat @ to_r(x))
+
+    first = augmented_hessian_step(grad, hvp, np.abs(np.diag(hmat))[:m], tol=1e-8,
+                                   max_iter=80, trust=0.05)
+    n_first = calls[0]
+    retry = augmented_hessian_step(grad, hvp, np.abs(np.diag(hmat))[:m], tol=1e-8,
+                                   max_iter=80, trust=0.25 * 0.05,
+                                   subspace=first.subspace)
+    assert calls[0] == n_first                          # zero new products
+    assert retry.n_matvec == 0
+    assert float(np.max(np.abs(retry.step))) <= 0.25 * 0.05 * 1.05
+    assert float(np.real(np.vdot(retry.step, grad))) < 0.0
+    assert retry.shift >= first.shift                   # a smaller trust needs a larger shift
 
 
 def test_auto_does_not_escalate_while_the_gradient_keeps_falling():

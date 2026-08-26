@@ -204,10 +204,19 @@ class HashedEnvironmentCache(EnvironmentCache):
         return env.spaces[1] == sp and env.signs[1] == sg
 
     def rebind(self, ttno: TTNO, graph: NetworkGraph) -> None:
-        """Adopt a recompiled TTNO and new topology, keeping every still-valid entry."""
+        """Adopt a recompiled TTNO and new topology, keeping every still-valid entry.
+
+        ⚠ Only **resident** entries are candidates for survival: a paged (non-resident)
+        entry is dropped instead of re-keyed, because the survival test wants the tensor's
+        op leg in hand and an adoption is a rare event — a rebuild on demand costs one
+        subtree contraction where a wrongly kept environment would cost a silent error.
+        """
+        if self._pager is not None:
+            self._pager.drop_all()
         self.ttno = ttno
         old_cache, old_held = self._cache, self._held
         self._cache, self._held = {}, {}
+        self._recency.clear()
         edges = set(graph.directed_bonds())
         kept = 0
         for (a, b, h), env in old_cache.items():
@@ -230,6 +239,8 @@ class HashedEnvironmentCache(EnvironmentCache):
                 res.BUDGET.release(held)
         for held in old_held.values():                  # entries with no surviving env
             res.BUDGET.release(held)
+        for key in self._cache:                         # survivors are evictable again
+            self._touch(key)
         log.debug("environment cache rebind: kept %d of %d entries", kept,
                   len(old_cache))
 
@@ -429,7 +440,14 @@ def solve_adaptive(terms, graph: NetworkGraph, n_elec: int, *, bases=None,
     requested = np.full(n_roots, 1.0 / n_roots) if weights is None \
         else np.asarray(weights, dtype=float) / float(np.sum(weights))
 
-    cache = HashedEnvironmentCache(ttno, state)
+    # Pressure-only paging, exactly as the fixed-topology solver's default: an escape
+    # hatch that engages when an environment reservation would otherwise refuse, and
+    # reverts to that refusal where scratch is unconfigured. rebind() drops the paged
+    # (non-resident) entries rather than re-keying them — an adoption is a rare event and
+    # a rebuild-on-demand is the conservative survival rule for entries whose tensors are
+    # not in hand.
+    from .paging import EnvironmentPager
+    cache = HashedEnvironmentCache(ttno, state, pager=EnvironmentPager())
     table = out.Table(log, [out.col_iter("sweep"), out.col_energy("E_SA [Eh]"),
                             out.col_delta(), out.col_sci("w_disc"),
                             out.col_count("max D", 6), out.col_count("moves", 6),

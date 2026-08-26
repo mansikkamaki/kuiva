@@ -203,10 +203,116 @@ allow_overcommit = false
 # amf_cache_dir = /scratch/\$USER/kuiva-amf
 
 [scratch]
-# Directory for scratch files (checkpoints, out-of-core arrays). Unset: \$TMPDIR, else the cwd.
+# Directory for scratch files (out-of-core arrays). Like memory_gb this has NO built-in
+# default: any scratch use refuses until it is set here or with \$KUIVA_SCRATCH. Pick a real
+# disk with room, never a tmpfs. Calculations that never touch scratch do not need it.
 # scratch_dir = /scratch/\$USER
 # scratch_gb = 100.0
 EOF
+}
+
+# --- Scratch directory -----------------------------------------------------
+# Same rule as the memory limit (user decision, 2026-08-26): no built-in default and no
+# $TMPDIR/cwd fallback, because a guessed location lands on whatever filesystem happens to
+# be there — a RAM-backed /tmp spends exactly the memory a spill exists to save. Any scratch
+# *use* (a factor spill, environment paging) refuses until this is set; calculations that
+# never touch scratch are unaffected, but it is asked for here, on install, exactly like the
+# memory limit, so the refusal never lands mid-project.
+_kuiva_scratch_is_configured() {
+    local root="$1" prefix="$2" candidate
+    [ -n "${KUIVA_SCRATCH:-}" ] && return 0
+    for candidate in \
+        "${KUIVA_CONFIG:-}" \
+        "${XDG_CONFIG_HOME:-${HOME}/.config}/kuiva/defaults.conf" \
+        "/etc/kuiva/defaults.conf" \
+        "${prefix:+${prefix}/etc/kuiva/defaults.conf}" \
+        "${root}/defaults.conf"
+    do
+        [ -n "${candidate}" ] || continue
+        [ -f "${candidate}" ] || continue
+        if grep -qE '^[[:space:]]*scratch_dir[[:space:]]*=' "${candidate}"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+_kuiva_write_scratch_config() {
+    # Append scratch_dir to the per-user config, creating what is missing. Both templates
+    # this script writes keep [scratch] as the last section, so a plain append lands inside
+    # it; a hand-reordered file would need a manual edit and the parse error at the next
+    # run says which file.
+    local target="$1" value="$2"
+    mkdir -p "$(dirname "${target}")" || return 1
+    if [ ! -f "${target}" ]; then
+        cat > "${target}" <<EOF
+# Kuiva site defaults. Written by setup.sh; edit freely.
+
+[scratch]
+# Directory for scratch files (out-of-core arrays). No built-in default: any scratch use
+# refuses until this is set. Pick a real disk with room, never a tmpfs.
+scratch_dir = ${value}
+EOF
+        return $?
+    fi
+    if grep -qE '^\[scratch\]' "${target}"; then
+        printf 'scratch_dir = %s\n' "${value}" >> "${target}"
+    else
+        printf '\n[scratch]\nscratch_dir = %s\n' "${value}" >> "${target}"
+    fi
+}
+
+_kuiva_ask_for_scratch() {
+    local root="$1" prefix="$2"
+    local target="${XDG_CONFIG_HOME:-${HOME}/.config}/kuiva/defaults.conf"
+    local answer="" fstype="" attempt=0
+
+    if [ ! -t 0 ]; then
+        _kuiva_err "no scratch directory is configured, and this shell cannot ask for one."
+        _kuiva_err "Kuiva has no built-in scratch location (same rule as the memory limit):"
+        _kuiva_err "a guessed directory lands on an unvetted filesystem. Set one of:"
+        _kuiva_err "    export KUIVA_SCRATCH=<directory>       for this job"
+        _kuiva_err "    ${target}"
+        _kuiva_err "        [scratch]"
+        _kuiva_err "        scratch_dir = <directory>"
+        return 1
+    fi
+
+    printf '\n'
+    _kuiva_say "No scratch directory is configured yet, and Kuiva never guesses one."
+    _kuiva_say "It is where out-of-core arrays go (the three-index factor spill, and any"
+    _kuiva_say "future paging). Pick a real disk with room for tens of GB — never a"
+    _kuiva_say "RAM-backed tmpfs, which would spend the memory a spill exists to save."
+
+    while [ "${attempt}" -lt 3 ]; do
+        attempt=$((attempt + 1))
+        printf '[kuiva] scratch directory: '
+        read -r answer || answer=""
+        if [ -z "${answer}" ]; then
+            _kuiva_warn "expected a directory path, e.g. /scratch/${USER:-me}/kuiva"
+            continue
+        fi
+        if ! mkdir -p "${answer}" 2>/dev/null || [ ! -w "${answer}" ]; then
+            _kuiva_warn "cannot create or write to ${answer}"
+            continue
+        fi
+        fstype="$(stat -f -c %T "${answer}" 2>/dev/null || true)"
+        case "${fstype}" in
+            tmpfs|ramfs)
+                _kuiva_warn "${answer} is on a ${fstype} (RAM-backed) filesystem: a spill"
+                _kuiva_warn "there spends the memory it exists to save. Accepted, but a"
+                _kuiva_warn "real disk is what this setting is for."
+                ;;
+        esac
+        if _kuiva_write_scratch_config "${target}" "${answer}"; then
+            _kuiva_say "wrote ${target}  (scratch_dir = ${answer})"
+            return 0
+        fi
+        _kuiva_err "could not write ${target}"
+        return 1
+    done
+    _kuiva_err "no directory given; any scratch use will refuse until one is set."
+    return 1
 }
 
 _kuiva_ask_for_memory() {
@@ -326,9 +432,13 @@ _kuiva_setup() {
         *) export PYTHONPATH="${root}${PYTHONPATH:+:${PYTHONPATH}}" ;;
     esac
 
-    # 4. A memory limit, once, ever.
+    # 4. A memory limit and a scratch directory, once, ever — the two settings with no
+    #    built-in default, asked for together so neither refusal lands mid-project.
     if ! _kuiva_memory_is_configured "${root}" "${prefix}"; then
         _kuiva_ask_for_memory "${root}" "${prefix}" || return 1
+    fi
+    if ! _kuiva_scratch_is_configured "${root}" "${prefix}"; then
+        _kuiva_ask_for_scratch "${root}" "${prefix}" || return 1
     fi
 
     if [ "${cached}" -eq 1 ]; then
@@ -342,6 +452,7 @@ _kuiva_setup() {
 _kuiva_setup
 _kuiva_status=$?
 unset -f _kuiva_setup _kuiva_probe _kuiva_root _kuiva_say _kuiva_warn _kuiva_err \
-         _kuiva_memory_is_configured _kuiva_ask_for_memory _kuiva_write_memory_config
+         _kuiva_memory_is_configured _kuiva_ask_for_memory _kuiva_write_memory_config \
+         _kuiva_scratch_is_configured _kuiva_ask_for_scratch _kuiva_write_scratch_config
 unset _KUIVA_REQUIRES
 return ${_kuiva_status} 2>/dev/null || true

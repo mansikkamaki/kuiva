@@ -93,11 +93,13 @@ A hard error is only defensible if the estimate is accurate, so:
 """
 from __future__ import annotations
 
+import atexit
 import configparser
 import os
 import shutil
 import sys
 import textwrap
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -424,11 +426,18 @@ class ResourceLimits:
                    checkpoint_cost_fraction=(DEFAULT_CHECKPOINT_COST_FRACTION
                                              if ckpt_fraction is None else ckpt_fraction))
 
-    def resolved_scratch_dir(self) -> Path:
-        """Directory scratch files go to: configured, else ``$TMPDIR``, else the cwd."""
-        if self.scratch_dir:
-            return Path(self.scratch_dir)
-        return Path(os.environ.get("TMPDIR", ".")).resolve()
+    def resolved_scratch_dir(self) -> Optional[Path]:
+        """Directory scratch files go to, or ``None`` — there is deliberately no fallback.
+
+        ⚠ Same rule as the memory limit (user decision, 2026-08-26): configured once, by
+        whoever knows the machine, never guessed. The old ``$TMPDIR``-else-cwd fallback
+        silently chose a filesystem nobody had vetted — a RAM-backed ``/tmp`` spends exactly
+        the memory a spill exists to save, and a working directory on a network filesystem
+        is worse — so any scratch *use* refuses until ``scratch_dir`` (or ``$KUIVA_SCRATCH``)
+        is set; ``setup.sh`` asks for it beside the memory limit. Calculations that never
+        touch scratch are unaffected.
+        """
+        return Path(self.scratch_dir) if self.scratch_dir else None
 
 
 def _no_limit_message(cfg_path: Optional[Path]) -> str:
@@ -910,6 +919,44 @@ def reserve(label: str, gb: float, **kwargs) -> Allocation:
     return BUDGET.reserve(label, gb, **kwargs)
 
 
+def release(alloc: Optional[Allocation], *, budget: MemoryBudget = BUDGET) -> None:
+    """:meth:`MemoryBudget.release` on the global ledger."""
+    budget.release(alloc)
+
+
+def reserve_owned(owner: Any, label: str, gb: float, *, budget: MemoryBudget = BUDGET,
+                  **kwargs) -> Allocation:
+    """:func:`reserve`, with the reservation released when ``owner`` is garbage collected.
+
+    For the resident array of an object that is **rebuilt inside a driver loop** — the
+    per-macro-iteration CAS integral block is the case this exists for. An explicit release
+    at every site that drops such an object is one forgotten accept/reject branch away from
+    a ledger that grows by one array per iteration, and a ledger that over-reports produces
+    false refusals late in a run — the same damage as a stale sizing function, delivered
+    slowly. Tying the release to the owner's lifetime keeps the ledger equal to what is
+    live: under CPython the release is immediate when the last reference goes, and an object
+    that is kept alive keeps its reservation, which is the truthful accounting either way.
+
+    ⚠ The reserve semantics do not change: the refusal still happens here, before the caller
+    proceeds. A long-lived array (integral factors, the sigma workspace) keeps using
+    :func:`reserve`, scoped by :func:`calculation` — automatic release is for objects whose
+    lifetime is genuinely shorter than the calculation's.
+    """
+    alloc = budget.reserve(label, gb, **kwargs)
+    return owned_by(owner, alloc, budget=budget)
+
+
+def owned_by(owner: Any, alloc: Allocation, *, budget: MemoryBudget = BUDGET) -> Allocation:
+    """Release ``alloc`` automatically when ``owner`` is garbage collected.
+
+    The two-step form of :func:`reserve_owned`, preserving the refuse-before-allocate order
+    where the caller allocates the array itself: reserve first (nothing exists yet, so the
+    refusal costs nothing), allocate, then hand the reservation to the array that carries it.
+    """
+    weakref.finalize(owner, budget.release, alloc)
+    return alloc
+
+
 def require(label: str, gb: float, **kwargs) -> None:
     BUDGET.require(label, gb, **kwargs)
 
@@ -944,9 +991,38 @@ def require_scratch(label: str, gb: float, *, budget: MemoryBudget = BUDGET,
     whichever is smaller: a limit set at start-up is not evidence that the space is still
     there, since scratch filesystems are shared. There is no reservation bookkeeping — free
     space is re-read on every call, which is cheap and is the only number that is true.
+
+    ⚠ Refuses (:class:`ConfigurationError`) when no scratch directory is configured — the
+    same no-built-in-default rule as the memory limit, and for the same reason: only whoever
+    knows the machine can pick a filesystem that is actually disk, actually theirs to fill,
+    and actually fast enough to stream from.
     """
     lims = budget.limits
-    directory = lims.resolved_scratch_dir() if lims is not None else Path(".")
+    directory = lims.resolved_scratch_dir() if lims is not None else None
+    if directory is None:
+        message = (
+            "no scratch directory is configured, and '{}' needs one.\n"
+            "\n"
+            "  Kuiva has no built-in scratch location, exactly as it has no built-in memory\n"
+            "  limit: a guessed directory lands on whatever filesystem happens to be there —\n"
+            "  a RAM-backed /tmp spends the memory a spill exists to save — so whoever knows\n"
+            "  the machine chooses it once. Set one of:\n"
+            "      export {}=<directory>            for this job\n"
+            "      scratch_dir = <directory>  in the [scratch] section of a configuration\n"
+            "      file on the search path (source setup.sh asks for it and writes the\n"
+            "      per-user copy).\n"
+            "  Calculations that never touch scratch do not need it.".format(
+                label, ENV_SCRATCH_DIR))
+        log.error("%s", message)
+        raise ConfigurationError(message)
+    try:
+        os.makedirs(str(directory), exist_ok=True)
+    except OSError as exc:
+        message = ("the configured scratch directory {} does not exist and cannot be "
+                   "created ({}); fix scratch_dir in the [scratch] section, or ${}."
+                   .format(directory, exc, ENV_SCRATCH_DIR))
+        log.error("%s", message)
+        raise ScratchLimitError(message)
     free = scratch_free_gb(directory)
     cap = lims.scratch_gb if lims is not None else None
     bound = min([v for v in (cap, free) if v is not None], default=None)
@@ -1062,6 +1138,10 @@ def checkpoint_cost_fraction(budget: MemoryBudget = BUDGET) -> float:
 # --- Pre-flight --------------------------------------------------------------------------
 
 
+#: Whether the end-of-process drift check has been registered (see :func:`preflight`).
+_EXIT_CHECK_REGISTERED = False
+
+
 def _phase_walk(phases: Sequence[PhaseEstimate], carried: float):
     """Walk the phases under the peak model: resident carried forward plus the current
     phase's transients. Returns ``(rows, peak, worst)`` with one ``(phase, carried,
@@ -1164,6 +1244,16 @@ def preflight(phases: Sequence[PhaseEstimate], *, budget: MemoryBudget = BUDGET,
             log.debug("%d reservation(s) totalling %.3f GB carried in from an earlier "
                       "calculation", len(stale), sum(a.gb for a in stale))
     budget._plan_peak_gb = max(budget._plan_peak_gb, peak)
+    # An estimate nobody checks is decoration, and most runs never call summary(): register
+    # the drift warnings to run once, at process exit, where the peak RSS finally means the
+    # whole run. Only for the global ledger (a test's throwaway budget says nothing about
+    # the process), and not under a test runner, whose process peaks over hundreds of
+    # unrelated tests — there the comparison is exactly the meaningless one the >0.5 GB
+    # guard in drift_check exists to suppress, but the guard cannot see it.
+    global _EXIT_CHECK_REGISTERED
+    if budget is BUDGET and not _EXIT_CHECK_REGISTERED and "pytest" not in sys.modules:
+        atexit.register(drift_check)
+        _EXIT_CHECK_REGISTERED = True
     if lims is not None:
         out.entry(logger, "memory limit", limit, "GB", note=lims.source, fmt="{:.3f}")
     out.entry(logger, "planned peak", peak, "GB", fmt="{:.3f}")
@@ -1209,6 +1299,22 @@ def summary(logger=None, *, budget: MemoryBudget = BUDGET) -> None:
     out.entry(logger, "declared peak (Kuiva arrays)", planned, "GB", fmt="{:.3f}")
     if actual is not None:
         out.entry(logger, "peak resident set (VmHWM)", actual, "GB", fmt="{:.3f}")
+    drift_check(budget=budget)
+
+
+def drift_check(*, budget: MemoryBudget = BUDGET) -> None:
+    """The drift warnings of :func:`summary`, without the printed table.
+
+    Warns when the declared peak and the true peak RSS have drifted far apart — the two
+    failure modes are a plan pessimistic enough to refuse runs that would have fitted, and a
+    plan covering so little of the real footprint that the limit no longer protects anyone.
+    Split out from :func:`summary` so it can run where a printed section would be noise: it
+    is registered (by :func:`preflight`, once) to run at process exit, so every run that
+    pre-flighted gets the check even when no script calls :func:`summary`.
+    """
+    planned = budget.peak_gb
+    actual = peak_rss_gb()
+    if actual is not None:
         # Only judge the comparison once the numbers are large enough to mean something: on a
         # small run the resident set is mostly the interpreter, NumPy, PySCF and MKL, none of
         # which Kuiva's sizing functions describe or claim to.
@@ -1237,7 +1343,7 @@ __all__ = [
     "config_search_path", "read_config", "ResourceLimits",
     "Allocation", "PlannedAllocation", "PhaseEstimate", "MemoryBudget", "BUDGET",
     "configure", "ensure_configured", "limits", "reset", "clear", "calculation",
-    "reserve", "require",
+    "reserve", "release", "reserve_owned", "owned_by", "require",
     "transient_gb", "in_phase", "scratch_free_gb", "require_scratch", "preflight",
-    "plan_peak_gb", "summary",
+    "plan_peak_gb", "summary", "drift_check",
 ]

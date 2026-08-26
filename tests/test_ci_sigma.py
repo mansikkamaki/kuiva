@@ -104,12 +104,15 @@ def test_the_F_intermediate_is_E_pq_applied_to_the_vector(n, k):
     space = CASSpace(n, k)
     operator = SigmaOperator(space, h, eri)
     c = _random_vector(space.ndet, seed=k)
-    operator(c)
+    # ⚠ Through gather_f, not by peeking after an application: F and G share the buffer, so
+    # after __call__ it holds G — reading it as F is exactly the mistake the shared-buffer
+    # contract exists to name.
+    f = operator.gather_f(c)
     dets = space.determinants()
     for p in range(n):
         for q in range(n):
             expected = single_excitation_operator(dets, p, q) @ c
-            assert np.allclose(operator.f_buf[:, p * n + q], expected, atol=1e-13)
+            assert np.allclose(f[:, p * n + q], expected, atol=1e-13)
 
 
 # --- permutational symmetry (4-fold, never 8-fold) ---------------------------------
@@ -210,17 +213,23 @@ def test_callers_never_learn_which_backend_they_got():
 def test_sigma_workspace_sizing_is_exact_two_sided(n, k):
     h, eri = random_spinor_integrals(n, seed=3)
     operator = SigmaOperator(CASSpace(n, k), h, eri)
-    actual = operator.f_buf.nbytes + operator.g_buf.nbytes
+    actual = operator.f_buf.nbytes + operator.tile_buf.nbytes
     assert sigma_workspace_gb(n, k) == pytest.approx(actual / 1024.0 ** 3, rel=1e-12)
     assert eri_matrix_gb(n) == pytest.approx(operator.eri_mat.nbytes / 1024.0 ** 3, rel=1e-12)
 
 
 def test_workspace_sizing_reproduces_the_residency_table():
-    """The numbers the conventional-CI ceiling is set by — memory, not flops."""
-    assert sigma_workspace_gb(18, 9) == pytest.approx(0.469, abs=0.002)
-    assert sigma_workspace_gb(20, 10) == pytest.approx(2.202, abs=0.002)
-    assert sigma_workspace_gb(22, 11) == pytest.approx(10.18, abs=0.02)
-    assert sigma_workspace_gb(24, 12) == pytest.approx(46.4, abs=0.1)
+    """The numbers the conventional-CI ceiling is set by — memory, not flops.
+
+    ⚠ Halved on 2026-08-26: F and G share one buffer (the one-electron term is banked before
+    the GEMM overwrites F in tiles), so the former ``2 C(n,k) n^2`` — 2.2 GB at 20 spinors,
+    10.2 at 22 — became ``C(n,k) n^2`` plus a fixed tile. The validation record carries the
+    measurement; this table is the sizing function's current word.
+    """
+    assert sigma_workspace_gb(18, 9) == pytest.approx(0.274, abs=0.002)
+    assert sigma_workspace_gb(20, 10) == pytest.approx(1.150, abs=0.002)
+    assert sigma_workspace_gb(22, 11) == pytest.approx(5.147, abs=0.02)
+    assert sigma_workspace_gb(24, 12) == pytest.approx(23.28, abs=0.1)
     assert cas_dimension(20, 10) == 184756
 
 

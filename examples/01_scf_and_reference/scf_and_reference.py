@@ -38,6 +38,9 @@ WHAT TO LOOK FOR IN THE OUTPUT
 * the same front end run a second time with ``fitting="cholesky-direct"``, which evaluates
   the integrals as the decomposition asks for them and never builds the array -- compare the
   two pre-flight tables, and note that the answers are identical;
+* a third run with ``factors="scratch"``: the finished factor rows spilled to a scratch file
+  and streamed back, so the later stages get their memory without the rows changing by a bit
+  (the default, ``factors="auto"``, does this exactly when the in-core plan does not fit);
 * the nuclear charge model, the third choice behind the Hamiltonian's name: a point charge
   by default, a finite (Gaussian) distribution on request, and what the difference is worth
   on an atom as light as neon;
@@ -261,6 +264,29 @@ def main() -> int:
     out.note(log, "mixing of them reproduces the same integrals, and the integrals are what")
     out.note(log, "every later stage contracts.")
 
+    # (c3) Where the finished factor rows live is a second, independent choice. `factors=
+    #      "scratch"` spills them to a file in the configured scratch directory the moment
+    #      the decomposition ends, and every consumer streams them back in the same
+    #      sequential blocks it always read -- freeing their memory for the CI workspace and
+    #      the orbital-optimization blocks of the later stages. The default
+    #      (`factors="auto"`) does this exactly when the in-core plan exceeds the memory
+    #      limit, announced on the output's own residence line; here it is forced for the
+    #      demonstration. The rows are the same rows: what changes is where they wait, and
+    #      the pre-flight table shows the factor line as a transient of the two-electron
+    #      phase instead of a resident carried into every later one.
+    out.section(log, "The same factors, resident on scratch (factors='scratch')")
+    scf_spill = kuiva.ScalarSCF(neon, memory_gb=2.0, fitting="cholesky-direct",
+                                factors="scratch").run()
+    spilled = kuiva.Reference(scf_spill).run().reference.factors
+    l_spill = spilled.unpack(slice(None))
+    spill_vs_direct = float(np.max(np.abs(l_spill - l_direct)))
+    out.entries(log, [
+        ("factor rows resident in memory", "no" if spilled.is_spilled else "yes", "",
+         "streamed from scratch in sequential blocks"),
+        ("max |L spilled - L in-core|", spill_vs_direct, "", "same rows, read from disk",
+         out.SCI_FMT),
+    ])
+
     # (d) The one-electron Hamiltonian the multireference layer will use. With spin-orbit
     #     coupling ingested this is the full two-component X2C operator in the spin-blocked
     #     AO basis: complex, Hermitian, and not block diagonal in spin -- that off-diagonal
@@ -428,6 +454,8 @@ def main() -> int:
         "the integral-direct route keeps the same error bound":
             direct_vs_exact < 10.0 * direct.tol,
         "the two factorization routes give the same integrals": direct_vs_stored < 1e-12,
+        "spilled factors are read back as the rows that were written":
+            spilled.is_spilled and spill_vs_direct < 1e-12,
         "the two-component Hamiltonian is Hermitian": herm_err < 1e-10,
         "spin-orbit coupling was ingested": bool(data.has_soc),
         "the default nuclear model is a point charge":

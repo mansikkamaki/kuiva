@@ -108,8 +108,11 @@ from typing import Any, Callable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from ..integrals.transform import (ThreeIndexAO, assemble_4c, coulomb_exchange,
-                                   mo_block_memory_gb, transform_3c)
+                                   diagonal_pair_blocks, half_transform,
+                                   half_transform_memory_gb, mo_block_memory_gb,
+                                   transform_3c)
 from ..util import output as out
+from ..util import resources
 from ..util import threads
 from ..util.logging import get_logger
 from ..util.timing import timer
@@ -280,6 +283,24 @@ def hessian_response_memory_gb(naux: int, n_orb: int, n_active: int) -> float:
     return HESSIAN_RESPONSE_COPIES * cas_integrals_memory_gb(naux, n_orb, n_active)
 
 
+def hessian_square_memory_gb(naux: int, n_orb: int, n_occ: int) -> float:
+    """Size [GB] of the fixed-factor route's resident blocks (exact sizing function).
+
+    The full MO three-index square ``B^P_pq`` plus its occupied blocks in their two
+    contraction-ready layouts (``B^P_{p,occ}`` twice over, ``B^P_{occ,occ}`` once), all
+    ``complex128`` — what :class:`OrbitalHessian` holds for the span of one
+    macro-iteration when the integral-free product route engages (see its docstring).
+    This is the deliberate, size-gated exception to the rule that no production path
+    transforms the square: it is taken only where this size fits the transient budget,
+    and the blocked AO route remains the fallback, so a plan carrying
+    ``min(this, transient budget)`` never refuses a calculation the fallback would have
+    run.
+    """
+    return (resources.array_gb((naux, n_orb, n_orb))
+            + 2.0 * resources.array_gb((naux, n_orb, n_occ))
+            + resources.array_gb((naux, n_occ, n_occ)))
+
+
 @dataclass
 class CASIntegrals:
     """The integral quantities the orbital gradient and the CI need, at fixed orbitals.
@@ -326,6 +347,26 @@ class CASIntegrals:
             inac = np.ix_(spaces.inactive, spaces.inactive)
             e_core = 0.5 * float(np.real(np.trace(h_mo[inac]) + np.trace(f_i[inac]))) + e_nuc
             b_act = transform_3c(factors, c, np.ascontiguousarray(c[:, spaces.active]))
+        # ``b_act`` is resident for as long as this object lives — one macro-iteration, or
+        # two blocks at a trial step, when the incumbent's and the trial's overlap — so the
+        # ledger carries a *reservation* for it, not only ``transform_3c``'s pre-allocation
+        # check, or the largest array the optimizer holds would be invisible to every later
+        # refusal. Tied to the array's lifetime because this constructor runs inside the
+        # driver loops: an explicit release at every accept/reject/failure branch that drops
+        # an instance is the leak-prone alternative.
+        resources.reserve_owned(
+            b_act, "three-index MO block B^P_pt",
+            cas_integrals_memory_gb(factors.naux, b_act.shape[1], spaces.n_active),
+            note="{} spinors x {} active, naux = {}".format(
+                b_act.shape[1], spaces.n_active, factors.naux),
+            advice=["reduce the active space: this block carries one index over it",
+                    "reduce the auxiliary/Cholesky dimension, which it is linear in"])
+        # The ``(n_act)^4`` active ERI block is assembled on demand (:meth:`active_eri`),
+        # several times per macro-iteration; its fit is checked once here, where the size is
+        # first known, rather than per assembly inside the driver loop.
+        resources.require("active four-index integrals",
+                          resources.array_gb((spaces.n_active,) * 4, np.complex128),
+                          advice=["reduce the active space"])
         return cls(h=h_mo, f_inactive=f_i, b_act=b_act, e_core=e_core, spaces=spaces,
                    f_inactive_ao=f_i_ao)
 
@@ -453,9 +494,34 @@ class OrbitalHessian:
         dD^I = X_I C_I^dag + C_I X_I^dag,    dD^A = X_T g^T C_T^dag + C_T g^T X_T^dag
 
     which are Hermitian but **indefinite**, hence the two-factor
-    :func:`~kuiva.integrals.transform.coulomb_exchange`. So one Hessian-vector product costs
-    two J/K builds plus one three-index transform — the same order as a gradient, not the
-    ``O(n^4)`` an explicit Hessian would need, and no ``(naux, n, n)`` array is ever formed.
+    :func:`~kuiva.integrals.transform.coulomb_exchange`. Each is built **one-sided** —
+    ``J/K(A)`` for ``A = X C^dag`` alone, Hermitized afterwards, which is exact because J
+    and K are linear in the density and map ``A^dag`` to the Hermitian adjoint over real AO
+    integrals — and the kappa-independent right-hand half transforms (of ``C_I`` and
+    ``C_T``) are cached across every product of the macro-iteration. Together that removes
+    about three quarters of the J/K work a symmetrized two-sided build pays per product. So
+    one Hessian-vector product costs two half-width J/K builds plus one three-index
+    transform — the same order as a gradient, not the ``O(n^4)`` an explicit Hessian would
+    need.
+
+    The fixed-factor route (default where it fits)
+    ----------------------------------------------
+    That AO build is the **fallback**. Where the full MO factor square ``B^P_pq`` fits the
+    transient budget (:func:`hessian_square_memory_gb`; ``mo_square=`` overrides), it is
+    built once per macro-iteration and every product becomes **integral-free dense MO
+    algebra** (:meth:`_response_square`) — no AO pass, no half transform, no per-product
+    ``transform_3c``, and :meth:`exact_diagonal`'s streamed pass reduces to array
+    reductions on the held blocks. This adapts the fixed-integral micro-iteration idea of
+    Werner & Meyer, J. Chem. Phys. 73, 2342 (1980), and Werner & Knowles, J. Chem. Phys.
+    82, 5053 (1985), to three-index factors: their stored ``J^{ij}/K^{ij}`` occupied-pair
+    matrices scale as ``n_occ^2 n^2`` — four times each dimension of the scalar case for
+    spinors, gigabytes already for a diatomic — where the square is ``naux n^2`` and the
+    products still avoid every integral pass. ⚠ **This is the one sanctioned exception to
+    the no-square rule** for the three-index factors, taken deliberately, size-gated, and
+    with the blocked route always available: the plan carries
+    ``min(hessian_square_memory_gb, transient budget)``, so the gate can never refuse a
+    calculation the fallback would have run. The two routes agree to roundoff and a test
+    holds them together.
 
     The one economy worth naming: the *bra*-side three-index response needs no new integrals
     at all. Since ``X = C kappa``,
@@ -497,7 +563,8 @@ class OrbitalHessian:
     def __init__(self, ints: CASIntegrals, factors: ThreeIndexAO, h_ao: np.ndarray,
                  c_spinor: np.ndarray, gamma: np.ndarray, gamma2: np.ndarray,
                  rows: np.ndarray, cols: np.ndarray,
-                 f_active_ao: Optional[np.ndarray] = None):
+                 f_active_ao: Optional[np.ndarray] = None,
+                 mo_square: Optional[bool] = None):
         self.ints = ints
         self.factors = factors
         self.h_ao = h_ao
@@ -529,9 +596,89 @@ class OrbitalHessian:
         self.g2_flat = np.ascontiguousarray(
             gamma2.reshape(self.nact ** 2, self.nact ** 2))
         self.mc = self._contract_gamma2(self.b_act[:, sp.active, :])
+        # Half-transform cache for the response J/K builds (see matvec): the right-hand
+        # factors of both transition densities are the kappa-independent ``c_i`` and
+        # ``c_t``, so their half transforms are paid once here instead of once per
+        # Hessian-vector product — in ONE pass over the factors for both, with the two
+        # blocks handed out as column views of the combined array. The same array, with
+        # its column identity, is what :meth:`exact_diagonal` reuses for its occupied
+        # stage. Sized against the transient budget — the same allowance any blocked
+        # kernel gets, asked once, outside every loop — and skipped rather than shrunk
+        # when it does not fit: the uncached path is exact, just slower.
+        naux, nao = factors.naux, factors.nao
+        n_i, n_t = self.c_i.shape[1], self.c_t.shape[1]
+        n_occ = n_i + n_t
+        self._occ_cols = np.concatenate([sp.inactive, sp.active])
+        # Route decision: the fixed-factor (integral-free) product when the MO square fits
+        # the transient budget, the blocked AO route otherwise — asked once, outside every
+        # loop, and never a correctness question: the two routes agree to roundoff.
+        square_gb = hessian_square_memory_gb(naux, ints.n_orb, n_occ)
+        if mo_square is None:
+            mo_square = n_occ > 0 and square_gb <= resources.transient_gb()
+        self.mo_square = bool(mo_square)
+        # What the kappa-sparse product forms may assume (see _response_square): the
+        # occupied orbitals sit at the leading indices, and — for the active response —
+        # no active-active rotations are parameters. Detected once; the dense general
+        # forms remain the fallback and a test holds the two together.
+        sid = np.zeros(ints.n_orb, dtype=int)
+        sid[sp.active] = 1
+        sid[sp.virtual] = 2
+        self._has_act_act = bool(np.any((sid[rows] == 1) & (sid[cols] == 1)))
+        self._occ_prefix = bool(np.array_equal(self._occ_cols, np.arange(n_occ)))
+        if self.mo_square:
+            # The whole of what the fixed-factor route holds; kappa-independent, one
+            # transform per macro-iteration, and every Hessian-vector product afterwards
+            # is dense MO algebra on these blocks (see _response_square). The blocks are
+            # stored in contraction-ready layouts so each term below is ONE large GEMM —
+            # batched matmul-and-reduce over the auxiliary index measured 13 GFLOP/s
+            # against ~2.5x that for the flat forms, the same lesson as the J/K build's
+            # einsum history.
+            # ⚠ transform_3c, deliberately: a real-arithmetic square assembly (three real
+            # GEMMs per spin, the fourth product free by the symmetry of L) was built,
+            # measured and REMOVED — 25% fewer flops, 29% more CPU seconds, because the
+            # strided stores into the interleaved complex result and the batched
+            # transpose cost more than the flops saved. The wide-ket zgemm path is the
+            # measured optimum of the assemblies tried, judged on CPU seconds.
+            with timer("MO factor square"):
+                n_orb = ints.n_orb
+                self.b_full = transform_3c(factors, self.c, self.c)
+                b_occ = np.ascontiguousarray(self.b_full[:, :, self._occ_cols])
+                #: (n, naux, n_occ) — the occupied columns, aux-middle layout.
+                self.b_occ_t = np.ascontiguousarray(b_occ.transpose(1, 0, 2))
+                b_oo = b_occ[:, self._occ_cols, :]
+                #: ((naux n_i), n_occ) and ((naux n_t), n_occ) — occupied-row blocks.
+                self.b_i_occ_flat = np.ascontiguousarray(
+                    b_oo[:, :n_i, :]).reshape(naux * n_i, n_occ)
+                self.b_a_occ_flat = np.ascontiguousarray(
+                    b_oo[:, n_i:, :]).reshape(naux * n_t, n_occ)
+                #: (n, (naux n_i)) and (n, (naux n_t)) — occupied-column blocks.
+                self.b_p_i_flat = np.ascontiguousarray(
+                    b_occ[:, :, :n_i].transpose(1, 0, 2)).reshape(n_orb, naux * n_i)
+                self.b_p_a_flat = np.ascontiguousarray(
+                    b_occ[:, :, n_i:].transpose(1, 0, 2)).reshape(n_orb, naux * n_t)
+            self._w_occ = None
+            self._w_i = self._w_t = None
+        else:
+            self.b_full = self.b_occ_t = None
+            self.b_i_occ_flat = self.b_a_occ_flat = None
+            self.b_p_i_flat = self.b_p_a_flat = None
+            want_gb = half_transform_memory_gb(naux, nao, n_occ)
+            if want_gb <= resources.transient_gb():
+                self._w_occ = half_transform(
+                    factors, np.concatenate([self.c_i, self.c_t], axis=1))
+                self._w_i = [w[:, :, :n_i] for w in self._w_occ] if n_i else None
+                self._w_t = [w[:, :, n_i:] for w in self._w_occ] if n_t else None
+            else:
+                self._w_occ = None
+                self._w_i = self._w_t = None
+                log.debug("half-transform cache (%.2f GB) exceeds the transient budget; "
+                          "each Hessian-vector product recomputes the right-hand half "
+                          "transform", want_gb)
         # Gradient matrix, for the chart-curvature correction (see the class docstring).
         f_active = self.c.conj().T @ self.f_a_ao @ self.c
+        self.f_act_mo = f_active
         self.g_dual = np.conj(orbital_gradient(ints, gamma, gamma2, f_active))
+        self._exact_diag: Optional[np.ndarray] = None
 
     def _fock_mo(self, f_ao: np.ndarray, x: np.ndarray) -> np.ndarray:
         """``X^dag F C + C^dag F X`` — the one-electron part of a one-index transformation."""
@@ -557,21 +704,37 @@ class OrbitalHessian:
         sp = self.sp
         n = self.ints.n_orb
         kappa = _unpack(kappa_vec, self.rows, self.cols, n)
+        if self.mo_square:
+            with timer("Hessian-vector product"):
+                d_f = self._response_square(kappa)
+            d_g = d_f.conj().T - d_f
+            raw = 2.0 * np.conj(_pack(d_g, self.rows, self.cols))
+            curv = -0.5 * (kappa @ self.g_dual - self.g_dual @ kappa)
+            return raw - 2.0 * _pack(curv, self.rows, self.cols)
         x = self.c @ kappa                                        # orbital response
 
         with timer("Hessian-vector product"):
             x_i = np.ascontiguousarray(x[:, sp.inactive])
             x_t = np.ascontiguousarray(x[:, sp.active])
-            # Transition densities, as two-factor (indefinite) low-rank objects.
-            j_i, k_i = coulomb_exchange(
-                self.factors, np.concatenate([x_i, self.c_i], axis=1),
-                orbitals_right=np.concatenate([self.c_i, x_i], axis=1))
-            j_a, k_a = coulomb_exchange(
-                self.factors,
-                np.concatenate([x_t @ self.gamma.T, self.c_t @ self.gamma.T], axis=1),
-                orbitals_right=np.concatenate([self.c_t, x_t], axis=1))
-            d_f_i = self._fock_mo(self.f_i_ao, x) + self.c.conj().T @ (j_i - k_i) @ self.c
-            d_f_a = self._fock_mo(self.f_a_ao, x) + self.c.conj().T @ (j_a - k_a) @ self.c
+            # Transition densities, as ONE-SIDED low-rank products, Hermitized afterwards:
+            # the response density is A + A^dag with A = X C^dag, and J/K are linear maps
+            # taking A^dag to the Hermitian adjoint of what they give A (real AO
+            # integrals), so building A's half and adding the adjoint costs half the half
+            # transforms and half the pair contraction of building the symmetrized density
+            # [X | C], [C | X] directly. The active A uses gamma Hermitian (the rdm gate):
+            # c_t gamma^T x_t^dag = (x_t gamma^T c_t^dag)^dag. The kappa-independent
+            # right-hand half transforms come from the cache built once in __init__.
+            j_i, k_i = coulomb_exchange(self.factors, x_i, orbitals_right=self.c_i,
+                                        right_half=self._w_i)
+            j_a, k_a = coulomb_exchange(self.factors,
+                                        np.ascontiguousarray(x_t @ self.gamma.T),
+                                        orbitals_right=self.c_t, right_half=self._w_t)
+            g_i = j_i - k_i
+            g_i = g_i + g_i.conj().T
+            g_a = j_a - k_a
+            g_a = g_a + g_a.conj().T
+            d_f_i = self._fock_mo(self.f_i_ao, x) + self.c.conj().T @ g_i @ self.c
+            d_f_a = self._fock_mo(self.f_a_ao, x) + self.c.conj().T @ g_a @ self.c
 
             # Three-index response. Bra side: free from b_act — but it must be a *batched
             # GEMM*, not an einsum. `einsum("rp,Prt->Ppt", ...)` is 1.2e9 flops that NumPy
@@ -601,6 +764,233 @@ class OrbitalHessian:
         return raw - 2.0 * _pack(curv, self.rows, self.cols)
 
     __call__ = matvec
+
+    def _response_square(self, kappa: np.ndarray) -> np.ndarray:
+        """The response Fock matrix ``d_f``, built from the held MO factor square.
+
+        The fixed-factor formulation (the adaptation of Werner & Meyer's and Werner &
+        Knowles' fixed-integral micro-iterations — J. Chem. Phys. 73, 2342 (1980);
+        J. Chem. Phys. 82, 5053 (1985) — to three-index factors; see the class docstring):
+        with ``B^P_pq`` held, the MO-projected Coulomb and exchange responses of a density
+        perturbation ``dD`` are
+
+            J(dD)_pq = sum_P B^P_pq Tr(B^P dD),      K(dD)_pq = sum_P (B^P dD B^P)_pq,
+
+        and the two response densities are commutators, ``dD_I = [kappa, P_I]`` and
+        ``dD_A = [kappa, Ge]`` with ``P_I`` the projector on the inactive columns and
+        ``Ge`` gamma^T embedded in the active block (gamma Hermitian, the rdm gate). The
+        response Focks are needed only at **occupied columns** — the generalized Fock has
+        no virtual rows — which is what keeps every contraction here at
+        ``O(naux n^2 n_occ)`` dense GEMMs with no AO pass and no half transform. The
+        ket-side three-index response is ``B kappa`` restricted to active columns, so the
+        per-product ``transform_3c`` of the AO route disappears too.
+        """
+        sp = self.sp
+        n = self.ints.n_orb
+        inact, act = sp.inactive, sp.active
+        n_i, n_t = inact.size, act.size
+        n_occ = n_i + n_t
+        b = self.b_full
+        naux = b.shape[0]
+        b_occ_t = self.b_occ_t                                    # (n, naux, n_occ)
+
+        # --- inactive response: dD_I = [kappa, P_I] ---------------------------------
+        # kappa's inactive-inactive block is never a parameter, so with the occupied
+        # orbitals at the leading indices the contractions can skip the zero rows and
+        # columns — about 40% of these two GEMMs on a typical inactive fraction. The
+        # dense forms below them are the general fallback (arbitrary index layout).
+        if self._occ_prefix:
+            b2 = b.reshape(naux * n, n)
+            y_i = (b2[:, n_i:] @ np.ascontiguousarray(kappa[n_i:, :n_i])
+                   ).reshape(naux, n, n_i)
+            z_i = (np.ascontiguousarray(kappa[:n_i, n_i:])
+                   @ b_occ_t[n_i:].reshape(n - n_i, naux * n_occ)
+                   ).reshape(n_i, naux, n_occ)
+        else:
+            k_i = np.ascontiguousarray(kappa[:, inact])           # (n, n_i)
+            y_i = (b.reshape(-1, n) @ k_i).reshape(naux, n, n_i)  # (B kappa P_I)
+            z_i = (np.ascontiguousarray(kappa[inact, :])
+                   @ b_occ_t.reshape(n, naux * n_occ)).reshape(n_i, naux, n_occ)
+        y_i_t = np.ascontiguousarray(y_i.transpose(1, 0, 2)).reshape(n, naux * n_i)
+        t_i = (y_i[:, inact, np.arange(n_i)].sum(axis=1)
+               - z_i[np.arange(n_i), :, np.arange(n_i)].sum(axis=0))   # Tr(B^P dD_I)
+        z_i_flat = np.ascontiguousarray(z_i.transpose(1, 0, 2)).reshape(naux * n_i, n_occ)
+        m_i = ((b_occ_t * t_i[None, :, None]).sum(axis=1)         # J
+               - y_i_t @ self.b_i_occ_flat                        # - K, first commutator half
+               + self.b_p_i_flat @ z_i_flat)                      # - K, second half
+
+        # --- active response: dD_A = [kappa, Ge] ------------------------------------
+        if self._occ_prefix and not self._has_act_act:
+            # kappa's active-active block is zero too: the active columns' nonzero rows
+            # are the inactive prefix and the virtual tail, each a contiguous slab.
+            b2 = b.reshape(naux * n, n)
+            y_a = (b2[:, :n_i] @ np.ascontiguousarray(kappa[:n_i, n_i:n_occ])
+                   + b2[:, n_occ:] @ np.ascontiguousarray(kappa[n_occ:, n_i:n_occ])
+                   ).reshape(naux, n, n_t)
+            z_a = (np.ascontiguousarray(kappa[n_i:n_occ, :n_i])
+                   @ b_occ_t[:n_i].reshape(n_i, naux * n_occ)
+                   + np.ascontiguousarray(kappa[n_i:n_occ, n_occ:])
+                   @ b_occ_t[n_occ:].reshape(n - n_occ, naux * n_occ)
+                   ).reshape(n_t, naux, n_occ)
+        else:
+            k_a = np.ascontiguousarray(kappa[:, act])             # (n, n_t)
+            y_a = (b.reshape(-1, n) @ k_a).reshape(naux, n, n_t)  # (B kappa P_A)
+            z_a = (np.ascontiguousarray(kappa[act, :])
+                   @ b_occ_t.reshape(n, naux * n_occ)).reshape(n_t, naux, n_occ)
+        y_ag = y_a @ self.gamma.T                                 # y_a doubles as bx below
+        y_ag_t = np.ascontiguousarray(y_ag.transpose(1, 0, 2)).reshape(n, naux * n_t)
+        z_ag = np.tensordot(self.gamma.T, z_a, axes=([1], [0]))   # (n_t, naux, n_occ)
+        t_a = (y_ag[:, act, np.arange(n_t)].sum(axis=1)
+               - z_ag[np.arange(n_t), :, n_i + np.arange(n_t)].sum(axis=0))
+        z_ag_flat = np.ascontiguousarray(
+            z_ag.transpose(1, 0, 2)).reshape(naux * n_t, n_occ)
+        m_a = ((b_occ_t * t_a[None, :, None]).sum(axis=1)
+               - y_ag_t @ self.b_a_occ_flat
+               + self.b_p_a_flat @ z_ag_flat)
+
+        # One-electron parts: [F^MO, kappa], with the MO Fock matrices already in hand.
+        occ = self._occ_cols
+        d_f_i = np.zeros((n, n), dtype=np.complex128)
+        d_f_a = np.zeros((n, n), dtype=np.complex128)
+        d1_i = self.ints.f_inactive @ kappa - kappa @ self.ints.f_inactive
+        d1_a = self.f_act_mo @ kappa - kappa @ self.f_act_mo
+        d_f_i[:, occ] = d1_i[:, occ] + m_i
+        d_f_a[:, occ] = d1_a[:, occ] + m_a
+
+        # Three-index response of b_act: bra side from b_act, ket side is (B kappa)_act.
+        bx = np.matmul(kappa.conj().T, self.b_act) + y_a
+
+        d_f = np.zeros((n, n), dtype=np.complex128)
+        d_f[inact, :] = (d_f_i + d_f_a)[:, inact].T
+        mx = self._contract_gamma2(bx[:, act, :])
+        d_f[act, :] = (self.gamma @ d_f_i[:, act].T
+                       + self._pair_contract(bx, self.mc)
+                       + self._pair_contract(self.b_act, mx))
+        return d_f
+
+    def exact_diagonal(self) -> np.ndarray:
+        """The exact diagonal of this Hessian over the rotation pairs, as a preconditioner.
+
+        The Fock-difference model (:func:`diagonal_hessian`) is a *preconditioner*, measured
+        ~0.67x too small on average and up to 10x on soft modes — and the Davidson expansion
+        count is set by exactly those modes. This is the analytic diagonal, derived as the
+        Wirtinger curvature ``2 d^2E / dkappa_pq dconj(kappa_pq)`` (the complex-linear
+        diagonal of :meth:`matvec`, i.e. the mean of the two real directions' curvatures;
+        the anti-linear part is not representable in a one-number-per-pair preconditioner).
+        Per pair class, with ``f = F^I + F^A``, ``F`` the generalized Fock and all values
+        real parts:
+
+            virtual-inactive (a,i):  2 [ f_aa - f_ii - (aa|ii) + (ia|ai) ]
+            active-inactive  (t,i):  2 [ f_tt - f_ii + gamma_tt F^I_ii - F_tt
+                                          - (tt|ii) + (it|ti)
+                                          + sum_uv Gamma_ttuv (ii|uv)
+                                          + sum_vw Gamma_vttw (vi|iw)
+                                          + 2 Re sum_u gamma_tu (ii|tu)
+                                          - 2 Re sum_s gamma_ts (is|ti) ]
+            virtual-active   (a,t):  2 [ gamma_tt F^I_aa - F_tt
+                                          + sum_uv Gamma_ttuv (aa|uv)
+                                          + sum_vw Gamma_vttw (va|aw) ]
+
+        (RDM sums over active spinors only; the inactive contractions are already folded
+        into ``F^I`` and the explicit ``(..|ii)`` terms.) The derivation is pinned by
+        ``tests/test_mcscf.py``, which extracts the complex-linear diagonal from
+        :meth:`matvec` on unit vectors and demands agreement to near machine precision —
+        the matvec is verified independently against the numerical Hessian, so an error in
+        these formulas cannot pass. Active-active pairs (opt-in, redundant for an exact
+        CAS) fall back to the unfloored Fock-difference value.
+
+        Every two-electron integral above reduces to the diagonal three-index block and
+        exchange-type sums (:func:`~kuiva.integrals.transform.diagonal_pair_blocks`) plus
+        contractions of ``b_act`` the Hessian already holds; the streamed pass costs one to
+        two matrix-vector products, once per macro-iteration, cached on the instance.
+        Values may legitimately be negative far from a minimum; the augmented-Hessian
+        solver's floored denominators absorb that, so nothing is clamped here.
+        """
+        if self._exact_diag is not None:
+            return self._exact_diag
+        with timer("exact Hessian diagonal"):
+            sp, ints = self.sp, self.ints
+            n = ints.n_orb
+            act, inact = sp.active, sp.inactive
+            nact = self.nact
+            rows, cols = self.rows, self.cols
+            fia_d = np.real(np.diag(ints.f_inactive + self.f_act_mo))
+            fi_d = np.real(np.diag(ints.f_inactive))
+            f_gen = generalized_fock(ints, self.gamma, self.gamma2, self.f_act_mo)
+            fg_d = np.real(np.diag(f_gen))
+            g_tt = np.clip(np.real(np.diag(self.gamma)), 0.0, None)
+            occ = np.zeros(n)
+            occ[inact] = 1.0
+            occ[act] = np.real(np.diag(self.gamma))
+
+            if self.mo_square:
+                # Everything the streamed pass would compute is a reduction over blocks
+                # the fixed-factor route already holds.
+                b_diag = np.ascontiguousarray(
+                    np.real(self.b_full[:, np.arange(n), np.arange(n)]))
+                s2v = (np.abs(self.b_occ_t[sp.virtual, :, :inact.size]) ** 2).sum(axis=1)
+            else:
+                # The streamed pass reuses the occupied half transforms the response
+                # builds already cached, and computes the exchange sums only for the
+                # virtual rows — the active rows' exchange sums come from the resident
+                # b_act below, and the occupied columns' half transforms would be
+                # recomputation.
+                half = (self._occ_cols, self._w_occ) if self._w_occ is not None else None
+                b_diag, s2v = diagonal_pair_blocks(self.factors, self.c, inact,
+                                                   rows=sp.virtual, half=half)
+            # Exchange-type sums against the active orbitals, from the resident b_act.
+            s2t = (np.abs(self.b_act) ** 2).sum(axis=0)              # (n, nact)
+            # sum_uv Gamma_ttuv (qq|uv) = sum_P B^P_qq M^P_tt, with M the Gamma-contracted
+            # intermediate the matvec already holds.
+            mcd = self.mc[:, np.arange(nact), np.arange(nact)]       # (naux, nact)
+            g1 = b_diag.T @ mcd                                      # (n, nact)
+            # sum_vw Gamma_vttw (vq|qw) = sum_{P,vw} Gamma_vttw conj(B^P_qv) B^P_qw.
+            n_pair = np.empty((n, nact), dtype=np.float64)
+            for t in range(nact):
+                g2t = np.ascontiguousarray(self.gamma2[:, t, t, :])  # Gamma_{v t t w}
+                y = self.b_act @ g2t.T                               # (naux, n, nact)
+                n_pair[:, t] = np.real((np.conj(self.b_act) * y).sum(axis=(0, 2)))
+            # 2 Re sum_u gamma_tu (ii|tu) and -2 Re sum_s gamma_ts (is|ti).
+            bta = self.b_act[:, act, :]                              # (naux, nact, nact)
+            t_p = (self.gamma[None, :, :] * bta).sum(axis=-1)        # (naux, nact)
+            term_tt = 2.0 * np.real(b_diag[:, inact].T @ t_p)        # (n_inact, nact)
+            b_i = self.b_act[:, inact, :]                            # (naux, n_inact, nact)
+            v = b_i @ self.gamma.T
+            term_u = -2.0 * np.real((v * np.conj(b_i)).sum(axis=0))  # (n_inact, nact)
+
+            loc = np.zeros(n, dtype=int)
+            loc[inact] = np.arange(inact.size)
+            loc[act] = np.arange(act.size)
+            vloc = np.zeros(n, dtype=int)
+            vloc[sp.virtual] = np.arange(sp.virtual.size)
+            sid = np.zeros(n, dtype=int)
+            sid[act] = 1
+            sid[sp.virtual] = 2
+
+            a_diag = np.empty(rows.size, dtype=np.float64)
+            ppqq = (b_diag[:, rows] * b_diag[:, cols]).sum(axis=0)
+            m_ai = (sid[rows] == 2) & (sid[cols] == 0)
+            m_ti = (sid[rows] == 1) & (sid[cols] == 0)
+            m_at = (sid[rows] == 2) & (sid[cols] == 1)
+            m_tt = (sid[rows] == 1) & (sid[cols] == 1)
+            r, c = rows[m_ai], cols[m_ai]
+            a_diag[m_ai] = (fia_d[r] - fia_d[c] - ppqq[m_ai]
+                            + s2v[vloc[r], loc[c]])
+            r, c = rows[m_ti], cols[m_ti]
+            lt, li = loc[r], loc[c]
+            a_diag[m_ti] = (fia_d[r] - fia_d[c] + g_tt[lt] * fi_d[c] - fg_d[r]
+                            - ppqq[m_ti] + s2t[c, lt]
+                            + np.real(g1[c, lt]) + n_pair[c, lt]
+                            + term_tt[li, lt] + term_u[li, lt])
+            r, c = rows[m_at], cols[m_at]
+            lt = loc[c]
+            a_diag[m_at] = (g_tt[lt] * fi_d[r] - fg_d[c]
+                            + np.real(g1[r, lt]) + n_pair[r, lt])
+            if np.any(m_tt):                       # opt-in active-active: model value only
+                r, c = rows[m_tt], cols[m_tt]
+                a_diag[m_tt] = (occ[c] - occ[r]) * (fia_d[r] - fia_d[c])
+            self._exact_diag = 2.0 * a_diag
+        return self._exact_diag
 
 
 def diagonal_hessian(ints: CASIntegrals, gamma: np.ndarray, f_active: np.ndarray,
@@ -646,13 +1036,29 @@ class AHResult:
     n_matvec: int
     converged: bool
     shift: float = 0.0
+    #: The Krylov subspace the solve built, as ``(basis, applied)`` lists of
+    #: ``(alpha, x)`` pairs. Returned so a caller that must re-solve **at the same point**
+    #: with a different trust radius (a trust-region rejection retry) can pass it back as
+    #: ``subspace=`` and pay zero Hessian-vector products. It is a statement about one
+    #: gradient and one Hessian; reusing it after the orbitals have moved is wrong.
+    subspace: Optional[tuple] = None
+    #: The lowest few Ritz vectors of the final subspace (normalized ``x`` parts), when
+    #: ``n_ritz_out`` asked for them. These are the soft directions a diagonal
+    #: preconditioner is worst at rediscovering; the Hessian moves slowly between
+    #: macro-iterations, so seeding the *next* solve with them (``recycle=``) trades one
+    #: Hessian-vector product per seed for the expansions that would have re-found them.
+    ritz_vectors: Optional[list] = None
 
 
 def augmented_hessian_step(grad: np.ndarray, hvp: Callable[[np.ndarray], np.ndarray],
                            hdiag: np.ndarray, *, max_iter: int = 24, tol: float = 1e-3,
                            max_subspace: int = 100,
                            trust: Optional[float] = None,
-                           guess: Optional[np.ndarray] = None) -> AHResult:
+                           guess: Optional[np.ndarray] = None,
+                           step_tol: float = 0.1,
+                           subspace: Optional[tuple] = None,
+                           recycle: Optional[Sequence[np.ndarray]] = None,
+                           n_ritz_out: int = 0) -> AHResult:
     """Newton step from the augmented-Hessian eigenproblem, solved by Davidson.
 
     Solves for the lowest eigenpair of
@@ -688,6 +1094,34 @@ def augmented_hessian_step(grad: np.ndarray, hvp: Callable[[np.ndarray], np.ndar
     taking over. (Observed, before this was fixed: the gradient parked at 4e-4 while the trust
     region collapsed through five successive rejections.) The caller chooses ``tol``;
     :class:`OrbitalOptimizer` supplies an inexact-Newton forcing sequence.
+
+    ``step_tol`` terminates a **trust-capped** solve early. While the Ritz step exceeds the
+    trust radius, what the caller will actually take is the *shifted* step, and refining the
+    Krylov subspace beyond the point where that shifted step has stopped moving only polishes
+    the part of the Newton direction the shift then discards — measured on a heavy-element
+    CASSCF far from convergence, most of the Hessian-vector products of the early
+    macro-iterations went exactly there. So once two successive shifted steps agree to
+    ``step_tol`` (relative), the solve stops and returns the shifted step: still the exact
+    Newton step of the more conservative shifted model, at a fraction of the products. The
+    eigen-residual test is untouched, so behaviour near convergence — where the cap is
+    inactive — is unchanged. ``step_tol=0`` disables the truncation.
+
+    ``subspace`` re-solves in a previously returned ``AHResult.subspace`` with **no**
+    expansions and no Hessian-vector products: the projected problem is rebuilt, shifted to
+    the (new) trust radius, and returned. This is for the one situation where it is exact —
+    the caller rejected the step and retries at the *same* orbitals and RDMs with a smaller
+    trust radius, where the gradient and Hessian are bitwise those the subspace was built
+    from.
+
+    ``recycle`` seeds the subspace with additional vectors — the previous macro-iteration's
+    lowest Ritz vectors (``AHResult.ritz_vectors``, requested via ``n_ritz_out``). Unlike
+    ``subspace`` this is **not** a replay: the Hessian has moved with the orbitals, so each
+    seed is re-applied (one Hessian-vector product) and enters as an ordinary expansion.
+    The point is which directions get into the subspace first: the softest curvature
+    directions dominate the Newton step, move slowly between macro-iterations, and are
+    precisely what a diagonal preconditioner rediscovers most slowly. Seeds nearly parallel
+    to what is already in the basis are dropped by the orthogonalization, so a redundant
+    seed costs nothing.
     """
     m = grad.size
     gnorm = float(np.linalg.norm(grad))
@@ -697,6 +1131,37 @@ def augmented_hessian_step(grad: np.ndarray, hvp: Callable[[np.ndarray], np.ndar
 
     def dot(a1, x1, a2, x2):
         return float(a1 * a2 + np.real(np.vdot(x1, x2)))
+
+    def ritz(basis, applied):
+        """Lowest Ritz pair of the symmetrized projection: ``(lam, y_a, y_x, resid)``."""
+        k = len(basis)
+        s = np.zeros((k, k))
+        for i in range(k):
+            for j in range(k):
+                s[i, j] = dot(basis[i][0], basis[i][1], applied[j][0], applied[j][1])
+        s = 0.5 * (s + s.T)                           # exact projection of the true Hessian
+        vals, vecs = np.linalg.eigh(s)
+        c = vecs[:, 0]
+        lam = float(vals[0])
+        y_a = sum(c[i] * basis[i][0] for i in range(k))
+        y_x = sum(c[i] * basis[i][1] for i in range(k))
+        ay_a = sum(c[i] * applied[i][0] for i in range(k))
+        ay_x = sum(c[i] * applied[i][1] for i in range(k))
+        r_a = ay_a - lam * y_a
+        r_x = ay_x - lam * y_x
+        resid = float(np.sqrt(r_a ** 2 + np.real(np.vdot(r_x, r_x))))
+        return lam, y_a, y_x, resid, r_a, r_x
+
+    if subspace is not None:
+        # Rejection retry: same point, smaller trust. Zero Hessian-vector products.
+        basis, applied = subspace
+        lam, y_a, y_x, resid, _, _ = ritz(basis, applied)
+        step = y_x / y_a if abs(y_a) > 1e-12 else np.zeros_like(grad)
+        shift = 0.0
+        if trust is not None and step.size and float(np.max(np.abs(step))) > trust:
+            step, lam, shift = _shift_to_trust(basis, applied, trust, lam)
+        return AHResult(step=step, eigenvalue=lam, residual=resid, n_matvec=0,
+                        converged=True, shift=shift, subspace=(basis, applied))
 
     # Start from the "no step" direction; the first expansion is the preconditioned gradient.
     basis = [(1.0, np.zeros_like(grad))]
@@ -715,26 +1180,29 @@ def augmented_hessian_step(grad: np.ndarray, hvp: Callable[[np.ndarray], np.ndar
             basis.append((0.0, t_x))
             applied.append((float(np.real(np.vdot(grad, t_x))), hvp(t_x)))
             n_matvec += 1
+    if recycle is not None:
+        # Ritz-vector recycling (see the docstring). Each surviving seed costs one product.
+        for vec in recycle:
+            t_a, t_x = 0.0, np.asarray(vec, dtype=np.complex128).copy()
+            for (b_a, b_x) in basis:                  # modified Gram-Schmidt
+                ov = dot(b_a, b_x, t_a, t_x)
+                t_a -= ov * b_a
+                t_x -= ov * b_x
+            nrm = np.sqrt(t_a ** 2 + np.real(np.vdot(t_x, t_x)))
+            if nrm < 1e-6:                            # already represented: free
+                continue
+            t_a, t_x = t_a / nrm, t_x / nrm
+            basis.append((t_a, t_x))
+            applied.append((float(np.real(np.vdot(grad, t_x))), t_a * grad + hvp(t_x)))
+            n_matvec += 1
     lam, step, resid = 0.0, np.zeros_like(grad), gnorm
     converged = False
+    capped_shift = None                               # set when step_tol truncates the solve
+    prev_capped = None                                # previous iteration's shifted step
 
     for it_ah in range(max_iter):
         k = len(basis)
-        s = np.zeros((k, k))
-        for i in range(k):
-            for j in range(k):
-                s[i, j] = dot(basis[i][0], basis[i][1], applied[j][0], applied[j][1])
-        s = 0.5 * (s + s.T)                           # exact projection of the true Hessian
-        vals, vecs = np.linalg.eigh(s)
-        c = vecs[:, 0]
-        lam = float(vals[0])
-        y_a = sum(c[i] * basis[i][0] for i in range(k))
-        y_x = sum(c[i] * basis[i][1] for i in range(k))
-        ay_a = sum(c[i] * applied[i][0] for i in range(k))
-        ay_x = sum(c[i] * applied[i][1] for i in range(k))
-        r_a = ay_a - lam * y_a
-        r_x = ay_x - lam * y_x
-        resid = float(np.sqrt(r_a ** 2 + np.real(np.vdot(r_x, r_x))))
+        lam, y_a, y_x, resid, r_a, r_x = ritz(basis, applied)
         if abs(y_a) > 1e-12:
             step = y_x / y_a
         # At least one expansion always happens: the k == 1 subspace contains only the
@@ -742,6 +1210,20 @@ def augmented_hessian_step(grad: np.ndarray, hvp: Callable[[np.ndarray], np.ndar
         if (it_ah > 0 and resid < target) or k >= max_subspace:
             converged = resid < target
             break
+        # Trust-radius-aware truncation (see the docstring): while the step is capped, stop
+        # as soon as the *shifted* step — the one the caller will actually take — has
+        # stabilized. The shift search runs on the projected matrices only, so probing it
+        # every capped iteration costs no Hessian-vector products.
+        if (step_tol > 0.0 and trust is not None and it_ah > 0 and step.size
+                and float(np.max(np.abs(step))) > trust):
+            st, lm, sg = _shift_to_trust(basis, applied, trust, lam)
+            st_norm = float(np.linalg.norm(st))
+            if (prev_capped is not None and st_norm > 0.0
+                    and float(np.linalg.norm(st - prev_capped)) <= step_tol * st_norm):
+                step, lam, capped_shift = st, lm, sg
+                converged = True
+                break
+            prev_capped = st
         # Davidson preconditioning with the diagonal Hessian.
         denom = hdiag - lam
         denom = np.where(np.abs(denom) < 1e-8, 1e-8, denom)
@@ -760,11 +1242,34 @@ def augmented_hessian_step(grad: np.ndarray, hvp: Callable[[np.ndarray], np.ndar
         applied.append((float(np.real(np.vdot(grad, t_x))), t_a * grad + hvp(t_x)))
         n_matvec += 1
 
-    shift = 0.0
-    if trust is not None and step.size and float(np.max(np.abs(step))) > trust:
-        step, lam, shift = _shift_to_trust(basis, applied, trust, lam)
+    if capped_shift is not None:
+        shift = capped_shift                          # the step is already the shifted one
+    else:
+        shift = 0.0
+        if trust is not None and step.size and float(np.max(np.abs(step))) > trust:
+            step, lam, shift = _shift_to_trust(basis, applied, trust, lam)
+    ritz_out = None
+    if n_ritz_out > 0 and len(basis) > 1:
+        # Lowest Ritz vectors of the final subspace, for the next solve's recycle= seeds.
+        # Projected matrices only — no products. The lowest one is essentially the step
+        # direction the caller's warm start already carries; the orthogonalization there
+        # makes handing it over anyway harmless.
+        k = len(basis)
+        s = np.zeros((k, k))
+        for i in range(k):
+            for j in range(k):
+                s[i, j] = dot(basis[i][0], basis[i][1], applied[j][0], applied[j][1])
+        s = 0.5 * (s + s.T)
+        _, vecs = np.linalg.eigh(s)
+        ritz_out = []
+        for kk in range(min(int(n_ritz_out), k)):
+            y = sum(vecs[i, kk] * basis[i][1] for i in range(k))
+            nrm = float(np.sqrt(np.real(np.vdot(y, y))))
+            if nrm > 1e-12:
+                ritz_out.append(y / nrm)
     return AHResult(step=step, eigenvalue=lam, residual=resid, n_matvec=n_matvec,
-                    converged=converged, shift=shift)
+                    converged=converged, shift=shift, subspace=(basis, applied),
+                    ritz_vectors=ritz_out)
 
 
 def _shift_to_trust(basis, applied, trust: float, lam0: float):
@@ -889,7 +1394,8 @@ class OrbitalOptimizer:
                  second_order_start: float = SECOND_ORDER_START,
                  stall_patience: int = 3, stall_window: int = STALL_WINDOW,
                  stall_factor: float = STALL_FACTOR,
-                 conv_grad: float = 1e-4, ah_tol: float = 1e-3, ah_max_iter: int = 60):
+                 conv_grad: float = 1e-4, ah_tol: float = 1e-3, ah_max_iter: int = 60,
+                 ah_recycle: int = 0):
         if mode not in ("auto", "quasi-newton", "second-order"):
             raise ValueError("unknown optimizer mode {!r}; expected 'auto', 'quasi-newton' "
                              "or 'second-order'".format(mode))
@@ -908,6 +1414,16 @@ class OrbitalOptimizer:
         self._gnorm_history: List[float] = []
         self.ah_tol = float(ah_tol)
         self.ah_max_iter = int(ah_max_iter)
+        #: Ritz vectors carried from one augmented-Hessian solve to the next. ⚠ **Measured
+        #: and OFF by default**: with the exact-diagonal preconditioner in place, seeding
+        #: cost more products than it saved on the real heavy-element benchmark (+47%) and
+        #: on every synthetic tried — the seeds are re-applied against a Hessian that has
+        #: moved, and the preconditioned expansion finds the soft directions faster than
+        #: the seeds repay. The machinery stays because the measurement was made *with* a
+        #: good preconditioner; a future solver with a poor one may re-measure, not
+        #: re-implement.
+        self.ah_recycle = int(ah_recycle)
+        self._ah_ritz: Optional[list] = None
         self._second_order = (mode == "second-order")
         self._stalls = 0
         self.n_hessian_matvec = 0
@@ -919,6 +1435,16 @@ class OrbitalOptimizer:
         self._prev_energy: Optional[float] = None
         self._pending: Optional[Tuple[np.ndarray, np.ndarray, float]] = None
         self._ah_guess: Optional[np.ndarray] = None
+        #: The Hessian and Krylov subspace :meth:`step` built at the current iterate,
+        #: keyed by **object identity** of ``(ints, c_spinor, gamma)``. A trust-region
+        #: rejection retries at the same iterate, where both are bitwise what they were —
+        #: recomputing them is the single largest avoidable cost of a rejection. Cleared
+        #: on :meth:`accept` (the iterate moves) and never checkpointed (like
+        #: ``_pending``, it is half of an unfinished trial). The gradient has its own
+        #: memo (:meth:`gradient`), which *survives* accept — the driver has already
+        #: evaluated it at the accepted iterate for the L-BFGS update.
+        self._iterate_cache: Optional[dict] = None
+        self._grad_cache: Optional[dict] = None
         self.n_rejected = 0
 
     @property
@@ -1019,7 +1545,10 @@ class OrbitalOptimizer:
         self._prev_grad = None
         self._prev_step = None
         self._ah_guess = None
+        self._ah_ritz = None
         self._pending = None
+        self._iterate_cache = None
+        self._grad_cache = None
         self._prev_energy = None
         self._stalls = 0
         self._gnorm_history.clear()
@@ -1033,13 +1562,28 @@ class OrbitalOptimizer:
 
         ``dE = 2 Re sum_{p>q} G_pq kappa_pq``, so the vector conjugate to ``kappa`` under the
         real inner product ``Re <g, kappa>`` is ``2 conj(G)``.
+
+        Memoized on the **object identity** of ``(ints, c_spinor, gamma)``: the driver
+        evaluates the gradient at an accepted iterate to feed the L-BFGS memory, and the
+        next :meth:`step` call needs the gradient at exactly that iterate — without the
+        memo it rebuilds the active Fock (a J/K pass) for a bitwise-identical result, once
+        per accepted macro-iteration. A caller that rebuilt any of the three objects is at
+        a new iterate even if the numbers agree, which is why identity, not value, is the
+        key.
         """
+        gc = self._grad_cache
+        if (gc is not None and gc["ints"] is ints and gc["c"] is c_spinor
+                and gc["gamma"] is gamma):
+            self._f_active_ao = gc["f_active_ao"]
+            return gc["grad"], gc["hdiag"]
         f_active_ao = _active_fock_ao(factors, c_spinor, self.spaces, gamma)
         self._f_active_ao = f_active_ao        # handed to the Hessian; one J/K build saved
         f_active = c_spinor.conj().T @ f_active_ao @ c_spinor
         g_mat = orbital_gradient(ints, gamma, gamma2, f_active)
         grad = 2.0 * np.conj(_pack(g_mat, self.rows, self.cols))
         hdiag = diagonal_hessian(ints, gamma, f_active, self.rows, self.cols)
+        self._grad_cache = {"ints": ints, "c": c_spinor, "gamma": gamma,
+                            "grad": grad, "hdiag": hdiag, "f_active_ao": f_active_ao}
         return grad, hdiag
 
     def step(self, ints: CASIntegrals, gamma: np.ndarray, gamma2: np.ndarray,
@@ -1062,28 +1606,51 @@ class OrbitalOptimizer:
         if h_ao is None and hessian_vector is None and self.mode != "quasi-newton":
             raise ValueError("a second-order step needs h_ao (or an explicit hessian_vector); "
                              "pass it, or construct the optimizer with mode='quasi-newton'")
+        # Rejection retry at the same iterate: the Hessian and its Krylov subspace are
+        # bitwise what the previous call computed (the gradient is memoized inside
+        # :meth:`gradient` itself). Identity, not value, is the right key — a caller that
+        # rebuilt any of these objects is at a new iterate even if the numbers agree.
         grad, hdiag = self.gradient(ints, gamma, gamma2, factors, c_spinor)
+        cache = self._iterate_cache
+        if not (cache is not None and cache["ints"] is ints and cache["c"] is c_spinor
+                and cache["gamma"] is gamma):
+            cache = None
         e_now = cas_energy(ints, gamma, gamma2) if energy is None else float(energy)
         gnorm = float(np.linalg.norm(grad))
 
         use_second_order = self._decide_second_order(gnorm)
         second_order = False
         direction = None
+        hess = None
+        subspace = None
         if use_second_order:
             hv = hessian_vector
             if hv is None:
-                hess = OrbitalHessian(ints, factors, h_ao, c_spinor, gamma, gamma2,
-                                      self.rows, self.cols,
-                                      f_active_ao=getattr(self, "_f_active_ao", None))
+                if cache is not None and cache.get("hess") is not None:
+                    hess = cache["hess"]
+                else:
+                    hess = OrbitalHessian(ints, factors, h_ao, c_spinor, gamma, gamma2,
+                                          self.rows, self.cols,
+                                          f_active_ao=getattr(self, "_f_active_ao", None))
                 hv = hess.matvec
             # Inexact Newton (Eisenstat-Walker): solve loosely while the gradient is large —
             # the step is trust-region capped there anyway, so a tight solve burns
             # Hessian-vector products for a step that gets truncated — and tighten
             # automatically as the gradient falls, which is what buys superlinear convergence.
             eta = max(self.ah_tol, min(0.5, float(np.sqrt(gnorm))))
-            ah = augmented_hessian_step(grad, hv, hdiag, tol=eta,
+            reuse = cache.get("subspace") if cache is not None else None
+            # The exact diagonal (see OrbitalHessian.exact_diagonal) preconditions the
+            # solve; the Fock-difference hdiag stays what the quasi-Newton machinery uses.
+            # A caller-supplied hessian_vector has no exact diagonal to offer.
+            hdiag_ah = hess.exact_diagonal() if hess is not None else hdiag
+            ah = augmented_hessian_step(grad, hv, hdiag_ah, tol=eta,
                                         max_iter=self.ah_max_iter, trust=self.trust,
-                                        guess=self._ah_guess)
+                                        guess=self._ah_guess, subspace=reuse,
+                                        recycle=self._ah_ritz,
+                                        n_ritz_out=self.ah_recycle)
+            subspace = ah.subspace
+            if ah.ritz_vectors is not None:
+                self._ah_ritz = ah.ritz_vectors
             self._ah_guess = ah.step.copy() if ah.step.size else None
             self.n_hessian_matvec += ah.n_matvec
             if self._dot(ah.step, grad) < 0.0:          # must be downhill to be usable
@@ -1108,6 +1675,13 @@ class OrbitalOptimizer:
             max_rot = self.trust
 
         self._pending = (grad, direction, e_now)
+        self._iterate_cache = {
+            "ints": ints, "c": c_spinor, "gamma": gamma,
+            # Only a Hessian this optimizer built itself is cached: a caller-supplied
+            # hessian_vector may close over state this cache cannot see.
+            "hess": hess if hessian_vector is None else None,
+            "subspace": subspace if hessian_vector is None else None,
+        }
         kappa = _unpack(direction, self.rows, self.cols, ints.n_orb)
         return OrbitalStep(kappa=kappa, unitary=unitary_from_antihermitian(kappa),
                            energy=e_now, grad_norm=gnorm, max_rotation=max_rot,
@@ -1167,6 +1741,10 @@ class OrbitalOptimizer:
         self._prev_energy = energy
         self.trust = min(1.5 * self.trust, self.max_step)
         self._pending = None
+        self._iterate_cache = None          # the iterate moves; the Hessian is stale
+        # _grad_cache is deliberately kept: the driver evaluated the gradient at the
+        # accepted iterate for the L-BFGS update, and that is the iterate the next step
+        # starts from. The identity key makes a stale entry a miss, never a wrong hit.
 
     # -- checkpointing ---------------------------------------------------------------
     def state_dict(self, *, space_key: Optional[str] = None) -> dict:
@@ -1236,6 +1814,12 @@ class OrbitalOptimizer:
         self.n_second_order_steps = int(state.get("n_second_order_steps", 0))
         self.n_rejected = int(state.get("n_rejected", 0))
         self._pending = None
+        self._iterate_cache = None
+        self._grad_cache = None
+        # The Ritz seeds are a per-process warm start, deliberately not checkpointed: a
+        # restart pays a few extra products on its first solve rather than carrying more
+        # surface-dependent state across the boundary.
+        self._ah_ritz = None
 
         if not same_chart:
             log.warning("the checkpoint was written on CI space %r and this run is on %r; "
@@ -1268,6 +1852,12 @@ class OrbitalOptimizer:
         the step was too long, not that the accumulated curvature is wrong, and discarding
         hard-won pairs on every rejection throws the method back to preconditioned steepest
         descent exactly when it is struggling.
+
+        The iterate cache is kept too, deliberately: a rejection means the *next*
+        :meth:`step` call happens at the same orbitals and RDMs, where the cached gradient,
+        Hessian and Krylov subspace are still exact — the retry then costs no Hessian-vector
+        products and no gradient build, only the small shifted re-solve at the new trust
+        radius.
         """
         self.trust = max(0.25 * self.trust, 1e-6)
         self.n_rejected += 1
@@ -1477,7 +2067,7 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
 
 
 __all__ = ["OrbitalSpaces", "CASIntegrals", "cas_integrals_memory_gb",
-           "hessian_response_memory_gb", "HESSIAN_RESPONSE_COPIES",
+           "hessian_response_memory_gb", "HESSIAN_RESPONSE_COPIES", "hessian_square_memory_gb",
            "OrbitalOptimizer", "OrbitalStep", "CASSCFResult",
            "OrbitalHessian", "augmented_hessian_step", "AHResult",
            "cas_energy", "generalized_fock", "averaged_fock", "fock_diagonal",

@@ -261,7 +261,7 @@ def kramers_map_gb(ndet: int) -> float:
     """Size [GB] of a :class:`KramersMap` over ``ndet`` determinants (exact sizing function).
 
     Small against everything it sits beside — 3 MB at the 184 756 determinants of a
-    half-filled 20-spinor space, against 2.2 GB of sigma workspace — but it is an
+    half-filled 20-spinor space, against 1.2 GB of sigma workspace — but it is an
     ``ndet``-sized resident array and is declared like one.
     """
     return float(ndet) * BYTES_PER_KRAMERS_ENTRY / res.BYTES_PER_GB

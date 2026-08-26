@@ -668,7 +668,11 @@ def test_sqd_drives_the_event_gated_optimizer_to_the_exact_casscf(synthetic_cass
     is the complete CAS space, so the trajectory must land on the exact-CI CASSCF answer.
     """
     factors, h_ao, c0, spaces, n_elec = synthetic_casscf_system
-    kwargs = dict(max_iter=40, mode="second-order", conv_grad=1e-6, report=False)
+    # 60 rather than 40: a budget with slack over the ~42 macro-iterations this
+    # random-integral system takes since the exact-diagonal preconditioner (the early
+    # trajectory is knife-edge sensitive to step details); the claim under test is the
+    # exact/sampled agreement, not the iteration count.
+    kwargs = dict(max_iter=60, mode="second-order", conv_grad=1e-6, report=False)
     exact = optimize_orbitals(factors, h_ao, c0, spaces,
                               FullCISolver(spaces.n_active, n_elec), **kwargs)
     solver = _covering_solver(n_elec)

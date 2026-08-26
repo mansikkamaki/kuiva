@@ -89,13 +89,16 @@ References
 from __future__ import annotations
 
 import math
+import os
+import weakref
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from ..util import output as out
 from ..util import resources as res
+from ..util import scratch as scratch_io
 from ..util.logging import get_logger
 from ..util.timing import timer
 
@@ -549,6 +552,129 @@ def _warn_if_coulomb_only(aux_name: Optional[str]) -> None:
                     "for correlated work.", aux_name)
 
 
+# --- Scratch residence for the factor rows ------------------------------------------------
+
+# The short-read/short-write loops live in kuiva.util.scratch, shared with every other
+# out-of-core store, so no layer re-derives them.
+_readinto_full = scratch_io.readinto_full
+_write_full = scratch_io.write_full
+
+
+def _scratch_cleanup(fileobj, path: str, executor) -> None:
+    """Finalizer for a scratch store: stop the prefetcher, close, delete. Never raises."""
+    try:
+        if executor is not None:
+            executor.shutdown(wait=True)
+    except Exception:
+        pass
+    try:
+        fileobj.close()
+    except Exception:
+        pass
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+class _ScratchFactorStore:
+    """The packed factor rows ``(naux, npair)`` in a raw scratch file, read in row blocks.
+
+    IO design, each point deliberate:
+
+    * **Raw row-major binary, no container format.** The file lives exactly as long as the
+      process (a finalizer deletes it), is regenerated rather than restarted from (the
+      checkpoint layer's never-checkpoint rule for integral factors), and is read only by this class — so a
+      block read is one contiguous ``readinto`` at ``offset = p0 * npair * 8`` with no chunk
+      layer, no metadata seeks and no decompression. Random factor data does not compress.
+    * **Buffered by the page cache, not by us, and never ``O_DIRECT``.** The configured memory limit
+      governs Kuiva's *own* arrays; whatever RAM the machine has beyond it is exactly
+      what the OS page cache uses. On a node with spare RAM the repeated sequential passes a
+      CASSCF makes over this file are then served at memory speed, and on a tight node the
+      cache degrades gracefully to device speed — an adaptive cache nobody had to size.
+    * **One prefetch worker, double-buffered.** Every consumer walks the auxiliary index in
+      ascending contiguous blocks, so after serving ``[p0, p1)`` the next block is issued to
+      a single background worker while the caller computes; ``readinto`` and BLAS both
+      release the GIL, so read and compute overlap. All file access goes through that one
+      worker (the serving thread waits on a future), so there is no seek race and no lock.
+      This is an IO thread, not a compute thread — the calculation's threading budget is untouched.
+    * **Sequential append on write**, with the file preallocated to its final size
+      (``posix_fallocate``) so the extents are laid out contiguously; there is deliberately
+      no fsync, because scratch outliving a crash protects nothing.
+
+    A wrong-prediction read (a consumer jumping backwards, or two consumers interleaved on
+    one store) is served correctly by a synchronous read through the same worker — slower,
+    never wrong. The two packed buffers are the store's whole resident footprint;
+    :attr:`ThreeIndexAO.stream_row_bytes` is how a consumer's block sizing accounts for them.
+
+    ⚠ Failure semantics are a hard error, not a cache miss: by the time a block is read the
+    in-RAM copy is gone, and the only recovery would be re-running the decomposition.
+    """
+
+    #: Write slab [bytes]. Large enough to reach device bandwidth, small enough to be noise
+    #: against the transient budget.
+    WRITE_SLAB = 64 * 1024 * 1024
+
+    def __init__(self, l_packed: np.ndarray, path: str) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        naux, npair = (int(l_packed.shape[0]), int(l_packed.shape[1]))
+        self.naux, self.npair = naux, npair
+        self.path = str(path)
+        self._row_bytes = npair * 8
+        rows_per_slab = max(1, self.WRITE_SLAB // self._row_bytes)
+        with timer("factor spill to scratch"):
+            with open(self.path, "wb", buffering=0) as f:
+                try:
+                    os.posix_fallocate(f.fileno(), 0, naux * self._row_bytes)
+                except (AttributeError, OSError):
+                    pass                       # preallocation is an optimization, not a need
+                for r0 in range(0, naux, rows_per_slab):
+                    _write_full(f, l_packed[r0:r0 + rows_per_slab])
+        self._file = open(self.path, "rb", buffering=0)
+        self._executor = ThreadPoolExecutor(max_workers=1,
+                                            thread_name_prefix="kuiva-factor-io")
+        self._buffers = [np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)]
+        self._active = 0
+        self._pending = None                   # (future, p0, p1, slot) of the prefetched read
+        self._finalizer = weakref.finalize(self, _scratch_cleanup, self._file, self.path,
+                                           self._executor)
+
+    def _do_read(self, p0: int, p1: int, slot: int) -> np.ndarray:
+        """Runs on the worker thread — the only thread that touches the file."""
+        need = (p1 - p0) * self.npair
+        if self._buffers[slot].size < need:
+            self._buffers[slot] = np.empty(need, dtype=np.float64)
+        block = self._buffers[slot][:need]
+        self._file.seek(p0 * self._row_bytes)
+        _readinto_full(self._file, block)
+        return block.reshape(p1 - p0, self.npair)
+
+    def read(self, p0: int, p1: int) -> np.ndarray:
+        """Rows ``[p0, p1)`` as ``(nb, npair)`` float64.
+
+        ⚠ Returns a view of an internal buffer, valid until the next :meth:`read` — the one
+        consumer (:meth:`ThreeIndexAO.unpack`) copies it into square form immediately.
+        """
+        pending, self._pending = self._pending, None
+        if pending is not None and pending[1] == p0 and pending[2] == p1:
+            block = pending[0].result()
+            self._active = pending[3]
+        else:
+            if pending is not None:
+                pending[0].result()            # drain the stale read; the worker is serial
+            block = self._executor.submit(self._do_read, p0, p1, self._active).result()
+        # Predict the next contiguous block of the same walk and start it now.
+        q0, q1 = p1, min(p1 + (p1 - p0), self.naux)
+        if q1 > q0:
+            slot = 1 - self._active
+            self._pending = (self._executor.submit(self._do_read, q0, q1, slot), q0, q1, slot)
+        return block
+
+    def close(self) -> None:
+        self._finalizer()
+
+
 # --- The three-index AO factors ----------------------------------------------------------
 
 @dataclass
@@ -575,6 +701,9 @@ class ThreeIndexAO:
     #: free-ion multiplet splitting means something different in each case.
     orbit_complete: bool = False
     _rows: Optional[Tuple[np.ndarray, np.ndarray]] = field(default=None, repr=False)
+    _store: Optional[_ScratchFactorStore] = field(default=None, repr=False)
+    _shape: Optional[Tuple[int, int]] = field(default=None, repr=False)
+    _reservation: Optional[object] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         expected = npair_of(self.nao)
@@ -582,34 +711,107 @@ class ThreeIndexAO:
             raise ValueError("three-index factors must have shape (naux, {}) for nao={}, "
                              "got {}".format(expected, self.nao, self.l_packed.shape))
         self.l_packed = np.ascontiguousarray(self.l_packed, dtype=np.float64)
+        self._shape = (int(self.l_packed.shape[0]), int(self.l_packed.shape[1]))
         self._rows = _pair_rows(self.nao)
         # the factors live for the whole calculation, so they are declared resident.
         # Declared *after* construction rather than predicted before it, because naux is not
         # known until the decomposition has run — the pre-flight makes the prediction, this
         # replaces it with the fact so that every later check starts from the truth.
-        res.reserve("three-index AO factors ({})".format(self.origin), self.memory_gb,
-                    note="naux={} x {} AO pairs".format(self.naux, self.npair),
-                    advice=["loosen the Cholesky threshold (fewer vectors, less accurate "
-                            "integrals)",
-                            "use density fitting with an explicit auxiliary basis, which is "
-                            "usually a smaller factorization than Cholesky",
-                            "use a smaller basis set"])
+        self._reservation = res.reserve(
+            "three-index AO factors ({})".format(self.origin), self.memory_gb,
+            note="naux={} x {} AO pairs".format(self.naux, self.npair),
+            advice=["loosen the Cholesky threshold (fewer vectors, less accurate "
+                    "integrals)",
+                    "use density fitting with an explicit auxiliary basis, which is "
+                    "usually a smaller factorization than Cholesky",
+                    "spill the factors to scratch after the decomposition "
+                    "(factors=\"scratch\" on the front end)",
+                    "use a smaller basis set"])
 
     @property
     def naux(self) -> int:
-        return int(self.l_packed.shape[0])
+        return int(self._shape[0])
 
     @property
     def npair(self) -> int:
-        return int(self.l_packed.shape[1])
+        return int(self._shape[1])
 
     @property
     def memory_gb(self) -> float:
-        return self.l_packed.nbytes / 1024.0 ** 3
+        """Size [GB] of the factor data, wherever it resides (RAM in-core, disk spilled)."""
+        return self._shape[0] * self._shape[1] * 8.0 / 1024.0 ** 3
+
+    @property
+    def is_spilled(self) -> bool:
+        """Whether the rows live in a scratch file rather than in RAM."""
+        return self._store is not None
+
+    @property
+    def stream_row_bytes(self) -> float:
+        """Bytes per auxiliary row a consumer's block sizing must add for the stream buffers.
+
+        Zero in-core. Spilled, the store double-buffers packed rows (one being consumed, one
+        being prefetched), so a consumer holding ``nb`` rows of temporaries makes the store
+        hold ``2 nb`` packed rows beside them — unaccounted, that would be a systematic
+        under-plan of every blocked loop over a spilled store.
+        """
+        return 2.0 * self.npair * 8.0 if self.is_spilled else 0.0
+
+    def spill_to_scratch(self) -> "ThreeIndexAO":
+        """Move the factor rows to a scratch file and free their RAM (in place).
+
+        The trade, and when it is taken: every consumer walks the rows in sequential
+        auxiliary blocks, so streaming them from disk costs bandwidth but no algorithm —
+        while the freed RAM is what lets the CI workspace, the MO blocks and the Hessian
+        transients of the later stages fit at all. ``factors="auto"`` on the front end takes
+        it exactly when the in-core plan does not fit the configured memory limit and the spilled one
+        does. On a node whose *machine* RAM exceeds the configured limit the OS page cache
+        holds the file anyway and the streaming reads run at memory speed — the limit
+        governs Kuiva's arrays, not the kernel's cache (see :class:`_ScratchFactorStore`
+        for the whole IO design).
+
+        ⚠ This does not reduce the decomposition-time peak: the rows are spilled *after*
+        they exist. A factorization too large to build in RAM at all needs the out-of-core
+        decomposition, which does not exist yet; the refusal for that case says so.
+        Idempotent; returns ``self``.
+        """
+        if self.is_spilled:
+            return self
+        size_gb = self.memory_gb
+        directory = res.require_scratch(
+            "three-index factor spill", size_gb,
+            advice=["loosen the Cholesky threshold (fewer vectors)",
+                    "use a smaller basis set"])
+        path = os.path.join(str(directory),
+                            "kuiva-factors-{}-{:x}.bin".format(os.getpid(), id(self)))
+        self._store = _ScratchFactorStore(self.l_packed, path)
+        self.l_packed = None
+        # The RAM reservation goes back to the ledger; the stream buffers are the store's
+        # only resident footprint and are charged to each consumer's block sizing instead
+        # (stream_row_bytes), because their size is the consumer's block choice.
+        res.release(self._reservation)
+        self._reservation = None
+        # DEBUG, not INFO: the output file reports the residence through its own structured
+        # rows (the front end's residence line, report()'s entry), and this line carries a
+        # per-process path that would make a committed reference output differ on every run.
+        log.debug("three-index factors spilled to scratch: %.3f GB at %s", size_gb, path)
+        return self
 
     def unpack(self, aux: slice) -> np.ndarray:
-        """Unpack an auxiliary block to ``(nb, nao, nao)`` square form."""
-        blk = self.l_packed[aux]
+        """Unpack an auxiliary block to ``(nb, nao, nao)`` square form.
+
+        Always a fresh array the caller owns, on either residence. On a spilled store the
+        packed rows are read through the prefetching scratch reader; the sequential block
+        walks every consumer already does are exactly what it is optimized for.
+        """
+        if self._store is not None:
+            p0, p1, step = aux.indices(self.naux)
+            if step != 1:
+                raise ValueError("a spilled factor store reads contiguous auxiliary blocks; "
+                                 "got a slice with step {}".format(step))
+            blk = self._store.read(p0, p1)
+        else:
+            blk = self.l_packed[aux]
         i, j = self._rows
         full = np.zeros((blk.shape[0], self.nao, self.nao), dtype=np.float64)
         full[:, i, j] = blk
@@ -741,8 +943,21 @@ class ThreeIndexAO:
                             "argument of the front-end call on that route.",
                             prebuilt.tol, tol)
             return prebuilt
+        # The residence the front end resolved (its factors= axis, "in-core" by default) —
+        # honoured here because the stored and DF routes are the ones whose decomposition
+        # runs at this point; the integral-direct route spilled where it decomposed.
+        residence = getattr(data, "factor_residence", "in-core")
         if getattr(data, "df_cderi", None) is not None:
             obj = cls.from_df(data.df_cderi, data.nao, aux_name=getattr(data, "aux_name", None))
+            if residence == "scratch":
+                # ⚠ Not an oversight: the DF factors *are* the container's own array, and
+                # the container keeps it (as it keeps the stored route's ERI array) so the
+                # factorization can be rebuilt. Spilling this alias would free nothing
+                # while telling the ledger it had — the accounting lie the budget exists
+                # to prevent — so the request is declined out loud instead.
+                log.warning("factors=\"scratch\" has no effect on the density-fitting "
+                            "route: the factor rows are the ingested container's own DF "
+                            "array, which stays in memory either way. Staying in core.")
             if report:
                 out.subsection(log, "Density-fitted two-electron integrals")
                 obj.report()
@@ -761,7 +976,10 @@ class ThreeIndexAO:
             else:
                 orbits = shell_pair_orbits(layout.ao_shell, layout.ao_atom,
                                            one_centre=one_centre)
-        return cls.from_eri(data.eri, data.nao, tol, orbits=orbits, report=report)
+        obj = cls.from_eri(data.eri, data.nao, tol, orbits=orbits, report=report)
+        if residence == "scratch":
+            obj.spill_to_scratch()
+        return obj
 
     # -- reporting ----------------------------------------------------------------------
     def report(self, logger=None) -> None:
@@ -770,6 +988,9 @@ class ThreeIndexAO:
         out.entry(logger, "AO basis functions", self.nao)
         out.entry(logger, "auxiliary / Cholesky vectors", self.naux,
                   note="{:.1f} per AO".format(self.naux / max(self.nao, 1)))
+        if self.is_spilled:
+            out.entry(logger, "factor residence", "scratch",
+                      note="{:.3f} GB streamed per pass".format(self.memory_gb))
         if self.aux_name:
             out.entry(logger, "auxiliary basis", self.aux_name)
         if self.tol is not None:
@@ -871,10 +1092,15 @@ def _buffer_gb(buffer_gb: Optional[float]) -> float:
     return res.transient_gb() if buffer_gb is None else float(buffer_gb)
 
 
-def _aux_blocksize(nao: int, nket: int, naux: int, buffer_gb: float) -> int:
-    """Auxiliary block size that keeps the transform's temporaries inside ``buffer_gb``."""
+def _aux_blocksize(nao: int, nket: int, naux: int, buffer_gb: float,
+                   stream_row_bytes: float = 0.0) -> int:
+    """Auxiliary block size that keeps the transform's temporaries inside ``buffer_gb``.
+
+    ``stream_row_bytes`` is :attr:`ThreeIndexAO.stream_row_bytes` — the packed read buffers
+    a spilled store holds per row beside the consumer's own temporaries; zero in-core.
+    """
     per_aux = nao * nao * 8.0 + nao * nket * 16.0        # unpacked L block + intermediate
-    nb = int(buffer_gb * 1024.0 ** 3 / max(per_aux, 1.0))
+    nb = int(buffer_gb * 1024.0 ** 3 / max(per_aux + stream_row_bytes, 1.0))
     return max(1, min(naux, nb))
 
 
@@ -953,7 +1179,8 @@ def transform_3c(factors: ThreeIndexAO, c_bra: np.ndarray, c_ket: np.ndarray, *,
         if b.shape != (naux, nbra, nket) or b.dtype != dtype:
             raise ValueError("out_array has shape {}/{} but the result is {}/{}".format(
                 b.shape, b.dtype, (naux, nbra, nket), dtype))
-    nb = int(aux_blocksize or _aux_blocksize(nao, nket, naux, _buffer_gb(buffer_gb)))
+    nb = int(aux_blocksize or _aux_blocksize(nao, nket, naux, _buffer_gb(buffer_gb),
+                                             factors.stream_row_bytes))
     log.debug("3-index transform: naux=%d nao=%d (%d x %d) block=%d dtype=%s %.3f GB",
               naux, nao, nbra, nket, nb, dtype.name, size_gb)
 
@@ -973,9 +1200,151 @@ def transform_3c(factors: ThreeIndexAO, c_bra: np.ndarray, c_ket: np.ndarray, *,
     return b
 
 
+def half_transform_memory_gb(naux: int, nao: int, k: int) -> float:
+    """Size [GB] of one :func:`half_transform` result (exact sizing function).
+
+    Two spin blocks of ``(naux, nao, k)`` complex. This is what a caller trades for skipping
+    the right-hand half transform of every subsequent :func:`coulomb_exchange` call against
+    the same factors — the orbital Hessian's response builds are the consumer.
+    """
+    return 2.0 * naux * nao * k * 16.0 / res.BYTES_PER_GB
+
+
+def half_transform(factors: ThreeIndexAO, orbitals: np.ndarray, *,
+                   buffer_gb: Optional[float] = None) -> List[np.ndarray]:
+    """The occupied-side half transform ``W^P_{mi} = sum_l L^P_{ml} c_{li}``, per spin block.
+
+    Returns ``[W_alpha, W_beta]``, each ``(naux, nao, k)`` and always ``complex128`` (the
+    result dtype never depends on the numerical content of the input — see
+    :func:`transform_3c`). This is the first stage of :func:`coulomb_exchange`, split out so
+    a caller that runs **many** J/K builds against the *same* right-hand factors — one per
+    Davidson expansion of an orbital Hessian-vector product, at fixed orbitals — can pay it
+    once and pass the result back as ``right_half=``. The cache is a statement about one set
+    of orbitals; it must be rebuilt whenever they change.
+    """
+    nao = factors.nao
+    orbitals = np.asarray(orbitals)
+    if orbitals.ndim != 2 or orbitals.shape[0] != 2 * nao:
+        raise ValueError("orbitals must be ({}, k) in the two-component AO basis, got {}"
+                         .format(2 * nao, orbitals.shape))
+    k_orb = orbitals.shape[1]
+    naux = factors.naux
+    spin = [_real_or_complex(np.ascontiguousarray(orbitals[:nao])),
+            _real_or_complex(np.ascontiguousarray(orbitals[nao:]))]
+    out_w = [np.empty((naux, nao, k_orb), dtype=np.complex128) for _ in range(2)]
+    nb = max(1, min(naux, int(_buffer_gb(buffer_gb) * 1024.0 ** 3 /
+                              max(nao * nao * 8.0 + 2 * nao * k_orb * 16.0
+                                  + factors.stream_row_bytes, 1.0))))
+    with timer("J/K half transform"):
+        for p0 in range(0, naux, nb):
+            p1 = min(p0 + nb, naux)
+            lmat = factors.unpack(slice(p0, p1)).reshape(-1, nao)
+            for s in (0, 1):
+                out_w[s][p0:p1] = _lgemm(lmat, spin[s]).reshape(p1 - p0, nao, k_orb)
+    return out_w
+
+
+def diagonal_pair_blocks(factors: ThreeIndexAO, c: np.ndarray, cols: np.ndarray, *,
+                         rows: Optional[np.ndarray] = None,
+                         half: Optional[Tuple[np.ndarray, Sequence[np.ndarray]]] = None,
+                         buffer_gb: Optional[float] = None
+                         ) -> Tuple[np.ndarray, np.ndarray]:
+    """``(b_diag, s2)``: the diagonal of the MO three-index block, and exchange-type sums.
+
+    * ``b_diag[P, p] = B^P_pp`` — real, because the AO factors are real symmetric; always
+      over **every** orbital ``p``.
+    * ``s2[k, j] = sum_P |B^P_{rows[k], cols[j]}|^2 = (p c_j | c_j p)`` — the
+      exchange-type diagonal two-electron integrals of the ``rows`` orbitals (all of them
+      when ``rows`` is None) against the ``cols`` orbitals; real and non-negative.
+
+    Together with an active block ``B^P_{p,t}`` these are what an **exact orbital-Hessian
+    diagonal** needs: ``(pp|qq) = sum_P b_diag[P,p] b_diag[P,q]`` and ``(pq|qp) = s2`` —
+    and ``rows`` exists because that consumer needs the exchange sums only for the pair
+    classes not already covered by its resident active block (the virtual rows), which is
+    the larger of the two GEMM stages here.
+
+    ``half = (indices, [W_alpha, W_beta])`` supplies :func:`half_transform` output for the
+    ``indices`` columns of ``c`` — the orbital Hessian already holds it for the occupied
+    columns — so the streamed stage only transforms the complement. ``cols`` must be a
+    subset of ``indices`` when ``half`` is given: the s2 stage reads its ket columns from
+    the cache. The arrays are trusted to be what they claim, exactly as
+    :func:`coulomb_exchange`'s ``right_half`` is.
+
+    One streamed pass over the auxiliary index — nothing of size ``(naux, n, n)`` is ever
+    stored, so the square-block rule stands.
+    """
+    nao = factors.nao
+    c = np.asarray(c)
+    if c.ndim != 2 or c.shape[0] != 2 * nao:
+        raise ValueError("coefficients must be ({}, n) in the two-component AO basis, got {}"
+                         .format(2 * nao, c.shape))
+    n = c.shape[1]
+    cols = np.asarray(cols, dtype=int).ravel()
+    rows = np.arange(n) if rows is None else np.asarray(rows, dtype=int).ravel()
+    naux = factors.naux
+    if half is not None:
+        have = np.asarray(half[0], dtype=int).ravel()
+        w_have = half[1]
+        if len(w_have) != 2 or any(
+                np.asarray(w).shape != (naux, nao, have.size) for w in w_have):
+            raise ValueError("half must be (indices, [W_alpha, W_beta]) with W of shape "
+                             "{} from half_transform over those columns"
+                             .format((naux, nao, have.size)))
+        missing = np.setdiff1d(cols, have)
+        if missing.size:
+            raise ValueError("cols must be a subset of half's columns; {} are not"
+                             .format(missing.size))
+        pos_in_have = {int(p): k for k, p in enumerate(have)}
+        col_pos = np.array([pos_in_have[int(q)] for q in cols], dtype=int)
+        todo = np.setdiff1d(np.arange(n), have)
+    else:
+        have = np.zeros(0, dtype=int)
+        w_have = None
+        col_pos = cols
+        todo = np.arange(n)
+    spin = [_real_or_complex(np.ascontiguousarray(c[:nao])),
+            _real_or_complex(np.ascontiguousarray(c[nao:]))]
+    conj_spin = [np.conj(s) for s in spin]
+    conj_rows = [np.ascontiguousarray(cs[:, rows]) for cs in conj_spin]
+    spin_todo = [np.ascontiguousarray(s[:, todo]) for s in spin]
+    conj_todo = [np.ascontiguousarray(cs[:, todo]) for cs in conj_spin]
+    conj_have = [np.ascontiguousarray(cs[:, have]) for cs in conj_spin]
+    b_diag = np.zeros((naux, n), dtype=np.float64)
+    s2 = np.zeros((rows.size, cols.size), dtype=np.float64)
+    per_aux = (nao * nao * 8.0 + 2.0 * nao * max(todo.size, 1) * 16.0
+               + 2.0 * rows.size * max(cols.size, 1) * 16.0 + factors.stream_row_bytes)
+    nb = max(1, min(naux, int(_buffer_gb(buffer_gb) * 1024.0 ** 3 / max(per_aux, 1.0))))
+    with timer("Hessian diagonal integrals"):
+        for p0 in range(0, naux, nb):
+            p1 = min(p0 + nb, naux)
+            nblk = p1 - p0
+            lmat = None
+            if todo.size:
+                lmat = factors.unpack(slice(p0, p1)).reshape(-1, nao)
+            b_ket = np.zeros((nblk, rows.size, cols.size), dtype=np.complex128) \
+                if cols.size and rows.size else None
+            for s in (0, 1):
+                if todo.size:
+                    w = _lgemm(lmat, spin_todo[s]).reshape(nblk, nao, todo.size)
+                    b_diag[p0:p1, todo] += np.real(
+                        conj_todo[s][None, :, :] * w).sum(axis=1)
+                if half is not None and have.size:
+                    wc = w_have[s][p0:p1]
+                    b_diag[p0:p1, have] += np.real(
+                        conj_have[s][None, :, :] * wc).sum(axis=1)
+                if b_ket is not None:
+                    w_cols = (w_have[s][p0:p1][:, :, col_pos] if half is not None
+                              else w[:, :, col_pos])
+                    b_ket += np.matmul(conj_rows[s].T, w_cols)
+            if b_ket is not None:
+                s2 += (np.abs(b_ket) ** 2).sum(axis=0)
+    return b_diag, s2
+
+
 def coulomb_exchange(factors: ThreeIndexAO, orbitals: np.ndarray,
                      occupations: Optional[np.ndarray] = None, *,
                      orbitals_right: Optional[np.ndarray] = None,
+                     right_half: Optional[Sequence[np.ndarray]] = None,
                      buffer_gb: Optional[float] = None,
                      with_k: bool = True) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """Coulomb and exchange matrices in the two-component AO basis.
@@ -1011,7 +1380,16 @@ def coulomb_exchange(factors: ThreeIndexAO, orbitals: np.ndarray,
     A density that is not even *positive* — the transition densities of a Hessian-vector
     product, ``X C^dag + C X^dag`` — is why ``orbitals_right`` exists: pass
     ``[X | C]`` and ``[C | X]`` and the same builder handles it, with no eigendecomposition
-    and no square roots of negative numbers.
+    and no square roots of negative numbers. (The orbital Hessian in fact passes only the
+    one-sided ``X`` / ``C`` pair and Hermitizes the result — J and K are linear in the
+    density and map ``D^dag`` to the Hermitian adjoint over real AO integrals.)
+
+    ``right_half`` supplies the half transform of ``orbitals_right`` precomputed by
+    :func:`half_transform` — for a caller that builds J/K repeatedly against the same
+    right-hand factors. It replaces only the K path's half transform; ``orbitals_right`` must
+    still be given, because the Coulomb contraction uses the raw coefficients. The arrays are
+    trusted to *be* the half transform of ``orbitals_right`` — only their shape is checked,
+    since recomputing them for comparison would cost exactly what they exist to save.
     """
     nao = factors.nao
     orbitals = np.asarray(orbitals)
@@ -1023,6 +1401,16 @@ def coulomb_exchange(factors: ThreeIndexAO, orbitals: np.ndarray,
         raise ValueError("orbitals_right must match orbitals in shape, got {} and {}"
                          .format(right.shape, orbitals.shape))
     k_orb = orbitals.shape[1]
+    if right_half is not None:
+        if orbitals_right is None:
+            raise ValueError("right_half needs orbitals_right too: the Coulomb contraction "
+                             "uses the raw coefficients, only the exchange half transform "
+                             "is replaced")
+        expect = (factors.naux, nao, k_orb)
+        if (len(right_half) != 2
+                or any(np.asarray(w).shape != expect for w in right_half)):
+            raise ValueError("right_half must be the two spin blocks of shape {} from "
+                             "half_transform(factors, orbitals_right)".format(expect))
     # Fold the occupations into one factor rather than taking square roots: it is exact for
     # *any* sign of n_i, which matters because a transition density is indefinite.
     cw = orbitals if occupations is None else orbitals * np.asarray(occupations, dtype=float)
@@ -1040,7 +1428,8 @@ def coulomb_exchange(factors: ThreeIndexAO, orbitals: np.ndarray,
         _real_or_complex(np.ascontiguousarray(dw[:nao])),
         _real_or_complex(np.ascontiguousarray(dw[nao:]))]
     nb = max(1, min(naux, int(_buffer_gb(buffer_gb) * 1024.0 ** 3 /
-                              max(nao * nao * 8.0 + 4 * nao * k_orb * 16.0, 1.0))))
+                              max(nao * nao * 8.0 + 4 * nao * k_orb * 16.0
+                                  + factors.stream_row_bytes, 1.0))))
     with timer("J/K build"):
         for p0 in range(0, naux, nb):
             p1 = min(p0 + nb, naux)
@@ -1050,8 +1439,11 @@ def coulomb_exchange(factors: ThreeIndexAO, orbitals: np.ndarray,
             lflat = lblk.reshape(nblk, -1)                        # (nblk, nao*nao)
             # W^P_{mi} = sum_l L^P_{ml} c_{li}, per spin component (and the same for d).
             wc = [_lgemm(lmat, c).reshape(nblk, nao, k_orb) for c in cw_spin]
-            wd = wc if dw_spin is cw_spin else [
-                _lgemm(lmat, d).reshape(nblk, nao, k_orb) for d in dw_spin]
+            if right_half is not None:
+                wd = [w[p0:p1] for w in right_half]
+            else:
+                wd = wc if dw_spin is cw_spin else [
+                    _lgemm(lmat, d).reshape(nblk, nao, k_orb) for d in dw_spin]
             # Coulomb: d_P = sum_{s,m,i} conj(d^s_{mi}) Wc^s_{Pmi}, then J = sum_P d_P L^P.
             d_p = np.zeros(nblk, dtype=np.complex128)
             for d, ws in zip(dw_spin, wc):
@@ -1235,5 +1627,6 @@ class SpinorMOIntegrals:
 __all__ = ["ThreeIndexAO", "SpinorMOIntegrals", "pivoted_cholesky", "shell_pair_orbits",
            "transform_3c", "transform_1e", "assemble_4c", "coulomb_exchange",
            "check_permutational_symmetry", "npair_of", "factor_memory_gb",
+           "half_transform", "half_transform_memory_gb", "diagonal_pair_blocks",
            "mo_block_memory_gb", "DEFAULT_CHOLESKY_TOL", "DEFAULT_BUFFER_GB",
            "ORBIT_DEGENERACY_RTOL", "ORBIT_STABILITY_RTOL"]

@@ -198,7 +198,12 @@ def test_casci_reproduces_the_hand_built_energy(system):
 def test_casscf_lowers_the_energy_and_is_stationary(system):
     factors, h_ao, c0, spaces, n_elec = system
     reference = casci(factors, h_ao, c0, spaces, n_elec, report=False)
-    outcome = casscf(factors, h_ao, c0, spaces, n_elec, mode="second-order", max_iter=40,
+    # max_iter is a budget, not the claim: on this random-integral system the early
+    # trajectory is knife-edge sensitive to step details (the exact-diagonal
+    # preconditioner moved it from ~36 to ~42 macro-iterations while improving the real
+    # heavy-element benchmark), and what this test asserts is convergence and
+    # stationarity, not an iteration count.
+    outcome = casscf(factors, h_ao, c0, spaces, n_elec, mode="second-order", max_iter=60,
                      conv_grad=1e-6, report=False)
     assert outcome.converged
     assert outcome.energy <= reference.energy + 1e-12

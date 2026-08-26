@@ -145,6 +145,10 @@ def node_environments(ttno: TTNO, state: TTNState,
     graph = state.graph
     w = np.asarray(weights, dtype=float)
     stacked = _stack_roots(state.centers, w / float(np.sum(w)))
+    # Deliberately unpaged: this phase materializes essentially the whole environment set
+    # at once (every neighbor of every node), which is the one access pattern paging cannot
+    # help — an LRU under that load would thrash the scratch disk for no resident saving.
+    # It is also one-shot and released below, so its residency is a transient of this call.
     cache = EnvironmentCache(ttno, state)
     parent, preorder = graph.parents(state.center)
     center_side = {int(x): int(parent[x]) for x in preorder[1:]}

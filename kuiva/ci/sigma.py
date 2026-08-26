@@ -52,15 +52,17 @@ Decisions that constrain the rest of the code
   one, and it is why the two steps are separate registered kernels rather than one.
 * ⚠ **That costs full residency of ``G``, and residency — not flops — sets the ceiling.** The
   ``K`` connected to a given ``I`` are scattered across the whole space, so the step-3 gather
-  needs all of ``G`` in memory. :func:`sigma_workspace_gb` is exact and is reserved before the
-  first allocation; above roughly 22 spinors it refuses, and the refusal says why, because the
-  alternative there is *a different kernel with a different parallelization* (batched over
-  ``K``, hence scattering where this one gathers) and not a larger run of this one. Without
-  that message the failure mode is an OOM that looks like a machine problem rather than an
-  algorithmic ceiling.
+  needs all of ``G`` in memory. ⚠ ``F`` costs no *second* buffer: once the row-local
+  one-electron term is banked, nothing needs ``F`` after the GEMM, so ``G`` overwrites it in
+  row tiles (BLAS forbids an aliased product; see :func:`sigma_workspace_gb`).
+  :func:`sigma_workspace_gb` is exact and is reserved before the first allocation; above
+  roughly 24 spinors it refuses, and the refusal says why, because the alternative there is
+  *a different kernel with a different parallelization* (batched over ``K``, hence scattering
+  where this one gathers) and not a larger run of this one. Without that message the failure
+  mode is an OOM that looks like a machine problem rather than an algorithmic ceiling.
 * **``F`` is per CI vector.** A block Davidson expands several directions per iteration; they
-  are applied one at a time, so the resident cost stays ``2 N n^2`` and not ``n_roots`` times
-  that.
+  are applied one at a time, so the resident cost stays ``N n^2`` (plus the tile) and not
+  ``n_roots`` times that.
 * ⚠ **4-fold permutational symmetry only**. The ``n^2 x n^2`` reshape must respect
   ``(pq|rs) = (rs|pq) = (qp|sr)*`` and **must not assume 8-fold** — with complex spinors
   ``(pq|rs) != (rq|ps)`` in general. Both 4-fold relations are asserted on construction; a
@@ -114,26 +116,41 @@ log = get_logger(__name__)
 BYTES_PER_GATHER_INCIDENCE = 64.0
 
 
+#: Rows of the in-place GEMM tile (see :func:`sigma_workspace_gb`). A **fixed** count, so the
+#: sizing function is deterministic across machines; large enough that a
+#: ``(GEMM_TILE_ROWS, n^2) . (n^2, n^2)`` product is squarely BLAS-3, small enough that the
+#: tile is ~50 MB at 20 spinors against the 1.1 GB second buffer it replaced.
+GEMM_TILE_ROWS = 8192
+
+
 def sigma_workspace_gb(n_spinor: int, n_elec: int) -> float:
-    """Size [GB] of the resident ``F`` and ``G`` intermediates (exact sizing function).
+    """Size [GB] of the resident sigma workspace (exact sizing function).
 
     ⚠ **This is the number that sets the conventional-CI ceiling**, not the flop count:
-    ``2 * C(n,k) * n^2`` complex numbers. 0.47 GB at 18 spinors half filled, **2.20 GB at 20**,
-    10.2 GB at 22, 46.4 GB at 24. At 20 spinors nothing is batched over the determinant index
-    and the pure-gather design above holds exactly; above ~22 residency fails on a normal node
-    and the answer is a different algorithm, not a bigger run of this one.
+    ``C(n,k) * n^2`` complex numbers plus a fixed GEMM tile. 0.27 GB at 18 spinors half
+    filled, **1.15 GB at 20**, 5.15 GB at 22, 23.3 GB at 24.
+
+    ⚠ **``F`` and ``G`` share this one buffer, and that is a theorem about the data flow, not
+    a squeeze**: once the row-local one-electron term is banked (its contraction reads
+    ``F``'s own row and nothing else), no consumer needs ``F`` after the GEMM that turns it
+    into ``G`` — the RDM builder and the perturbation regather ``F`` from scratch. BLAS
+    forbids an aliased GEMM, so the product runs in row tiles through
+    :data:`GEMM_TILE_ROWS` of scratch and is copied back; the copy is a few per cent of the
+    GEMM (measured, in this package's validation record). Step 3's gather still needs **all
+    of ``G``** resident — the ``K`` connected to an output row are scattered across the whole
+    space — so the halving ends here: going further is the batched, scattering kernel that
+    was measured and scratched, not a smaller run of this one.
 
     ⚠ **The Kramers-restricted symmetry mode does not move this**, measured rather than
     assumed and recorded in this package's validation record. That mode halves the *Davidson*
-    subspace, which is the smaller term: at CAS(9, 20) with 10 states the peak goes from
-    2.90 GB to 2.46 GB, all of the difference in the subspace and none of it here. ``F`` and
-    ``G`` are gathered over the whole determinant space in both modes, because the
-    intermediates ``K`` connected to a representative determinant are scattered across all of
-    it. Switching symmetry mode is therefore never the answer to this refusal.
+    subspace, which is a different term; the workspace is gathered over the whole determinant
+    space in both modes. Switching symmetry mode is therefore never the answer to this
+    refusal.
     """
     from .strings import cas_dimension
     ndet = cas_dimension(n_spinor, n_elec)
-    return 2.0 * res.array_gb((ndet, n_spinor * n_spinor), np.complex128)
+    tile = min(ndet, GEMM_TILE_ROWS)
+    return res.array_gb((ndet + tile, n_spinor * n_spinor), np.complex128)
 
 
 def eri_matrix_gb(n_spinor: int) -> float:
@@ -328,7 +345,7 @@ class SigmaOperator:
                  backend: Optional[str] = None, block: Optional[int] = None,
                  check_symmetry: bool = True) -> None:
         n = space.n_spinor
-        # Cheap shape guard *before* the reservation: the workspace is 2.2 GB at 20 spinors
+        # Cheap shape guard *before* the reservation: the workspace is 1.2 GB at 20 spinors
         # and there is no reason to allocate it only to refuse the integrals afterwards.
         if np.shape(h) != (n, n):
             raise ValueError("h has shape {}, expected {}".format(np.shape(h), (n, n)))
@@ -344,20 +361,22 @@ class SigmaOperator:
         res.reserve("full-CI sigma workspace ({} spinors, {} electrons)"
                     .format(n, space.n_elec),
                     sigma_workspace_gb(n, space.n_elec),
-                    note="F and G, each {} determinants x {} orbital pairs"
-                         .format(self.ndet, n * n),
+                    note="F/G (one shared buffer) of {} determinants x {} orbital pairs, "
+                         "plus the GEMM tile".format(self.ndet, n * n),
                     advice=[
                         "reduce the active space: the workspace grows as C(n,k) * n^2",
-                        "this kernel keeps F and G fully resident so that both gathers own "
-                        "their output row (no atomics in a threaded port); above ~22 spinors "
-                        "that is no longer possible and the answer is a batched, scattering "
-                        "kernel that does not exist yet -- not a larger run of this one",
+                        "this kernel keeps the whole F/G intermediate resident so that both "
+                        "gathers own their output row (no atomics in a threaded port); above "
+                        "~24 spinors that is no longer possible and the answer is a batched, "
+                        "scattering kernel that does not exist yet -- not a larger run of "
+                        "this one",
                         "the Kramers-restricted CI mode does NOT help here: it halves the "
                         "Davidson subspace, not this workspace, which is gathered over the "
                         "whole determinant space in either mode",
                         "above the conventional-CI ceiling, use DMRG"])
         self.f_buf = np.empty((self.ndet, n * n), dtype=np.complex128)
-        self.g_buf = np.empty((self.ndet, n * n), dtype=np.complex128)
+        self.tile_buf = np.empty((min(self.ndet, GEMM_TILE_ROWS), n * n),
+                                 dtype=np.complex128)
         self.block = gather_block_size(space.n_elec, space.n_empty, self.ndet, block)
         self.n_apply = 0
         self.set_integrals(h, eri, check_symmetry=check_symmetry)
@@ -370,7 +389,7 @@ class SigmaOperator:
 
         ⚠ This is what makes a CASSCF macro-iteration cheap. The integrals change at every
         orbital rotation while the space, the excitation map and the ``F``/``G`` workspace do
-        not — and that workspace is 2.2 GB at 20 spinors (:func:`sigma_workspace_gb`).
+        not — and that workspace is 1.2 GB at 20 spinors (:func:`sigma_workspace_gb`).
         Constructing a fresh operator per macro-iteration would free and re-allocate it every
         time; this replaces two small arrays instead. Nothing that has been handed out
         (``f_buf``, shared with :class:`~kuiva.rdm.rdm.RDMBuilder`) is invalidated.
@@ -397,7 +416,7 @@ class SigmaOperator:
         """``H c`` for one CI vector.
 
         ``F`` is per vector: a block Davidson applies this to its expansion directions one at
-        a time, so the resident cost stays ``2 N n^2`` rather than ``n_roots`` times that.
+        a time, so the resident cost stays ``N n^2`` plus the tile rather than ``n_roots`` times that.
         """
         c = np.ascontiguousarray(c, dtype=np.complex128)
         if c.shape != (self.ndet,):
@@ -409,24 +428,51 @@ class SigmaOperator:
         n = self.n_spinor
 
         # The three regions are timed separately on purpose: step 1 reads a cached
-        # few MB, step 3 reads G at 1.1 GB fully randomly, and a single "gather" number would
-        # hide the difference that decides whether either is worth porting.
+        # few MB, step 3 reads G at ~1.1 GB fully randomly, and a single "gather" number
+        # would hide the difference that decides whether either is worth porting.
         with timer("sigma step 1: gather F"):
             kernels.resolve("sigma_gather_f", self.backend)(
                 c, *arrays, n, self.block, self.f_buf)
+        # The one-electron term is row-local — a BLAS-2 contraction of F's own row — and it
+        # is banked *before* the GEMM, which is what lets F and G share one buffer: after
+        # this line nothing needs F, so the GEMM may overwrite it. Kept out of the gathers'
+        # timed regions so the number the C++ port gate is decided on is the gather alone.
+        with timer("sigma one-electron term"):
+            one_electron = self.f_buf @ self.h_eff_flat
+        # ⚠ In place through a tile, not out= on the same array: BLAS forbids an aliased
+        # GEMM. Row tiles keep every output row's contraction identical to the one-shot
+        # product's (a GEMM row depends on its own A row only); the copy-back is a few per
+        # cent of the GEMM and buys the second N x n^2 buffer this operator no longer holds.
         with timer("sigma step 2: GEMM"):
-            np.dot(self.f_buf, self.eri_mat, out=self.g_buf)
+            nt = self.tile_buf.shape[0]
+            for r0 in range(0, self.ndet, nt):
+                r1 = min(r0 + nt, self.ndet)
+                np.dot(self.f_buf[r0:r1], self.eri_mat, out=self.tile_buf[:r1 - r0])
+                self.f_buf[r0:r1] = self.tile_buf[:r1 - r0]
         with timer("sigma step 3: gather sigma"):
             kernels.resolve("sigma_gather_out", self.backend)(
-                self.g_buf, *arrays, n, self.block, out)
-        # The one-electron term is row-local: a BLAS-2 contraction of F's own row, kept out of
-        # the GEMM (module docstring) and out of the gather's timed region, so that the number
-        # the C++ port gate is decided on is the gather alone.
-        with timer("sigma one-electron term"):
-            out *= 0.5
-            out += self.f_buf @ self.h_eff_flat
+                self.f_buf, *arrays, n, self.block, out)
+        out *= 0.5
+        out += one_electron
         self.n_apply += 1
         return out
+
+    def gather_f(self, c: np.ndarray) -> np.ndarray:
+        """Fill the shared workspace with ``F[K, pq] = sum_J <K|E_pq|J> c_J`` and return it.
+
+        ⚠ The returned array is the operator's own buffer, and it holds ``G`` after an
+        application — ``F`` and ``G`` share it (:func:`sigma_workspace_gb`). Anything that
+        needs ``F`` therefore gathers it afresh, which is what the RDM builder and the
+        perturbation always did by driving the gather kernel themselves; this is the same
+        gather with the entry checks in one place.
+        """
+        c = np.ascontiguousarray(c, dtype=np.complex128)
+        if c.shape != (self.ndet,):
+            raise ValueError("CI vector has shape {}, expected {}"
+                             .format(c.shape, (self.ndet,)))
+        kernels.resolve("sigma_gather_f", self.backend)(
+            c, *self.space.excitation_arrays(), self.n_spinor, self.block, self.f_buf)
+        return self.f_buf
 
     def matrix(self) -> np.ndarray:
         """The dense CI Hamiltonian, by applying to unit vectors (tests and tiny spaces).

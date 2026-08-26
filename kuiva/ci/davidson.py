@@ -439,14 +439,21 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
 
     cap = subspace_cap(n_roots, ndet, max_subspace)
     n_guess = min(cap, 2 * n_roots if n_guess is None else int(n_guess))
-    res.reserve("Davidson subspace ({} roots, {} determinants)".format(n_roots, ndet),
-                davidson_workspace_gb(ndet, cap),
-                note="{} expansion vectors and their images".format(cap),
-                advice=["reduce the number of states, or max_subspace (it is floored at "
-                        "2 * n_roots + {}, which is what separates a Kramers-degenerate "
-                        "cluster and may not be lowered further)".format(SUBSPACE_MARGIN)])
+    # ⚠ Reserved before the stacks exist (the refusal must cost nothing), then owned by them:
+    # this function runs once per CI solve — twice per CASSCF macro-iteration — and its
+    # stacks die on return, so a reservation with no release would grow the ledger by one
+    # subspace per solve and refuse a long optimization that fits at every instant
+    # (invisible so far only because every committed CASSCF is tiny here or dense-solved).
+    alloc = res.reserve("Davidson subspace ({} roots, {} determinants)".format(n_roots, ndet),
+                        davidson_workspace_gb(ndet, cap),
+                        note="{} expansion vectors and their images".format(cap),
+                        advice=["reduce the number of states, or max_subspace (it is floored "
+                                "at 2 * n_roots + {}, which is what separates a "
+                                "Kramers-degenerate cluster and may not be lowered further)"
+                                .format(SUBSPACE_MARGIN)])
 
     space = np.zeros((cap, ndet), dtype=np.complex128)
+    res.owned_by(space, alloc)
     space_conj = np.zeros((cap, ndet), dtype=np.complex128)
     images = np.zeros((cap, ndet), dtype=np.complex128)
     size = _initial_subspace(diagonal, n_roots, n_guess, guess, space, space_conj)
@@ -1005,14 +1012,17 @@ def davidson_kramers(apply_h: Callable[[np.ndarray], np.ndarray], kramers,
     # floor of the general path has to be compared against — hence 2 * n_pairs = n_states here.
     cap = subspace_cap(n_pairs, ndet // 2, max_subspace)
     n_guess = min(cap, 2 * n_pairs if n_guess is None else int(n_guess))
-    res.reserve("Kramers-restricted Davidson subspace ({} pairs, {} determinants)"
-                .format(n_pairs, ndet), davidson_workspace_gb(ndet, cap),
-                note="{} time-reversal-closed directions (spanning {} states) and their "
-                     "images".format(cap, 2 * cap),
-                advice=["reduce the number of states, or max_subspace (it is floored at "
-                        "2 * n_pairs + {})".format(SUBSPACE_MARGIN)])
+    # Reserved before the stacks exist, then owned by them — same per-solve lifetime as the
+    # general path above, and the same ledger leak without the release.
+    alloc = res.reserve("Kramers-restricted Davidson subspace ({} pairs, {} determinants)"
+                        .format(n_pairs, ndet), davidson_workspace_gb(ndet, cap),
+                        note="{} time-reversal-closed directions (spanning {} states) and "
+                             "their images".format(cap, 2 * cap),
+                        advice=["reduce the number of states, or max_subspace (it is floored "
+                                "at 2 * n_pairs + {})".format(SUBSPACE_MARGIN)])
 
     space = np.zeros((cap, ndet), dtype=np.complex128)
+    res.owned_by(space, alloc)
     space_conj = np.zeros((cap, ndet), dtype=np.complex128)
     images = np.zeros((cap, ndet), dtype=np.complex128)
     size = _initial_subspace_kramers(diagonal, n_pairs, n_guess, guess, space, space_conj,

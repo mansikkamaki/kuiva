@@ -408,6 +408,108 @@ def test_aux_blocking_does_not_change_the_result():
         assert np.max(np.abs(transform_3c(f, c, c, aux_blocksize=nb) - whole)) < ALG_TOL
 
 
+def test_coulomb_exchange_right_half_is_a_pure_cache():
+    """Passing the precomputed half transform must change nothing but the cost."""
+    from kuiva.integrals.transform import coulomb_exchange, half_transform
+    nao = 6
+    eri = synthetic_eri(nao, seed=11)
+    f = ThreeIndexAO.from_eri(eri, nao, tol=CD_TOL, report=False)
+    left = random_spinors(nao, 4, seed=12)
+    right = random_spinors(nao, 4, seed=13)
+    j_ref, k_ref = coulomb_exchange(f, left, orbitals_right=right)
+    j_c, k_c = coulomb_exchange(f, left, orbitals_right=right,
+                                right_half=half_transform(f, right))
+    scale = max(1.0, float(np.max(np.abs(k_ref))))
+    assert np.max(np.abs(j_c - j_ref)) < 1e-13 * scale
+    assert np.max(np.abs(k_c - k_ref)) < 1e-13 * scale
+    with pytest.raises(ValueError):                     # J needs the raw coefficients too
+        coulomb_exchange(f, left, right_half=half_transform(f, right))
+    with pytest.raises(ValueError):                     # a wrong-shape cache is refused
+        coulomb_exchange(f, left, orbitals_right=right,
+                         right_half=half_transform(f, right[:, :2]))
+
+
+def test_one_sided_jk_hermitized_equals_the_symmetrized_build():
+    """J and K are linear in the density and map D^dag to the Hermitian adjoint.
+
+    This identity is what lets the orbital Hessian build its transition densities
+    one-sided (A = X C^dag alone, Hermitized afterwards) at half the half-transform and
+    pair-contraction cost of the symmetrized [X | C], [C | X] build. It holds only over
+    real AO integrals, which every factorization here produces.
+    """
+    from kuiva.integrals.transform import coulomb_exchange
+    nao = 6
+    eri = synthetic_eri(nao, seed=14)
+    f = ThreeIndexAO.from_eri(eri, nao, tol=CD_TOL, report=False)
+    x = random_spinors(nao, 3, seed=15)
+    c = random_spinors(nao, 3, seed=16)
+    j2, k2 = coulomb_exchange(f, np.concatenate([x, c], axis=1),
+                              orbitals_right=np.concatenate([c, x], axis=1))
+    j1, k1 = coulomb_exchange(f, x, orbitals_right=c)
+    scale = max(1.0, float(np.max(np.abs(k2))))
+    assert np.max(np.abs((j1 + j1.conj().T) - j2)) < 1e-13 * scale
+    assert np.max(np.abs((k1 + k1.conj().T) - k2)) < 1e-13 * scale
+
+
+def test_diagonal_pair_blocks_match_brute_force():
+    """b_diag and the exchange sums against the brute-force spinor integrals:
+    ``(pp|qq) = sum_P b_diag[P,p] b_diag[P,q]`` and ``s2[p,j] = (p c_j | c_j p)``."""
+    from kuiva.integrals.transform import diagonal_pair_blocks
+    nao = 6
+    eri = synthetic_eri(nao, seed=19)
+    f = ThreeIndexAO.from_eri(eri, nao, tol=CD_TOL, report=False)
+    c = random_spinors(nao, 2 * nao, seed=20)
+    cols = np.array([1, 4, 7])
+    b_diag, s2 = diagonal_pair_blocks(f, c, cols)
+    ref = brute_force_spinor_eri(eri, c)
+    n = c.shape[1]
+    ppqq = b_diag.T @ b_diag
+    for p in range(n):
+        for q in range(n):
+            assert abs(ppqq[p, q] - np.real(ref[p, p, q, q])) < 1e-7
+    for p in range(n):
+        for j, q in enumerate(cols):
+            assert abs(s2[p, j] - np.real(ref[p, q, q, p])) < 1e-7
+
+
+def test_diagonal_pair_blocks_rows_and_half_are_pure_restructurings():
+    """``rows=`` restricts, ``half=`` reuses — neither may change a number."""
+    from kuiva.integrals.transform import diagonal_pair_blocks, half_transform
+    nao = 6
+    eri = synthetic_eri(nao, seed=21)
+    f = ThreeIndexAO.from_eri(eri, nao, tol=CD_TOL, report=False)
+    c = random_spinors(nao, 2 * nao, seed=22)
+    n = c.shape[1]
+    cols = np.array([0, 2, 5])
+    rows = np.array([3, 8, 9, 11])
+    b_ref, s2_ref = diagonal_pair_blocks(f, c, cols)
+    b_r, s2_r = diagonal_pair_blocks(f, c, cols, rows=rows)
+    assert np.max(np.abs(b_r - b_ref)) < 1e-12
+    assert np.max(np.abs(s2_r - s2_ref[rows])) < 1e-12
+    have = np.array([0, 1, 2, 4, 5, 6])                # covers cols
+    w = half_transform(f, np.ascontiguousarray(c[:, have]))
+    b_h, s2_h = diagonal_pair_blocks(f, c, cols, rows=rows, half=(have, w))
+    scale = max(1.0, float(np.max(np.abs(b_ref))))
+    assert np.max(np.abs(b_h - b_ref)) < 1e-12 * scale
+    assert np.max(np.abs(s2_h - s2_ref[rows])) < 1e-12 * scale
+    with pytest.raises(ValueError):                     # cols outside the cached columns
+        diagonal_pair_blocks(f, c, np.array([3]), half=(have, w))
+
+
+def test_half_transform_sizing_is_exact():
+    """Two-sided pin of the sizing function against a real result's nbytes — sizing
+    functions are exact and never pad, like every other one in the resource budget."""
+    from kuiva.integrals.transform import half_transform, half_transform_memory_gb
+    nao, k = 6, 4
+    eri = synthetic_eri(nao, seed=17)
+    f = ThreeIndexAO.from_eri(eri, nao, tol=CD_TOL, report=False)
+    w = half_transform(f, random_spinors(nao, k, seed=18))
+    nbytes = sum(a.nbytes for a in w)
+    assert all(a.dtype == np.complex128 for a in w)
+    got = half_transform_memory_gb(f.naux, nao, k) * 1024.0 ** 3
+    assert got == pytest.approx(nbytes, rel=0.0, abs=0.5)
+
+
 def test_real_and_complex_paths_agree():
     """The real fast path must be exactly the complex path, not merely close to it."""
     nao = 5
@@ -1062,3 +1164,136 @@ def test_f_shell_degeneracy_is_structural(tol):
         "physically meaningful accuracy at 0.01 cm^-1, and this is supposed "
         "to be structural rather than threshold-dependent."
         .format(tol, cholesky, cholesky * 219474.6313632))
+
+
+# --- Scratch residence of the factor rows -------------------------------------------------
+# The spill is a statement about memory, never about numbers: every test here asserts
+# bitwise equality against the in-core path, because the two run the same arithmetic on the
+# same rows and anything less than bitwise would mean they do not.
+
+
+@pytest.fixture
+def scratch_limits(monkeypatch, tmp_path):
+    """Global limits with a test-owned scratch directory.
+
+    ⚠ A spill in a test must never land in the site scratch, and must not depend on one
+    being configured — the scratch directory has no built-in default (the same rule as the
+    memory limit), so every spilling test states its own.
+    """
+    from kuiva.util import resources as res
+    monkeypatch.setattr(res.BUDGET, "_limits",
+                        res.ResourceLimits(memory_gb=8.0, source="test",
+                                           scratch_dir=str(tmp_path)))
+    return tmp_path
+
+
+def _random_factors(nao=14, naux=40, seed=3):
+    rng = np.random.default_rng(seed)
+    return ThreeIndexAO(l_packed=rng.standard_normal((naux, npair_of(nao))),
+                        nao=nao, origin="cholesky")
+
+
+def test_spilled_factors_unpack_bitwise_including_non_sequential_reads(scratch_limits):
+    """Sequential blocks are the optimized walk; a backwards jump (a second consumer
+    starting over) must be served correctly through the same reader, just without the
+    prefetch hit."""
+    keep = _random_factors()
+    spilled = ThreeIndexAO(l_packed=keep.l_packed.copy(), nao=keep.nao, origin="cholesky")
+    assert spilled.spill_to_scratch() is spilled and spilled.is_spilled
+    assert spilled.spill_to_scratch() is spilled           # idempotent
+    for sl in [slice(0, 13), slice(13, 26), slice(26, 40),  # the sequential walk
+               slice(5, 20), slice(0, 40), slice(39, 40)]:  # jumps and edges
+        np.testing.assert_array_equal(keep.unpack(sl), spilled.unpack(sl))
+    with pytest.raises(ValueError):
+        spilled.unpack(slice(0, 10, 2))                    # strided reads are refused
+
+
+def test_spilled_factors_transform_and_jk_bitwise(scratch_limits):
+    rng = np.random.default_rng(4)
+    keep = _random_factors()
+    spilled = ThreeIndexAO(l_packed=keep.l_packed.copy(), nao=keep.nao, origin="cholesky")
+    spilled.spill_to_scratch()
+    c = rng.standard_normal((2 * keep.nao, 6)) + 1j * rng.standard_normal((2 * keep.nao, 6))
+    c = np.ascontiguousarray(c)
+    np.testing.assert_array_equal(transform_3c(keep, c, c, aux_blocksize=7),
+                                  transform_3c(spilled, c, c, aux_blocksize=7))
+    from kuiva.integrals.transform import coulomb_exchange
+    occ = np.ascontiguousarray(c[:, :3])
+    j1, k1 = coulomb_exchange(keep, occ)
+    j2, k2 = coulomb_exchange(spilled, occ)
+    np.testing.assert_array_equal(j1, j2)
+    np.testing.assert_array_equal(k1, k2)
+
+
+def test_spill_releases_the_ram_reservation_and_deletes_its_file_with_the_object(
+        scratch_limits):
+    """The two lifetime halves of the design: the ledger stops carrying rows that are no
+    longer in RAM, and the scratch file cannot outlive the object that owns it."""
+    import gc
+    import os as _os
+    from kuiva.util import resources as res
+
+    base = res.BUDGET.resident_gb()
+    f = _random_factors()
+    assert res.BUDGET.resident_gb() > base                 # the in-core reservation
+    f.spill_to_scratch()
+    assert res.BUDGET.resident_gb() == pytest.approx(base)  # given back on spill
+    path = f._store.path
+    assert _os.path.exists(path)
+    del f
+    gc.collect()
+    assert not _os.path.exists(path)
+
+
+def test_spilled_metadata_and_stream_accounting(scratch_limits):
+    f = _random_factors()
+    naux, npair, gb = f.naux, f.npair, f.memory_gb
+    assert f.stream_row_bytes == 0.0
+    f.spill_to_scratch()
+    assert (f.naux, f.npair) == (naux, npair)
+    assert f.memory_gb == pytest.approx(gb)                # the data size, wherever it lives
+    assert f.stream_row_bytes == pytest.approx(2.0 * npair * 8.0)
+    assert f.l_packed is None
+
+
+def test_front_end_scratch_residence_is_recorded_and_numerically_inert(scratch_limits):
+    """The whole axis end to end: an explicit factors="scratch" run must carry the record,
+    hand back spilled factors, and change nothing numerical. ⚠ Bitwise identity of the spill
+    itself (write the rows, read them back) is asserted in the unit tests above; *across two
+    separate runs* the last bits belong to threaded-reduction nondeterminism, not to the
+    residence, so here the comparison is a tight tolerance on converged quantities."""
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    core = run_scalar_x2c(mol, fitting="cholesky-direct", screening="none")
+    spill = run_scalar_x2c(mol, fitting="cholesky-direct", screening="none",
+                           factors="scratch")
+    assert core.factor_residence == "in-core" and not core.factors.is_spilled
+    assert spill.factor_residence == "scratch" and spill.factors.is_spilled
+    assert spill.e_scf == pytest.approx(core.e_scf, abs=1e-9)
+    full = slice(0, core.factors.naux)
+    np.testing.assert_allclose(spill.factors.unpack(full), core.factors.unpack(full),
+                               rtol=0.0, atol=1e-12)
+    # And the stored route honours the same record downstream, where it decomposes.
+    # Compared against an in-core factorization of the *same* ingested data — the stored
+    # and direct routes are documented to differ in the last bits of the integrals
+    # themselves, so cross-route factor comparison would measure that, not the spill.
+    conv = run_scalar_x2c(mol, fitting="conventional", screening="none",
+                          factors="scratch")
+    obj = ThreeIndexAO.from_scalar_data(conv, CD_TOL, report=False)
+    assert obj.is_spilled
+    object.__setattr__(conv, "factor_residence", "in-core")
+    ref = ThreeIndexAO.from_scalar_data(conv, CD_TOL, report=False)
+    assert not ref.is_spilled
+    np.testing.assert_array_equal(obj.unpack(slice(0, obj.naux)),
+                                  ref.unpack(slice(0, ref.naux)))
+
+
+def test_an_explicit_scratch_request_without_a_scratch_directory_refuses_early(monkeypatch):
+    """⚠ The no-built-in-default rule, at the front end: factors="scratch" with no scratch
+    directory configured refuses before the SCF is paid for, and the refusal teaches the
+    knob. ("auto" never resolves to scratch in that state — tested with the plan.)"""
+    from kuiva.util import resources as res
+    monkeypatch.setattr(res.BUDGET, "_limits",
+                        res.ResourceLimits(memory_gb=8.0, source="test"))
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    with pytest.raises(res.ConfigurationError, match="scratch"):
+        run_scalar_x2c(mol, fitting="cholesky-direct", screening="none", factors="scratch")

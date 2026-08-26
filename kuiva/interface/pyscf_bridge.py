@@ -106,15 +106,16 @@ log = get_logger(__name__)
 def eri_memory_gb(nao: int) -> float:
     """Size [GB] of the conventional 8-fold-packed AO ERI array (exact sizing function).
 
-    ``npair*(npair+1)/2`` doubles with ``npair = nao(nao+1)/2``, i.e. ``O(nao^4/8)``: 0.6 GB
-    at nao = 200 and 10 GB at nao = 400. This is the single largest array the default
-    (Cholesky) route allocates, it is allocated by PySCF inside ``mol.intor``, and it is
+    ``npair*(npair+1)/2`` doubles with ``npair = nao(nao+1)/2``, i.e. ``O(nao^4/8)``: 1.5 GB
+    at nao = 200 and 24 GB at nao = 400. This is the single largest array the stored
+    (conventional) route allocates, it is allocated by PySCF inside ``mol.intor``, and it is
     knowable from the AO count alone — which makes it the earliest useful check in the whole
     program (estimate at the first point where an estimate is possible).
 
-    ⚠ Until an integral-direct Cholesky decomposition exists (``pivoted_cholesky`` already
-    takes a column callback so that it can be added without touching anything else), this
-    array bounds the system size of the default route.
+    This array is what bounds the stored route's system size, and it is the entire content
+    of the ``fitting="auto"`` route decision: ``"cholesky-direct"`` evaluates the integrals
+    as the decomposition asks for them and never forms it, at the same threshold and the
+    same error bound.
     """
     npair = nao * (nao + 1) // 2
     return res.array_gb((npair * (npair + 1) // 2,), np.float64)
@@ -1400,6 +1401,12 @@ class ScalarX2CData:
     #: call on that route; :meth:`kuiva.integrals.transform.ThreeIndexAO.from_scalar_data`
     #: hands these back unchanged and says so if it is asked for a different threshold.
     factors: Optional[object] = None
+    #: Where the factor rows live after the decomposition — ``"in-core"`` or ``"scratch"``,
+    #: the ``factors=`` axis of the front-end call, resolved once there (``"auto"`` against
+    #: the memory plan). Carried on the container because the stored and DF routes decompose
+    #: downstream, in :meth:`~kuiva.integrals.transform.ThreeIndexAO.from_scalar_data`,
+    #: which honours it — one statement, resolved once, wherever the factors come to exist.
+    factor_residence: str = "in-core"
     # spin-orbit coupling (None if ingestion was disabled)
     soc: Optional[SpinOrbitX2C] = None
     # reference type
@@ -1768,6 +1775,71 @@ def _auto_fit_route(nao: int, *, nelec: int, n_active: Optional[int] = None,
 CHOLESKY_VECTORS_PER_AO = CHOLESKY_VECTORS_PER_AO
 
 
+def _auto_factor_residence(nao: int, *, nelec: int, fit_route: str,
+                           shell_ao_max: Optional[int] = None,
+                           n_shells: Optional[int] = None,
+                           n_active: Optional[int] = None,
+                           n_active_elec: Optional[int] = None,
+                           n_states: Optional[int] = None,
+                           screening: bool = False) -> Tuple[str, str]:
+    """Resolve ``factors="auto"`` against the memory plan. Returns ``(residence, note)``.
+
+    In-core wherever the in-core plan fits the configured limit — streaming from disk is
+    pure cost when the RAM is there — and the scratch spill where it does not, because the
+    factor rows carried into every later phase are then what the CI workspace and the MO
+    blocks cannot fit beside. Same shape as :func:`_auto_fit_route`, resolved after it (the
+    residence question is asked of the route that will actually run), and the note is
+    non-empty only when the resolution changed something a user would see.
+
+    ⚠ The spill happens *after* the decomposition, so it lowers every later phase and not
+    the decomposition's own peak; a factorization too large to build in RAM at all is
+    refused by the pre-flight either way, and the refusal's advice says what would change
+    that. Scratch capacity is checked softly here — the hard check is
+    :func:`kuiva.util.resources.require_scratch` at the spill itself — so a scratch disk
+    known to be too small falls back to the in-core plan and its honest refusal, instead of
+    failing after the SCF has been paid for.
+    """
+    from ..integrals.transform import factor_memory_gb
+
+    budget = res.BUDGET
+    limits = budget.limits
+    limit = limits.memory_gb if limits is not None else float("inf")
+    if fit_route == "df":
+        # The DF factors are the container's own array and stay in memory either way
+        # (ThreeIndexAO.from_scalar_data declines the spill out loud), so resolving
+        # "scratch" here would make the plan promise a release that never happens.
+        return "in-core", ""
+    kw = dict(conventional=fit_route == "conventional", direct=fit_route == "direct",
+              shell_ao_max=shell_ao_max, n_shells=n_shells, n_active=n_active,
+              n_active_elec=n_active_elec, n_states=n_states, nelec=nelec,
+              screening=screening)
+    peak = res.plan_peak_gb(memory_plan(nao, **kw), budget=budget)
+    if peak <= limit:
+        return "in-core", ""
+    est_gb = factor_memory_gb(nao, int(CHOLESKY_VECTORS_PER_AO * nao))
+    directory = limits.resolved_scratch_dir() if limits is not None else None
+    if directory is None:
+        # "auto" never resolves to a residence that would refuse for want of configuration:
+        # the in-core plan stands, its honest refusal names the shortfall, and this warning
+        # names the knob that would have changed the outcome.
+        log.warning("the in-core plan (%.2f GB) exceeds the %.2f GB limit and spilling the "
+                    "three-index factors would help, but no scratch directory is configured "
+                    "(scratch_dir in the [scratch] section, or $KUIVA_SCRATCH); staying in "
+                    "core.", peak, limit)
+        return "in-core", ""
+    free = res.scratch_free_gb(directory)
+    if free is not None and est_gb > free:
+        log.warning("the in-core plan (%.2f GB) exceeds the %.2f GB limit and spilling the "
+                    "three-index factors would help, but the scratch filesystem has only "
+                    "%.2f GB free against the ~%.2f GB file; staying in core.",
+                    peak, limit, free, est_gb)
+        return "in-core", ""
+    spilled = res.plan_peak_gb(memory_plan(nao, factors_scratch=True, **kw), budget=budget)
+    return "scratch", ("chosen automatically: the in-core plan peaks at {:.2f} GB against "
+                       "the {:.2f} GB limit; spilled to scratch it plans {:.2f} GB"
+                       .format(peak, limit, spilled))
+
+
 def _nevpt2_block_split(n: int, n_occ: int, n_active: int) -> Tuple[int, int, int]:
     """``(inactive, active, virtual)`` spinor counts a memory plan must assume.
 
@@ -1793,7 +1865,8 @@ def memory_plan(nao: int, *, conventional: bool = True, direct: bool = False,
                 shell_ao_max: Optional[int] = None, n_shells: Optional[int] = None,
                 naux: Optional[int] = None,
                 nspinor: Optional[int] = None, n_active: Optional[int] = None,
-                nelec: Optional[int] = None,
+                n_active_elec: Optional[int] = None, n_states: Optional[int] = None,
+                nelec: Optional[int] = None, factors_scratch: bool = False,
                 nevpt2: bool = False, screening: bool = False) -> list:
     """Phase-by-phase memory estimate for a calculation on ``nao`` AO functions.
 
@@ -1808,6 +1881,18 @@ def memory_plan(nao: int, *, conventional: bool = True, direct: bool = False,
     (one four-component atomic solve per unique element). ``nelec`` is the electron count,
     which is what bounds the transformed three-index blocks (see below) and is known as soon
     as the molecule is built.
+
+    ``n_active_elec`` (with ``n_active``) adds the conventional-CI residency — the sigma
+    workspace ``F``/``G``, the excitation map, the kept CI vectors and the Davidson subspace
+    stacks — which is what actually binds a CASSCF once the space nears half filling (1.15 GB
+    at CAS(10, 20), 5.15 GB at 22 spinors): without it the plan promises a calculation the
+    first CI solve then refuses, after the SCF and the decomposition have been paid for.
+    ``n_states`` sizes the Davidson stacks and the kept vectors; one root is assumed
+    otherwise, stated in the plan. ⚠ A macro-iteration is a *cycle* (transform, CI solve,
+    orbital step) and the phase model is a line, so the CI residency is planned as its own
+    phase between the integrals and the orbital step: each phase's peak is then a real
+    moment of the iteration — solve-time and step-time — instead of the sum of the two,
+    which would be exactly the pessimism a hard limit cannot afford.
 
     ``conventional`` is whether the ``O(nao^4/8)`` AO integral array is materialized;
     ``direct`` is the integral-direct Cholesky route, which does not materialize it and holds
@@ -1825,9 +1910,10 @@ def memory_plan(nao: int, *, conventional: bool = True, direct: bool = False,
     hit it knows which block grew.
     """
     from ..amf.correction import correction_memory_gb
-    from ..integrals.transform import (factor_memory_gb, mo_block_memory_gb,
-                                       transform_buffer_gb)
-    from ..mcscf.orbopt import cas_integrals_memory_gb, hessian_response_memory_gb
+    from ..integrals.transform import (factor_memory_gb, half_transform_memory_gb,
+                                       mo_block_memory_gb, transform_buffer_gb)
+    from ..mcscf.orbopt import (cas_integrals_memory_gb, hessian_response_memory_gb,
+                                hessian_square_memory_gb)
 
     estimated_naux = naux is None
     naux = int(naux if naux is not None else CHOLESKY_VECTORS_PER_AO * nao)
@@ -1851,9 +1937,18 @@ def memory_plan(nao: int, *, conventional: bool = True, direct: bool = False,
         ints.allocations.append(res.PlannedAllocation(
             "conventional AO ERI array", eri_memory_gb(nao),
             note="nao = {}; grows as nao^4".format(nao)))
+    # ``factors_scratch`` moves the factor rows to a scratch file right after the
+    # decomposition (ThreeIndexAO.spill_to_scratch): the RAM peak still occurs *in this
+    # phase*, while the rows are being built, so the line becomes a transient here and is
+    # simply not carried into the later phases — which is the entire benefit. The stream
+    # buffers the spilled store holds instead are the consumers' block choice and are inside
+    # the min(want, transient) buffer lines those phases already carry.
     ints.allocations.append(res.PlannedAllocation(
         "three-index AO factors", factor_memory_gb(nao, naux),
-        note="naux {} {}".format("~" if estimated_naux else "=", naux)))
+        resident=not factors_scratch,
+        note="naux {} {}{}".format("~" if estimated_naux else "=", naux,
+                                   "; spilled to scratch after the decomposition"
+                                   if factors_scratch else "")))
     if direct:
         # ⚠ What replaces the array above, and the whole of what the direct route holds at
         # once: shell-pair batches of integrals. Transient — each is re-used across the
@@ -1922,13 +2017,15 @@ def memory_plan(nao: int, *, conventional: bool = True, direct: bool = False,
     ], advice=mo_advice))
 
     if n_active:
-        phases.append(res.PhaseEstimate(name="active-space integrals", allocations=[
+        cas_allocations = [
             res.PlannedAllocation("active four-index integrals",
                                   res.array_gb((n_active,) * 4),
                                   note="{} active spinors".format(n_active)),
             res.PlannedAllocation("2-RDM", res.rdm_gb(n_active, 2)),
-            # ⚠ The second-order step's peak, and it is three times the block above rather
-            # than a fraction of it. "auto" escalates to that step on the gradient
+        ]
+        hessian_allocations = [
+            # ⚠ The second-order step's peak, and it is three times the resident block
+            # rather than a fraction of it. "auto" escalates to that step on the gradient
             # trajectory, so this is planned whenever an active space is, not only when
             # second order was asked for by name.
             res.PlannedAllocation("second-order Hessian response blocks",
@@ -1936,9 +2033,85 @@ def memory_plan(nao: int, *, conventional: bool = True, direct: bool = False,
                                   resident=False,
                                   note="3 x B^P_pt, live together in one Hessian-vector "
                                        "product"),
-        ], advice=["reduce the active space",
-                   "mode=\"quasi-newton\" never forms the Hessian response blocks, at the "
-                   "cost of the robustness the second-order step exists for"]))
+            # The occupied-side half-transform cache the Hessian builds once per
+            # macro-iteration (kuiva.integrals.transform.half_transform). Capped by the
+            # transient budget because the Hessian itself skips the cache when it would
+            # exceed that allowance; n_occ + n_active bounds the cached columns
+            # (inactive + active) from what is known here.
+            res.PlannedAllocation("Hessian half-transform cache",
+                                  min(half_transform_memory_gb(naux, nao,
+                                                               n_occ + int(n_active)),
+                                      res.BUDGET.transient_gb()),
+                                  resident=False,
+                                  note="occupied-side W^P, built once per macro-iteration; "
+                                       "skipped when over the transient budget"),
+            # The fixed-factor route's MO square (kuiva.mcscf.orbopt.OrbitalHessian):
+            # the sanctioned, size-gated exception to the no-square rule. Capped by the
+            # transient budget because the Hessian itself falls back to the blocked AO
+            # route when the square would exceed that allowance, so this line can never
+            # refuse a calculation the fallback would have run.
+            res.PlannedAllocation("Hessian MO factor square (fixed-factor route)",
+                                  min(hessian_square_memory_gb(naux, n,
+                                                               n_occ + int(n_active)),
+                                      res.BUDGET.transient_gb()),
+                                  resident=False,
+                                  note="B^P_pq plus its occupied blocks, one macro-"
+                                       "iteration; skipped when over the transient "
+                                       "budget"),
+        ]
+        hessian_advice = ["reduce the active space",
+                          "mode=\"quasi-newton\" never forms the Hessian response blocks, "
+                          "at the cost of the robustness the second-order step exists for"]
+        if n_active_elec is None:
+            # No electron count for the space, so no determinant count and no CI residency:
+            # one phase, exactly as before the CI lines existed (absent input means the
+            # behaviour the plan had before — the advice says what stating it would add).
+            phases.append(res.PhaseEstimate(
+                name="active-space integrals",
+                allocations=cas_allocations + hessian_allocations,
+                advice=hessian_advice + [
+                    "state the active electron count (n_active_elec=): the plan then "
+                    "carries the CI residency too, which is what binds a CASSCF near "
+                    "half filling"]))
+        else:
+            from ..ci.davidson import davidson_workspace_gb, subspace_cap
+            from ..ci.sigma import sigma_workspace_gb
+            from ..ci.strings import cas_dimension, cas_vector_gb, excitation_map_gb
+            k = int(n_active_elec)
+            ndet = cas_dimension(int(n_active), k)
+            roots = max(1, int(n_states)) if n_states else 1
+            cap = subspace_cap(roots, ndet)
+            # The macro-iteration cycle, linearized (see the docstring): the CI residency
+            # is carried into the orbital-step phase, whose transients then sit on top of
+            # it — which is the true peak of a Hessian-vector product at held CI buffers —
+            # while the Davidson stacks, released at the end of every solve, are not.
+            phases.append(res.PhaseEstimate(name="active-space integrals",
+                                            allocations=cas_allocations,
+                                            advice=["reduce the active space"]))
+            phases.append(res.PhaseEstimate(name="CI solves", allocations=[
+                res.PlannedAllocation(
+                    "sigma workspace F and G", sigma_workspace_gb(int(n_active), k),
+                    note="CAS({}, {}): C({}, {}) = {} determinants".format(
+                        k, n_active, n_active, k, ndet)),
+                res.PlannedAllocation("excitation map",
+                                      excitation_map_gb(int(n_active), k)),
+                res.PlannedAllocation(
+                    "CI vectors", cas_vector_gb(int(n_active), k, roots),
+                    note="{} root{}{}".format(roots, "" if roots == 1 else "s",
+                                              "" if n_states else " (no n_states given)")),
+                res.PlannedAllocation(
+                    "Davidson subspace stacks", davidson_workspace_gb(ndet, cap),
+                    resident=False,
+                    note="subspace cap {}; live during a solve, released before the "
+                         "orbital step".format(cap)),
+            ], advice=[
+                "the sigma workspace is the conventional-CI ceiling and no symmetry mode "
+                "moves it: beyond ~20 half-filled spinors the answer is the DMRG solver, "
+                "not a bigger run of this one",
+                "reduce n_states: the Davidson stacks scale with the subspace cap"]))
+            phases.append(res.PhaseEstimate(name="orbital steps",
+                                            allocations=hessian_allocations,
+                                            advice=hessian_advice))
     if nevpt2 and n_active:
         n_i, n_a, n_v = _nevpt2_block_split(n, n_occ, int(n_active))
         phases.append(res.PhaseEstimate(name="SC-NEVPT2", allocations=[
@@ -3270,6 +3443,8 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                    second_order: bool = False, stability: Optional[str] = None,
                    guess_from=None, allow_unconverged_scf: bool = False,
                    memory_gb: Optional[float] = None, n_active: Optional[int] = None,
+                   n_active_elec: Optional[int] = None, n_states: Optional[int] = None,
+                   factors: Optional[str] = None,
                    cholesky_tol: float = DEFAULT_CHOLESKY_TOL, orbit_pivots: bool = True,
                    one_centre: bool = True,
                    gauge_origin=None, property_picture_change: bool = False,
@@ -3444,6 +3619,24 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         It adds the multireference phases, and it makes the three-index MO block exact rather
         than bounded by the occupied space, so it is worth passing whenever the active space
         is narrower than the occupied one, which is the usual case.
+    n_active_elec, n_states : int, optional
+        The active electron count and the state count, if they too are already known — the
+        same pre-flight sharpening as ``n_active``, one step further: with the electron
+        count the plan carries the conventional-CI residency (the sigma workspace that sets
+        the CI ceiling, the excitation map, the Davidson stacks), so a CAS(11, 22)-class
+        request is refused *here*, before the SCF and the decomposition are paid for, rather
+        than at its first CI solve. Planning only, exactly like ``n_active``: nothing
+        downstream reads them, and the CASSCF still states its own space.
+    factors : str, optional
+        Where the three-index factor rows live after the decomposition: ``"in-core"`` (RAM,
+        the historical behaviour), ``"scratch"`` (spilled to a scratch file and streamed in
+        sequential auxiliary blocks — :meth:`kuiva.integrals.transform.ThreeIndexAO.
+        spill_to_scratch` holds the IO design), or ``"auto"`` (the default): in-core
+        wherever that plan fits the memory limit, spilled where it does not, stated with
+        its reason on the output's residence line. ⚠ The spill frees the rows *after* the
+        decomposition builds them, so it lowers every later phase and not the
+        decomposition's own peak. A statement about this calculation's memory, never about
+        its numbers: both residences produce bitwise-identical integrals.
     gauge_origin : optional
         Gauge origin for the orbital angular momentum of the property dump: ``"mass"``
         (the default centre of mass), ``"charge"``, ``"origin"``, or three coordinates in
@@ -3497,13 +3690,39 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     res.ensure_configured(memory_gb)
     fit_note = ""
     if fit_route == "auto":
+        # ⚠ Deliberately without the CI residency (n_active_elec): the route decision is
+        # stored-vs-direct on the front-end arrays, and the CI phase is identical on both
+        # routes — a plan the CI pushes over the limit would otherwise select the direct
+        # route for a refusal the route cannot avert. The pre-flight below carries it.
         fit_route, fit_note = _auto_fit_route(
             mol.nao, nelec=mol.nelectron, n_active=n_active,
             screening=with_soc and chosen.screening != "none")
+    factor_residence = "auto" if factors is None else str(factors)
+    if factor_residence not in ("auto", "in-core", "scratch"):
+        raise ValueError("factors= must be \"auto\", \"in-core\" or \"scratch\", got {!r}"
+                         .format(factors))
+    residence_note = ""
+    if factor_residence == "auto":
+        factor_residence, residence_note = _auto_factor_residence(
+            mol.nao, nelec=mol.nelectron, fit_route=fit_route,
+            shell_ao_max=_shell_ao_max(mol), n_shells=int(mol.nbas),
+            n_active=n_active, n_active_elec=n_active_elec, n_states=n_states,
+            screening=with_soc and chosen.screening != "none")
+    elif factor_residence == "scratch":
+        # An explicit request is checked *here*, before the SCF is paid for: this refuses
+        # both a missing scratch configuration (no built-in scratch directory, same rule as
+        # the memory limit) and a scratch disk the estimated file cannot fit. The spill
+        # itself re-checks the free space, which may have changed by then.
+        from ..integrals.transform import factor_memory_gb
+        res.require_scratch("three-index factor spill",
+                            factor_memory_gb(mol.nao,
+                                             int(CHOLESKY_VECTORS_PER_AO * mol.nao)))
     res.preflight(memory_plan(mol.nao, conventional=fit_route == "conventional",
                               direct=fit_route == "direct",
                               shell_ao_max=_shell_ao_max(mol), n_shells=int(mol.nbas),
-                              n_active=n_active, nelec=mol.nelectron,
+                              n_active=n_active, n_active_elec=n_active_elec,
+                              n_states=n_states, nelec=mol.nelectron,
+                              factors_scratch=factor_residence == "scratch",
                               screening=with_soc and chosen.screening != "none"))
     if fit_route == "conventional":
         _reserve_eri_memory(mol.nao)
@@ -3630,6 +3849,12 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     if fit_route == "direct":
         factors = _direct_cholesky(mol, tol=cholesky_tol, orbit_pivots=orbit_pivots,
                                    one_centre=one_centre)
+        # Spilled here, the moment the rows exist: everything after this point runs with
+        # the factor RAM already given back. The stored and DF routes build their factors
+        # downstream (ThreeIndexAO.from_scalar_data), which honours the same resolved
+        # residence off the container.
+        if factor_residence == "scratch":
+            factors.spill_to_scratch()
 
     # The mean field takes the SAME resolved per-label reference states the charges do —
     # one statement per atom, everywhere — so the raw user spec never reaches it twice.
@@ -3655,6 +3880,11 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         ("electrons (alpha, beta)", "{}, {}".format(*mol.nelec)),
         ("two-electron route", fit_route + (" [{}]".format(aux) if aux else ""), "",
          fit_note),
+        # Only the non-default residence announces itself — the same convention as the
+        # kernel backend's banner line: an unmarked output is an in-core one. The committed
+        # reference outputs are then untouched by the axis existing.
+        *((("three-index factor residence", "scratch", "", residence_note),)
+          if factor_residence == "scratch" else ()),
         ("gauge origin (property operators)", "({:.4f}, {:.4f}, {:.4f}) bohr".format(
             *np.asarray(props.gauge_origin).ravel()), "", props.origin_label),
         ("nuclear repulsion", float(mol.energy_nuc()), "Eh", "", out.E_FMT),
@@ -3747,6 +3977,7 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         mo_energy=np.ascontiguousarray(mf.mo_energy),
         mo_occ=np.ascontiguousarray(mf.mo_occ),
         fit_route=fit_route, eri=eri, df_cderi=df_cderi, factors=factors,
+        factor_residence=factor_residence,
         aux_name=aux if isinstance(aux, str) else ("custom" if aux is not None else None),
         soc=soc, reference=ref_name, unrestricted=unrestricted, s2_deviation=s2_dev,
         scf_stable=stable,

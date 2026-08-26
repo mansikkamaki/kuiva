@@ -389,6 +389,84 @@ def test_the_second_order_transient_matches_what_a_hessian_product_holds():
     assert hess.gb == pytest.approx(hessian_response_memory_gb(naux_planned, 200, n_act))
 
 
+# --- Lifetime-owned reservations ----------------------------------------------------------
+
+
+def test_reserve_owned_releases_when_the_owner_dies(budget):
+    import gc
+
+    owner = np.zeros(4)
+    res.reserve_owned(owner, "per-iteration block", 0.4, budget=budget)
+    assert budget.resident_gb() == pytest.approx(0.4)
+    del owner
+    gc.collect()
+    assert budget.resident_gb() == 0.0
+
+
+def test_reserve_owned_still_refuses_before_anything_is_allocated(budget):
+    with pytest.raises(res.MemoryLimitError):
+        res.reserve_owned(np.zeros(4), "too big", 2.0, budget=budget)   # 1 GB limit
+    assert budget.resident_gb() == 0.0
+
+
+def test_owned_by_is_the_refuse_before_allocate_order(budget):
+    """Reserve first — the refusal costs nothing while the array does not exist — then hand
+    the reservation to the array that carries it."""
+    import gc
+
+    alloc = budget.reserve("stacks", 0.4)
+    arr = np.zeros(4)
+    res.owned_by(arr, alloc, budget=budget)
+    assert budget.resident_gb() == pytest.approx(0.4)
+    del arr
+    gc.collect()
+    assert budget.resident_gb() == 0.0
+
+
+def test_cas_integrals_block_lives_on_the_ledger_exactly_as_long_as_the_object():
+    """⚠ Two regressions at once. ``b_act`` used to pass through a transient check only, so
+    the largest array the optimizer holds was invisible to every later refusal; and a plain
+    reservation instead would grow the ledger by one block per macro-iteration, because
+    ``CASIntegrals.build`` runs inside the driver loops (incumbent and trial overlap at a
+    trial step, then one of them is dropped). The reservation is therefore owned by the
+    array: on the ledger while it is live, gone when it is not.
+    """
+    import gc
+    from kuiva.mcscf.orbopt import cas_integrals_memory_gb
+
+    res.ensure_configured()      # the committed defaults.conf; conftest clears reservations
+    base = res.BUDGET.resident_gb()
+    factors, ints, coeff, spaces = _cas_setup()
+    factors_gb = tf.factor_memory_gb(factors.nao, factors.naux)
+    expect = cas_integrals_memory_gb(factors.naux, ints.n_orb, spaces.n_active)
+    assert res.BUDGET.resident_gb() == pytest.approx(base + factors_gb + expect)
+    del ints
+    gc.collect()
+    assert res.BUDGET.resident_gb() == pytest.approx(base + factors_gb)
+
+
+def test_davidson_reservation_dies_with_its_solve():
+    """⚠ One reservation per CI solve with no release grows the ledger by a subspace per
+    solve — two per macro-iteration — and refuses a long optimization that fits at every
+    instant. Invisible so far only because every committed CASSCF is tiny here or takes the
+    dense route, which is exactly how a leak survives a passing suite."""
+    import gc
+    from kuiva.ci.davidson import DENSE_SOLVE_MAX_DET, davidson
+
+    res.ensure_configured()
+    ndet = DENSE_SOLVE_MAX_DET + 50          # the iterative path, which reserves
+    rng = np.random.default_rng(7)
+    h = rng.standard_normal((ndet, ndet)) + 1j * rng.standard_normal((ndet, ndet))
+    h = 0.02 * (h + h.conj().T) + np.diag(np.linspace(0.0, 5.0, ndet))
+    diag = np.real(np.diag(h)).copy()
+    base = res.BUDGET.resident_gb()
+    for _ in range(3):
+        result = davidson(lambda v: h @ v, diag, 2)
+        del result
+    gc.collect()
+    assert res.BUDGET.resident_gb() == pytest.approx(base)
+
+
 def test_direct_batch_sizing_matches_the_array_the_evaluator_holds():
     """The integral-direct route's working set, against a real shell-pair batch.
 
@@ -635,6 +713,75 @@ def test_the_plan_falls_back_on_the_occupied_block_when_no_active_space_is_given
     assert "occupied" in block.note
 
 
+def test_the_plan_carries_the_ci_residency_when_the_space_is_fully_stated():
+    """With the active electron count the plan knows the determinant count, and with it the
+    sigma workspace that actually binds a CASSCF near half filling — so the refusal happens
+    at the pre-flight, before the SCF and the decomposition are paid for, rather than at the
+    first CI solve.
+
+    ⚠ The macro-iteration is a cycle and the phase model is a line: the CI residency is its
+    own phase between the integrals and the orbital step, so each phase peak is a real
+    moment (solve-time, step-time) instead of the sum of the two — summing them is exactly
+    the pessimism that refuses calculations that would have run.
+    """
+    from kuiva.ci.davidson import davidson_workspace_gb, subspace_cap
+    from kuiva.ci.sigma import sigma_workspace_gb
+    from kuiva.ci.strings import cas_dimension, excitation_map_gb
+
+    nao, n_act, k, roots, nelec = 100, 12, 6, 4, 60
+    plan = br.memory_plan(nao=nao, n_active=n_act, n_active_elec=k, n_states=roots,
+                          nelec=nelec)
+    names = [p.name for p in plan]
+    assert (names.index("active-space integrals") < names.index("CI solves")
+            < names.index("orbital steps"))
+
+    ci = [p for p in plan if p.name == "CI solves"][0]
+    sigma = [a for a in ci.allocations if "sigma workspace" in a.label][0]
+    assert sigma.resident
+    assert sigma.gb == pytest.approx(sigma_workspace_gb(n_act, k))
+    ndet = cas_dimension(n_act, k)
+    exc = [a for a in ci.allocations if "excitation map" in a.label][0]
+    assert exc.gb == pytest.approx(excitation_map_gb(n_act, k))
+    dav = [a for a in ci.allocations if "Davidson" in a.label][0]
+    assert not dav.resident        # released at the end of every solve, so not carried
+    assert dav.gb == pytest.approx(davidson_workspace_gb(ndet, subspace_cap(roots, ndet)))
+
+    # The Hessian transients moved with the orbital step and sit on top of the carried CI
+    # residency there — the true peak of a Hessian-vector product at held CI buffers.
+    orbital = [p for p in plan if p.name == "orbital steps"][0]
+    assert any("Hessian" in a.label for a in orbital.allocations)
+    cas = [p for p in plan if p.name == "active-space integrals"][0]
+    assert not any("Hessian" in a.label for a in cas.allocations + ci.allocations)
+
+
+def test_the_plan_without_an_electron_count_is_what_it_was():
+    """Absent input means the behaviour the plan had before the CI lines existed: one
+    active-space phase, Hessian transients included, and no CI phase to guess at."""
+    plan = br.memory_plan(nao=100, n_active=12, nelec=60)
+    assert not any(p.name in ("CI solves", "orbital steps") for p in plan)
+    phase = [p for p in plan if p.name == "active-space integrals"][0]
+    assert any("Hessian" in a.label for a in phase.allocations)
+    # And the advice says what stating the electron count would add.
+    assert any("n_active_elec" in a for a in phase.advice)
+
+
+def test_the_preflight_draws_the_half_filled_22_spinor_boundary():
+    """The pre-flight refusal this exists for, on both sides of the boundary the shared
+    F/G buffer moved: at 8 GB a CAS(11, 22) sigma workspace (5.15 GB) plus a few-root
+    Davidson now *fits*, while a real 10-root state average is refused — before anything has
+    been computed — and a half-filled 24-spinor space (23.3 GB) is refused at any root
+    count."""
+    b = res.MemoryBudget(res.ResourceLimits(memory_gb=8.0, source="test"))
+    few = br.memory_plan(nao=100, n_active=22, n_active_elec=11, n_states=2, nelec=60)
+    assert res.plan_peak_gb(few, budget=b) <= 8.0
+    many = br.memory_plan(nao=100, n_active=22, n_active_elec=11, n_states=10, nelec=60)
+    with pytest.raises(res.MemoryLimitError):
+        res.preflight(many, budget=b)
+    beyond = br.memory_plan(nao=100, n_active=24, n_active_elec=12, n_states=2, nelec=60)
+    with pytest.raises(res.MemoryLimitError):
+        res.preflight(beyond, budget=b)
+
+
 def test_the_planned_nevpt2_blocks_bound_every_split_they_could_turn_out_to_be():
     """The inactive/virtual split is the one thing the pre-flight cannot know.
 
@@ -677,10 +824,27 @@ def test_scratch_limit_refuses_and_reports_both_bounds(tmp_path, monkeypatch):
     assert "checkpoint less often" in message
 
 
-def test_scratch_defaults_to_tmpdir(monkeypatch, tmp_path):
-    monkeypatch.setenv("TMPDIR", str(tmp_path))
+def test_scratch_has_no_fallback_and_refuses_unconfigured(monkeypatch, tmp_path):
+    """⚠ Same rule as the memory limit (user decision, 2026-08-26): no built-in scratch
+    location — the old $TMPDIR-else-cwd fallback silently chose an unvetted filesystem (a
+    RAM-backed /tmp spends the memory a spill exists to save). Any scratch *use* refuses
+    until scratch_dir or $KUIVA_SCRATCH is set; the refusal teaches the fix."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))            # must NOT count as configured
     lims = res.ResourceLimits(memory_gb=1.0, source="test")
-    assert lims.resolved_scratch_dir() == tmp_path.resolve()
+    assert lims.resolved_scratch_dir() is None
+    b = res.MemoryBudget(lims)
+    with pytest.raises(res.ConfigurationError) as excinfo:
+        res.require_scratch("factor spill", 0.01, budget=b)
+    message = str(excinfo.value)
+    assert "scratch_dir" in message and res.ENV_SCRATCH_DIR in message
+
+
+def test_a_configured_scratch_directory_is_created_on_first_use(tmp_path):
+    target = tmp_path / "deeper" / "scratch"
+    b = res.MemoryBudget(res.ResourceLimits(memory_gb=1.0, source="test",
+                                            scratch_dir=str(target)))
+    assert res.require_scratch("small file", 0.001, budget=b) == target
+    assert target.is_dir()
 
 
 def test_free_space_bounds_scratch_even_without_a_limit(tmp_path, monkeypatch):
@@ -720,6 +884,72 @@ def test_summary_is_quiet_when_the_plan_matches_reality(kuiva_caplog, monkeypatc
     assert not [r for r in kuiva_caplog.records if r.levelname == "WARNING"]
 
 
+def test_preflight_registers_the_exit_drift_check_only_for_real_runs(monkeypatch):
+    """The drift warnings run at process exit once a pre-flight has run — an estimate nobody
+    checks is decoration, and most runs never call summary(). But not under a test runner,
+    whose process peaks over hundreds of unrelated tests, and not for a private budget,
+    which says nothing about the process."""
+    import atexit
+    import sys as _sys
+
+    plan = [res.PhaseEstimate("a", [res.PlannedAllocation("x", 0.01)])]
+    monkeypatch.setattr(res, "_EXIT_CHECK_REGISTERED", False)
+    # Under pytest (this process): never registered, however many pre-flights run.
+    res.preflight(plan)
+    assert not res._EXIT_CHECK_REGISTERED
+    monkeypatch.delitem(_sys.modules, "pytest")
+    try:
+        res.preflight(plan, budget=res.MemoryBudget())        # private budget: still no
+        assert not res._EXIT_CHECK_REGISTERED
+        res.preflight(plan)                                   # a real run's global ledger
+        assert res._EXIT_CHECK_REGISTERED
+    finally:
+        atexit.unregister(res.drift_check)
+
+
 def test_peak_rss_is_readable_here():
     """If this ever returns None on Linux the honesty check above is silently disabled."""
     assert res.peak_rss_gb() is None or res.peak_rss_gb() > 0.0
+
+
+# --- Factor residence (scratch spill) -----------------------------------------------------
+
+
+def test_the_plan_stops_carrying_spilled_factors():
+    """factors_scratch turns the factor line into a decomposition-time transient: the RAM
+    peak still happens in the two-electron phase, while the rows are being built, and is
+    simply not carried into the phases the spill exists to relieve."""
+    core = [p for p in br.memory_plan(nao=100, nelec=60)
+            if p.name == "two-electron integrals"][0]
+    spilled = [p for p in br.memory_plan(nao=100, nelec=60, factors_scratch=True)
+               if p.name == "two-electron integrals"][0]
+    line = [a for a in core.allocations if "three-index AO factors" in a.label][0]
+    sline = [a for a in spilled.allocations if "three-index AO factors" in a.label][0]
+    assert line.resident and not sline.resident
+    assert sline.gb == pytest.approx(line.gb)              # same array, same phase peak
+    assert "scratch" in sline.note
+
+
+def test_auto_factor_residence_is_resolved_by_the_plan(monkeypatch, tmp_path):
+    naux = int(br.CHOLESKY_VECTORS_PER_AO * 100)
+    factors_gb = tf.factor_memory_gb(100, naux)
+    # A limit the in-core plan clearly fits: stay in core, no note.
+    monkeypatch.setattr(res.BUDGET, "_limits",
+                        res.ResourceLimits(memory_gb=1000.0, source="test",
+                                           scratch_dir=str(tmp_path)))
+    assert br._auto_factor_residence(100, nelec=60, fit_route="direct") == ("in-core", "")
+    # A limit the factor rows themselves break: spill, and say why.
+    monkeypatch.setattr(res.BUDGET, "_limits",
+                        res.ResourceLimits(memory_gb=1.2 * factors_gb, source="test",
+                                           scratch_dir=str(tmp_path)))
+    residence, note = br._auto_factor_residence(100, nelec=60, fit_route="direct")
+    assert residence == "scratch" and "chosen automatically" in note
+    # Density fitting can never spill (the rows are the container's own array), so auto
+    # must not promise a release that will not happen.
+    assert br._auto_factor_residence(100, nelec=60, fit_route="df") == ("in-core", "")
+    # ⚠ And with no scratch directory configured, "auto" stays in core rather than resolve
+    # to a residence that would refuse for want of configuration; the explicit request is
+    # the one that refuses (require_scratch, tested with the front end).
+    monkeypatch.setattr(res.BUDGET, "_limits",
+                        res.ResourceLimits(memory_gb=1.2 * factors_gb, source="test"))
+    assert br._auto_factor_residence(100, nelec=60, fit_route="direct") == ("in-core", "")

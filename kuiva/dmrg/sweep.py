@@ -390,28 +390,51 @@ class EnvironmentCache(object):
     to take, and the only sanctioned way to reuse environments across a topology change.
     """
 
-    def __init__(self, ttno: TTNO, state: TTNState):
+    def __init__(self, ttno: TTNO, state: TTNState, pager=None,
+                 resident_cap_gb: Optional[float] = None):
         self.ttno = ttno
         self.state = state
         self._cache: Dict[tuple, BlockTensor] = {}
         self._held: Dict[tuple, object] = {}
+        #: Scratch backend for cold environments (kuiva.dmrg.paging.EnvironmentPager), or
+        #: ``None`` for the historical always-resident behaviour. With a pager, an
+        #: environment whose reservation cannot fit is paged out coldest-first instead of
+        #: refusing — and ``resident_cap_gb`` additionally bounds the resident set below
+        #: the hard limit, which is what keeps headroom for the two-site solve transients.
+        self._pager = pager
+        self._resident_cap_gb = resident_cap_gb
+        self._recency: Dict[tuple, None] = {}      # insertion-ordered; oldest first
 
     def _key(self, u: int, v: int) -> tuple:
         return (u, v)
 
+    def _touch(self, key: tuple) -> None:
+        self._recency.pop(key, None)
+        self._recency[key] = None
+
     def get(self, u: int, v: int) -> BlockTensor:
         key = self._key(u, v)
         env = self._cache.get(key)
+        if env is None and self._pager is not None and self._pager.has(key):
+            env = self._pager.load(key)
+            self._admit(key, u, v, env, note="paged back in")
         if env is None:
             env = self._build(u, v)
-            self._cache[key] = env
+            self._admit(key, u, v, env)
+        self._touch(key)
         return env
 
     def refresh(self, u: int, v: int) -> None:
         """Rebuild ``env(u -> v)`` after the tensor at ``u`` changed (center crossed)."""
         key = self._key(u, v)
         res.BUDGET.release(self._held.pop(key, None))
-        self._cache[key] = self._build(u, v)
+        self._cache.pop(key, None)
+        self._recency.pop(key, None)
+        if self._pager is not None:
+            self._pager.discard(key)               # a paged copy is equally stale
+        env = self._build(u, v)
+        self._admit(key, u, v, env)
+        self._touch(key)
 
     def release_all(self) -> None:
         """Drop every entry and give back its memory reservation.
@@ -424,6 +447,73 @@ class EnvironmentCache(object):
             res.BUDGET.release(held)
         self._held.clear()
         self._cache.clear()
+        self._recency.clear()
+        if self._pager is not None:
+            self._pager.close()
+
+    # -- admission and eviction ------------------------------------------------------------
+
+    def _admit(self, key: tuple, u: int, v: int, env: BlockTensor, note: str = "") -> None:
+        """Put ``env`` on the ledger and in the resident set, paging others out to fit.
+
+        ⚠ Correctness never depends on eviction timing: a consumer that already holds a
+        reference (a local problem pinning its window, a build mid-contraction) keeps the
+        object alive through that reference; eviction only writes the payload to scratch and
+        drops the cache's own reference, so the next ``get`` pages it back in.
+        """
+        gb = env.nbytes / 1024.0 ** 3
+        label = "DMRG environment ({} -> {})".format(u, v)
+        note = note or "subtree of {} nodes".format(
+            len(self.state.graph.subtree_nodes(u, v)))
+        advice = ["reduce max_bond: an environment scales as D^2 * D_op"]
+        try:
+            held = res.reserve(label, gb, note=note, advice=advice)
+        except res.MemoryLimitError:
+            if self._pager is None or not self._evict_until(skip=key, need_gb=gb):
+                raise
+            held = res.reserve(label, gb, note=note, advice=advice)
+        self._held[key] = held
+        self._cache[key] = env
+        if self._resident_cap_gb is not None:
+            self._evict_over_cap(skip=key)
+
+    def _resident_env_gb(self) -> float:
+        return sum(a.gb for a in self._held.values())
+
+    def _evict_over_cap(self, skip: tuple) -> None:
+        while self._resident_env_gb() > self._resident_cap_gb:
+            if not self._evict_one(skip):
+                break
+
+    def _evict_until(self, skip: tuple, need_gb: float) -> bool:
+        """Evict coldest-first until ``need_gb`` fits the budget; False if nothing left.
+
+        A pager failure here — no scratch directory configured, or no space — must not
+        replace the refusal the caller was about to raise: paging is an escape hatch, and
+        an escape hatch that fails reverts to the honest refusal, with the knob named.
+        """
+        while res.BUDGET.available_gb() < need_gb:
+            try:
+                if not self._evict_one(skip):
+                    return False
+            except (res.ConfigurationError, res.ScratchLimitError) as exc:
+                log.warning("the environment cache would page to scratch here, but cannot "
+                            "(%s); the memory refusal below stands.",
+                            type(exc).__name__)
+                return False
+        return True
+
+    def _evict_one(self, skip: tuple) -> bool:
+        """Page out the least recently used resident environment. False if none qualify."""
+        assert self._pager is not None
+        for key in self._recency:
+            if key != skip and key in self._cache:
+                env = self._cache.pop(key)
+                self._pager.store(key, env)
+                res.BUDGET.release(self._held.pop(key, None))
+                self._recency.pop(key, None)
+                return True
+        return False
 
     def _build(self, u: int, v: int) -> BlockTensor:
         graph = self.state.graph
@@ -443,12 +533,7 @@ class EnvironmentCache(object):
         c = _Lab(a.conj(), [("cb", u, x) for x in nbrs] + [("cp",)])
         t = t.dot(c, [(("bra", x), ("cb", u, x)) for x in nbrs if x != v]
                   + [(("po",), ("cp",))])
-        env = t.to([("cb", u, v), ("op_out",), ("b", u, v)])
-        self._held[self._key(u, v)] = res.reserve(
-            "DMRG environment ({} -> {})".format(u, v), env.nbytes / 1024.0 ** 3,
-            note="subtree of {} nodes".format(len(graph.subtree_nodes(u, v))),
-            advice=["reduce max_bond: an environment scales as D^2 * D_op"])
-        return env
+        return t.to([("cb", u, v), ("op_out",), ("b", u, v)])
 
 
 def _w_lab(ttno: TTNO, u: int, v: Optional[int]) -> _Lab:
@@ -678,6 +763,8 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
               max_bond: Optional[int] = None, weights: Optional[Sequence[float]] = None,
               n_elec: Optional[int] = None, boundary_check: int = 4,
               davidson_tol: float = 1e-8, on_split: str = "raise",
+              page_environments: bool = True,
+              environment_resident_gb: Optional[float] = None,
               report: bool = True) -> SweepResult:
     """State-averaged two-site DMRG to energy stationarity (module docstring).
 
@@ -686,6 +773,17 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
     residual norms. ``weights`` are the *requested* averaging weights — they are
     re-equalized inside degenerate blocks at every update, and the equalized
     weights are what both the truncation and the reported SA energy use.
+
+    ``page_environments`` (default on) lets the environment cache page its coldest entries
+    to scratch **when a reservation would otherwise refuse** — a two-site window touches
+    ``O(degree)`` of the ``2(n-1)`` cached environments, so the cold tail is exactly what a
+    memory refusal does not need resident. Strictly an escape hatch: a solve whose
+    environments fit never touches scratch, a solve that pages produces bit-identical
+    energies (the paged tensor is the written tensor), and a machine with no scratch
+    directory configured gets the same refusal it always got, with the knob named.
+    ``environment_resident_gb`` additionally caps the resident environment set below the
+    hard limit — which is what keeps headroom for the two-site solve's own transients on a
+    machine where the environments *barely* fit.
 
     ``report=False`` moves the sweep table to DEBUG — for a solver called once per
     CASSCF macro-iteration, whose driver already owns the INFO table (INFO is the
@@ -699,7 +797,12 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
     if requested.size != n_roots:
         raise ValueError("{} weights for {} roots".format(requested.size, n_roots))
 
-    cache = EnvironmentCache(ttno, state)
+    pager = None
+    if page_environments or environment_resident_gb is not None:
+        from .paging import EnvironmentPager
+        pager = EnvironmentPager()
+    cache = EnvironmentCache(ttno, state, pager=pager,
+                             resident_cap_gb=environment_resident_gb)
     table = out.Table(log, [out.col_iter("sweep"), out.col_energy("E_SA [Eh]"),
                             out.col_delta(), out.col_sci("w_disc"),
                             out.col_count("max D", 6), out.col_time()],
