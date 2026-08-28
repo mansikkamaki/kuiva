@@ -162,6 +162,14 @@ class ScalarSCF(_Stage):
     ``ScalarSCF`` (projecting its orbitals if the basis differs). ⚠ An SCF that does not
     converge **refuses**; ``allow_unconverged_scf=True`` continues on it deliberately.
 
+    ⚠ **For antiferromagnetically coupled centres there is a fourth lever, and it is not a
+    convergence one**: an unrestricted SCF started the ordinary way *converges* perfectly well
+    — to the symmetric solution, because the closed-shell density is a stationary point.
+    ``broken_symmetry={"Fe1": +5, "Fe2": -5}`` (with ``reference="uhf"``) builds the polarized
+    density instead, from the high-spin solution's localized magnetic orbitals, and reports the
+    two things that say whether it held: ``<S^2>`` between the low-spin and high-spin values,
+    and spin populations carrying the signs that were asked for.
+
     After :meth:`run`: :attr:`data`, :attr:`energy` [Eh], :attr:`converged`.
     """
 

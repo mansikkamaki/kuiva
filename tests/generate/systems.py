@@ -158,6 +158,17 @@ def _tif3(origin: Tuple[float, float, float] = (0.0, 0.0, 0.0),
     return atoms
 
 
+def _fecl2(r: float = 2.151) -> List[Atom]:
+    """Linear D(inf)h FeCl2 (gas phase), Fe at the origin, Cl on the z axis.
+
+    r(Fe-Cl) = 2.151 A, the gas-phase electron-diffraction value. ⚠ **The axis matters and
+    it is z**: the ground state is the |Lambda = +-2, Sigma = +-2> pair of a 5-Delta term,
+    whose moment lies along the molecular axis, and the spinor conventions quantize spin
+    along z (a symmetry axis that is not z is reported and not used).
+    """
+    return [("Fe", (0.0, 0.0, 0.0)), ("Cl", (0.0, 0.0, r)), ("Cl", (0.0, 0.0, -r))]
+
+
 def _ti3_far(sep: float = 25.0) -> List[Atom]:
     """Three bare Ti(3+) ions at ``sep`` Angstrom along x — the d^1 trimer that FITS.
 
@@ -478,6 +489,27 @@ SYSTEMS: Tuple[System, ...] = (
         physics_note="single d^1 site in a fluoride ligand field: the compact monomer "
                      "whose trimer (ti3f9_far) fits the memory the chloride trimer "
                      "cannot. Same 5-Kramers-doublet structure as ticl3",
+    ),
+    System(
+        key="fecl2", label="FeCl2 (linear)", atoms=_fecl2(), charge=0, spin=4,
+        basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
+        ncas=5, nelecas=6, active_l="d",
+        nroots={5: 5}, slow=True,
+        geom_note="linear D(inf)h, r(Fe-Cl) = 2.151 A (gas-phase electron diffraction); "
+                  "the molecular axis is z, which is where the spinor conventions put the "
+                  "spin quantization axis",
+        physics_note="⚠ THE INTEGER-SPIN SYSTEM, and the only one: every other reference "
+                     "here is odd-electron and therefore Kramers protected. Fe(2+) d^6 in a "
+                     "linear field gives a 5-Delta ground term, and spin-orbit coupling "
+                     "splits it into the |Omega| = 4, 3, 2, 1, 0 ladder whose lowest member "
+                     "is a NON-KRAMERS doublet: degenerate because the field is axial, not "
+                     "because time reversal says so. Two things follow that no odd-electron "
+                     "system can test. The transverse g values are ZERO (a Kramers doublet "
+                     "always has a transverse moment; this pair cannot, since mu_x connects "
+                     "|Omega| = 4 to |Omega| = 3), and g_z has an analytic target: "
+                     "2 (Lambda + g_e Sigma) = 12.009 for a pure |+-2, +-2>, measured "
+                     "12.0075 here. Break the axis and the pair splits by a tunnelling gap, "
+                     "which is the quantity a Tb or Ho single-molecule magnet is about.",
     ),
     System(
         key="ti3_far", label="Ti(3+) x3 (25 A)", atoms=_ti3_far(25.0), charge=9, spin=3,

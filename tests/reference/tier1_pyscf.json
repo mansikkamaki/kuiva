@@ -827,6 +827,130 @@
       "seconds": 15.07,
       "spin": 5
     },
+    "fecl2/ano-rcc-vdzp": {
+      "active_l": "d",
+      "active_l_pop": [
+        0.988358,
+        1.0,
+        0.972884,
+        0.918838,
+        0.986341
+      ],
+      "active_mo_indices": [
+        28,
+        29,
+        30,
+        31,
+        43
+      ],
+      "basis": "ano-rcc-vdzp",
+      "casscf_converged": true,
+      "charge": 0,
+      "e_casscf_avg": -2192.2182457994622,
+      "e_nuc": 253.02592349196655,
+      "e_scf": -2193.3323514528306,
+      "e_states": [
+        -2192.417174531872,
+        -2192.4171276707757,
+        -2192.398220060863,
+        -2192.3962239265243,
+        -2191.462482807274
+      ],
+      "e_states_rel_cm": [
+        0.0,
+        10.2848,
+        4160.0255,
+        4598.1264,
+        209530.6143
+      ],
+      "key": "fecl2",
+      "label": "FeCl2 (linear)",
+      "nao": 70,
+      "ncas": 5,
+      "nelecas": 6,
+      "nelectron": 60,
+      "nroots": {
+        "5": 5
+      },
+      "resources": {
+        "cpu_seconds": 24.0,
+        "effective_cores": 4.0,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 66.0,
+        "temp_start_c": 64.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 6.0
+      },
+      "scf_converged": true,
+      "scf_second_order": false,
+      "seconds": 5.98,
+      "spin": 4
+    },
+    "fecl2/x2c-SVPall-2c": {
+      "active_l": "d",
+      "active_l_pop": [
+        0.914093,
+        0.974235,
+        0.974234,
+        1.0,
+        1.0
+      ],
+      "active_mo_indices": [
+        28,
+        29,
+        30,
+        31,
+        36
+      ],
+      "basis": "x2c-SVPall-2c",
+      "casscf_converged": true,
+      "charge": 0,
+      "e_casscf_avg": -2191.829713155566,
+      "e_nuc": 253.02592349196655,
+      "e_scf": -2192.8165431383195,
+      "e_states": [
+        -2191.9219287854958,
+        -2191.9216238845856,
+        -2191.906130923335,
+        -2191.8910202385273,
+        -2191.5078619458855
+      ],
+      "e_states_rel_cm": [
+        0.0,
+        66.918,
+        3467.23,
+        6783.642,
+        90877.167
+      ],
+      "key": "fecl2",
+      "label": "FeCl2 (linear)",
+      "nao": 84,
+      "ncas": 5,
+      "nelecas": 6,
+      "nelectron": 60,
+      "nroots": {
+        "5": 5
+      },
+      "resources": {
+        "cpu_seconds": 32.6,
+        "effective_cores": 3.94,
+        "idle_injected_seconds": 0.0,
+        "n_cpus": 8,
+        "powerclamp_end": 0,
+        "temp_end_c": 64.0,
+        "temp_start_c": 54.0,
+        "thermally_throttled": false,
+        "throttle_fraction": 0.0,
+        "wall_seconds": 8.3
+      },
+      "scf_converged": true,
+      "scf_second_order": false,
+      "seconds": 8.25,
+      "spin": 4
+    },
     "hi/ano-rcc-vdzp": {
       "active_l": "",
       "active_mo_indices": [

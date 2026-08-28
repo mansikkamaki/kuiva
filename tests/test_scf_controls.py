@@ -220,9 +220,12 @@ def test_projected_guess_reaches_the_same_solution_as_a_cold_start():
     assert warm.energy == pytest.approx(cold.energy, abs=1e-9)
 
 
-def test_guess_from_and_init_guess_are_refused_together():
+def test_the_ways_to_start_an_scf_are_refused_together():
+    """⚠ There are three of them now — ``guess_from=``, ``init_guess=`` and
+    ``broken_symmetry=`` — and they are three statements about the same thing, so any two are
+    a contradiction rather than a preference."""
     source = kuiva.ScalarSCF(hf_molecule(), **BASE).run()
-    with pytest.raises(ValueError, match="two different statements"):
+    with pytest.raises(ValueError, match="statements about where the SCF"):
         kuiva.ScalarSCF(hf_molecule(), guess_from=source, init_guess="atom", **BASE).run()
 
 

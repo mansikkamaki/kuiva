@@ -243,6 +243,42 @@ def lowdin_coefficients(c_ao: np.ndarray, s_ao: np.ndarray) -> np.ndarray:
     return out_c
 
 
+
+def scalar_spin_populations(data) -> np.ndarray:
+    """Per-atom Löwdin spin population of an **unrestricted scalar** reference.
+
+    ``n_alpha - n_beta`` per atom, in the same symmetrically orthogonalized AO basis every
+    other population in this module uses. Duck-typed on the ingested container
+    (``mo_sets()``, ``mo_occ``, ``s_ao``, ``ao_layout``) rather than typed against it, like
+    the rest of this module.
+
+    ⚠ **This is the number that says a broken-symmetry solution is one.** A guess that puts
+    up-spin on one centre and down-spin on the other is only a claim until the converged
+    density is asked where its spin actually sits: an SCF that fell back to the symmetric
+    solution reports zeros here while its energy and its orbitals look perfectly ordinary.
+    Signs are what matter; the magnitudes are Löwdin's and carry that method's usual caveats
+    (:func:`atomic_populations`).
+
+    Raises ``ValueError`` for a restricted reference, where the answer is zero by
+    construction and returning it would invite the question to be asked of a container that
+    cannot answer it.
+    """
+    sets = data.mo_sets()
+    if len(sets) != 2:
+        raise ValueError("spin populations need an unrestricted reference (reference=\"uhf\"); "
+                         "a restricted one has none by construction")
+    c_a, c_b = (np.asarray(c, dtype=float) for c in sets)
+    occ = np.asarray(data.mo_occ, dtype=float)
+    occ_a, occ_b = occ[0], occ[1]
+    root = sqrt_overlap(np.asarray(data.s_ao))
+    t_a, t_b = root @ c_a, root @ c_b
+    q = (t_a ** 2) @ occ_a - (t_b ** 2) @ occ_b
+    layout = data.ao_layout
+    ao_atom = np.asarray(layout.ao_atom)
+    natm = len(layout.atom_symbols)
+    return np.asarray([float(q[ao_atom == a].sum()) for a in range(natm)])
+
+
 # --- Atomic populations: charge and spin --------------------------------------------------
 
 @dataclass(frozen=True)
@@ -848,6 +884,6 @@ def lowdin_analysis(c_ao: np.ndarray, s_ao: np.ndarray, layout: AOLayout, *,
 
 __all__ = ["DEFAULT_PRINT_TOLERANCE", "AtomicPopulations", "OrbitalPopulations",
            "atomic_populations", "degenerate_groups", "frontier_columns",
-           "kramers_pair_groups", "lowdin_analysis", "lowdin_coefficients", "resolve_groups",
-           "orbital_populations", "population_memory_gb", "select_columns",
-           "warn_if_groups_not_degenerate"]
+           "kramers_pair_groups", "lowdin_analysis", "lowdin_coefficients",
+           "orbital_populations", "population_memory_gb", "resolve_groups",
+           "scalar_spin_populations", "select_columns", "warn_if_groups_not_degenerate"]

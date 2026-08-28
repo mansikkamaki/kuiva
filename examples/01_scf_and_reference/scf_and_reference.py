@@ -443,6 +443,88 @@ def main() -> int:
     out.note(log, "file made from this run says which nucleus it describes.")
 
     # ----------------------------------------------------------------------------------
+    # 6b. Two coupled centres: the guess that has to be built, and the orbitals that say
+    #     which centre is which.
+    # ----------------------------------------------------------------------------------
+    # Everything above is one centre. A polynuclear system needs two things that a single
+    # metal never asks for, and both are here in their cheapest possible form: two Ti(3+)
+    # ions far enough apart to be a model and close enough to couple.
+    #
+    # (a) An unrestricted SCF started the ordinary way STAYS SYMMETRIC. The closed-shell
+    #     density is a stationary point of the energy, so nothing in the iteration pushes
+    #     off it: you ask for UHF on an antiferromagnetically coupled pair, get the
+    #     restricted answer, and nothing in the output says so. `broken_symmetry=` builds
+    #     the polarized density instead — converge the high-spin state, localize its singly
+    #     occupied orbitals onto the centres, and flip the ones on the centres you asked to
+    #     be spin-down.
+    dimer = kuiva.Molecule([("Ti", (0.0, 0.0, 0.0)), ("Ti", (4.0, 0.0, 0.0))],
+                           basis="x2c-SVPall-2c", charge=6, spin=0)
+    plain = kuiva.ScalarSCF(dimer, memory_gb=2.0, reference="uhf", screening="none").run()
+    broken = kuiva.ScalarSCF(dimer, memory_gb=2.0, reference="uhf", screening="none",
+                             broken_symmetry={"Ti1": +1, "Ti2": -1}).run()
+
+    from kuiva.props.population import scalar_spin_populations
+    spin_plain = scalar_spin_populations(plain.data)
+    spin_broken = scalar_spin_populations(broken.data)
+
+    out.section(log, "Two coupled centres: the broken-symmetry guess")
+    out.entries(log, [
+        ("symmetric UHF energy", plain.energy, "Eh", "started the ordinary way", out.E_FMT),
+        ("its <S^2> deviation", plain.data.s2_deviation, "",
+         "zero: not polarized at all", out.SCI_FMT),
+        ("its spin on Ti 1 / Ti 2", "{:+.3f} / {:+.3f}".format(*spin_plain), "e"),
+        ("broken-symmetry energy", broken.energy, "Eh", "", out.E_FMT),
+        ("its <S^2>", broken.data.s2_deviation, "",
+         "between the singlet 0 and the triplet 2", "{:.4f}"),
+        ("its spin on Ti 1 / Ti 2", "{:+.3f} / {:+.3f}".format(*spin_broken), "e",
+         "the signs that were asked for"),
+        ("energy gained", broken.energy - plain.energy, "Eh",
+         "the symmetric solution was not the lowest one", out.E_FMT),
+    ])
+    out.note(log, "<S^2> between the two limits is the diagnostic that the determinant is")
+    out.note(log, "really broken-symmetry; the SIGNS are the diagnostic that the")
+    out.note(log, "polarization sits where it was asked to. A run that swapped the two")
+    out.note(log, "centres has the same energy and the same <S^2>, and is a different state.")
+
+    # (b) Which centre does an active orbital belong to? For two equivalent metals the
+    #     canonical orbitals answer "both" — the SCF returns the symmetric and
+    #     antisymmetric combinations, each half on each atom — so a per-fragment character
+    #     selection cannot be made at all. Localizing rotates INSIDE the active space, so
+    #     it changes no energy and every label becomes definite.
+    dimer_ref = kuiva.Reference(kuiva.ScalarSCF(dimer, memory_gb=2.0,
+                                                screening="none").run()).run().reference
+    from kuiva.interface.api import active_space_for, casci, localize_active_space
+    from kuiva.mcscf.localize import fragment_populations
+
+    space = active_space_for(dimer_ref, character=([0, 1], "d"), n_active=20,
+                             n_active_elec=2)
+    active = np.asarray(space.spaces.active)
+    before = fragment_populations(dimer_ref.spinors_in_ao(), dimer_ref.data.s_ao,
+                                  dimer_ref.ao_layout, [0, 1], active)
+    local = localize_active_space(dimer_ref, space, [0, 1], report=False)
+
+    e_plain = casci(dimer_ref, active=space, n_states=4, report=False).energies
+    e_local = casci(dimer_ref, active=space, n_states=4, coeff=local.coeff,
+                    report=False).energies
+    ci_shift = float(np.max(np.abs(np.asarray(e_local) - np.asarray(e_plain))))
+
+    out.section(log, "Which centre an active orbital belongs to")
+    out.entries(log, [
+        ("active spinors", int(active.size), "", "ten d pairs over the two metals"),
+        ("best site population, canonical", float(np.max(before, axis=1).min()), "",
+         "half and half: the question has no answer yet", "{:.3f}"),
+        ("weakest site population, localized", local.weakest, "",
+         "each orbital on one metal", "{:.3f}"),
+        ("orbitals on Ti 1 / Ti 2", "{} / {}".format(len(local.site_columns(0)),
+                                                     len(local.site_columns(1)))),
+        ("max |E(CASCI) localized - plain|", ci_shift, "Eh",
+         "an active-active rotation changes nothing", out.SCI_FMT),
+    ])
+    out.note(log, "This is what a broken-symmetry guess flips, what a multi-centre")
+    out.note(log, "pseudospin export partitions, and what a tensor network wants its modes")
+    out.note(log, "ordered by. The rotation is free: the CI energy is invariant to it.")
+
+    # ----------------------------------------------------------------------------------
     # 7. Assert. An example that only prints numbers cannot fail, and one that cannot fail
     #    demonstrates nothing.
     # ----------------------------------------------------------------------------------
@@ -460,6 +542,15 @@ def main() -> int:
         "the default route resolution stored the integrals here":
             scf.data.fit_route == "conventional",
         "the integral-direct route stores no integral array": scf_direct.data.eri is None,
+        "an ordinary UHF on a coupled dimer stays symmetric":
+            abs(plain.data.s2_deviation) < 1e-4,
+        "the broken-symmetry guess polarizes it, between the singlet and the triplet":
+            0.5 < broken.data.s2_deviation < 2.0,
+        "and polarizes it the way it was asked to":
+            spin_broken[0] > 0.9 > -spin_broken[1] * -1.0 and spin_broken[1] < -0.9,
+        "the broken-symmetry solution is the lower one": broken.energy < plain.energy,
+        "localization puts every active orbital on one metal": local.weakest > 0.99,
+        "and changes no CI energy": ci_shift < 1e-10,
         "the stored route releases its integral array once the factors exist":
             scf.data.eri is None and scf.data.eri_released,
         "the integral-direct route keeps the same error bound":

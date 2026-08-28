@@ -154,58 +154,24 @@ def dense_ci(h_act: np.ndarray, eri_act: np.ndarray, n_elec: int) -> np.ndarray:
 
 def localize_active(reference, space, centres: Sequence[int],
                     coeff: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Dict]:
-    """Löwdin-projector localization of the active spinors onto metal centres.
+    """Localize the active spinors onto the metal centres, one site per centre.
 
-    Sequential deflation: for each centre (last takes the remainder), diagonalize the
-    centre's Löwdin projector within the not-yet-assigned active subspace and take the
-    ``n_act / n_sites`` most-localized orbitals. Site-blocked column order — mode labels
-    are then site-contiguous, which the site-local operators require
-    (the reconnection JW lesson). Pure active-active rotation: the CI is exactly invariant.
+    ⚠ **A thin call into the package**, deliberately: this used to be a copy of the
+    projection localization living in the test tree, and "which centre an orbital belongs to"
+    is exactly the kind of definition that must have one implementation. The site-blocked
+    column order the site-local operators need (the reconnection JW lesson) is what
+    :func:`kuiva.interface.api.localize_active_space` returns, the pairs are rebuilt per
+    site, and the rotation is active-active so the CI is exactly invariant.
     """
-    c = reference.spinors_in_ao() if coeff is None else np.asarray(coeff)
-    act = np.asarray(space.spaces.active, dtype=int)
-    n_act = act.size
-    n_site = n_act // len(centres)
-    if n_site * len(centres) != n_act:
-        raise ValueError("active dimension {} does not divide over {} centres"
-                         .format(n_act, len(centres)))
-    s = np.asarray(reference.data.s_ao)
-    evals, evecs = np.linalg.eigh(s)
-    s12 = (evecs * np.sqrt(np.clip(evals, 0.0, None))) @ evecs.conj().T
-    nao = s.shape[0]
-    c_act = c[:, act]
-    t = np.vstack([s12 @ c_act[:nao], s12 @ c_act[nao:]])
-
-    layout = reference.ao_layout
-    rows_of = {}
-    for a in centres:
-        rows = np.nonzero(np.asarray(layout.ao_atom) == int(a))[0]
-        rows_of[a] = np.concatenate([rows, rows + nao])
-
-    residual = np.eye(n_act, dtype=np.complex128)
-    blocks: List[np.ndarray] = []
-    pops: List[List[float]] = []
-    for i, a in enumerate(centres):
-        ta = t[rows_of[a]]
-        m = ta.conj().T @ ta
-        mr = residual.conj().T @ m @ residual
-        vals, vecs = np.linalg.eigh(0.5 * (mr + mr.conj().T))
-        if i < len(centres) - 1:
-            take = residual @ vecs[:, : -n_site - 1: -1]        # descending eigenvalue
-            residual = residual @ vecs[:, : n_act - (i + 1) * n_site]
-        else:
-            take = residual @ vecs[:, ::-1]                     # the remainder, ordered
-        blocks.append(take)
-        pops.append([round(float(np.linalg.norm(ta @ take[:, j])) ** 2, 6)
-                     for j in range(take.shape[1])])
-    u = np.hstack(blocks)
-    if np.max(np.abs(u.conj().T @ u - np.eye(n_act))) > 1e-10:
-        raise AssertionError("localization rotation lost unitarity")
-    c_loc = np.ascontiguousarray(c.copy())
-    c_loc[:, act] = c_act @ u
-    diag = {"per_site_population_min": [round(min(p), 4) for p in pops],
-            "per_site_population_mean": [round(float(np.mean(p)), 4) for p in pops]}
-    return c_loc, diag
+    result = api.localize_active_space(reference, space, list(centres), coeff=coeff,
+                                       report=False)
+    diag = {"per_site_population_min":
+            [round(float(result.populations[result.site == i, i].min()), 4)
+             for i in range(result.n_sites)],
+            "per_site_population_mean":
+            [round(float(result.populations[result.site == i, i].mean()), 4)
+             for i in range(result.n_sites)]}
+    return result.coeff, diag
 
 
 def active_moments(reference, coeff: np.ndarray, space) -> np.ndarray:

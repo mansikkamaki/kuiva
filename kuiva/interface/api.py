@@ -187,7 +187,9 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                          diis_space: Optional[int] = None,
                          diis_start_cycle: Optional[int] = None,
                          second_order: bool = False, stability: Optional[str] = None,
-                         guess_from=None, allow_unconverged_scf: bool = False,
+                         guess_from=None, broken_symmetry=None,
+                         bs_min_population: Optional[float] = None,
+                         allow_unconverged_scf: bool = False,
                          memory_gb: Optional[float] = None, n_active: Optional[int] = None,
                          n_active_elec: Optional[int] = None,
                          n_states: Optional[int] = None,
@@ -267,6 +269,8 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                           init_guess=init_guess, diis=diis, diis_space=diis_space,
                           diis_start_cycle=diis_start_cycle, second_order=second_order,
                           stability=stability, guess_from=guess_from,
+                          broken_symmetry=broken_symmetry,
+                          bs_min_population=bs_min_population,
                           allow_unconverged_scf=allow_unconverged_scf,
                           memory_gb=memory_gb, n_active=n_active,
                           n_active_elec=n_active_elec, n_states=n_states, nevpt2=nevpt2,
@@ -460,6 +464,106 @@ def spinor_reference(molecule_or_data, *, threshold: float = DEFAULT_THRESHOLD,
     out.section(log, "Two-electron integrals")
     factors = ThreeIndexAO.from_scalar_data(data, cholesky_tol, orbit_pivots=orbit_pivots)
     return SpinorReference(data=data, orth=orth, spinors=spinors, factors=factors)
+
+
+
+def localize_active_space(reference: SpinorReference, space, sites, *,
+                          coeff: Optional[np.ndarray] = None,
+                          counts: Optional[Sequence[int]] = None,
+                          min_population: Optional[float] = None,
+                          repair_pairing: bool = True, report: bool = True):
+    """Rotate an active space into orbitals that each belong to one centre.
+
+    The user surface of :mod:`kuiva.mcscf.localize`. Selection by character says *which
+    orbitals* are active — "the ten lowest spinors of d character on the two titaniums" —
+    and for two equivalent centres that is as far as it can go: the canonical orbitals are
+    the symmetric and antisymmetric combinations, each half on each metal. This says **which
+    centre**, by rotating inside the space that was selected.
+
+    ⚠ **It changes no number.** The rotation is active-active, so the CASCI/CASSCF energy is
+    invariant to machine precision — asserted in the suite rather than tolerated. What it
+    changes is what the orbitals *mean*, which is what a broken-symmetry guess
+    (:func:`kuiva.interface.pyscf_bridge.run_scalar_x2c`'s ``broken_symmetry=``) and a
+    site-blocked mode ordering both need.
+
+    Parameters
+    ----------
+    reference, space
+        A finished :class:`SpinorReference` and the :class:`~kuiva.mcscf.casci.ActiveSpace`
+        to localize (from :func:`active_space_for`).
+    sites : sequence
+        One entry per centre; the addressing is ``character=``'s (atom index, unique element
+        symbol, or a sequence of either for a multi-atom fragment).
+    coeff : ndarray ``(2*nao, n)``, optional
+        Localize *these* orbitals (AO basis) rather than the reference's guess — a converged
+        ``CASSCFOutcome.coeff`` is the case this exists for, since the orbitals a multi-site
+        export or a tensor network is handed are the optimized ones.
+    counts : sequence of int, optional
+        Orbitals per site; the default equal split is refused when it does not divide.
+    min_population : float, optional
+        Own-site Löwdin population every localized orbital must reach
+        (:data:`~kuiva.mcscf.localize.DEFAULT_SITE_POPULATION_MIN`). The refusal prints the
+        table, because "these orbitals are not site orbitals" is the useful answer.
+    repair_pairing : bool
+        Rebuild each site's block as explicit Kramers pairs afterwards (default). ⚠ The
+        localizing rotation mixes the members of a pair like any other active-active
+        rotation, and the pair convention is what an active space is addressed in; each
+        site's span is time-reversal closed, so the repair is a rotation *inside* a site and
+        moves no population. Set ``False`` only to inspect the raw localization.
+
+    Returns
+    -------
+    :class:`kuiva.mcscf.localize.FragmentLocalization`
+        Whose ``coeff`` is in the **AO basis**, ready to pass as ``coeff=`` to
+        :func:`casscf` / :func:`casci` or to the ``CASSCF`` stage.
+    """
+    from ..mcscf.localize import DEFAULT_SITE_POPULATION_MIN, fragment_populations, localize
+    from ..spinor.expand import nearest_kramers_paired
+
+    active = np.asarray(space.spaces.active, dtype=int)
+    floor = (DEFAULT_SITE_POPULATION_MIN if min_population is None else float(min_population))
+    c_ao = (reference.spinors_in_ao() if coeff is None
+            else np.ascontiguousarray(coeff, dtype=np.complex128))
+    result = localize(c_ao, reference.data.s_ao, reference.ao_layout,
+                      active, sites, counts=counts, min_population=floor)
+    if repair_pairing:
+        # ⚠ In the **working** basis, which is where the pairing repair is defined (an
+        # orthonormal real scalar basis; the AO metric is not the identity). The rotation is
+        # a right multiplication, so the same unitary moves either representation, and the
+        # repaired columns come back through the same transform the reference uses.
+        blocks = [result.site_columns(i) for i in range(result.n_sites)]
+        if any(b.size % 2 for b in blocks):
+            raise ValueError(
+                "repair_pairing needs an even number of orbitals on every site (a Kramers "
+                "pair belongs to one centre, and half a pair belongs to nothing); got {}"
+                .format([int(b.size) for b in blocks]))
+        # AO -> working for a caller-supplied set (X^T S per spin block); the reference's
+        # own spinors are already there.
+        if coeff is None:
+            c_work = np.array(reference.spinors.c, copy=True)
+        else:
+            nao = int(reference.data.s_ao.shape[0])
+            c_work = np.vstack([reference.orth.to_working(c_ao[:nao]),
+                                reference.orth.to_working(c_ao[nao:])])
+        c_work[:, active] = c_work[:, active] @ result.rotation
+        c_work = nearest_kramers_paired(c_work, blocks)
+        n_col = c_work.shape[1]
+        sb = SpinorBasis(c_work, np.zeros(n_col), np.zeros(n_col),
+                         kramers_paired=reference.spinors.kramers_paired)
+        coeff = sb.transform_scalar_basis(reference.orth.x, basis="ao").c
+        pops = fragment_populations(coeff, reference.data.s_ao, reference.ao_layout, sites,
+                                    active)
+        result = replace(result, coeff=np.ascontiguousarray(coeff),
+                                     populations=pops)
+        if result.weakest < floor:              # the repair moved a span it should not have
+            raise AssertionError(
+                "rebuilding the Kramers pairs moved the localization below its floor "
+                "({:.3f} < {:.2f}); a site span that is time-reversal closed cannot do that"
+                .format(result.weakest, floor))
+    if report:
+        out.subsection(log, "Fragment localization of the active space")
+        result.report()
+    return result
 
 
 def project_to_basis(source: SpinorReference, target: SpinorReference,
@@ -1171,5 +1275,6 @@ def avas_active_space(reference: SpinorReference, *, atom, l, coeff=None,
 __all__ = ["Molecule", "ScalarX2CData", "SpinorReference", "scalar_x2c_reference",
            "spinor_reference", "build_mole", "memory_plan",
            "project_to_basis", "projected_active_space",
-           "active_space_for", "avas_active_space", "casci", "casscf",
+           "active_space_for", "avas_active_space", "localize_active_space",
+           "casci", "casscf",
            "property_matrices", "property_dump", "spin_analysis", "assign_states"]

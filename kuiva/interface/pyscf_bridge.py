@@ -94,6 +94,7 @@ from ..util.logging import get_logger
 from ..util.timing import timer
 from ..basis import custom as custom_mod
 from ..basis.custom import is_custom, is_custom_name
+from .broken_symmetry import BrokenSymmetryGuess, broken_symmetry_density
 from .environment import EmbeddingRecord, Environment, embedding_operator
 from ..basis.ghosts import ghost_element, is_ghost, normalize_symbol
 from ..x2c.methods import DecouplingRecord
@@ -3450,6 +3451,42 @@ def _stability_follow(mf, mode: str):
     return mf, e_scf, bool(stable), n_follow
 
 
+
+def _report_broken_symmetry_result(guess, mo_coeff, mo_occ, s_ao, layout) -> None:
+    """State where the converged solution's spin sits, and whether it is where it was asked.
+
+    ⚠ **The sign is the assertion, not the magnitude.** Löwdin spin populations carry that
+    method's usual caveats, but a centre the guess made spin-up coming back spin-down is not
+    a caveat: it is a different state with the same energy, and a run that reported only
+    ``<S^2>`` could not tell the two apart.
+    """
+    from ..orth.canonical import sqrt_overlap
+
+    root = sqrt_overlap(np.asarray(s_ao))
+    c_a, c_b = np.asarray(mo_coeff[0]), np.asarray(mo_coeff[1])
+    occ_a, occ_b = np.asarray(mo_occ[0], dtype=float), np.asarray(mo_occ[1], dtype=float)
+    q = ((root @ c_a) ** 2) @ occ_a - ((root @ c_b) ** 2) @ occ_b
+    ao_atom = np.asarray(layout.ao_atom)
+    wrong = []
+    for label, atom, asked in zip(guess.site_labels,
+                                  [i for i, sp in enumerate(guess.spins) if sp],
+                                  guess.assigned):
+        got = float(q[ao_atom == atom].sum())
+        out.entry(log, "spin population, {}".format(label), got, "e",
+                  note="asked for {:+d} unpaired".format(asked), fmt="{:+.3f}")
+        if got * asked < 0 or abs(got) < 1e-3:
+            wrong.append((label, asked, got))
+    if wrong:
+        log.warning(
+            "the converged broken-symmetry solution does not carry the spin pattern it was "
+            "given: %s. The SCF found a different state of the same energy — the centres may "
+            "have swapped, or the polarization collapsed on one of them. The guess is a "
+            "starting point and the iteration is free to leave it, so this is a statement "
+            "about the solution rather than about the input.",
+            "; ".join("{} was asked for {:+d} and carries {:+.3f}".format(l, a, g)
+                      for l, a, g in wrong))
+
+
 def _guess_density(source, mol, ref_name: str, layout, target_spec: "MoleculeSpec"):
     """Build an SCF starting density from a previous calculation's scalar orbitals.
 
@@ -3588,7 +3625,9 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                    diis_space: Optional[int] = None,
                    diis_start_cycle: Optional[int] = None,
                    second_order: bool = False, stability: Optional[str] = None,
-                   guess_from=None, allow_unconverged_scf: bool = False,
+                   guess_from=None, broken_symmetry=None,
+                   bs_min_population: Optional[float] = None,
+                   allow_unconverged_scf: bool = False,
                    memory_gb: Optional[float] = None, n_active: Optional[int] = None,
                    n_active_elec: Optional[int] = None, n_states: Optional[int] = None,
                    nevpt2: bool = False, factors: Optional[str] = None,
@@ -3931,13 +3970,29 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
 
     dm0 = None
     guess_note = ""
+    bs_guess = None
+    if sum(x is not None for x in (guess_from, broken_symmetry, init_guess)) > 1:
+        raise ValueError(
+            "guess_from=, broken_symmetry= and init_guess= are three different statements "
+            "about where the SCF starts, and only one of them can be true. guess_from re-uses "
+            "a previous calculation's orbitals; broken_symmetry builds a spin-polarized "
+            "density from a high-spin solution; init_guess names one of PySCF's built-in "
+            "guesses.")
     if guess_from is not None:
-        if init_guess is not None:
-            raise ValueError(
-                "guess_from= and init_guess= are two different statements about where the SCF "
-                "starts, and only one of them can be true. guess_from re-uses a previous "
-                "calculation's orbitals; init_guess names one of PySCF's built-in guesses.")
         dm0, guess_note = _guess_density(guess_from, mol, ref_name, data_layout, mol_spec)
+    if broken_symmetry is not None:
+        # ⚠ Unrestricted by definition: a broken-symmetry density has different alpha and beta
+        # orbitals, and there is nowhere in a restricted reference to put that.
+        if ref_name != "uhf":
+            raise ValueError(
+                "broken_symmetry= needs reference=\"uhf\": the guess is a density whose alpha "
+                "and beta orbitals differ, and a {} reference has no place to put that (an "
+                "'auto' reference resolves to {} for this molecule)."
+                .format(ref_name.upper(), ref_name.upper()))
+        bs_guess = broken_symmetry_density(
+            mol, broken_symmetry, data_layout, controls=controls, conv_tol=conv_tol,
+            max_cycle=max_cycle, min_population=bs_min_population, embedding=embedding)
+        dm0 = bs_guess.dm0
 
     with timer("scalar X2C SCF") as t_scf:
         e_scf = mf.kernel(dm0=dm0)
@@ -3972,7 +4027,24 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         s2, mult = mf.spin_square()
         s_exact = 0.5 * mol.spin
         s2_dev = float(s2 - s_exact * (s_exact + 1.0))
-        if abs(s2_dev) > 0.1:
+        if bs_guess is not None:
+            # ⚠ Contamination is the POINT here, not a fault: a broken-symmetry determinant
+            # is not an eigenfunction of S^2, and an <S^2> that came back at the low-spin
+            # value would mean the guess collapsed to the symmetric solution. So the run
+            # states where it landed between the two, and warns only in that direction.
+            s2_hs = bs_guess.s2_high_spin
+            out.entry(log, "broken-symmetry <S^2>", float(s2), "",
+                      note="between the low-spin {:.2f} and the high-spin {:.2f}".format(
+                          s_exact * (s_exact + 1.0), s2_hs), fmt="{:.4f}")
+            if abs(s2_dev) < 0.1:
+                log.warning(
+                    "the broken-symmetry SCF converged back to <S^2> = %.4f, the value of "
+                    "the symmetric solution: the spin polarization did not survive the "
+                    "iteration and this is NOT a broken-symmetry state. The guess itself was "
+                    "polarized (its magnetic orbitals localized to %.3f), so the symmetric "
+                    "solution is the lower one here, or the coupling is too weak to hold a "
+                    "polarized density at this geometry.", s2, bs_guess.weakest)
+        elif abs(s2_dev) > 0.1:
             log.warning("unrestricted reference is spin contaminated: <S^2> = %.4f against "
                         "the exact %.4f (deviation %.4f). The orbitals are a guess for the "
                         "multireference step, so this is not fatal, but a strongly "
@@ -3986,6 +4058,12 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
             h_x2c = np.asarray(h_x2c)
             if h_x2c.ndim == 3:          # UHF may hand back one copy per spin; they are equal
                 h_x2c = h_x2c[0]
+        if bs_guess is not None:
+            # ⚠ The check the guess cannot make for itself: <S^2> says the determinant came
+            # out polarized, and this says the polarization is where it was ASKED to be. A
+            # solution that converged with the two centres swapped has the same energy and
+            # the same <S^2>, and is a different state from the one the user described.
+            _report_broken_symmetry_result(bs_guess, mo_coeff, mf.mo_occ, s_ao, data_layout)
 
         # the dump's property operators. One cheap intor, ingested here because nothing downstream
         # may call PySCF — and the gauge origin has to be fixed before the Mole is gone. The

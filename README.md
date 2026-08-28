@@ -325,6 +325,44 @@ stability analysis is what tells you whether it is the one you want.
 calculations must be the same molecule (elements and their order are checked, the geometry is
 not — carrying orbitals along a scan is the ordinary use).
 
+#### Antiferromagnetically coupled centres: the broken-symmetry guess
+
+⚠ **An unrestricted SCF started the ordinary way stays symmetric.** The closed-shell density is
+a stationary point of the energy, so nothing in the iteration pushes off it: you ask for UHF on
+a coupled pair of metals, get the restricted answer, and nothing in the output says so. The
+polarization has to be put in by the starting density.
+
+```python
+scf = kuiva.ScalarSCF(dimer, reference="uhf",
+                      broken_symmetry={"Fe1": +5, "Fe2": -5}).run()   # signed, per centre
+```
+
+The values are **signed counts of unpaired electrons per centre**, addressed the same way a
+per-atom basis or reference configuration is (`"Fe1"`, `"Fe"`, or a 1-based atom number). Kuiva
+converges the **high-spin** state — the easy, unambiguous one — localizes its singly occupied
+orbitals onto the centres you named, flips the ones you asked to be spin-down into the beta set,
+and runs the SCF from that density. For two equivalent metals that localization is what makes
+the flip expressible at all: the canonical orbitals are the symmetric and antisymmetric
+combinations, each half on each metal.
+
+Two things are then reported, and **both** matter:
+
+- **`<S^2>` between the low-spin and high-spin values** says the determinant really is
+  broken-symmetry. Coming back at the low-spin value means the polarization did not survive the
+  iteration, and Kuiva warns rather than letting it pass as a converged UHF.
+- **The spin populations must carry the signs you asked for**
+  (`kuiva.props.population.scalar_spin_populations`). A solution with the two centres swapped
+  has the same energy and the same `<S^2>`, and is a different state; nothing but the signs can
+  tell them apart.
+
+Measured on two Ti(3+) ions 4 Å apart: the ordinary UHF gives `<S^2> = 0` and zero spin on both
+metals, and the broken-symmetry guess gives `<S^2> = 1.00`, `+1.00 / −1.00` electrons of spin,
+and an energy **0.29 Eh lower**. ⚠ It is one of the three mutually exclusive ways to start an
+SCF (with `guess_from=` and `init_guess=`), needs `reference="uhf"`, and refuses when the
+magnetic orbitals do not localize — `bs_min_population=` is the knob, and the refusal prints the
+populations, because flipping an orbital that is half on the other centre produces a density
+that is not the pattern you asked for.
+
 #### The gauge origin, and the one unit trap in this API
 
 It is fixed **here**, not at the property dump, because `L` is defined relative to it and the
@@ -413,6 +451,28 @@ an arbitrary mixture of two degenerate orbitals, and a mixture is an eigenvector
 The rotation happens inside the degenerate block, so no density, energy or observable
 changes, and the run reports how many blocks it touched. An orbital that is still not an
 eigenvector afterwards is refused, naming the orbital and the operation.
+
+#### Which centre an active orbital belongs to
+
+Selection by character says *which* orbitals are active; for two equivalent centres it cannot
+say *which centre*, and the honest answer for the canonical orbitals is "both". Localization
+rotates inside the active space so that every orbital sits on one site:
+
+```python
+from kuiva.interface.api import active_space_for, localize_active_space
+
+space = active_space_for(ref, character=([0, 1], "d"), n_active=20, n_active_elec=2)
+local = localize_active_space(ref, space, [0, 1])          # one site per metal
+cas   = kuiva.CASSCF(ref, active=space, coeff=local.coeff).run()
+```
+
+⚠ **It changes no number** — the rotation is active-active, so the CI energy is invariant to
+machine precision (measured 5e-15 Eh). What it changes is what the orbitals mean, which is what
+a broken-symmetry guess flips, what a multi-centre pseudospin export partitions, and what a
+tensor network wants its modes ordered by. Sites are addressed like every other per-atom
+feature, a site may be a whole fragment (`[["Fe", 3, 4], ...]`), and `counts=` states an uneven
+split. A set that does not localize is **refused** with its populations printed, since a site
+partition that is half delocalized is one in name only.
 
 ### `Reference(scf, **options)`
 
@@ -1657,6 +1717,11 @@ for m in cas_matrices.analyse(pseudo_doublet_tol_cm=50.0):
   assumed is not a diagnostic.
 - Three near-equal singlets are not a doublet: a state consumed by one pair cannot join
   another, so nothing is quietly counted twice.
+- ⚠ **Measured end to end on a real molecule** (linear FeCl₂, Fe(2+) d⁶, ⁵Δ): the non-Kramers
+  ground doublet's `g_z` comes out **12.0075** against the analytic `2(Λ + g_e Σ) = 12.009`,
+  its transverse g values are zero to 1e-6 — which no Kramers doublet's ever are — and bending
+  the molecule to 90° splits the pair by 0.32 cm⁻¹ while the next level sits 125 cm⁻¹ away.
+  That separation of scales is what an integer-spin single-molecule magnet lives on.
 
 Both files carry a `format_version` that is bumped when the *meaning* of a stored field
 changes, so a consumer can refuse rather than misinterpret.
@@ -1698,7 +1763,7 @@ built) or `compiled kernels: native ...` (with one), and in the latter case quan
 
 | # | example | what it shows | runtime |
 |---|---|---|---|
-| 1 | `01_scf_and_reference` | the front end end to end: scalar X2C SCF → orthonormal working basis → Kramers-paired spinors → factorized integrals, each stage checked; plus the SCF's convergence controls — the refusal, the stability analysis and `guess_from=` | ~3 s |
+| 1 | `01_scf_and_reference` | the front end end to end: scalar X2C SCF → orthonormal working basis → Kramers-paired spinors → factorized integrals, each stage checked; the SCF's convergence controls — the refusal, the stability analysis and `guess_from=`; and the two things a coupled pair of centres needs, the broken-symmetry guess and fragment localization | ~17 s |
 | 2 | `02_atomic_spin_orbit` | fine structure of a free atom: the exact 2 + 4 splitting of a p shell, Landé g factors with no free parameter, what two-electron screening changes, and `⟨S²⟩` with the term assignment it supports | ~2 s |
 | 3 | `03_casscf_ligand_field` | the flagship calculation: a state-averaged two-component CASSCF on TiCl₃, its active space stated as orbital character **and** built a second way by AVAS, the five Kramers doublets of the d¹ ligand field, and a term assignment that correctly refuses to name them | ~3 min |
 | 4 | `04_dmrg_casscf` | the tensor-network solver: a cheap CI, a tree topology built from its entanglement, and a DMRG-CASSCF reproducing the exact CI through the same orbital optimizer | ~4 min |
@@ -1919,7 +1984,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.27.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.28.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1935,7 +2000,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.27.0'
+import kuiva; kuiva.__version__          # '0.28.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
