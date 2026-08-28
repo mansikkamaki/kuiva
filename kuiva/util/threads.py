@@ -23,18 +23,33 @@ portability rule B8 forbids anything slower than a lookup there). "All cores" me
 CPUs this process is actually allowed to run on (``sched_getaffinity``), so a cgroup or a
 ``taskset`` is respected rather than overridden.
 
-⚠ **The budget is applied to MKL only when it came from KUIVA_NUM_THREADS** (or an
+⚠ **The budget is applied to the BLAS only when it came from KUIVA_NUM_THREADS** (or an
 explicit :func:`set_budget`). A budget inherited from ``OMP_NUM_THREADS`` or from the core
 count leaves the BLAS exactly as the environment configured it — silently overriding a
-deliberate ``MKL_NUM_THREADS`` would be the same class of surprise this module exists to
-remove.
+deliberate ``MKL_NUM_THREADS`` or ``OPENBLAS_NUM_THREADS`` would be the same class of
+surprise this module exists to remove.
 
 The regions
 -----------
-:func:`blas_region` — MKL gets the budget, kernels get 1.
-:func:`kernel_region` — kernels get the budget, MKL is clamped to 1 for the duration
-(``MKL_Set_Num_Threads_Local``, restored on exit; it is a *local* setting, so a region on
-one thread never disturbs another).
+:func:`blas_region` — the BLAS gets the budget, kernels get 1.
+:func:`kernel_region` — kernels get the budget, the BLAS is clamped to 1 for the duration,
+restored on exit.
+
+⚠ **Three BLAS libraries are controlled, through one interface and the same trick**: MKL
+(``MKL_Set_Num_Threads_Local``), OpenBLAS (``openblas_set_num_threads``) and BLIS
+(``bli_thread_set_num_threads``), each bound by ``ctypes`` to the library *already mapped
+into this process*. This is not exotic hardware: MKL's dispatch is vendor-gated, so it is
+the wrong BLAS on every AMD cluster, and the NumPy and SciPy wheels bring their own
+OpenBLAS there anyway. Without this the whole region contract was a silent no-op on those
+machines — the budget never reached the BLAS, neither region could hand it over or clamp
+it, and the per-run check that exists because absent threads waste CPU-hours silently was
+simply gone.
+
+⚠ **Only MKL's width is per-thread.** OpenBLAS and BLIS expose one process-wide setting,
+so on those a region's width is visible to every thread until it exits. Regions are entered
+once per stage on the driver thread and restore in stack order, so nothing in this project
+notices; a *concurrent* second driver would, and that is the one guarantee MKL gives and
+they do not.
 
 Both are entered **once per solve/sweep, never inside a loop** (B8), and they nest: a
 DMRG solver entering its kernel region inside the orbital optimizer's BLAS region gets
@@ -75,17 +90,25 @@ the calculation irreproducible, and an adaptive one did exactly that (the measur
 measured).
 
 ⚠ **Not a dependency, deliberately**: ``threadpoolctl`` does exactly this and does it well,
-but the project pins one BLAS and needs three calls against it, which is not worth a new
-pinned dependency on the default path. Revisit only if a second BLAS ever becomes supported.
+and it stays out of the pinned set. What it would buy is the discovery of *every* threading
+runtime in the process; what this needs is three calls against the one BLAS NumPy linked,
+which is a few dozen lines and no new dependency on the default path — the price of that
+decision rather than a reason to revisit it.
 
 References
 ------------------
 Intel oneAPI Math Kernel Library, "Techniques to Set the Number of Threads" and
 "MKL_Set_Num_Threads_Local"; the OpenMP composability/nesting notes that the same
-documentation set carries. The ctypes binding below uses the **C** entry points
+documentation set carries. OpenBLAS's ``openblas_set_num_threads`` /
+``openblas_get_num_threads`` / ``openblas_get_config`` (OpenBLAS user manual, "Setting the
+number of threads using environment variables" and the ``cblas``/``openblas_config``
+headers), and BLIS's ``bli_thread_set_num_threads`` / ``bli_thread_get_num_threads``
+(BLIS "Multithreading" documentation). The ctypes binding below uses the **C** entry points
 (``MKL_Set_Num_Threads_Local``): ⚠ the lowercase ``mkl_set_num_threads_local`` is the
 *Fortran* entry point and takes its argument **by pointer** — calling it by value
-segfaults, which is a five-minute mistake to make and a long one to diagnose.
+segfaults, which is a five-minute mistake to make and a long one to diagnose. ⚠ The
+64-bit-integer builds the wheels ship rename their exports with a ``64_`` suffix, so every
+lookup here takes a list of names rather than one.
 """
 from __future__ import annotations
 
@@ -207,16 +230,62 @@ def thread_count(explicit: Optional[int] = None) -> int:
     return budget()
 
 
-# --- MKL, through ctypes on the already-loaded library ------------------------------------
+# --- The BLAS, through ctypes on the already-loaded library ---------------------------------
+
+# ⚠ **The three libraries are bound by the same trick and behind one interface**, so that
+# apply_budget(), the regions and the probe never learn which BLAS they are talking to.
+# ``dlopen`` of a library already mapped into the process returns *that* library's handle,
+# so the settings act on the one BLAS NumPy is using — which is the whole point of the
+# build script's "one MKL, no libmkl_sequential" rule, and equally the point on a machine
+# whose NumPy wheel brought its own OpenBLAS.
+#
+# The interface every control implements:
+#
+#   ``name``          short identity for the banner ("MKL 2025.1", "OpenBLAS 0.3.27")
+#   ``thread_local``  whether ``set_local`` is per-thread (MKL) or process-wide
+#   ``set_local(n)``  set the width, returning a token that restores it
+#   ``set_global(n)`` set the process-wide width
+#   ``max_threads()`` the width in force here
+#
+# ⚠ **Only MKL's setting is thread-local.** OpenBLAS and BLIS expose one process-wide
+# width, so a region on one thread changes the width every thread sees. The region contract
+# is unaffected in practice — a region is entered once per stage on the driver thread, and
+# nested regions save and restore in stack order — but a *concurrent* driver on a second
+# thread would see the other's policy on those libraries, which MKL would have isolated.
+# Stated rather than hidden: ``thread_local`` is on the control and the fact is reported at
+# DEBUG by the probe.
+
+#: Substrings of the mapped library's basename, in priority order, and the control class
+#: to bind it with. ⚠ MKL first: a process can carry both (PySCF's MKL and a wheel's
+#: OpenBLAS), and the one that runs Kuiva's own GEMMs is the one NumPy linked — which on
+#: this project's sandbox is MKL, and the rule that gives the same answer as before the
+#: other two existed.
+_BLAS_LIBRARIES = (
+    ("mkl", ("libmkl_rt",), ("libmkl_rt.so.2", "libmkl_rt.so.1", "libmkl_rt.so")),
+    ("openblas", ("openblas",), ("libopenblas.so.0", "libopenblas.so")),
+    ("blis", ("libblis",), ("libblis.so.4", "libblis.so.3", "libblis.so")),
+)
+
+
+def _first_symbol(lib, names):
+    """The first of ``names`` this library exports, or ``None``. Never raises.
+
+    ⚠ The 64-bit-integer builds every NumPy/SciPy wheel now ships **rename their exports**
+    (``openblas_set_num_threads64_``), so a lookup of the plain name alone finds nothing on
+    exactly the machines this exists for.
+    """
+    for name in names:
+        try:
+            return getattr(lib, name)
+        except AttributeError:
+            continue
+    return None
 
 
 class _MKL(object):
-    """The four calls this module needs, bound to the MKL already in the process.
+    """The four calls this module needs, bound to the MKL already in the process."""
 
-    ``dlopen`` of ``libmkl_rt`` returns the handle of the library NumPy has already
-    loaded, so the settings below act on the one MKL of the process — which is the whole
-    point of the build script's "one MKL, no libmkl_sequential" rule.
-    """
+    thread_local = True
 
     def __init__(self, lib):
         self._lib = lib
@@ -248,28 +317,197 @@ class _MKL(object):
         self._version(buf, 256)
         return buf.value.decode("ascii", "replace").strip()
 
+    @property
+    def name(self) -> str:
+        # "Intel(R) oneAPI Math Kernel Library Version 2025.1-Product Build ..." -> 2025.1
+        for word in self.version().split():
+            if word[:1].isdigit() and "." in word:
+                return "MKL " + word.split("-")[0]
+        return "MKL"
 
-_MKL_HANDLE = None            # type: Optional[_MKL]
-_MKL_LOOKED = False
+
+class _OpenBLAS(object):
+    """OpenBLAS's thread control: one process-wide width, set and read.
+
+    ⚠ ``openblas_get_num_threads`` is absent from some older builds. Without it there is
+    nothing to read a region's saved width back from, so the control shadows the value it
+    last set — seeded from ``openblas_get_num_procs``, which is what OpenBLAS itself starts
+    at. A shadow that is wrong only if something *else* in the process moved the width, and
+    the alternative (refusing to region at all) is worse.
+    """
+
+    thread_local = False
+
+    def __init__(self, lib):
+        self._lib = lib
+        self._set = _first_symbol(lib, ("openblas_set_num_threads",
+                                        "openblas_set_num_threads64_",
+                                        "goto_set_num_threads"))
+        if self._set is None:
+            raise AttributeError("no openblas_set_num_threads in this OpenBLAS")
+        self._set.restype = None
+        self._set.argtypes = [ctypes.c_int]
+        self._get = _first_symbol(lib, ("openblas_get_num_threads",
+                                        "openblas_get_num_threads64_"))
+        if self._get is not None:
+            self._get.restype = ctypes.c_int
+            self._get.argtypes = []
+        self._procs = _first_symbol(lib, ("openblas_get_num_procs",
+                                          "openblas_get_num_procs64_"))
+        if self._procs is not None:
+            self._procs.restype = ctypes.c_int
+            self._procs.argtypes = []
+        self._config = _first_symbol(lib, ("openblas_get_config",
+                                           "openblas_get_config64_"))
+        if self._config is not None:
+            self._config.restype = ctypes.c_char_p
+            self._config.argtypes = []
+        self._shadow = int(self._procs()) if self._procs is not None else 1
+
+    def set_local(self, n_threads: int) -> int:
+        previous = self.max_threads()
+        self.set_global(n_threads)
+        return previous
+
+    def set_global(self, n_threads: int) -> None:
+        n = max(1, int(n_threads))
+        self._set(n)
+        self._shadow = n
+
+    def max_threads(self) -> int:
+        if self._get is not None:
+            return int(self._get())
+        return int(self._shadow)
+
+    def version(self) -> str:
+        if self._config is None:
+            return "OpenBLAS"
+        raw = self._config()
+        return (raw or b"").decode("ascii", "replace").strip()
+
+    @property
+    def name(self) -> str:
+        # "OpenBLAS 0.3.27  USE64BITINT DYNAMIC_ARCH ..." -> "OpenBLAS 0.3.27"
+        for word in self.version().split():
+            if word[:1].isdigit() and "." in word:
+                return "OpenBLAS " + word
+        return "OpenBLAS"
 
 
-def _mkl() -> Optional[_MKL]:
-    """The process's MKL, or ``None`` if the loaded BLAS is not MKL (never raises)."""
-    global _MKL_HANDLE, _MKL_LOOKED
-    if _MKL_LOOKED:
-        return _MKL_HANDLE
-    _MKL_LOOKED = True
-    _ensure_blas_loaded()
-    if "mkl" not in _loaded_libraries():
+class _BLIS(object):
+    """BLIS's thread control: one process-wide width, in ``dim_t`` (64-bit)."""
+
+    thread_local = False
+
+    def __init__(self, lib):
+        self._lib = lib
+        self._set = _first_symbol(lib, ("bli_thread_set_num_threads",))
+        if self._set is None:
+            raise AttributeError("no bli_thread_set_num_threads in this BLIS")
+        self._set.restype = None
+        self._set.argtypes = [ctypes.c_int64]
+        self._get = _first_symbol(lib, ("bli_thread_get_num_threads",))
+        if self._get is not None:
+            self._get.restype = ctypes.c_int64
+            self._get.argtypes = []
+        self._version = _first_symbol(lib, ("bli_info_get_version_str",))
+        if self._version is not None:
+            self._version.restype = ctypes.c_char_p
+            self._version.argtypes = []
+        self._shadow = 1
+
+    def set_local(self, n_threads: int) -> int:
+        previous = self.max_threads()
+        self.set_global(n_threads)
+        return previous
+
+    def set_global(self, n_threads: int) -> None:
+        n = max(1, int(n_threads))
+        self._set(n)
+        self._shadow = n
+
+    def max_threads(self) -> int:
+        if self._get is not None:
+            return int(self._get())
+        return int(self._shadow)
+
+    def version(self) -> str:
+        if self._version is None:
+            return ""
+        raw = self._version()
+        return (raw or b"").decode("ascii", "replace").strip()
+
+    @property
+    def name(self) -> str:
+        version = self.version()
+        return "BLIS " + version if version else "BLIS"
+
+
+_BLAS_CONTROLS = {"mkl": _MKL, "openblas": _OpenBLAS, "blis": _BLIS}
+
+_BLAS_HANDLE = None           # type: Optional[object]
+_BLAS_LOOKED = False
+
+
+def _mapped_library_paths(token: str):
+    """Paths of the mapped shared objects whose file name contains ``token``.
+
+    Reading the path rather than guessing an soname is what makes this work on a wheel:
+    NumPy ships its OpenBLAS as ``libopenblas64_-r0-<hash>.so`` inside ``numpy.libs``,
+    which no ``dlopen("libopenblas.so.0")`` will ever find.
+    """
+    paths = []
+    try:
+        with open("/proc/self/maps", "r") as handle:
+            for line in handle:
+                start = line.find("/")
+                if start < 0:
+                    continue
+                path = line[start:].strip()
+                if token in os.path.basename(path).lower() and path not in paths:
+                    paths.append(path)
+    except OSError:                                       # pragma: no cover - non-Linux
+        pass
+    return paths
+
+
+def _bind(kind: str, tokens, sonames):
+    """Bind ``kind``'s control to the mapped library, or ``None``. Never raises."""
+    control = _BLAS_CONTROLS[kind]
+    candidates = []
+    for token in tokens:
+        candidates.extend(_mapped_library_paths(token))
+    if not candidates:
         return None
-    for name in ("libmkl_rt.so.2", "libmkl_rt.so.1", "libmkl_rt.so"):
+    # ⚠ The soname is tried FIRST for MKL and only there: it is what this project's sandbox
+    # has always bound, and dlopen returns the same handle either way, so the one machine
+    # every committed number came from keeps binding exactly as it did.
+    for name in (list(sonames) + candidates if kind == "mkl" else candidates + list(sonames)):
         try:
-            _MKL_HANDLE = _MKL(ctypes.CDLL(name))
-            return _MKL_HANDLE
+            return control(ctypes.CDLL(name))
         except (OSError, AttributeError):
             continue
-    log.debug("MKL is mapped into the process but libmkl_rt could not be bound; "
-              "thread regions degrade to no-ops")
+    log.debug("%s is mapped into the process but its thread control could not be bound; "
+              "thread regions degrade to no-ops", kind)
+    return None
+
+
+def _blas_control():
+    """The process's BLAS thread control, or ``None`` when it exposes none (never raises).
+
+    Cached: the answer is a property of the process, and the lookup reads ``/proc`` and
+    dlopens a library.
+    """
+    global _BLAS_HANDLE, _BLAS_LOOKED
+    if _BLAS_LOOKED:
+        return _BLAS_HANDLE
+    _BLAS_LOOKED = True
+    _ensure_blas_loaded()
+    for kind, tokens, sonames in _BLAS_LIBRARIES:
+        handle = _bind(kind, tokens, sonames)
+        if handle is not None:
+            _BLAS_HANDLE = handle
+            return _BLAS_HANDLE
     return None
 
 
@@ -303,22 +541,23 @@ def _loaded_libraries() -> str:
 
 
 def blas_identity() -> str:
-    """A short name for the BLAS actually loaded into this process."""
-    mkl = _mkl()
-    if mkl is not None:
-        version = mkl.version()
-        # "Intel(R) oneAPI Math Kernel Library Version 2025.1-Product Build ..." -> 2025.1
-        token = ""
-        for word in version.split():
-            if word[:1].isdigit() and "." in word:
-                token = word.split("-")[0]
-                break
-        return "MKL " + token if token else "MKL"
+    """A short name for the BLAS actually loaded into this process.
+
+    From the bound control where there is one, so the name and the thread calls can never
+    disagree about which library they mean; from the mapped libraries otherwise, which is
+    the case of a BLAS that is present and exposes no thread control (an old OpenBLAS, a
+    static link) — reported as itself rather than as "unknown".
+    """
+    control = _blas_control()
+    if control is not None:
+        return control.name
     libs = _loaded_libraries()
-    if "libopenblas" in libs:
+    if "libopenblas" in libs or "openblas" in libs:
         return "OpenBLAS"
     if "libblis" in libs:
         return "BLIS"
+    if "mkl" in libs:
+        return "MKL"
     return "unknown - assume serial"
 
 
@@ -335,12 +574,12 @@ def apply_budget() -> None:
     _APPLIED = True
     if budget_source() not in ("KUIVA_NUM_THREADS", "explicit"):
         return
-    mkl = _mkl()
-    if mkl is None:
+    control = _blas_control()
+    if control is None:
         log.debug("thread budget %d not applied to the BLAS: %s exposes no thread control",
                   budget(), blas_identity())
         return
-    mkl.set_global(budget())
+    control.set_global(budget())
 
 
 # --- the regions --------------------------------------------------------------------------
@@ -361,18 +600,18 @@ class _Region(object):
         global _REGION_KERNEL_THREADS
         self._saved_kernel = _REGION_KERNEL_THREADS
         _REGION_KERNEL_THREADS = self._kernel_threads
-        mkl = _mkl()
-        if mkl is not None:
-            self._saved_blas = mkl.set_local(self._blas_threads)
+        control = _blas_control()
+        if control is not None:
+            self._saved_blas = control.set_local(self._blas_threads)
         return self._kernel_threads
 
     def __exit__(self, *exc) -> bool:
         global _REGION_KERNEL_THREADS
         _REGION_KERNEL_THREADS = self._saved_kernel
         if self._saved_blas is not None:
-            mkl = _mkl()
-            if mkl is not None:
-                mkl.set_local(self._saved_blas)
+            control = _blas_control()
+            if control is not None:
+                control.set_local(self._saved_blas)
         return False
 
 
@@ -397,7 +636,7 @@ def kernel_region(n_threads: Optional[int] = None) -> _Region:
     ⚠ Clamping the BLAS is not a courtesy to the kernels — it is the measured policy of
     measured: inside this layer the threaded BLAS returns
     nothing for the CPU seconds it spends, and those seconds are what the port gate ranks candidates
-    by. Nested kernels that dispatch a GEMM themselves clamp MKL again inside their own
+    by. Nested kernels that dispatch a GEMM themselves clamp the BLAS again inside their own
     parallel region; the two clamps agree by construction.
     """
     n = budget() if n_threads is None else _positive(n_threads, "n_threads")
@@ -460,16 +699,39 @@ class ThreadsReport(NamedTuple):
 
 
 def _time_gemm(a, b, n_threads: int):
-    """One complex GEMM at a given MKL width; returns ``(wall, cpu)`` seconds."""
-    mkl = _mkl()
-    saved = None if mkl is None else mkl.set_local(n_threads)
+    """One complex GEMM at a given BLAS width; returns ``(wall, cpu)`` seconds."""
+    control = _blas_control()
+    saved = None if control is None else control.set_local(n_threads)
     try:
         w0, c0 = time.perf_counter(), time.process_time()
         a.dot(b)
         return time.perf_counter() - w0, time.process_time() - c0
     finally:
-        if saved is not None and mkl is not None:
-            mkl.set_local(saved)
+        if saved is not None and control is not None:
+            control.set_local(saved)
+
+
+def _control_takes_effect(control) -> bool:
+    """Does asking this library for a width actually change it? One set and one restore.
+
+    ⚠ **Not paranoia — the OpenMP-built OpenBLAS is exactly this case**: its
+    ``openblas_set_num_threads`` can be inert because the width belongs to the OpenMP
+    runtime instead, and a probe that assumed the setter worked would time two GEMMs at the
+    *same* ambient width, measure a speedup of 1, and warn that a perfectly threaded BLAS is
+    not threading. Checking costs one call and turns that false accusation into the honest
+    "unverified".
+
+    ⚠ Undetectable on a build with no getter, where :class:`_OpenBLAS` shadows the width it
+    set and the read-back agrees by construction. Stated where it matters rather than
+    papered over.
+    """
+    try:
+        saved = control.set_local(1)
+        got = control.max_threads()
+        control.set_local(saved)
+    except Exception:                                     # noqa: BLE001 - diagnostic only
+        return False
+    return got == 1
 
 
 def _measure(n_threads: int):
@@ -485,8 +747,14 @@ def _measure(n_threads: int):
     the warning would fire on every run of a machine whose only fault is not using MKL.
     Degrading to a no-op is allowed; pretending to have measured is not.
     """
-    if _mkl() is None:
+    control = _blas_control()
+    if control is None:
         log.debug("no BLAS thread control (%s): the thread budget cannot be verified",
+                  blas_identity())
+        return None, None
+    if not _control_takes_effect(control):
+        log.debug("%s accepted a thread width without taking it (an OpenMP-built OpenBLAS "
+                  "leaves the width to its OpenMP runtime): the budget cannot be verified",
                   blas_identity())
         return None, None
     try:
@@ -527,11 +795,18 @@ def threads_report(force: bool = False) -> ThreadsReport:
         return _REPORT
     apply_budget()
     n = budget()
-    mkl = _mkl()
+    control = _blas_control()
+    if control is not None and not control.thread_local:
+        # Stated where it is true rather than assumed away: on this library a region's
+        # width is process-wide, so a second driver thread would see the first's policy.
+        log.debug("%s exposes one process-wide thread width, not a per-thread one: a "
+                  "region's setting is visible to every thread until it exits",
+                  blas_identity())
     speedup, cpu_per_wall = _measure(n)
     threaded = None if speedup is None or n == 1 else speedup >= THREADED_SPEEDUP_MIN
     report = ThreadsReport(budget=n, source=budget_source(), blas=blas_identity(),
-                           blas_max_threads=None if mkl is None else mkl.max_threads(),
+                           blas_max_threads=None if control is None
+                           else control.max_threads(),
                            speedup=speedup, serial_cpu_per_wall=cpu_per_wall,
                            threaded=threaded)
     _REPORT = report

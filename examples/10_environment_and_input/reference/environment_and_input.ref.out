@@ -2,14 +2,14 @@
                                    K U I V A                                    
                  relativistic multireference quantum chemistry                  
                 example 10: environment, ghosts and custom bases                
-                                 version 0.23.0                                 
+                                 version 0.27.0                                 
                 compiled kernels: disabled (KUIVA_KERNELS=numpy)                
            threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
 ================================================================================
    output file                                   output/environment_and_input.out
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.13 s
+ Scalar-relativistic X2C reference                                    t = 0.14 s
 ================================================================================
    atoms                                                          1   (Ne)
    charge                                                         0
@@ -24,12 +24,12 @@
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
      mol.max_memory = the rest of the limit
-     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4; released once the factors exist)
      three-index AO factors                                   0.000  GB   (naux ~ 168)
      three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
    planned peak                                               0.001  GB
-   machine available                                         12.886  GB
+   machine available                                         11.856  GB
    SCF reference                                                RHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            14
@@ -40,7 +40,7 @@
    nuclear repulsion                                 0.000000000000  Eh
    scalar X2C SCF energy                          -128.512061726104  Eh
    SCF converged                                                yes
-   SCF time                                                    0.03  s wall   (0.10 s cpu)
+   SCF time                                                    0.03  s wall   (0.11 s cpu)
    AO integral time                                            0.00  s wall   (0.01 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
@@ -53,7 +53,7 @@
    two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.41 s
+ Scalar-relativistic X2C reference                                    t = 0.42 s
 ================================================================================
    atoms                                                          1   (Ne)
    charge                                                         0
@@ -64,16 +64,16 @@
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF                                                       external 
    two-electron integrals            0.000           0.000       0.000  ok       
-   spinor MO transform               0.001           0.001       0.002  ok       
+   spinor MO transform               0.001           0.001       0.001  ok       
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
      mol.max_memory = the rest of the limit
-     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4; released once the factors exist)
      three-index AO factors                                   0.000  GB   (naux ~ 168)
      three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
-   planned peak                                               0.002  GB
-   machine available                                         12.886  GB
+   planned peak                                               0.001  GB
+   machine available                                         11.856  GB
    SCF reference                                                RHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            14
@@ -86,7 +86,7 @@
    embedding potential, max |V|                           7.667e-02  Eh   (bare)
    scalar X2C SCF energy                          -128.512623004639  Eh
    SCF converged                                                yes
-   SCF time                                                    0.03  s wall   (0.10 s cpu)
+   SCF time                                                    0.03  s wall   (0.11 s cpu)
    AO integral time                                            0.00  s wall   (0.01 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
@@ -103,7 +103,7 @@
    two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
 
 ================================================================================
- A molecule in a field of point charges                               t = 0.44 s
+ A molecule in a field of point charges                               t = 0.46 s
 ================================================================================
    vacuum SCF energy                              -128.512061726104  Eh
    embedded SCF energy                            -128.512623004639  Eh
@@ -114,7 +114,7 @@
    not of this calculation: it is neither computed nor reported here.
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.44 s
+ Scalar-relativistic X2C reference                                    t = 0.46 s
 ================================================================================
    atoms                                                          1   (Ne)
    charge                                                         0
@@ -129,12 +129,12 @@
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
      mol.max_memory = the rest of the limit
-     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4; released once the factors exist)
      three-index AO factors                                   0.000  GB   (naux ~ 168)
      three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
    planned peak                                               0.002  GB
-   machine available                                         12.886  GB
+   machine available                                         11.855  GB
    SCF reference                                                RHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            14
@@ -190,7 +190,7 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    ----------  --------  ----------
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.48 s
+ Scalar-relativistic X2C reference                                    t = 0.50 s
 ================================================================================
    atoms                                                          1   (Ne)
    charge                                                         0
@@ -205,12 +205,12 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
      mol.max_memory = the rest of the limit
-     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4; released once the factors exist)
      three-index AO factors                                   0.000  GB   (naux ~ 168)
      three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
    planned peak                                               0.002  GB
-   machine available                                         12.886  GB
+   machine available                                         11.855  GB
    SCF reference                                                RHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            14
@@ -223,7 +223,7 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    embedding potential, max |V|                           1.674e-01  Eh   (bare)
    scalar X2C SCF energy                          -128.512080642893  Eh
    SCF converged                                                yes
-   SCF time                                                    0.03  s wall   (0.10 s cpu)
+   SCF time                                                    0.03  s wall   (0.11 s cpu)
    AO integral time                                            0.00  s wall   (0.01 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
@@ -277,7 +277,7 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    not the whole system, and the labels say what the whole system has.
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.52 s
+ Scalar-relativistic X2C reference                                    t = 0.54 s
 ================================================================================
    atoms                                                          2   (Ne ghost-Ar)
    charge                                                         0
@@ -287,17 +287,17 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF                                                       external 
-   two-electron integrals            0.004           0.000       0.004  ok       
-   spinor MO transform               0.008           0.006       0.014  ok       
+   two-electron integrals            0.002           0.001       0.004  ok       
+   spinor MO transform               0.007           0.006       0.013  ok       
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
      mol.max_memory = the rest of the limit
-     conventional AO ERI array                                0.001  GB   (nao = 35; grows as nao^4)
+     conventional AO ERI array                                0.001  GB   (nao = 35; grows as nao^4; released once the factors exist)
      three-index AO factors                                   0.002  GB   (naux ~ 420)
      three-index MO block B^P_p,occ                           0.004  GB   (70 spinors x 10 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
-   planned peak                                               0.014  GB
-   machine available                                         12.884  GB
+   planned peak                                               0.013  GB
+   machine available                                         11.854  GB
    SCF reference                                                RHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            35
@@ -308,7 +308,7 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    nuclear repulsion                                 0.000000000000  Eh
    scalar X2C SCF energy                          -128.513440818043  Eh
    SCF converged                                                yes
-   SCF time                                                    0.07  s wall   (0.27 s cpu)
+   SCF time                                                    0.07  s wall   (0.26 s cpu)
    AO integral time                                            0.04  s wall   (0.15 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
@@ -321,7 +321,7 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
 
 ================================================================================
- Ghost atoms and the superposition error they measure                 t = 0.69 s
+ Ghost atoms and the superposition error they measure                 t = 0.70 s
 ================================================================================
    neon alone, AO functions                                      14
    neon + ghost argon, AO functions                              35
@@ -331,7 +331,7 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    density on the ghost's functions                       1.228e-03  e
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.69 s
+ Scalar-relativistic X2C reference                                    t = 0.70 s
 ================================================================================
    atoms                                                          1   (Ne)
    charge                                                         0
@@ -342,16 +342,16 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF                                                       external 
    two-electron integrals            0.002           0.000       0.002  ok       
-   spinor MO transform               0.003           0.001       0.003  ok       
+   spinor MO transform               0.002           0.001       0.003  ok       
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
      mol.max_memory = the rest of the limit
-     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4)
+     conventional AO ERI array                                0.000  GB   (nao = 14; grows as nao^4; released once the factors exist)
      three-index AO factors                                   0.000  GB   (naux ~ 168)
      three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 10 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
    planned peak                                               0.003  GB
-   machine available                                         12.872  GB
+   machine available                                         11.839  GB
    SCF reference                                                RHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            14
@@ -362,7 +362,7 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    nuclear repulsion                                 0.000000000000  Eh
    scalar X2C SCF energy                          -128.512061726104  Eh
    SCF converged                                                yes
-   SCF time                                                    0.03  s wall   (0.10 s cpu)
+   SCF time                                                    0.02  s wall   (0.09 s cpu)
    AO integral time                                            0.00  s wall   (0.01 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
@@ -375,18 +375,18 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
 
 ================================================================================
- A user-supplied basis set                                            t = 0.73 s
+ A user-supplied basis set                                            t = 0.74 s
 ================================================================================
    registry family                                    x2c-SVPall-2c
    the same shells, supplied by hand             custom:svpall-copy [x2c-2c, segmented, fit=cholesky, conditioning=unknown]   (contraction measured from the data)
    registered SCF energy                          -128.512061726104  Eh
    custom SCF energy                              -128.512061726104  Eh
-   difference                                             0.000e+00  Eh
+   difference                                             2.842e-14  Eh
    without relativistic_treatment                           refused
    message                                       a custom basis must declare relativistic_treatment= ('x2c-2c', 'x2c-1c', 'dkh' or 'nonrel')
 
 ================================================================================
- Result                                                               t = 0.73 s
+ Result                                                               t = 0.74 s
 ================================================================================
    check                                                           verdict   
    --------------------------------------------------------------  ----------
@@ -408,26 +408,26 @@ i, sigma(xy) are a symmetry of the nuclei but not of the whole system, and are n
    checks                                             all 14 passed
 
 ================================================================================
- Timings                                                              t = 0.73 s
+ Timings                                                              t = 0.74 s
 ================================================================================
    region                            calls     wall [s]       cpu [s]   cpu/wall   % wall
    -------------------------------  ------  -----------  ------------  ---------  -------
-   scalar X2C SCF                        6         0.20          0.79       4.00     62.4
-   AO integrals                          6         0.05          0.20       3.99     16.0
-     angular-momentum integrals          6         0.00          0.01       3.99      0.4
-     electric dipole integrals           6         0.00          0.00       4.02      0.2
-   X2C spin-orbit integrals              6         0.04          0.16       4.00     12.4
-   environment embedding potential       3         0.00          0.00       3.99      0.2
+   scalar X2C SCF                        6         0.20          0.78       4.00     62.1
+   AO integrals                          6         0.05          0.21       4.00     16.4
+     angular-momentum integrals          6         0.00          0.01       4.01      0.4
+     electric dipole integrals           6         0.00          0.00       4.00      0.2
+   X2C spin-orbit integrals              6         0.04          0.16       4.00     12.5
+   environment embedding potential       3         0.00          0.00       4.00      0.3
    symmetry labelling                    2         0.00          0.01       4.00      0.7
-   atomic reference orbitals             1         0.03          0.10       4.00      8.2
+   atomic reference orbitals             1         0.03          0.10       4.00      8.1
    -------------------------------  ------  -----------  ------------  ---------  -------
-   total (top-level regions)                                   0.32  s wall
-   total CPU                                                   1.27  s cpu
+   total (top-level regions)                                   0.31  s wall
+   total CPU                                                   1.26  s cpu
    cost is cpu [s]; wall [s] also reflects thread count and, on a
    thermally clamped machine, time the CPU was forced to stay idle.
 
  -- Memory ---------------------------------------------------------------------
    limit                                                      2.000  GB   (set for this calculation)
-   pre-flight estimate                                        0.014  GB
+   pre-flight estimate                                        0.013  GB
    declared peak (Kuiva arrays)                               0.002  GB
    peak resident set (VmHWM)                                  0.157  GB

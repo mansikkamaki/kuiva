@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from kuiva.interface import Molecule, scalar_x2c_reference, build_mole
+from kuiva.integrals.transform import ThreeIndexAO
 from kuiva.interface.pyscf_bridge import run_scalar_x2c
 from kuiva.util import resources as res
 
@@ -112,46 +113,82 @@ def test_auto_route_follows_the_memory_plan(monkeypatch):
     Stored integrals wherever their plan fits the configured limit; integral-direct where it
     does not. There is no fixed AO-count cutoff because no CPU crossover exists to place one
     at: the two routes were measured within a few per cent of each other from ~160 AOs up,
-    so the ``O(nao^4/8)`` array only the stored route holds is the entire decision — and the
-    one regime where the direct route is *more* efficient overall is the one where the
-    stored plan is refused. The premise of each branch is asserted alongside its verdict, so
-    a drift in the sizing functions fails this test loudly instead of hollowing it out.
+    so the ``O(nao^4/8)`` array only the stored route holds is the entire decision.
+
+    ⚠ **And the decision is now a comparison of the two plans, not of the stored plan
+    against the limit.** Since the array is released once the factors exist, the routes
+    differ only inside the two-electron phase — so below the size at which that phase is the
+    one that *peaks*, the direct route lowers nothing and choosing it would only move the
+    refusal. The premise of each branch is asserted alongside its verdict, so a drift in the
+    sizing functions fails this test loudly instead of hollowing it out.
     """
     from kuiva.interface.pyscf_bridge import _auto_fit_route, memory_plan
-    nao, nelec = 105, 73                      # TiCl3 / x2c-SVPall-2c, no SCF needed
+    small, nelec = 105, 73                    # TiCl3 / x2c-SVPall-2c, no SCF needed
+    big = 320                                 # where the nao^4 array is the binding term
 
     roomy = res.MemoryBudget(res.ResourceLimits(memory_gb=64.0, source="test"))
     monkeypatch.setattr(res, "BUDGET", roomy)
-    route, note = _auto_fit_route(nao, nelec=nelec)
-    assert route == "conventional" and note == ""
+    assert _auto_fit_route(small, nelec=nelec, shell_ao_max=7, n_shells=13) \
+        == ("conventional", "")
 
-    tight = res.MemoryBudget(res.ResourceLimits(memory_gb=0.5, source="test"))
+    # Small system, tight limit: the phase that peaks is the spinor MO transform, which both
+    # routes carry identically — so the stored route stands and the pre-flight refuses on its
+    # own terms rather than the direct route being chosen for a refusal it cannot avert.
+    tight = res.MemoryBudget(res.ResourceLimits(memory_gb=0.1, source="test"))
     monkeypatch.setattr(res, "BUDGET", tight)
-    conv_peak = res.plan_peak_gb(memory_plan(nao, conventional=True, nelec=nelec),
-                                 budget=tight)
-    dir_peak = res.plan_peak_gb(memory_plan(nao, conventional=False, direct=True,
-                                            shell_ao_max=7, n_shells=13, nelec=nelec),
-                                budget=tight)
-    assert dir_peak <= 0.5 < conv_peak        # the premise the tight branch rests on
-    route, note = _auto_fit_route(nao, nelec=nelec)
+    conv_small = memory_plan(small, conventional=True, nelec=nelec)
+    assert res.plan_peak_gb(conv_small, budget=tight) > 0.1
+    peak_phase = max((p for p in conv_small if p.governed),
+                     key=lambda p: p.resident_gb() + p.transient_gb()).name
+    assert peak_phase == "spinor MO transform"
+    assert _auto_fit_route(small, nelec=nelec, shell_ao_max=7, n_shells=13) \
+        == ("conventional", "")
+
+    # Large system, same limit question: here the array *is* the peak and the direct route
+    # plans genuinely lower, which is the case the route exists for.
+    limit = res.MemoryBudget(res.ResourceLimits(memory_gb=8.0, source="test"))
+    monkeypatch.setattr(res, "BUDGET", limit)
+    conv_peak = res.plan_peak_gb(memory_plan(big, conventional=True, nelec=nelec),
+                                 budget=limit)
+    dir_peak = res.plan_peak_gb(memory_plan(big, conventional=False, direct=True,
+                                            shell_ao_max=7, n_shells=40, nelec=nelec),
+                                budget=limit)
+    assert dir_peak <= 8.0 < conv_peak        # the premise the direct branch rests on
+    route, note = _auto_fit_route(big, nelec=nelec, shell_ao_max=7, n_shells=40)
     assert route == "direct" and "chosen automatically" in note
 
 
 @pytest.mark.slow
-def test_auto_route_runs_direct_where_the_stored_route_would_be_refused():
-    """End to end: at a limit the stored plan exceeds, the default route is the direct one,
-    the calculation *runs* instead of being refused, and the result is the same reference
-    (route differences are below 1e-11 Eh on the SCF energy, measured 9e-13 here)."""
+def test_the_released_integral_array_is_what_lets_the_stored_route_run_here(monkeypatch):
+    """End to end at a limit the stored route used to be refused at.
+
+    ⚠ This test asserted the *direct* route until the array gained a release: carried
+    resident to the end of the run, ``O(nao^4/8)`` pushed every phase after the
+    decomposition over a 0.5 GB limit, and the automatic route had to leave the stored one.
+    Released once the factors exist, the same calculation runs on the stored route — and
+    the two routes still agree on the energy, which is what says the change moved memory
+    and not physics.
+    """
+    # ⚠ The limit is patched rather than passed as memory_gb=: that argument *configures*
+    # the global budget and would leave 0.5 GB behind for every test after this one, which
+    # is how a later, unrelated test in this file came to be refused.
+    monkeypatch.setattr(res.BUDGET, "_limits",
+                        res.ResourceLimits(memory_gb=0.5, source="test"))
     mol = Molecule([("Ti", (0.0, 0.0, 0.0)),
                     ("Cl", (2.2007128, 0.0, 0.0)),
                     ("Cl", (-1.1003564, 1.9058728, 0.0)),
                     ("Cl", (-1.1003564, -1.9058728, 0.0))],
                    basis="x2c-SVPall-2c", spin=1)
-    d = run_scalar_x2c(mol, screening="none", memory_gb=0.5)
-    assert d.fit_route == "direct"
-    assert d.eri is None and d.factors is not None and d.factors.orbit_complete
-    e_ref = run_scalar_x2c(mol, fitting="cholesky", screening="none", memory_gb=8.0).e_scf
-    assert abs(d.e_scf - e_ref) < 1e-10
+    with res.calculation("stored route at 0.5 GB"):
+        d = run_scalar_x2c(mol, screening="none")
+        assert d.fit_route == "conventional"
+        # Releases it, exactly as the pipeline's own Reference stage does.
+        ref = ThreeIndexAO.from_scalar_data(d, report=False)
+        assert d.eri is None and d.eri_released and ref.orbit_complete
+    with res.calculation("direct route at 0.5 GB"):
+        direct = run_scalar_x2c(mol, fitting="cholesky-direct", screening="none")
+        assert direct.eri is None and direct.factors is not None
+        assert abs(d.e_scf - direct.e_scf) < 1e-10
 
 
 def test_the_direct_route_is_a_value_on_the_same_axis_and_carries_factors():

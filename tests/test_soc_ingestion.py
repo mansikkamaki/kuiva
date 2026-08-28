@@ -376,7 +376,9 @@ def test_eri_memory_guard():
 
     resources.BUDGET.configure(resources.ResourceLimits(memory_gb=8.0, source="test"))
     _reserve_eri_memory(100)                            # ~0.2 GB: fine
-    with pytest.raises(MemoryError, match="integral-direct"):
+    # ⚠ The advice names the route that removes the array by the value a user would type,
+    # not by its prose name: a refusal is only half an error if it cannot be acted on.
+    with pytest.raises(MemoryError, match="cholesky-direct"):
         _reserve_eri_memory(1200)                       # ~5 TB: not fine
 
 

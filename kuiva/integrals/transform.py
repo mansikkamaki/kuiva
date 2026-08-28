@@ -444,6 +444,34 @@ def pivoted_cholesky(diagonal: np.ndarray,
     return lvec[:nvec], pivots[:nvec], residual
 
 
+def _orbit_keep_count(s: np.ndarray, tol: float, degeneracy_rtol: float) -> int:
+    """How many of an orbit block's **descending** eigenvalues to keep. The whole rule, once.
+
+    ⚠ Whole degenerate groups only, on BOTH floors — splitting a group across either is
+    exactly what breaks the invariance the block form exists to preserve, while looking like
+    ordinary numerical hygiene:
+
+    * *accuracy* — the group's **largest** member must exceed ``tol``. A direction
+      contributing less than that to the residual is what the error bound already allows to
+      be dropped.
+    * *stability* — the group's **smallest** must exceed :data:`ORBIT_STABILITY_RTOL` times
+      the block's largest, since the emitted vectors carry ``s^-1/2``. See that constant.
+
+    Shared by the in-core and the out-of-core block paths: two copies of this rule would be
+    two definitions of what the factorization keeps, and both would pass every test that
+    compares a factorization with itself.
+    """
+    if s.size == 0:
+        return 0
+    floor = ORBIT_STABILITY_RTOL * max(float(s[0]), 0.0)
+    keep = 0
+    for group in _degenerate_groups(s, degeneracy_rtol):
+        if float(s[group].max()) <= tol or float(s[group].min()) <= floor:
+            break
+        keep = int(group[-1]) + 1
+    return keep
+
+
 def _blocked_cholesky(diag: np.ndarray,
                       column: Callable[[int], np.ndarray],
                       tol: float,
@@ -487,16 +515,9 @@ def _blocked_cholesky(diag: np.ndarray,
         s, u = np.linalg.eigh(gram)
         s, u = s[::-1], u[:, ::-1]                       # descending
 
-        # ⚠ Whole groups only, on BOTH tests -- splitting a group across a floor is exactly
-        # what breaks the invariance the block form exists to preserve.
-        #   accuracy : the group's LARGEST member must contribute more than tol
-        #   stability: the group's SMALLEST must be a direction and not rounding noise
-        floor = ORBIT_STABILITY_RTOL * max(float(s[0]), 0.0)
-        keep = 0
-        for group in _degenerate_groups(s, degeneracy_rtol):
-            if float(s[group].max()) <= tol or float(s[group].min()) <= floor:
-                break
-            keep = int(group[-1]) + 1
+        # Whole degenerate groups only, on both floors -- see _orbit_keep_count, which is
+        # the single statement of that rule and is shared with the out-of-core path.
+        keep = _orbit_keep_count(s, tol, degeneracy_rtol)
         if keep:
             v = (cols @ u[:, :keep]) / np.sqrt(s[:keep])
             if nvec + keep > lvec.shape[0]:
@@ -515,6 +536,393 @@ def _blocked_cholesky(diag: np.ndarray,
                     "with residual %.3e > tol %.2e; the factorization is incomplete and "
                     "two-electron integrals carry an error of that order", limit, residual, tol)
     return lvec, piv, residual
+
+
+
+# --- Out-of-core: the decomposition that never holds the factor array ---------------------
+
+#: Candidate columns updated per GEMM in the streamed decomposition's rank-k updates. It
+#: bounds the *temporary* those updates would otherwise make (one full candidate block), and
+#: nothing else: blocking is a parameter here rather than a budget read, and the loop it
+#: bounds contains no resource call of any kind (B7/B8).
+STREAM_UPDATE_CHUNK = 256
+
+#: Fraction of the streamed decomposition's working budget given to the history read buffer;
+#: the rest holds the candidate columns. Half and half because the two are the same kind of
+#: array read the same number of times per pass — the read buffer sets how many passes the
+#: file costs, the candidate width sets how many pivots one pass can serve, and neither is
+#: worth starving for the other. Measured alternatives are in the package validation notes.
+STREAM_HISTORY_FRACTION = 0.5
+
+
+class _StreamingFactorWriter:
+    """The scratch file a decomposition appends its vectors to while it runs.
+
+    The write half of the out-of-core route (:func:`streamed_cholesky`); the read half is
+    :class:`_ScratchFactorStore`, which **adopts this file** when the decomposition is done,
+    so the finished factors are a spilled store that was never in RAM to begin with.
+
+    Two things it is deliberately not. It is not an :class:`kuiva.util.scratch.ExtentFile` —
+    nothing here is ever freed or replaced, the file only grows, and an allocator for that is
+    a liability rather than a service. And it is not buffered by us beyond one slab: the page
+    cache is the buffer (see :mod:`kuiva.util.scratch`), so a machine with RAM to spare
+    serves the update passes at memory speed and a tight one degrades to device speed.
+
+    ⚠ The file is deleted with this object unless :meth:`adopt` hands it on. A decomposition
+    that raises half way therefore leaves nothing behind, which is the only acceptable
+    behaviour for a store whose contents are meaningless without the pivot bookkeeping.
+    """
+
+    #: Append slab [bytes]: rows are accumulated to about this much before one write.
+    WRITE_SLAB = 64 * 1024 * 1024
+
+    def __init__(self, path: str, npair: int) -> None:
+        self.path = str(path)
+        self.npair = int(npair)
+        self.naux = 0
+        self._row_bytes = self.npair * 8
+        self._file = open(self.path, "w+b", buffering=0)
+        self._pending: List[np.ndarray] = []
+        self._pending_rows = 0
+        self._slab_rows = max(1, self.WRITE_SLAB // max(self._row_bytes, 1))
+        #: Bytes read back by the update passes — the cost figure of this route, reported.
+        self.bytes_read = 0
+        self.n_passes = 0
+        self._finalizer = weakref.finalize(self, _scratch_cleanup, self._file, self.path,
+                                           None)
+
+    @property
+    def size_gb(self) -> float:
+        return self.naux * self._row_bytes / res.BYTES_PER_GB
+
+    def append(self, rows: np.ndarray) -> None:
+        """Add ``(k, npair)`` finished vectors. Copied, so the caller may reuse its buffer."""
+        rows = np.ascontiguousarray(rows, dtype=np.float64)
+        if rows.ndim != 2 or rows.shape[1] != self.npair:
+            raise ValueError("streamed factor rows must be (k, {}), got {}"
+                             .format(self.npair, rows.shape))
+        self._pending.append(rows.copy())
+        self._pending_rows += rows.shape[0]
+        self.naux += rows.shape[0]
+        if self._pending_rows >= self._slab_rows:
+            self.flush()
+
+    def flush(self) -> None:
+        """Write out whatever is pending. Cheap and idempotent; no fsync (see the class)."""
+        if not self._pending:
+            return
+        self._file.seek((self.naux - self._pending_rows) * self._row_bytes)
+        for block in self._pending:
+            _write_full(self._file, block)
+        self._pending = []
+        self._pending_rows = 0
+
+    def passes(self, block_rows: int, buffer: np.ndarray):
+        """Iterate the vectors written so far as sequential ``(nb, npair)`` blocks.
+
+        ⚠ **Sequential and row-major, never a column gather.** The rows are the auxiliary
+        index and the columns the AO pair index, so taking "the pivot columns of the whole
+        history" would be one seek per row; a whole-file pass at streaming bandwidth beats
+        that by orders of magnitude even when it reads a hundred times the bytes.
+        """
+        self.flush()
+        if self.naux == 0:
+            return
+        self.n_passes += 1
+        self._file.seek(0)
+        for p0 in range(0, self.naux, block_rows):
+            nb = min(block_rows, self.naux - p0)
+            view = buffer[:nb]
+            _readinto_full(self._file, view)
+            self.bytes_read += view.nbytes
+            yield p0, view
+
+    def close(self) -> None:
+        """Close and delete the file. Never raises; what a failed decomposition leaves."""
+        self._finalizer()
+
+    def adopt(self) -> "_ScratchFactorStore":
+        """Hand the finished file to a reading store, which owns and deletes it from now on."""
+        self.flush()
+        naux, path = self.naux, self.path
+        self._finalizer.detach()               # the store's finalizer replaces this one
+        self._file.close()
+        return _ScratchFactorStore(path, naux, self.npair)
+
+
+def streamed_working_gb(nao: int, *, rows: int) -> float:
+    """Size [GB] of the streamed decomposition's whole working set (exact sizing function).
+
+    ``rows`` is the whole row budget: the history read block, the candidate columns and the
+    update chunk are all ``(rows_i, npair)`` float64 and share it — everything this route
+    holds is a whole number of packed AO-pair rows, which is what makes one number size it.
+    The ``(npair,)`` diagonal is counted on top, so this is what the arrays actually cost
+    and not a fraction of it.
+    """
+    n = npair_of(int(nao))
+    return res.array_gb((int(rows), n), np.float64) + res.array_gb((n,), np.float64)
+
+
+def streamed_cholesky(diagonal: np.ndarray,
+                      column: Callable[[int], np.ndarray],
+                      nao: int,
+                      tol: float = DEFAULT_CHOLESKY_TOL,
+                      *,
+                      directory=None,
+                      max_vectors: Optional[int] = None,
+                      orbits: Optional[np.ndarray] = None,
+                      degeneracy_rtol: float = ORBIT_DEGENERACY_RTOL,
+                      budget_gb: Optional[float] = None
+                      ) -> Tuple["_ScratchFactorStore", np.ndarray, float, dict]:
+    """:func:`pivoted_cholesky` with the factor array on scratch instead of in RAM.
+
+    Returns ``(store, pivots, residual, stats)``. The store is the finished factorization,
+    already spilled; nothing of size ``(naux, npair)`` is ever allocated.
+
+    **Why it exists.** The factor spill frees the rows *after* the decomposition has built
+    them, so on a large system the peak that binds is the array being built — 45 GB at
+    nao = 1000, 155 GB at a real single-molecule magnet — and a machine that cannot hold that
+    transient is refused even though every consumer of the rows already streams them.
+
+    **The algorithm, and what is exactly preserved.** The pivot sequence is the one
+    :func:`pivoted_cholesky` would take, *unchanged*: the next pivot is always the largest
+    element of the true updated diagonal, which is maintained in RAM (``diag -= v*v``) and
+    needs no history at all. Only the **updated column** of a pivot needs the vectors already
+    produced, and that is what is reorganized:
+
+    * a **pass** qualifies the widest set of candidate columns the budget allows, reads the
+      whole history file once (sequentially, in ``(nb, npair)`` blocks) and subtracts it from
+      all of them in one rank-``nb`` update per block;
+    * the pass then produces pivots from that set exactly as the in-core loop does, applying
+      each new vector to the candidates it holds, and **ends the moment the true argmax lies
+      outside the set** — so no pivot is ever taken out of order;
+    * candidates the pass did not consume are **retained**: they are current (every in-pass
+      update reached them), so the next pass re-reads the history only for the columns it
+      adds. Without this a pass that ends after one pivot would re-evaluate everything it had
+      qualified, which on the integral-direct route means re-evaluating integrals.
+
+    Total IO is therefore ``O(n_passes x file)`` with ``n_passes ~ naux / rows``, and both
+    numbers are measured and reported rather than assumed: ``stats`` carries the pass count,
+    the bytes read and the columns evaluated, and :meth:`ThreeIndexAO.report` prints them.
+
+    ⚠ **Bitwise identity with the in-core path is NOT claimed and cannot be.** The same
+    subtraction is summed in a different order — history blocks and in-pass rank-*k* updates,
+    against one GEMV over all previous vectors — so the two agree to rounding, not to the
+    last bit. The vector *count* and the residual bound are the same, and the pivot sequence
+    is the same wherever the diagonal has no ties; where two symmetry-equivalent columns are
+    tied, the last bits decide which goes first and the result is a **different valid
+    factorization of the same matrix**, with elements agreeing to ``tol``. Measured on a 3d
+    complex: identical vector count and residual at every working-set size, reconstructed
+    integrals agreeing to 4e-16 where the sequence matched and to the threshold where a tie
+    broke the other way. Anything that compares two factorizations must therefore compare the
+    **integrals they reconstruct**, never the factor rows.
+
+    ⚠ The orbit-complete path (``orbits``) keeps its whole-block treatment: an orbit is
+    qualified in full or not at all, its Gram matrix is eigendecomposed exactly as in core,
+    and :func:`_orbit_keep_count` — one implementation, shared — decides what it emits. A
+    budget too small to hold the largest orbit is refused rather than made to split one.
+
+    References
+    ----------
+    The two-step / batched organization of an out-of-core Cholesky decomposition of the
+    two-electron matrix follows F. Aquilante, T. B. Pedersen, R. Lindh, "Low-cost evaluation
+    of the exchange Fock matrix from Cholesky and density fitting representations",
+    J. Chem. Phys. 126, 194106 (2007), doi:10.1063/1.2736701, and the practice described in
+    F. Aquilante et al., "Cholesky Decomposition Techniques in Electronic Structure Theory",
+    Springer (2011), pp. 301-343, doi:10.1007/978-90-481-2853-2_13. The pivoting rule and the
+    error bound are Beebe & Linderberg (1977) and Koch, Sanchez de Meras & Pedersen (2003) as
+    in :func:`pivoted_cholesky`.
+    """
+    diag = np.array(diagonal, dtype=np.float64, copy=True)
+    n = diag.size
+    if n != npair_of(int(nao)):
+        raise ValueError("the diagonal has {} elements, which is not the packed AO pair "
+                         "count of nao = {}".format(n, nao))
+    if np.any(diag < -abs(tol)):
+        log.error("the matrix being Cholesky-decomposed has a negative diagonal element "
+                  "(min %.3e): it is not positive semidefinite and the factors are "
+                  "meaningless", float(diag.min()))
+    limit = int(max_vectors) if max_vectors else n
+
+    members = None
+    widest = 1
+    if orbits is not None:
+        orbits = np.asarray(orbits)
+        if orbits.shape != (n,):
+            raise ValueError("orbits must have one label per column ({}), got {}"
+                             .format(n, orbits.shape))
+        members = {label: np.nonzero(orbits == label)[0] for label in np.unique(orbits)}
+        widest = max(int(idx.size) for idx in members.values())
+
+    # ⚠ One budget question, asked once and outside every loop (a kernel's blocking is a
+    # parameter, never a budget read inside it): the working set is a transient, so it is
+    # sized against what the limit allows rather than reserved, and the loops below contain
+    # no resource call at all.
+    naux_estimate = max(1, int(CHOLESKY_VECTORS_PER_AO * max(int(nao), 1)))
+    budget = res.transient_gb() if budget_gb is None else float(budget_gb)
+    row_gb = res.array_gb((n,), np.float64)
+    # Everything the decomposition holds is a whole number of ``(npair,)`` rows: the history
+    # block it reads into, the candidate columns it works on, and the update chunk. ⚠ Clamped
+    # by what the problem can use as well as by what the budget allows — there are at most
+    # ``n`` columns to qualify and at most one estimated factorization of history to read, and
+    # a buffer past either is memory spent on nothing (measured: a 1 GB history buffer for a
+    # 19-AO molecule before this clamp existed).
+    rows = min(int(max(0.0, budget - row_gb) // row_gb),
+               n + naux_estimate + STREAM_UPDATE_CHUNK)
+    hist_rows = max(1, min(int(rows * STREAM_HISTORY_FRACTION), naux_estimate))
+    rest = rows - hist_rows
+    chunk = int(max(1, min(STREAM_UPDATE_CHUNK, rest // 2)))
+    cand_max = int(min(rest - chunk, n))
+    if cand_max < widest:
+        # Refused, never made to fit by splitting an orbit or by shrinking the history block
+        # until a pass reads one row at a time.
+        res.require("streamed Cholesky working set",
+                    streamed_working_gb(nao, rows=2 * max(widest, 1) + 2),
+                    note="{} AO pairs; the widest symmetry orbit is {} columns"
+                         .format(n, widest),
+                    advice=["raise the memory limit: this route needs room for the widest "
+                            "symmetry orbit and one history block, and nothing more",
+                            "use a smaller basis set",
+                            "factors=\"scratch\" decomposes in core and spills afterwards, "
+                            "which needs the whole factor array in RAM but no working set"])
+        cand_max = max(widest, 1)
+        chunk = min(chunk, cand_max)
+
+    directory = directory if directory is not None else res.require_scratch(
+        "streamed Cholesky factors", factor_memory_gb(nao, naux_estimate),
+        advice=["loosen the Cholesky threshold (fewer vectors)",
+                "use a smaller basis set"])
+    path = os.path.join(str(directory),
+                        "kuiva-cholesky-{}-{:x}.bin".format(os.getpid(), id(diag)))
+    writer = _StreamingFactorWriter(path, n)
+    history = np.empty((hist_rows, n), dtype=np.float64)
+
+    pivots = np.zeros(limit, dtype=np.int64)
+    nvec = 0
+    n_columns = 0
+    open_mask = np.ones(n, dtype=bool)         # an index is a pivot (or an orbit) once
+    # ⚠ Candidates are stored **one column per row**, ``(ncand, npair)``, the same way the
+    # file is: every update then writes contiguous memory. Held the other way up — the
+    # natural ``(npair, ncand)`` — each update writes one strided column at a time, which
+    # measured 1.6-3.3x the CPU of the same decomposition for no other difference.
+    cand_idx = np.zeros(0, dtype=np.int64)     # retained candidates, always fully updated
+    cand_rows = np.zeros((0, n), dtype=np.float64)
+    finished = False
+    try:
+        while nvec < limit and not finished:
+            # -- qualify: the candidate set this pass will work from, chosen from the true
+            # diagonal and ⚠ **always containing the next pivot's group first**. Choosing it
+            # from scratch rather than filling the room left by the retained columns is what
+            # makes that guarantee: a retained set that happened to fill the budget would
+            # otherwise be able to lock the pivot the loop is about to need out of the pass,
+            # and the decomposition would stop with a residual far above the threshold.
+            selected: List[int] = []
+            seen: set = set()
+            for q in np.argsort(-np.where(open_mask, diag, -np.inf), kind="stable"):
+                q = int(q)
+                if not open_mask[q] or diag[q] <= tol:
+                    break
+                group = np.asarray([q]) if orbits is None else members[orbits[q]]
+                if int(group[0]) in seen:
+                    continue
+                if len(selected) + group.size > cand_max:
+                    break                      # never a partial orbit; the next pass has it
+                selected.extend(int(i) for i in group)
+                seen.update(int(i) for i in group)
+            if not selected:
+                break                          # nothing left above the threshold
+            wanted = np.asarray(sorted(selected), dtype=np.int64)
+            # Retained columns still wanted are already current — every in-pass update
+            # reached them — so only the rest are fetched and taken through the history.
+            if cand_idx.size:
+                still = np.isin(cand_idx, wanted)
+                cand_idx, cand_rows = cand_idx[still], np.ascontiguousarray(cand_rows[still])
+            new_idx = np.setdiff1d(wanted, cand_idx)
+            if new_idx.size:
+                new_rows = np.empty((new_idx.size, n), dtype=np.float64)
+                for k, p in enumerate(new_idx):
+                    new_rows[k] = np.asarray(column(int(p)), dtype=np.float64)
+                n_columns += int(new_idx.size)
+                # -- one sequential pass over everything written so far, applied to the new
+                # columns only.
+                for _p0, block in writer.passes(hist_rows, history):
+                    gathered = np.ascontiguousarray(block[:, new_idx].T)   # (n_new, nb)
+                    for c0 in range(0, new_idx.size, chunk):
+                        sl = slice(c0, c0 + chunk)
+                        new_rows[sl] -= gathered[sl] @ block
+                cand_idx = np.concatenate([cand_idx, new_idx])
+                cand_rows = (np.vstack([cand_rows, new_rows]) if cand_rows.size
+                             else new_rows)
+            where = {int(p): k for k, p in enumerate(cand_idx)}
+            consumed: List[int] = []
+
+            # -- produce pivots, in exactly the order the in-core loop would take them
+            while nvec < limit:
+                q = int(np.argmax(np.where(open_mask, diag, -np.inf)))
+                if float(diag[q]) <= tol:
+                    finished = True
+                    break
+                if orbits is None:
+                    if q not in where:
+                        break                  # the argmax left the set: re-qualify
+                    v = (cand_rows[where[q]] / math.sqrt(float(diag[q])))[None, :]
+                    take = np.asarray([q], dtype=np.int64)
+                    open_mask[q] = False
+                    consumed.append(where[q])
+                else:
+                    idx = members[orbits[q]]
+                    if int(idx[0]) not in where:
+                        break
+                    if nvec + idx.size > limit:
+                        finished = True
+                        break                  # never truncate an orbit -- stop short
+                    pos = np.asarray([where[int(p)] for p in idx], dtype=np.int64)
+                    block_rows = cand_rows[pos]                     # (m, n), contiguous
+                    gram = block_rows[:, idx]
+                    gram = 0.5 * (gram + gram.T)
+                    sv, u = np.linalg.eigh(gram)
+                    sv, u = sv[::-1], u[:, ::-1]
+                    keep = _orbit_keep_count(sv, tol, degeneracy_rtol)
+                    open_mask[idx] = False
+                    consumed.extend(int(p) for p in pos)
+                    if not keep:
+                        continue
+                    v = (u[:, :keep].T @ block_rows) / np.sqrt(sv[:keep])[:, None]
+                    take = idx[:keep]
+                writer.append(v)
+                pivots[nvec:nvec + v.shape[0]] = take
+                nvec += v.shape[0]
+                diag -= np.einsum("kj,kj->j", v, v)
+                np.maximum(diag, 0.0, out=diag)   # rounding can push a converged one below 0
+                # The new vectors reach every candidate this pass holds, retained ones
+                # included -- which is what keeps a retained column current across passes.
+                gathered = np.ascontiguousarray(v[:, cand_idx].T)      # (ncand, k)
+                for c0 in range(0, cand_idx.size, chunk):
+                    sl = slice(c0, c0 + chunk)
+                    cand_rows[sl] -= gathered[sl] @ v
+
+            keepers = np.setdiff1d(np.arange(cand_idx.size), np.asarray(consumed, dtype=int))
+            if keepers.size == cand_idx.size and not new_idx.size:
+                break                          # no progress and nothing new: it would loop
+            cand_idx = cand_idx[keepers]
+            cand_rows = np.ascontiguousarray(cand_rows[keepers])
+        store = writer.adopt()
+    except BaseException:
+        writer.close()
+        raise
+
+    residual = float(diag.max()) if n else 0.0
+    if nvec >= limit and residual > tol:
+        log.warning("out-of-core Cholesky decomposition stopped at the vector limit (%d) "
+                    "with residual %.3e > tol %.2e; the factorization is incomplete and "
+                    "two-electron integrals carry an error of that order", limit, residual,
+                    tol)
+    stats = {"passes": writer.n_passes, "gb_read": writer.bytes_read / res.BYTES_PER_GB,
+             "columns": n_columns, "candidate_columns": cand_max,
+             "history_rows": hist_rows, "update_chunk": chunk}
+    log.debug("streamed Cholesky: %d vectors, %d update passes, %.2f GB read, %d columns "
+              "evaluated", nvec, writer.n_passes, stats["gb_read"], n_columns)
+    return store, pivots[:nvec], residual, stats
 
 
 def _warn_if_coulomb_only(aux_name: Optional[str]) -> None:
@@ -615,22 +1023,34 @@ class _ScratchFactorStore:
     #: against the transient budget.
     WRITE_SLAB = 64 * 1024 * 1024
 
-    def __init__(self, l_packed: np.ndarray, path: str) -> None:
-        from concurrent.futures import ThreadPoolExecutor
-
+    @classmethod
+    def spill(cls, l_packed: np.ndarray, path: str) -> "_ScratchFactorStore":
+        """Write a finished in-RAM factor array out, then read it back through this store."""
         naux, npair = (int(l_packed.shape[0]), int(l_packed.shape[1]))
-        self.naux, self.npair = naux, npair
-        self.path = str(path)
-        self._row_bytes = npair * 8
-        rows_per_slab = max(1, self.WRITE_SLAB // self._row_bytes)
+        row_bytes = npair * 8
+        rows_per_slab = max(1, cls.WRITE_SLAB // max(row_bytes, 1))
         with timer("factor spill to scratch"):
-            with open(self.path, "wb", buffering=0) as f:
+            with open(str(path), "wb", buffering=0) as f:
                 try:
-                    os.posix_fallocate(f.fileno(), 0, naux * self._row_bytes)
+                    os.posix_fallocate(f.fileno(), 0, naux * row_bytes)
                 except (AttributeError, OSError):
                     pass                       # preallocation is an optimization, not a need
                 for r0 in range(0, naux, rows_per_slab):
                     _write_full(f, l_packed[r0:r0 + rows_per_slab])
+        return cls(str(path), naux, npair)
+
+    def __init__(self, path: str, naux: int, npair: int) -> None:
+        """Adopt an existing row-major ``(naux, npair)`` float64 file at ``path``.
+
+        ⚠ The store **owns** the file from here: its finalizer deletes it. Two producers
+        hand it one — :meth:`spill` (a finished array written out) and the streamed
+        decomposition, which wrote the rows as it made them and never held the array at all.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        self.naux, self.npair = int(naux), int(npair)
+        self.path = str(path)
+        self._row_bytes = self.npair * 8
         self._file = open(self.path, "rb", buffering=0)
         self._executor = ThreadPoolExecutor(max_workers=1,
                                             thread_name_prefix="kuiva-factor-io")
@@ -705,8 +1125,24 @@ class ThreeIndexAO:
     _shape: Optional[Tuple[int, int]] = field(default=None, repr=False)
     _reservation: Optional[object] = field(default=None, repr=False)
 
+    #: Pass count, bytes read and columns evaluated, on the out-of-core route only
+    #: (:func:`streamed_cholesky`). ``None`` everywhere else. Reported, because the cost of
+    #: that route is IO and a route whose cost is invisible is a route nobody can judge.
+    stream_stats: Optional[dict] = None
+
     def __post_init__(self) -> None:
         expected = npair_of(self.nao)
+        if self.l_packed is None and self._store is not None:
+            # Built straight into the spilled state by the out-of-core decomposition: the
+            # rows were written as they were produced and the array never existed. No
+            # reservation, for the same reason spill_to_scratch gives one back.
+            if int(self._store.npair) != expected:
+                raise ValueError("a streamed factor store of {} AO pairs does not match "
+                                 "nao={} ({} expected)".format(self._store.npair, self.nao,
+                                                               expected))
+            self._shape = (int(self._store.naux), int(self._store.npair))
+            self._rows = _pair_rows(self.nao)
+            return
         if self.l_packed.ndim != 2 or self.l_packed.shape[1] != expected:
             raise ValueError("three-index factors must have shape (naux, {}) for nao={}, "
                              "got {}".format(expected, self.nao, self.l_packed.shape))
@@ -771,9 +1207,11 @@ class ThreeIndexAO:
         for the whole IO design).
 
         ⚠ This does not reduce the decomposition-time peak: the rows are spilled *after*
-        they exist. A factorization too large to build in RAM at all needs the out-of-core
-        decomposition, which does not exist yet; the refusal for that case says so.
-        Idempotent; returns ``self``.
+        they exist. A factorization too large to build in RAM at all is what
+        :func:`streamed_cholesky` is for (``factors="streamed"`` on the front end), which
+        writes the rows as it produces them and never allocates the array — one rung further
+        down the same ladder, and the one that costs passes over the file rather than
+        nothing. Idempotent; returns ``self``.
         """
         if self.is_spilled:
             return self
@@ -784,7 +1222,7 @@ class ThreeIndexAO:
                     "use a smaller basis set"])
         path = os.path.join(str(directory),
                             "kuiva-factors-{}-{:x}.bin".format(os.getpid(), id(self)))
-        self._store = _ScratchFactorStore(self.l_packed, path)
+        self._store = _ScratchFactorStore.spill(self.l_packed, path)
         self.l_packed = None
         # The RAM reservation goes back to the ledger; the stream buffers are the store's
         # only resident footprint and are charged to each consumer's block sizing instead
@@ -833,7 +1271,8 @@ class ThreeIndexAO:
     def from_matrix(cls, diagonal: np.ndarray, column: Callable[[int], np.ndarray],
                     nao: int, tol: float = DEFAULT_CHOLESKY_TOL, *,
                     max_vectors: Optional[int] = None, orbits: Optional[np.ndarray] = None,
-                    report: bool = True, note: str = "") -> "ThreeIndexAO":
+                    report: bool = True, note: str = "",
+                    residence: str = "in-core") -> "ThreeIndexAO":
         """Cholesky-decompose the two-electron matrix reached through ``diagonal``/``column``.
 
         The engine both Cholesky constructors run on, and the reason
@@ -848,7 +1287,30 @@ class ThreeIndexAO:
         ``orbits`` — from :func:`shell_pair_orbits` — selects the orbit-complete path, which
         makes the factorization's spherical symmetry exact rather than threshold-dependent.
         ``note`` is a line for the report, saying where the matrix elements came from.
+
+        ``residence="streamed"`` runs :func:`streamed_cholesky` instead: the vectors go to a
+        scratch file as they are produced and the ``(naux, npair)`` array is never allocated,
+        which is the difference between a large system running and being refused. It returns
+        the same object, already spilled — see that function for what it does and does not
+        preserve.
         """
+        if residence == "streamed":
+            with timer("Cholesky decomposition (out-of-core)") as t:
+                store, _piv, residual, stats = streamed_cholesky(
+                    diagonal, column, nao, tol, max_vectors=max_vectors, orbits=orbits)
+            obj = cls(l_packed=None, nao=nao, origin="cholesky", tol=tol, residual=residual,
+                      orbit_complete=orbits is not None, _store=store, stream_stats=stats)
+            if report:
+                out.subsection(log, "Cholesky decomposition of the AO two-electron "
+                                    "integrals (out-of-core)")
+                obj.report()
+                if note:
+                    out.entry(log, "matrix elements", note)
+                out.entry(log, "decomposition time", t.wall, "s wall", fmt=out.TIME_FMT)
+            return obj
+        if residence not in ("in-core", "scratch"):
+            raise ValueError("residence must be \"in-core\", \"scratch\" or \"streamed\", "
+                             "got {!r}".format(residence))
         with timer("Cholesky decomposition") as t:
             # The capacity to start the factor array at — a prediction, grown if it is short.
             # Given here rather than left to be inferred, because this is the one caller that
@@ -869,7 +1331,7 @@ class ThreeIndexAO:
     @classmethod
     def from_eri(cls, eri: np.ndarray, nao: int, tol: float = DEFAULT_CHOLESKY_TOL,
                  *, max_vectors: Optional[int] = None, orbits: Optional[np.ndarray] = None,
-                 report: bool = True) -> "ThreeIndexAO":
+                 report: bool = True, residence: str = "in-core") -> "ThreeIndexAO":
         """Cholesky-decompose conventional AO ERIs that are already in memory.
 
         ``eri`` may be 8-fold packed (1-D, as the bridge provides), 4-fold packed
@@ -898,13 +1360,14 @@ class ThreeIndexAO:
         else:
             raise ValueError("unrecognised ERI array of shape {}".format(eri.shape))
         return cls.from_matrix(diag, column, nao, tol, max_vectors=max_vectors,
-                               orbits=orbits, report=report,
+                               orbits=orbits, report=report, residence=residence,
                                note="stored AO integral array")
 
     @classmethod
     def from_scalar_data(cls, data, tol: float = DEFAULT_CHOLESKY_TOL, *,
                          report: bool = True, orbit_pivots: bool = True,
-                         one_centre: bool = True) -> "ThreeIndexAO":
+                         one_centre: bool = True,
+                         release_eri: bool = True) -> "ThreeIndexAO":
         """Build the factors from an ingested :class:`~kuiva.interface.pyscf_bridge.
         ScalarX2CData`, taking whichever two-electron route the front-end chose.
 
@@ -926,6 +1389,15 @@ class ThreeIndexAO:
         ``orbit_pivots`` and ``one_centre`` here can no longer be applied — they belong to the
         front-end call on that route. A ``tol`` that disagrees with the one the factors were
         built at is reported rather than silently ignored.
+
+        ⚠ **On the stored route the container's integral array is RELEASED here**, once the
+        factors that replace it exist (``release_eri=False`` keeps it). It is the largest
+        thing the container holds and nothing downstream reads it again, so carrying it is
+        ``O(nao^4/8)`` of dead weight in every later phase — 7.7 GB at nao = 300 against
+        factor rows of 1.2 GB, and enough to make the factor spill on this route free
+        nothing that mattered. Pass ``release_eri=False`` to factorize the *same* container
+        again (a second threshold, different pivots); a second call after a release is
+        refused with that advice rather than served a container that looks empty.
         """
         prebuilt = getattr(data, "factors", None)
         if prebuilt is not None:
@@ -949,20 +1421,29 @@ class ThreeIndexAO:
         residence = getattr(data, "factor_residence", "in-core")
         if getattr(data, "df_cderi", None) is not None:
             obj = cls.from_df(data.df_cderi, data.nao, aux_name=getattr(data, "aux_name", None))
-            if residence == "scratch":
+            if residence in ("scratch", "streamed"):
                 # ⚠ Not an oversight: the DF factors *are* the container's own array, and
                 # the container keeps it (as it keeps the stored route's ERI array) so the
                 # factorization can be rebuilt. Spilling this alias would free nothing
                 # while telling the ledger it had — the accounting lie the budget exists
                 # to prevent — so the request is declined out loud instead.
-                log.warning("factors=\"scratch\" has no effect on the density-fitting "
-                            "route: the factor rows are the ingested container's own DF "
-                            "array, which stays in memory either way. Staying in core.")
+                log.warning("factors=%r has no effect on the density-fitting route: the "
+                            "factor rows are the ingested container's own DF array, which "
+                            "stays in memory either way, and there is no decomposition here "
+                            "to run out of core. Staying in core.", residence)
             if report:
                 out.subsection(log, "Density-fitted two-electron integrals")
                 obj.report()
             return obj
         if getattr(data, "eri", None) is None:
+            if getattr(data, "eri_released", False):
+                raise ValueError(
+                    "the stored AO integral array was released after the first "
+                    "factorization of this container (it is dead weight once the factors "
+                    "exist, and it is the largest array the container holds). To factorize "
+                    "the same ingested data twice — at a second threshold, or with "
+                    "different pivots — pass release_eri=False to the first call; "
+                    "otherwise re-ingest with run_scalar_x2c(...).")
             raise ValueError("the ingested data carries neither conventional ERIs nor DF "
                              "factors; nothing to factorize")
         orbits = None
@@ -976,7 +1457,19 @@ class ThreeIndexAO:
             else:
                 orbits = shell_pair_orbits(layout.ao_shell, layout.ao_atom,
                                            one_centre=one_centre)
-        obj = cls.from_eri(data.eri, data.nao, tol, orbits=orbits, report=report)
+        obj = cls.from_eri(data.eri, data.nao, tol, orbits=orbits, report=report,
+                           residence="streamed" if residence == "streamed" else "in-core")
+        # ⚠ Before the spill, not after: the two are the same phase's memory, and giving
+        # the larger array back first is what makes the spill's own reservation check see
+        # the truth. An explicit step and a stated one — a released array is a change in
+        # what the run holds, and the output file is where that is said.
+        if release_eri:
+            freed = data.release_eri()
+            if report and freed:
+                out.entry(log, "stored integral array released", freed, "GB",
+                          fmt="{:.3f}",
+                          note="dead weight once the factors exist; release_eri=False "
+                               "keeps it for a second factorization")
         if residence == "scratch":
             obj.spill_to_scratch()
         return obj
@@ -989,8 +1482,17 @@ class ThreeIndexAO:
         out.entry(logger, "auxiliary / Cholesky vectors", self.naux,
                   note="{:.1f} per AO".format(self.naux / max(self.nao, 1)))
         if self.is_spilled:
-            out.entry(logger, "factor residence", "scratch",
+            out.entry(logger, "factor residence",
+                      "scratch (decomposed out of core)" if self.stream_stats else "scratch",
                       note="{:.3f} GB streamed per pass".format(self.memory_gb))
+        if self.stream_stats:
+            # The cost of the out-of-core route is IO, so it is stated rather than left to
+            # be inferred from a wall time that is mostly the filesystem's.
+            st = self.stream_stats
+            out.entry(logger, "out-of-core update passes", st["passes"],
+                      note="{} candidate columns, {} history rows a block".format(
+                          st["candidate_columns"], st["history_rows"]))
+            out.entry(logger, "out-of-core data read", st["gb_read"], "GB", fmt="{:.2f}")
         if self.aux_name:
             out.entry(logger, "auxiliary basis", self.aux_name)
         if self.tol is not None:

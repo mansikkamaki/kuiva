@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from kuiva.integrals.transform import (DEFAULT_CHOLESKY_TOL, SpinorMOIntegrals, ThreeIndexAO,
+                                       _s8_column, _s8_diagonal,
                                        assemble_4c, check_permutational_symmetry, npair_of,
                                        pivoted_cholesky, shell_pair_orbits, transform_1e,
                                        transform_3c)
@@ -342,9 +343,10 @@ def test_the_front_end_pivots_on_symmetry_orbits_by_default(hf_conv):
     """⚠ The plumbing, which is what makes the symmetry statement true of a *calculation*
     rather than of a routine nobody calls that way. ``ScalarX2CData.ao_layout`` stopped being
     analysis-only metadata when this landed."""
-    factors = ThreeIndexAO.from_scalar_data(hf_conv, report=False)
+    factors = ThreeIndexAO.from_scalar_data(hf_conv, report=False, release_eri=False)
     assert factors.orbit_complete
-    plain = ThreeIndexAO.from_scalar_data(hf_conv, report=False, orbit_pivots=False)
+    plain = ThreeIndexAO.from_scalar_data(hf_conv, report=False, orbit_pivots=False,
+                                          release_eri=False)
     assert not plain.orbit_complete
     assert factors.residual <= DEFAULT_CHOLESKY_TOL and plain.residual <= DEFAULT_CHOLESKY_TOL
 
@@ -356,9 +358,12 @@ def test_a_missing_layout_falls_back_to_plain_pivoting_with_a_warning(hf_conv, k
     fact from a physical one."""
     import dataclasses
 
+    # ⚠ release_eri=False on a ``replace`` copy for a reason: the copy shares both the
+    # array and its ledger entry with the fixture, so releasing here would empty the
+    # fixture's reservation while every later test still holds its array.
     stripped = dataclasses.replace(hf_conv, ao_layout=None)
     with kuiva_caplog.at_level("WARNING"):
-        factors = ThreeIndexAO.from_scalar_data(stripped, report=False)
+        factors = ThreeIndexAO.from_scalar_data(stripped, report=False, release_eri=False)
     assert not factors.orbit_complete
     assert any("plain column pivoting" in r.message for r in kuiva_caplog.records)
 
@@ -865,7 +870,8 @@ def test_df_and_cholesky_routes_agree(hf_conv, hf_df, kuiva_caplog):
     tolerance ever has to be *loosened*, something has gone wrong; if a JK-fitting auxiliary
     is adopted it should be tightened.
     """
-    f_cd = ThreeIndexAO.from_scalar_data(hf_conv, DEFAULT_CHOLESKY_TOL, report=False)
+    f_cd = ThreeIndexAO.from_scalar_data(hf_conv, DEFAULT_CHOLESKY_TOL, report=False,
+                                         release_eri=False)
     with kuiva_caplog.at_level("WARNING"):
         f_df = ThreeIndexAO.from_scalar_data(hf_df, report=False)
     assert f_cd.origin == "cholesky" and f_df.origin == "df"
@@ -885,7 +891,7 @@ def test_full_pipeline_integrals_are_hermitian(hf_conv):
     ob = canonical_orthogonalization(hf_conv.s_ao)
     sb = expand_scalar_mos(ob.to_working(hf_conv.mo_coeff), hf_conv.mo_energy,
                            hf_conv.mo_occ)
-    f = ThreeIndexAO.from_scalar_data(hf_conv, report=False)
+    f = ThreeIndexAO.from_scalar_data(hf_conv, report=False, release_eri=False)
     c_ao = sb.transform_scalar_basis(ob.x, "ao").take(np.arange(4, 14))
     ints = SpinorMOIntegrals.build(f, hf_conv.h_x2c, c_ao, e_nuc=hf_conv.e_nuc,
                                    report=False)
@@ -902,7 +908,7 @@ def test_time_reversed_orbitals_give_conjugate_integrals(hf_conv):
     transform that involves both the spin blocking and the conjugation convention."""
     ob = canonical_orthogonalization(hf_conv.s_ao)
     sb = expand_scalar_mos(ob.to_working(hf_conv.mo_coeff)).transform_scalar_basis(ob.x, "ao")
-    f = ThreeIndexAO.from_scalar_data(hf_conv, report=False)
+    f = ThreeIndexAO.from_scalar_data(hf_conv, report=False, release_eri=False)
     rng = np.random.default_rng(30)
     n = 6
     u, _ = np.linalg.qr(rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n)))
@@ -1256,6 +1262,53 @@ def test_spilled_metadata_and_stream_accounting(scratch_limits):
     assert f.l_packed is None
 
 
+def test_the_stored_array_is_released_once_the_factors_exist():
+    """⚠ The mechanism, not only the observable: the array goes *and* its ledger entry goes.
+
+    Half a release is worse than none — a dropped array whose reservation stays behind is a
+    budget that refuses calculations the machine would have run, and an array kept under a
+    released reservation is the same lie in the other direction. Both halves are asserted
+    here, together with the one thing that must not change: the factors themselves.
+    """
+    from kuiva.util import resources as res
+
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    data = run_scalar_x2c(mol, fitting="conventional", screening="none")
+    eri_gb = float(np.asarray(data.eri).nbytes) / 1024.0 ** 3
+    held = res.BUDGET.resident_gb()
+    assert any("ERI" in a.label for a in res.BUDGET._resident)
+
+    kept = ThreeIndexAO.from_scalar_data(data, CD_TOL, report=False, release_eri=False)
+    assert data.eri is not None and not data.eri_released
+
+    obj = ThreeIndexAO.from_scalar_data(data, CD_TOL, report=False)
+    assert data.eri is None and data.eri_released
+    assert not any("ERI" in a.label for a in res.BUDGET._resident)
+    # The ledger gave back exactly the array, and nothing else: both factorizations are
+    # still live and still reserved, so the difference is the ERI line alone.
+    assert res.BUDGET.resident_gb() == pytest.approx(
+        held - eri_gb + kept.memory_gb + obj.memory_gb, abs=1e-9)
+    np.testing.assert_array_equal(kept.l_packed, obj.l_packed)
+    assert data.release_eri() == 0.0                      # idempotent
+
+
+def test_a_second_factorization_after_the_release_refuses_with_the_knob():
+    """⚠ A refusal that teaches, not a container that merely looks empty: the message has to
+    name ``release_eri=False``, because "factorize this ingested data twice" is a real thing
+    to want (a threshold series) and the container cannot tell the user that by itself."""
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    data = run_scalar_x2c(mol, fitting="conventional", screening="none")
+    ThreeIndexAO.from_scalar_data(data, CD_TOL, report=False)
+    with pytest.raises(ValueError, match="release_eri=False"):
+        ThreeIndexAO.from_scalar_data(data, 1e-6, report=False)
+    # And a container that never had the array still gets the generic complaint, so the two
+    # states stay distinguishable.
+    import dataclasses
+    empty = dataclasses.replace(data, eri_released=False)
+    with pytest.raises(ValueError, match="neither conventional ERIs nor DF"):
+        ThreeIndexAO.from_scalar_data(empty, CD_TOL, report=False)
+
+
 def test_front_end_scratch_residence_is_recorded_and_numerically_inert(scratch_limits):
     """The whole axis end to end: an explicit factors="scratch" run must carry the record,
     hand back spilled factors, and change nothing numerical. ⚠ Bitwise identity of the spill
@@ -1278,13 +1331,160 @@ def test_front_end_scratch_residence_is_recorded_and_numerically_inert(scratch_l
     # themselves, so cross-route factor comparison would measure that, not the spill.
     conv = run_scalar_x2c(mol, fitting="conventional", screening="none",
                           factors="scratch")
-    obj = ThreeIndexAO.from_scalar_data(conv, CD_TOL, report=False)
+    obj = ThreeIndexAO.from_scalar_data(conv, CD_TOL, report=False, release_eri=False)
     assert obj.is_spilled
     object.__setattr__(conv, "factor_residence", "in-core")
     ref = ThreeIndexAO.from_scalar_data(conv, CD_TOL, report=False)
     assert not ref.is_spilled
     np.testing.assert_array_equal(obj.unpack(slice(0, obj.naux)),
                                   ref.unpack(slice(0, ref.naux)))
+
+
+# --- The out-of-core decomposition --------------------------------------------------------
+
+def _reconstruct(f):
+    """The two-electron integrals a factorization stands for, as a dense array."""
+    blk = f.unpack(slice(0, f.naux))
+    return np.einsum("pij,pkl->ijkl", blk, blk)
+
+
+def test_the_streamed_decomposition_reproduces_the_in_core_factorization(scratch_limits):
+    """⚠ The claim is about the **integrals**, not about the factor rows, and the difference
+    matters. The orbit path emits an eigenbasis of each orbit's Gram matrix, so two runs that
+    take equal-diagonal orbits in a different order produce different vectors spanning the
+    same space — an O(1) element-wise difference in ``L`` and none at all in ``(pq|rs)``.
+    What is asserted is therefore the vector *count*, the residual bound, and the
+    reconstructed integrals; the same discipline that forbids anything downstream from
+    depending on a rotation inside a degenerate block.
+
+    The tight budget is the point of the test: it forces several update passes, which is the
+    whole out-of-core mechanism (one pass would just be the in-core algorithm with a file).
+    """
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    data = run_scalar_x2c(mol, fitting="conventional", screening="none")
+    orbits = shell_pair_orbits(data.ao_layout.ao_shell, data.ao_layout.ao_atom)
+    core = ThreeIndexAO.from_eri(data.eri, data.nao, CD_TOL, orbits=orbits, report=False)
+    exact = _reconstruct(core)
+
+    from kuiva.integrals.transform import streamed_cholesky
+
+    n = npair_of(data.nao)
+    seen_passes = []
+    for budget in (4e-4, 1e-3, 1e-2):
+        store, _piv, residual, stats = streamed_cholesky(
+            _s8_diagonal(data.eri, n), lambda q: _s8_column(data.eri, n, q), data.nao,
+            CD_TOL, orbits=orbits, budget_gb=budget)
+        obj = ThreeIndexAO(l_packed=None, nao=data.nao, origin="cholesky", tol=CD_TOL,
+                           residual=residual, orbit_complete=True, _store=store,
+                           stream_stats=stats)
+        assert obj.naux == core.naux                       # the same pivot sequence
+        assert obj.residual <= CD_TOL
+        np.testing.assert_allclose(_reconstruct(obj), exact, rtol=0.0, atol=1e-13)
+        seen_passes.append(stats["passes"])
+    # Budget-independent numbers, budget-dependent IO: that is what an out-of-core route is.
+    assert max(seen_passes) > min(seen_passes) and max(seen_passes) > 1
+
+
+def test_a_tight_budget_forces_several_passes_and_re_reads_no_column_twice(scratch_limits):
+    """The retention rule, which is what keeps a narrow budget from becoming quadratic.
+
+    A pass ends the moment the true argmax leaves its candidate set — that is what keeps the
+    pivot order exactly the in-core one — so without retaining the candidates it did not
+    consume, a pass that ended early would throw away every column it had just evaluated. On
+    the integral-direct route those are integrals, re-evaluated from scratch.
+    """
+    from kuiva.integrals.transform import streamed_cholesky
+
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    data = run_scalar_x2c(mol, fitting="conventional", screening="none")
+    n = npair_of(data.nao)
+    orbits = shell_pair_orbits(data.ao_layout.ao_shell, data.ao_layout.ao_atom)
+    store, _piv, residual, stats = streamed_cholesky(
+        _s8_diagonal(data.eri, n), lambda q: _s8_column(data.eri, n, q), data.nao, CD_TOL,
+        orbits=orbits, budget_gb=4e-4)
+    assert stats["passes"] > 1 and stats["gb_read"] > 0.0
+    # Every column is evaluated at least once; retention holds the re-evaluations to a small
+    # multiple rather than one set per pass.
+    assert n <= stats["columns"] < n + stats["passes"] * stats["candidate_columns"]
+    assert residual <= CD_TOL
+    store.close()
+
+
+def test_a_streamed_factorization_is_a_spilled_store_that_never_had_a_reservation(
+        scratch_limits):
+    """⚠ The ledger half: the in-core route reserves the factor array and the spill gives it
+    back, so a factorization that never allocated it must never have reserved it either — an
+    unbalanced ledger refuses calculations the machine would have run."""
+    import gc
+    import os as _os
+    from kuiva.util import resources as res
+
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    data = run_scalar_x2c(mol, fitting="conventional", screening="none")
+    base = res.BUDGET.resident_gb()
+    obj = ThreeIndexAO.from_eri(data.eri, data.nao, CD_TOL, report=False,
+                                residence="streamed")
+    assert obj.is_spilled and obj.l_packed is None and obj._reservation is None
+    assert res.BUDGET.resident_gb() == pytest.approx(base)
+    assert obj.memory_gb > 0.0 and obj.stream_stats is not None
+    path = obj._store.path
+    assert _os.path.exists(path)
+    del obj
+    gc.collect()
+    assert not _os.path.exists(path)           # the file cannot outlive the factors
+
+
+def test_the_streamed_decomposition_refuses_rather_than_split_an_orbit(monkeypatch, tmp_path):
+    """⚠ The whole-orbit rule at the one place a *budget* could break it: an orbit is the
+    unit the block path is invariant in, so a working set that cannot hold the widest one is
+    refused — never quietly given a partial orbit, which would look like ordinary blocking
+    and would silently return the threshold-dependent symmetry the orbit path exists to
+    remove."""
+    from kuiva.integrals.transform import streamed_cholesky
+    from kuiva.util import resources as res
+
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    data = run_scalar_x2c(mol, fitting="conventional", screening="none")
+    n = npair_of(data.nao)
+    orbits = shell_pair_orbits(data.ao_layout.ao_shell, data.ao_layout.ao_atom)
+    monkeypatch.setattr(res.BUDGET, "_limits",
+                        res.ResourceLimits(memory_gb=1e-5, source="test",
+                                           scratch_dir=str(tmp_path)))
+    with pytest.raises(res.MemoryLimitError, match="streamed Cholesky working set"):
+        streamed_cholesky(_s8_diagonal(data.eri, n),
+                          lambda q: _s8_column(data.eri, n, q), data.nao, CD_TOL,
+                          orbits=orbits, budget_gb=1e-6)
+
+
+def test_front_end_streamed_residence_is_recorded_and_numerically_inert(scratch_limits):
+    """The axis end to end on the route that will use it: ``fitting="cholesky-direct"``
+    never forms the integral array and ``factors="streamed"`` never forms the factor array,
+    so the whole front end runs without either — and produces the same integrals."""
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    core = run_scalar_x2c(mol, fitting="cholesky-direct", screening="none")
+    flow = run_scalar_x2c(mol, fitting="cholesky-direct", screening="none",
+                          factors="streamed")
+    assert flow.factor_residence == "streamed" and flow.eri is None
+    assert flow.factors.is_spilled and flow.factors.l_packed is None
+    assert flow.factors.naux == core.factors.naux
+    np.testing.assert_allclose(_reconstruct(flow.factors), _reconstruct(core.factors),
+                               rtol=0.0, atol=1e-13)
+    # And the stored route honours the same record where it decomposes, downstream.
+    conv = run_scalar_x2c(mol, fitting="conventional", screening="none",
+                          factors="streamed")
+    obj = ThreeIndexAO.from_scalar_data(conv, CD_TOL, report=False)
+    assert obj.is_spilled and obj.stream_stats is not None and conv.eri is None
+
+
+def test_an_explicit_streamed_request_without_a_scratch_directory_refuses_early(monkeypatch):
+    """Same rule as the spill: no scratch directory is a configuration error, raised before
+    the SCF is paid for rather than after the integrals have been evaluated."""
+    from kuiva.util import resources as res
+    monkeypatch.setattr(res.BUDGET, "_limits",
+                        res.ResourceLimits(memory_gb=8.0, source="test"))
+    mol = Molecule.from_xyz_string("H 0 0 0\nF 0 0 0.917", basis="x2c-SVPall-2c")
+    with pytest.raises(res.ConfigurationError, match="scratch"):
+        run_scalar_x2c(mol, fitting="cholesky-direct", screening="none", factors="streamed")
 
 
 def test_an_explicit_scratch_request_without_a_scratch_directory_refuses_early(monkeypatch):

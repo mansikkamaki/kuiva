@@ -393,7 +393,13 @@ def extract_parameters(shells: AtomicShells, data=None, *,
         if data is None:
             raise ValueError("extraction needs either the ingested solution it should build "
                              "integral factors from, or the factors themselves")
-        factors = ThreeIndexAO.from_scalar_data(data, cholesky_tol, report=report)
+        # ⚠ ``release_eri=False``: this borrows a container it does not own. The pipeline
+        # releases the stored integral array once the factors replace it, but an extraction
+        # is one analysis among several a caller may run over the *same* ingested atom —
+        # a second shell set, a second threshold — and dropping the array under it would
+        # make the second call refuse.
+        factors = ThreeIndexAO.from_scalar_data(data, cholesky_tol, report=report,
+                                                release_eri=False)
 
     orbitals = list(shells)
     if not orbitals:

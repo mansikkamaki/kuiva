@@ -151,7 +151,9 @@ def test_the_factorized_transform_agrees_with_an_explicit_four_index_one(oxygen)
     from pyscf import ao2mo
 
     data, shells = oxygen
-    factors = ThreeIndexAO.from_scalar_data(data, 1e-12, report=False)
+    # release_eri=False: the reference half of this test reads the same container's
+    # integral array, and ``oxygen`` is shared with every other test in the module.
+    factors = ThreeIndexAO.from_scalar_data(data, 1e-12, report=False, release_eri=False)
     mine, slices = shell_mo_integrals(shells, factors)
 
     columns = np.hstack([shell.coefficients for shell in shells])
@@ -325,7 +327,8 @@ def test_the_integral_array_is_sized_exactly(oxygen):
     """Two-sided against a real array's own ``nbytes``, so a sizing function that grows a
     safety factor fails rather than quietly over-reserving."""
     data, shells = oxygen
-    factors = ThreeIndexAO.from_scalar_data(data, 1e-8, report=False)
+    factors = ThreeIndexAO.from_scalar_data(data, 1e-8, report=False,
+                                            release_eri=False)
     eri, _ = shell_mo_integrals(shells, factors)
     n = sum(shell.size for shell in shells)
 

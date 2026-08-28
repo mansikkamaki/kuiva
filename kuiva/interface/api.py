@@ -238,11 +238,13 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
     shifted-space workspace and vector sets) too, so a request those stages cannot hold is
     refused here, before the SCF is paid for. Planning only; the CASSCF still states its
     own space.
-    ``factors`` is where the three-index factor rows live after the decomposition:
-    ``"in-core"``, ``"scratch"`` (spilled to a scratch file and streamed back in sequential
-    blocks), or ``"auto"`` (the default — in-core wherever that fits the memory limit,
-    spilled where it does not, announced on its own output line). Both residences produce
-    bitwise-identical integrals.
+    ``factors`` is where the three-index factor rows live: ``"in-core"``, ``"scratch"``
+    (spilled to a scratch file after the decomposition and streamed back in sequential
+    blocks — bitwise identical), ``"streamed"`` (the decomposition itself runs out of core,
+    writing each vector to scratch as it is produced, so the factor array is never allocated;
+    ⚠ **not** bitwise, see :func:`kuiva.integrals.transform.streamed_cholesky`), or
+    ``"auto"`` (the default — each rung taken only where it lowers the planned peak below the
+    memory limit, announced on its own output line).
     """
     out.section(log, "Scalar-relativistic X2C reference")
     out.entries(log, [

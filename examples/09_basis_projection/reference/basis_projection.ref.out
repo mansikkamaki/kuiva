@@ -2,7 +2,7 @@
                                    K U I V A                                    
                  relativistic multireference quantum chemistry                  
                 example 9: a CASSCF continued in a larger basis                 
-                                 version 0.22.0                                 
+                                 version 0.27.0                                 
                 compiled kernels: disabled (KUIVA_KERNELS=numpy)                
            threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
 ================================================================================
@@ -35,17 +35,17 @@
    phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF                                                       external 
-   two-electron integrals            0.002           0.000       0.002  ok       
-   spinor MO transform               0.006           0.004       0.009  ok       
+   two-electron integrals            0.001           0.001       0.002  ok       
+   spinor MO transform               0.005           0.004       0.009  ok       
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
      mol.max_memory = the rest of the limit
-     conventional AO ERI array                                0.001  GB   (nao = 28; grows as nao^4)
+     conventional AO ERI array                                0.001  GB   (nao = 28; grows as nao^4; released once the factors exist)
      three-index AO factors                                   0.001  GB   (naux ~ 336)
      three-index MO block B^P_p,occ                           0.004  GB   (56 spinors x 14 occupied)
    memory limit                                               6.000  GB   (set for this calculation)
    planned peak                                               0.009  GB
-   machine available                                         11.106  GB
+   machine available                                         12.023  GB
    SCF reference                                                RHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            28
@@ -87,7 +87,7 @@
    Kramers pairs                                                 28
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    1.73e-14
+   orthonormality error                                    1.77e-14
 
 ================================================================================
  Two-electron integrals                                               t = 0.44 s
@@ -103,18 +103,19 @@
    factor storage                                             0.001  GB
    matrix elements                               stored AO integral array
    decomposition time                                          0.02  s wall
+   stored integral array released                             0.001  GB   (dead weight once the factors exist; release_eri=False keeps it for a second factorization)
  *** WARNING [mcscf.casci] at the starting orbitals the state average ends 0.07 cm^-1 below the first root it leaves out, which is under the 50 cm^-1 that makes a boundary unambiguous. Averaging over 1 states may be cutting a degenerate manifold in half, and if it is, the averaged density is not symmetric, the orbitals optimize on that, and the result looks entirely plausible. Next energies [cm^-1]: 0.00, 0.07, 0.12, 298.41, 10061.12, 10062.50, 10062.89, 10621.35, 11785.49. Either raise n_states to the next real gap or confirm the set is complete.
 CASSCF
   active space     : CAS(6, 8)  4 lowest Kramers pairs of l=1 character on 1 N and 2 N
   solver           : ci
-  E(CASSCF) [Eh]   : -108.946432453854
+  E(CASSCF) [Eh]   : -108.946432512685
   converged        : True
-  macro-iterations : 37
-  |grad|           : 7.60e-05
+  macro-iterations : 28
+  |grad|           : 6.62e-05
   states           : 1
 
 ================================================================================
- Scalar-relativistic X2C reference                                   t = 31.96 s
+ Scalar-relativistic X2C reference                                    t = 4.10 s
 ================================================================================
    atoms                                                          2   (N)
    charge                                                         0
@@ -124,17 +125,17 @@ CASSCF
    phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF                                                       external 
-   two-electron integrals            0.027           0.000       0.027  ok       
-   spinor MO transform               0.046           0.031       0.077  ok       
+   two-electron integrals            0.012           0.014       0.026  ok       
+   spinor MO transform               0.031           0.031       0.062  ok       
    ------------------------  -------------  --------------  ----------  ---------
    scalar X2C SCF: allocated by PySCF, not accounted for here; it is given
      mol.max_memory = the rest of the limit
-     conventional AO ERI array                                0.014  GB   (nao = 62; grows as nao^4)
+     conventional AO ERI array                                0.014  GB   (nao = 62; grows as nao^4; released once the factors exist)
      three-index AO factors                                   0.011  GB   (naux ~ 744)
      three-index MO block B^P_p,occ                           0.019  GB   (124 spinors x 14 occupied)
    memory limit                                               6.000  GB   (set for this calculation)
-   planned peak                                               0.077  GB
-   machine available                                         11.083  GB
+   planned peak                                               0.062  GB
+   machine available                                         11.770  GB
    SCF reference                                                RHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            62
@@ -145,8 +146,8 @@ CASSCF
    nuclear repulsion                                23.615376443607  Eh
    scalar X2C SCF energy                          -109.046282893849  Eh
    SCF converged                                                yes
-   SCF time                                                    0.12  s wall   (0.48 s cpu)
-   AO integral time                                            0.04  s wall   (0.18 s cpu)
+   SCF time                                                    0.11  s wall   (0.42 s cpu)
+   AO integral time                                            0.04  s wall   (0.17 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
    two-component Hamiltonian                                 X2C-1e
@@ -158,7 +159,7 @@ CASSCF
    two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
 
 ================================================================================
- Orthonormal working basis                                           t = 32.18 s
+ Orthonormal working basis                                            t = 4.31 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                            62
@@ -169,17 +170,17 @@ CASSCF
    condition number of S (retained)                       2.258e+04
 
 ================================================================================
- Spinor expansion                                                    t = 32.19 s
+ Spinor expansion                                                     t = 4.31 s
 ================================================================================
    scalar basis functions                                        62   (working basis)
    spinors                                                      124
    Kramers pairs                                                 62
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    1.01e-12
+   orthonormality error                                    1.00e-12
 
 ================================================================================
- Two-electron integrals                                              t = 32.19 s
+ Two-electron integrals                                               t = 4.31 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -192,29 +193,30 @@ CASSCF
    factor storage                                             0.010  GB
    matrix elements                               stored AO integral array
    decomposition time                                          0.15  s wall
+   stored integral array released                             0.014  GB   (dead weight once the factors exist; release_eri=False keeps it for a second factorization)
 
 ================================================================================
- 2. The production basis from its own SCF guess                      t = 32.34 s
+ 2. The production basis from its own SCF guess                       t = 4.46 s
 ================================================================================
    given the SAME iteration budget as the projected run below, not enough
    to converge -- the ratio is the point, not the endpoint.
  *** WARNING [mcscf.casci] at the starting orbitals the state average ends 0.06 cm^-1 below the first root it leaves out, which is under the 50 cm^-1 that makes a boundary unambiguous. Averaging over 1 states may be cutting a degenerate manifold in half, and if it is, the averaged density is not symmetric, the orbitals optimize on that, and the result looks entirely plausible. Next energies [cm^-1]: 0.00, 0.06, 0.17, 1149.61, 9863.60, 9871.87, 9872.22, 10270.36, 10309.21. Either raise n_states to the next real gap or confirm the set is complete.
- *** WARNING [mcscf.orbopt] orbital optimization did not converge in 12 macro-iterations (|g| = 1.758e-01, target 1.0e-04); the orbitals are the last iterate and may not be stationary
+ *** WARNING [mcscf.orbopt] orbital optimization did not converge in 12 macro-iterations (|g| = 5.860e-01, target 1.0e-04); the orbitals are the last iterate and may not be stationary
 CASSCF
   active space     : CAS(6, 8)  4 lowest Kramers pairs of l=1 character on 1 N and 2 N
   solver           : ci
-  E(CASSCF) [Eh]   : -108.808670303998
+  E(CASSCF) [Eh]   : -108.807283674523
   converged        : False
   macro-iterations : 12
-  |grad|           : 1.76e-01
+  |grad|           : 5.86e-01
   states           : 1
 
 ================================================================================
- 3. The production basis, continued from the cheap calculation       t = 51.44 s
+ 3. The production basis, continued from the cheap calculation       t = 15.44 s
 ================================================================================
 
 ================================================================================
- Basis-set projection of the orbitals                                t = 51.44 s
+ Basis-set projection of the orbitals                                t = 15.44 s
 ================================================================================
    source basis                                  x2c-SVPall-2c [x2c-2c, segmented, fit=df]
    target basis                                  x2c-TZVPall-2c [x2c-2c, segmented, fit=df]
@@ -224,19 +226,19 @@ CASSCF
    orthonormalization                                       blocked
    orbitals projected                                             8
    orbitals taken from the target's own SCF                     116
-   retained norm, all source orbitals (min / mean)0.906068 / 0.969643
+   retained norm, all source orbitals (min / mean)0.906067 / 0.969643
    active space overlap (min / mean)             0.999621 / 0.999772
    active Gram floor                                       9.99e-01
-   complement separation (kept / discarded)      1.00e+00 / 2.55e-15
-   Kramers pairing deviation (before / after)    9.76e-01 / 7.77e-16   (pairs rebuilt)
+   complement separation (kept / discarded)      1.00e+00 / 1.62e-15
+   Kramers pairing deviation (before / after)    9.74e-01 / 1.11e-15   (pairs rebuilt)
 
 ================================================================================
- CASSCF                                                              t = 51.50 s
+ CASSCF                                                              t = 15.51 s
 ================================================================================
    active space                                           CAS(6, 8)   (4 lowest Kramers pairs of l=1 character on 1 N and 2 N (projected from x2c-SVPall-2c [x2c-2c, segmented, fit=df]))
    inactive / active / virtual spinors                  8 / 8 / 108
    determinants                                                  28
-   state-average boundary gap                              68574.63  cm^-1   (to root 2 of 28, at the starting orbitals)
+   state-average boundary gap                              68572.45  cm^-1   (to root 2 of 28, at the starting orbitals)
 
  -- Orbital optimization -------------------------------------------------------
    inactive / active / virtual spinors                  8 / 8 / 108
@@ -246,74 +248,75 @@ CASSCF
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      1      -109.081115321521   -3.792e-02   2.133e+00    0.0149  2nd          0.73
-      2      -109.082363169222   -1.248e-03   3.183e-01    0.0050  2nd          1.10
-      3      -109.082646716878   -2.835e-04   4.711e-02    0.0159  2nd          2.16
-      4      -109.082666840525   -2.012e-05   7.703e-03    0.0104  2nd          4.62
-      5      -109.082667095814   -2.553e-07   5.868e-04    0.0081  2nd         20.28
-      6      -109.082667095814    0.000e+00   4.781e-05    0.0012  2nd         22.65
+      1      -109.080295007340   -3.698e-02   2.129e+00    0.0141  2nd          0.78
+      2      -109.082355358238   -2.060e-03   4.618e-01    0.0048  2nd          0.82
+      3      -109.082653264146   -2.979e-04   6.329e-02    0.0155  2nd          1.08
+      4      -109.082666920448   -1.366e-05   1.452e-02    0.0063  2nd          1.33
+      5      -109.082667095506   -1.751e-07   8.874e-04    0.0044  2nd          2.58
+      6      -109.082667102209   -6.703e-09   1.561e-04    0.0008  2nd          3.01
+      7      -109.082667102209    0.000e+00   5.663e-05    0.0001  2nd          2.09
    ----  ---------------------  -----------  ----------  --------  ------  ---------
    converged
-   second-order steps taken                                       6
-   Hessian-vector products                                      134
+   second-order steps taken                                       7
+   Hessian-vector products                                       84
    rejected steps                                                 0
      state                 E [Eh]     rel [cm^-1]     weight
    -------  ---------------------  --------------  ---------
-         0      -109.082667095814            0.00     1.0000
+         0      -109.082667102209            0.00     1.0000
    -------  ---------------------  --------------  ---------
    28 applications of H in 0 iterations
-   state-average boundary gap                              69021.29  cm^-1   (to root 2 of 28, at the converged orbitals)
-   state-average spin invariance                          1.282e-01   (leaning on the spin-orbit structure)
+   state-average boundary gap                              69025.81  cm^-1   (to root 2 of 28, at the converged orbitals)
+   state-average spin invariance                          3.732e-01   (leaning on the spin-orbit structure)
 CASSCF
   active space                   : CAS(6, 8)  4 lowest Kramers pairs of l=1 character on 1 N and 2 N (projected from x2c-SVPall-2c [x2c-2c, segmented, fit=df])
   solver                         : ci
-  E(CASSCF) [Eh]                 : -109.082667095814
+  E(CASSCF) [Eh]                 : -109.082667102209
   converged                      : True
-  macro-iterations               : 6
-  |grad|                         : 4.78e-05
+  macro-iterations               : 7
+  |grad|                         : 5.66e-05
   states                         : 1
   projected active-space overlap : 0.999621
 
  -- What the projection carried ------------------------------------------------
    orbitals carried across                                        8   (carry=active)
    orbitals taken from the target's own SCF                     116
-   retained norm of the carried orbitals (min)             0.999307
+   retained norm of the carried orbitals (min)             0.999249
    active-space principal overlaps (min / max)   0.999621 / 0.999887
-   complement separation (kept / discarded)      1.00e+00 / 2.55e-15
-   Kramers pairing deviation of the projected orbitals          1.85e-14   (pairs rebuilt on the carried block before the complement)
+   complement separation (kept / discarded)      1.00e+00 / 1.62e-15
+   Kramers pairing deviation of the projected orbitals          8.10e-15   (pairs rebuilt on the carried block before the complement)
 
  -- The two routes to the same number ------------------------------------------
-   E(CASSCF), from the SCF guess                  -108.808670303998  Eh
-   E(CASSCF), from the projection                 -109.082667095814  Eh
+   E(CASSCF), from the SCF guess                  -108.807283674523  Eh
+   E(CASSCF), from the projection                 -109.082667102209  Eh
    macro-iterations, from the SCF guess                          12   (budget exhausted)
-   macro-iterations, from the projection                          6   (converged)
-   |grad|, from the SCF guess                             1.758e-01
-   |grad|, from the projection                            4.781e-05
+   macro-iterations, from the projection                          7   (converged)
+   |grad|, from the SCF guess                             5.860e-01
+   |grad|, from the projection                            5.663e-05
 
 ================================================================================
- 4. Carrying the whole orbital set instead (carry='all')            t = 103.48 s
+ 4. Carrying the whole orbital set instead (carry='all')             t = 27.53 s
 ================================================================================
    the non-default policy, shown for contrast: it carries the small basis'
    inactive orbitals too, which are not eigenvectors of anything here.
-   macro-iterations, carry='active'                               6
+   macro-iterations, carry='active'                               7
    macro-iterations, carry='all'                                  7   (converged)
 
 ================================================================================
- 5. The reverse direction: production basis back onto the cheap one t = 161.35 s
+ 5. The reverse direction: production basis back onto the cheap one  t = 41.00 s
 ================================================================================
    the same call. Going down discards a variational space rather than
    reproducing one, so the retained norms are no longer near 1 and say so.
  *** WARNING [orth.project] 68 virtual orbital(s) were dropped: the target basis holds 56 spinors against the source's 124. Projecting onto a smaller basis discards a variational space rather than reproducing it.
    virtual orbitals the small basis cannot hold                  68
-   retained norm over ALL source orbitals (min)            0.487770
-   retained norm over the carried active space (min)          0.998249
-   active-space principal overlap (min)                    0.999062
-   E(CASSCF) in the cheap basis, direct           -108.946432453854  Eh
-   E(CASSCF) in the cheap basis, from above       -108.946432512544  Eh
-   macro-iterations                                               5   (converged)
+   retained norm over ALL source orbitals (min)            0.487769
+   retained norm over the carried active space (min)          0.998400
+   active-space principal overlap (min)                    0.999061
+   E(CASSCF) in the cheap basis, direct           -108.946432512685  Eh
+   E(CASSCF) in the cheap basis, from above       -108.946432497621  Eh
+   macro-iterations                                               4   (converged)
 
 ================================================================================
- Result                                                             t = 165.82 s
+ Result                                                              t = 42.57 s
 ================================================================================
    check                                                           verdict   
    --------------------------------------------------------------  ----------
@@ -332,55 +335,56 @@ CASSCF
    checks                                             all 11 passed
 
 ================================================================================
- Timings                                                            t = 165.82 s
+ Timings                                                             t = 42.57 s
 ================================================================================
    region                           calls     wall [s]       cpu [s]   cpu/wall   % wall
    ------------------------------  ------  -----------  ------------  ---------  -------
-   scalar X2C SCF                       2         0.16          0.63       3.99      0.1
-   AO integrals                         2         0.05          0.20       4.00      0.0
-     angular-momentum integrals         2         0.00          0.00       3.99      0.0
+   scalar X2C SCF                       2         0.15          0.59       3.99      0.3
+   AO integrals                         2         0.05          0.19       4.00      0.1
+     angular-momentum integrals         2         0.00          0.00       4.00      0.0
      electric dipole integrals          2         0.00          0.00       4.06      0.0
-   X2C spin-orbit integrals             2         0.04          0.18       3.99      0.0
+   X2C spin-orbit integrals             2         0.04          0.17       4.00      0.1
    orthogonalization (canonical)        2         0.00          0.00       4.00      0.0
-   Cholesky decomposition               2         0.18          0.71       4.00      0.1
-   CAS determinant addressing           5         0.00          0.00       3.96      0.0
-   CAS excitation map                   5         0.00          0.01       4.00      0.0
-   CAS integrals                       15         1.19          4.75       4.00      0.7
-     J/K build                         15         0.55          2.20       4.00      0.3
-     3-index transform                 15         0.60          2.39       4.00      0.4
-   dense CI diagonalization            15         0.07          0.29       4.00      0.0
-     sigma step 1: gather F           420         0.02          0.09       4.02      0.0
-     sigma step 2: GEMM               420         0.01          0.02       2.34      0.0
-     sigma step 3: gather sigma       420         0.02          0.10       4.02      0.0
-     sigma one-electron term          420         0.00          0.02       3.96      0.0
-   full CI: diagonal                    5         0.00          0.00       3.99      0.0
-   RDM gather F                         5         0.00          0.00       4.01      0.0
-   RDM accumulation F^H F               5         0.00          0.00       4.01      0.0
-   macro-iteration                     67       163.56        654.21       4.00     98.9
-     J/K build                        130         4.98         19.91       4.00      3.0
-     Hessian-vector product          1266       149.25        596.98       4.00     90.3
-       J/K build                     2532       103.28        413.11       4.00     62.5
-       3-index transform             1266        30.07        120.27       4.00     18.2
-     CAS integrals                     63         3.32         13.30       4.00      2.0
-       J/K build                       63         1.46          5.82       4.00      0.9
-       3-index transform               63         1.73          6.94       4.00      1.0
-     full CI: diagonal                 63         0.00          0.01       3.96      0.0
-     dense CI diagonalization          63         0.32          1.26       4.00      0.2
-       sigma step 1: gather F        1764         0.10          0.41       4.02      0.1
-       sigma step 2: GEMM            1764         0.03          0.07       2.45      0.0
-       sigma step 3: gather sigma    1764         0.11          0.43       4.03      0.1
-       sigma one-electron term       1764         0.02          0.08       3.96      0.0
-     RDM gather F                      63         0.00          0.02       3.99      0.0
-     RDM accumulation F^H F            63         0.00          0.02       4.02      0.0
-   basis projection                     3         0.11          0.44       4.00      0.1
+   Cholesky decomposition               2         0.17          0.69       4.00      0.4
+   CAS determinant addressing           5         0.00          0.00       3.98      0.0
+   CAS excitation map                   5         0.00          0.01       4.01      0.0
+   CAS integrals                       15         0.97          3.87       4.00      2.3
+     J/K build                         15         0.51          2.06       4.00      1.2
+     3-index transform                 15         0.44          1.76       4.00      1.0
+   dense CI diagonalization            15         0.08          0.31       4.00      0.2
+     sigma step 1: gather F           420         0.02          0.09       4.01      0.1
+     sigma one-electron term          420         0.00          0.01       4.06      0.0
+     sigma step 2: GEMM               420         0.01          0.04       4.06      0.0
+     sigma step 3: gather sigma       420         0.03          0.10       4.03      0.1
+   full CI: diagonal                    5         0.00          0.00       3.95      0.0
+   RDM gather F                         5         0.00          0.00       3.96      0.0
+   RDM accumulation F^H F               5         0.00          0.00       3.99      0.0
+   macro-iteration                     58        40.54        162.15       4.00     96.3
+     J/K build                         59         2.79         11.15       4.00      6.6
+     MO factor square                  58         8.34         33.38       4.00     19.8
+       3-index transform               58         7.44         29.76       4.00     17.7
+     exact Hessian diagonal            58         2.91         11.65       4.00      6.9
+     Hessian-vector product           439        21.61         86.44       4.00     51.3
+     CAS integrals                     54         3.15         12.59       4.00      7.5
+       J/K build                       54         1.54          6.17       4.00      3.7
+       3-index transform               54         1.53          6.10       4.00      3.6
+     full CI: diagonal                 54         0.00          0.01       3.95      0.0
+     dense CI diagonalization          54         0.27          1.08       4.00      0.6
+       sigma step 1: gather F        1512         0.08          0.34       4.01      0.2
+       sigma one-electron term       1512         0.01          0.04       4.02      0.0
+       sigma step 2: GEMM            1512         0.03          0.13       4.07      0.1
+       sigma step 3: gather sigma    1512         0.09          0.36       4.04      0.2
+     RDM gather F                      54         0.00          0.01       4.00      0.0
+     RDM accumulation F^H F            54         0.00          0.01       4.02      0.0
+   basis projection                     3         0.11          0.44       4.00      0.3
    ------------------------------  ------  -----------  ------------  ---------  -------
-   total (top-level regions)                                 165.37  s wall
-   total CPU                                                 661.44  s cpu
+   total (top-level regions)                                  42.11  s wall
+   total CPU                                                 168.42  s cpu
    cost is cpu [s]; wall [s] also reflects thread count and, on a
    thermally clamped machine, time the CPU was forced to stay idle.
 
  -- Memory ---------------------------------------------------------------------
    limit                                                      6.000  GB   (set for this calculation)
-   pre-flight estimate                                        0.077  GB
-   declared peak (Kuiva arrays)                               0.036  GB
-   peak resident set (VmHWM)                                  0.335  GB
+   pre-flight estimate                                        0.062  GB
+   declared peak (Kuiva arrays)                               0.175  GB
+   peak resident set (VmHWM)                                  0.817  GB

@@ -147,7 +147,16 @@ def main() -> int:
     # on the overlap eigenvalues, and a Cholesky decomposition of the two-electron
     # integrals at 1e-8. Cholesky rather than density fitting, because a Cholesky threshold
     # is an error bound you choose and a fitting error is not bounded at all.
+    #
+    # NOTE the copy taken first. On the stored route this stage RELEASES the O(nao^4/8)
+    # integral array as soon as the factors that replace it exist -- nothing downstream
+    # reads it again, and carrying it would charge every later stage for 7.7 GB at 300
+    # basis functions. The exactness check below is the one thing here that does want it,
+    # so it keeps its own reference before the stage runs. (The other way is
+    # release_eri=False on the factorization, which is what a threshold series would use.)
+    eri_stored = np.array(scf.data.eri, copy=True)
     ref = kuiva.Reference(scf).run()
+    assert scf.data.eri is None and scf.data.eri_released
 
     out.section(log, "The finished Reference stage")
     log.info("%s", ref.summary())
@@ -205,7 +214,7 @@ def main() -> int:
     #     demand. Rebuild a few AO integrals from the factors and compare against the exact
     #     ones. The error must sit at the decomposition threshold -- not merely be "small".
     from pyscf import ao2mo                      # front end only; not used past this point
-    eri_exact = ao2mo.restore(1, data.eri, data.nao)
+    eri_exact = ao2mo.restore(1, eri_stored, data.nao)
     l_square = factors.unpack(slice(None))                          # (naux, nao, nao)
     eri_fit = np.einsum("Pmn,Pkl->mnkl", l_square, l_square, optimize=True)
     cholesky_err = float(np.max(np.abs(eri_fit - eri_exact)))
@@ -253,7 +262,7 @@ def main() -> int:
     out.subsection(log, "Integral-direct route against the stored one")
     out.entries(log, [
         ("integral array stored", "no" if scf_direct.data.eri is None else "yes", "",
-         "the O(nao^4) array the other route holds"),
+         "never formed here; the stored route's is released after factorization"),
         ("Cholesky vectors", direct.naux, "",
          "same count as the stored route" if direct.naux == factors.naux else "DIFFERENT"),
         ("max |(pq|rs) rebuilt - exact|", direct_vs_exact, "Eh", "", out.SCI_FMT),
@@ -451,6 +460,8 @@ def main() -> int:
         "the default route resolution stored the integrals here":
             scf.data.fit_route == "conventional",
         "the integral-direct route stores no integral array": scf_direct.data.eri is None,
+        "the stored route releases its integral array once the factors exist":
+            scf.data.eri is None and scf.data.eri_released,
         "the integral-direct route keeps the same error bound":
             direct_vs_exact < 10.0 * direct.tol,
         "the two factorization routes give the same integrals": direct_vs_stored < 1e-12,

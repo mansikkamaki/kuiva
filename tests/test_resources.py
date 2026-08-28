@@ -488,7 +488,7 @@ def test_direct_batch_sizing_matches_the_array_the_evaluator_holds():
     _assert_predicts(br.direct_block_memory_gb(mol.nao, src.shell_ao_max), biggest, tol=0.0)
 
 
-def test_the_plan_drops_the_integral_array_on_the_direct_route():
+def test_the_plan_drops_the_integral_array_on_the_direct_route(monkeypatch):
     """What the route is for: the ``O(nao^4/8)`` line is gone, and what replaces it is a
     transient batch rather than a resident array."""
     conventional = [p for p in br.memory_plan(nao=200, nelec=100)
@@ -505,7 +505,23 @@ def test_the_plan_drops_the_integral_array_on_the_direct_route():
     # batches under a plan that claimed one.
     assert batch.gb == pytest.approx(min(br.direct_cache_memory_gb(200, 7, 40),
                                          res.BUDGET.transient_gb()))
-    assert direct.resident_gb() < conventional.resident_gb()
+    # ⚠ **Past this phase the two routes carry the same thing**, and that is the release
+    # working: the stored array is a transient of the phase that builds it, given back once
+    # the factors exist. What the direct route still saves is the peak *inside* the phase,
+    # and only where the budget bounds its batch cache — with room to spare the cache is
+    # capped at what the whole array would have cost, so the two plans meet there by
+    # construction (see direct_cache_memory_gb).
+    assert direct.resident_gb() == pytest.approx(conventional.resident_gb())
+    assert not any(a.resident for a in conventional.allocations if "ERI array" in a.label)
+    tight = res.MemoryBudget(res.ResourceLimits(memory_gb=1.0, source="test"))
+    monkeypatch.setattr(res, "BUDGET", tight)
+    conv_tight = [p for p in br.memory_plan(nao=200, nelec=100)
+                  if p.name == "two-electron integrals"][0]
+    dir_tight = [p for p in br.memory_plan(nao=200, nelec=100, conventional=False,
+                                           direct=True, shell_ao_max=7, n_shells=40)
+                 if p.name == "two-electron integrals"][0]
+    assert (dir_tight.resident_gb() + dir_tight.transient_gb()
+            < conv_tight.resident_gb() + conv_tight.transient_gb())
     # The advice on the phase has to name the route that removes the array, or a user
     # refused there cannot act on it.
     assert any("cholesky-direct" in a for a in conventional.advice)

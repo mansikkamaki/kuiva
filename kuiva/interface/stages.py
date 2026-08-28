@@ -253,6 +253,13 @@ class Reference(_Stage):
 
     After :meth:`run`: :attr:`reference`, :attr:`nspinor`, and the inspection helpers
     :meth:`population_analysis` / :meth:`write_molden`.
+
+    ⚠ **On the stored route this stage releases the SCF's two-electron integral array**, the
+    moment the factors that replace it exist: nothing downstream reads it again and it is the
+    largest thing the container holds (``O(nao^4/8)``). A script that wants the array
+    afterwards — an exactness check, a second factorization at another threshold — takes its
+    own reference to ``scf.data.eri`` first, or factorizes through
+    :meth:`kuiva.integrals.transform.ThreeIndexAO.from_scalar_data` with ``release_eri=False``.
     """
 
     _EXCLUDE = ("molecule_or_data", "memory_gb")

@@ -129,7 +129,7 @@ def bench_kernel(budgets: Sequence[int]) -> List[Dict]:
 
     label, n, k, modes, max_bond = DMRG_CONFIG
     previous = kernels.set_preferred_backend("native")
-    mkl = threads._mkl()
+    mkl = threads._blas_control()
     ambient = None if mkl is None else mkl.max_threads()
     rows = []
     try:

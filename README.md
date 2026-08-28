@@ -454,18 +454,42 @@ stage, so `cholesky_tol` and `orbit_pivots` belong to `ScalarSCF` rather than to
 passing a different threshold to `Reference` afterwards is reported and not silently applied.
 
 **Where the finished factor rows live is a second, independent choice** (`factors=` on the
-SCF stage: `"in-core"`, `"scratch"`, or `"auto"`, the default). `"scratch"` spills the rows
-to a file in the configured scratch directory right after the decomposition and streams them
-back in the same sequential blocks every consumer already reads — freeing their memory for
-the CI workspace and orbital-optimization blocks of the later stages, at no measured cost per
-pass on a machine whose spare RAM holds the file in the page cache (and at file-size over
-disk-bandwidth per pass where it does not). `"auto"` spills exactly when the in-core plan
-exceeds the memory limit and a scratch directory is configured, announced on its own output
-line; both residences produce identical results. ⚠ The spill frees the rows *after* the
-decomposition builds them, so the decomposition itself is the direct route's remaining memory
-peak — a factorization too large to build in RAM at all is still refused, with the plan
-saying so. ⚠ Density-fitting factors never spill (they are the ingested container's own
-array; the request is declined with a warning).
+SCF stage: `"in-core"`, `"scratch"`, `"streamed"`, or `"auto"`, the default). `"scratch"`
+spills the rows to a file in the configured scratch directory right after the decomposition
+and streams them back in the same sequential blocks every consumer already reads — freeing
+their memory for the CI workspace and orbital-optimization blocks of the later stages, at no
+measured cost per pass on a machine whose spare RAM holds the file in the page cache (and at
+file-size over disk-bandwidth per pass where it does not). Both produce identical results,
+bit for bit.
+
+`"streamed"` goes one step further and runs the **decomposition itself out of core**: each
+Cholesky vector is written to the scratch file as it is produced, and the update reads that
+file back in sequential passes, so the factor array is never allocated at all. That array is
+what otherwise bounds the largest system the front end can start — about 45 GB at 1000 basis
+functions — and it is now a working set you can size instead. What it costs is passes over
+the file: the number of Cholesky vectors divided by how many candidate columns the working
+set holds, measured at 35 passes and 3.5 GB read for a 0.2 GB factorization given a quarter
+of its size to work in, for about 10% more processor time than the in-core decomposition.
+⚠ Unlike the spill, this is **not** bit-for-bit identical to the in-core route: the same
+subtraction is summed in a different order, so the two agree to rounding and, where two
+symmetry-equivalent columns are tied, may pick them in the other order — a different but
+equally valid factorization of the same matrix, with the same vector count and the same error
+bound. Measured on a 3d complex: identical vector count and residual, and Coulomb/exchange
+matrices agreeing to 1e-12 absolute, or to the Cholesky threshold when the tie breaks the
+other way.
+
+`"auto"` takes each rung exactly when it lowers the planned peak below the memory limit and a
+scratch directory is configured, announced on its own output line. ⚠ Density-fitting factors
+never spill or stream (they are the ingested container's own array; the request is declined
+with a warning).
+
+**The stored route's integral array is released as soon as the factors exist.** Nothing
+downstream reads it again, so once `Reference` has factorized it the `O(nao^4/8)` array and
+its share of the memory budget are given back — 7.7 GB at 300 basis functions, against factor
+rows of 1.2 GB — and the memory plan stops charging every later stage for it. The output says
+what was released. ⚠ If you mean to factorize the *same* ingested SCF twice (a threshold
+series, say), pass `release_eri=False` to the first call; a second one afterwards is refused
+with that advice rather than silently finding the array gone.
 
 ⚠ An unrestricted spinor set is orthonormal but **not Kramers paired**. With `reference="uhf"`
 an active space may therefore not be chosen as a contiguous spinor range; select by orbital
@@ -1439,7 +1463,8 @@ allow_overcommit = false  # downgrade every memory refusal to a warning
 
 [scratch]
 # Like memory_gb, scratch_dir has NO built-in default and no $TMPDIR/cwd fallback: any
-# scratch use (a factor spill) refuses until it is set here or with $KUIVA_SCRATCH — pick a
+# scratch use (a factor spill, an out-of-core decomposition, network environment paging)
+# refuses until it is set here or with $KUIVA_SCRATCH — pick a
 # real disk with room, never a RAM-backed tmpfs. Calculations that never touch scratch do
 # not need it. setup.sh asks for it beside the memory limit.
 # scratch_dir = /scratch/$USER
@@ -1484,8 +1509,15 @@ asked for, and prints the verdict in the banner:
 It warns if the answer is no — a budget that buys no threads spends CPU-hours for nothing — and
 it warns in the other direction too, when a second threading runtime is found spinning next to
 the BLAS, because that silently inflates every timing the run reports. A BLAS with no thread
-control at all is reported as "unverified" rather than as either verdict. To see the numbers
-behind it:
+control at all is reported as "unverified" rather than as either verdict.
+
+**Three BLAS libraries are controlled** — MKL, OpenBLAS and BLIS — each bound at run time to
+whichever one is actually mapped into the process, including the OpenBLAS a NumPy or SciPy wheel
+brings with it. So the knob, the per-stage widths and the startup measurement work the same way
+on a machine without Intel's BLAS, which is most clusters. ⚠ One difference is worth knowing:
+MKL's width is per-thread, while OpenBLAS's and BLIS's is process-wide, so on those a stage's
+width is visible to the whole process until that stage ends. To see the numbers behind the
+verdict:
 
 ```bash
 python -m kuiva.util.threads
@@ -1810,13 +1842,16 @@ The release is usable for production work **with care**, and this is what the ca
   64-bit occupation mask). Beyond the ceiling, the tensor-network solver takes over.
 - **The integral factorization is memory-bound, and the memory plan picks the route.**
   The stored route materializes the conventional two-electron integral array, which grows as
-  the fourth power of the basis and is reserved against the memory limit before the SCF. This,
-  rather than core count, is what bounds the size of system that fits. `fitting="auto"` (the
-  default) therefore switches to `cholesky-direct` — which removes that array, see above —
-  exactly when the stored plan exceeds the limit, and says so in the output. The direct route
-  is *not* faster where both fit (measured within a few per cent of the stored route from
-  ~160 basis functions up, and up to ~46% slower when its batch cache is squeezed at very
-  large sizes); what it buys is that the calculation starts at all. ⚠ Note also that the
+  the fourth power of the basis and is reserved against the memory limit before the SCF —
+  though only until the factors replace it, since it is released there. `fitting="auto"` (the
+  default) switches to `cholesky-direct` — which never forms that array, see above — when
+  the stored plan is the larger one and the two-electron phase is what peaks; below the size
+  at which the array dominates, the two plans are the same after the release and the stored
+  route stands. The direct route is *not* faster where both fit (measured within a few per
+  cent of the stored route from ~160 basis functions up, and up to ~46% slower when its batch
+  cache is squeezed at very large sizes); what it buys is that the calculation starts at all.
+  The three-index factors it produces are then the next term — `factors="streamed"` keeps
+  even those out of memory, at the cost of repeated passes over a scratch file. ⚠ Note also that the
   scalar SCF is PySCF's, and it makes its own in-core/direct decision within the memory it is
   given: the direct route removes Kuiva's copy of the array, not necessarily every copy.
 - **Kramers degeneracy in the general two-component CI emerges numerically, not by
@@ -1884,7 +1919,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.26.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.27.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -1900,7 +1935,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.26.0'
+import kuiva; kuiva.__version__          # '0.27.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
@@ -1959,6 +1994,12 @@ generate validation reference data live with that code, in `tests/`.
   reference build, called directly by the compiled kernels (`cblas_zgemm`) and asked for its
   per-region thread width (`MKL_Set_Num_Threads_Local`). Intel Corporation, oneAPI MKL Developer
   Reference, https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-c/.
+- **OpenBLAS** and **BLIS** — the two other BLAS libraries Kuiva sets a thread width on, through
+  `openblas_set_num_threads` / `openblas_get_num_threads` / `openblas_get_config` and
+  `bli_thread_set_num_threads` / `bli_thread_get_num_threads`. Z. Xianyi, W. Qian, Z. Chothia,
+  _OpenBLAS_, https://www.openblas.net/; F. G. Van Zee, R. A. van de Geijn, _BLIS: A Framework
+  for Rapidly Instantiating BLAS Functionality_, _ACM Trans. Math. Softw._ **41**, 14 (2015),
+  DOI:10.1145/2764454.
 - **OpenMP** (via Intel's `libiomp5`, optional; only for the compiled kernel backend) — the
   thread-level parallelism inside those kernels, including the composability rules that let MKL
   and a kernel share one runtime. OpenMP Architecture Review Board, _OpenMP Application
