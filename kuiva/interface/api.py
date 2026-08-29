@@ -921,7 +921,7 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
            n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
            n_states=1, weights=None, coeff: Optional[np.ndarray] = None,
            checkpoint=None, restart=None, checkpoint_options: Optional[Dict] = None,
-           solver_options: Optional[Dict] = None, callback=None, deadline=None,
+           solver_options: Optional[Dict] = None, callback=None, deadline=None, signals=None,
            preserve_symmetry: bool = False, report: bool = True, classify: bool = True,
            **optimizer_kwargs):
     """State-averaged two-component CASSCF — the calculation this program exists for.
@@ -957,6 +957,14 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
     rather than leaving the run unprotected. See :mod:`kuiva.util.deadline`; with
     ``checkpoint=`` given, the final write happens *before* the stop.
 
+    ``signals=`` is the other half: a kill that was never announced (``scancel``, a
+    preemption, ``SIGTERM`` at the wall) stops the run at the next macro-iteration boundary
+    with its checkpoint written, instead of ending it mid-iteration. ``signals=True`` catches
+    ``SIGTERM``/``SIGUSR1``/``SIGUSR2``; a sequence names them. ⚠ **Off by default and
+    installed only for the duration of this call**, because a library that installs signal
+    handlers behind your back breaks embedding, test runners and notebooks. See
+    :mod:`kuiva.util.signals`.
+
     Symmetry
     --------
     ``n_states={irrep: n}`` selects states **per irrep** instead of "lowest n" (the front end
@@ -991,8 +999,10 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
     from ..io.checkpoint import CheckpointPolicy, read_checkpoint
     from ..mcscf.casci import ActiveSpace, FullCISolver, casscf as _casscf
     from ..util.deadline import Deadline
+    from ..util.signals import SignalStop, raise_if_pending, stop_context
 
     deadline = Deadline.resolve(deadline)
+    stopper = SignalStop.resolve(signals)
 
     resumed = None
     if restart is not None:
@@ -1026,6 +1036,12 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
             resumed.report(log)
         if deadline is not None:
             deadline.report(log)
+        if stopper is not None:
+            stopper.report(log)
+    # ⚠ Both refusals are here, before anything expensive: a stage that cannot finish is
+    # better not started than started and killed. A stop already requested by signal is the
+    # sharper of the two -- it means this process is on its way out.
+    raise_if_pending("this CASSCF")
     if deadline is not None:
         deadline.assert_room("this CASSCF")
 
@@ -1052,14 +1068,20 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
                                                  sort_keys=True)
         policy = CheckpointPolicy(checkpoint, solver=solver, metadata=metadata,
                                   n_active_elec=space.n_elec, chain=callback,
-                                  deadline=deadline, **(checkpoint_options or {}))
+                                  deadline=deadline, signals=stopper,
+                                  **(checkpoint_options or {}))
         hook = policy.callback
-    elif deadline is not None:
-        # ⚠ Without a checkpoint there is nothing to write before the stop, and the deadline
-        # is worth having anyway: a run that stops itself exits cleanly and its output file
-        # is complete, where one killed at the wall ends mid-line. The warning it raises says
-        # that nothing was saved.
-        hook = deadline.as_callback(chain=callback)
+    elif deadline is not None or stopper is not None:
+        # ⚠ Without a checkpoint there is nothing to write before the stop, and stopping is
+        # worth doing anyway: a run that stops itself exits cleanly and its output file is
+        # complete, where one killed at the wall ends mid-line. The warning it raises says
+        # that nothing was saved. The signal is the outer of the two, being the one that is
+        # already on its way.
+        hook = callback
+        if deadline is not None:
+            hook = deadline.as_callback(chain=hook)
+        if stopper is not None:
+            hook = stopper.as_callback(chain=hook)
 
     if preserve_symmetry:
         labels = reference.spinor_labels
@@ -1081,10 +1103,14 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
     from ..spinor.expand import spin_operator
     optimizer_kwargs.setdefault("spin_ao_2c", spin_operator(np.asarray(reference.data.s_ao)))
     classifier = _classifier_for(reference, space, orbitals, solver.space, classify=classify)
-    outcome = _casscf(reference.factors, reference.h_one_electron(), orbitals, space.spaces,
-                      space.n_elec, n_states=n_states, e_nuc=reference.data.e_nuc,
-                      solver=solver, active=space, callback=hook, classifier=classifier,
-                      **optimizer_kwargs)
+    # ⚠ The handlers live exactly as long as the optimization and the previous dispositions
+    # come back afterwards, exception or not -- which is what makes an opt-in signal handler
+    # something a library may install at all.
+    with stop_context(stopper):
+        outcome = _casscf(reference.factors, reference.h_one_electron(), orbitals,
+                          space.spaces, space.n_elec, n_states=n_states,
+                          e_nuc=reference.data.e_nuc, solver=solver, active=space,
+                          callback=hook, classifier=classifier, **optimizer_kwargs)
     if policy is not None:
         outcome.checkpoint_path = str(policy.path)
         if report:

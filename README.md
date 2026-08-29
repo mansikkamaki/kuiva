@@ -679,7 +679,7 @@ be the identity.
 The states: `n_states`, `weights`. The optimizer: `mode` (`"auto"`, `"quasi-newton"`,
 `"second-order"`), `max_iter`, `conv_grad`, `conv_energy`, `max_step`, `callback`.
 Checkpointing: `checkpoint=path`, `restart=path`, `checkpoint_options`. Stopping in time:
-`deadline=` (below).
+`deadline=`, `signals=` (below).
 
 #### After the run: `<S^2>`, and a term label with its evidence
 
@@ -1928,6 +1928,59 @@ macro-iteration outlives the allocation no deadline can help. A run that has les
 margin left when it starts is refused rather than started. Without `checkpoint=` a deadline
 still stops the run cleanly, and says plainly that nothing was saved.
 
+### The kill nobody announced: `signals=`
+
+A deadline covers the case where the end is known in advance. `scancel`, a preemption, a
+node draining and a `SIGTERM` at the wall are the case where it is not.
+
+```python
+cas = kuiva.CASSCF(ref, checkpoint="run.h5", deadline="slurm", signals=True, **space).run()
+```
+
+`signals=True` catches **`SIGTERM`, `SIGUSR1` and `SIGUSR2`**; a sequence names them
+instead (`signals=("TERM", "INT")`). The run then stops at the next macro-iteration
+boundary with its checkpoint written — the same stop, the same forced write, the same
+warning as a deadline, differing only in what asked for it.
+
+In a Slurm script, `--signal` is how you buy the lead time:
+
+```bash
+#SBATCH --signal=B:USR1@600     # SIGUSR1 ten minutes before the wall
+```
+
+⚠ The lead has to exceed one macro-iteration plus the checkpoint write, or the kill lands
+first anyway. If the limit is knowable, `deadline="slurm"` is the better instrument: it
+computes that reserve from what the run is actually doing instead of asking you to guess it.
+
+Four things about it are deliberate:
+
+- ⚠ **off by default, and never otherwise.** A library that installs signal handlers behind
+  your back breaks embedding, test runners and notebooks;
+- ⚠ **the handlers are a loan.** They are installed for the duration of the stage and the
+  previous dispositions are restored when it ends, exception or not. Off the main thread,
+  where Python cannot install a handler at all, `signals=` is **refused** rather than
+  silently skipped;
+- ⚠ **a second signal is not waited for.** The first is a request; the second restores what
+  was there before and re-raises, so the process dies exactly as it would have without
+  Kuiva in it. `SIGINT` is not in the default set for the same reason — Ctrl-C is expected
+  to interrupt *now*, not at the end of a macro-iteration;
+- ⚠ **the request outlives the stage that caught it.** A signal is delivered to the
+  process, so an `NEVPT2`, `CASCI` or `PseudospinExport` started afterwards raises
+  `kuiva.util.signals.StopRequested` instead of beginning work the process will not live to
+  finish. That is what makes a signalled run *exit* rather than merely pause:
+
+  ```python
+  from kuiva.util.signals import StopRequested
+  try:
+      pt = kuiva.NEVPT2(cas).run()
+  except StopRequested:
+      sys.exit(0)                       # the CASSCF's checkpoint is on disk
+  ```
+
+⚠ **What no signal can do is interrupt a solve.** A `SIGKILL` cannot be caught at all, and a
+`SIGTERM` arriving inside one CI solve, one DMRG solve or one NEVPT2 class is acted on when
+that finishes. The protection is the checkpoint cadence, not the handler.
+
 ---
 
 ## Examples
@@ -2184,7 +2237,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.32.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.33.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -2200,7 +2253,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.32.0'
+import kuiva; kuiva.__version__          # '0.33.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

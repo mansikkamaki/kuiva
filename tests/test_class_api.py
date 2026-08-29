@@ -574,6 +574,56 @@ def test_the_deadline_stops_the_stage_and_leaves_a_restart_point(ref, tmp_path,
     assert resumed.converged
 
 
+def test_a_signal_stops_the_stage_and_the_next_one_refuses_to_start(ref, tmp_path,
+                                                                    kuiva_caplog):
+    """⚠ The half the deadline cannot cover: a kill nobody announced. The run stops at the
+    next macro-iteration boundary with its checkpoint forced past an hour of minimum
+    interval — and the NEVPT2 after it refuses, which is what makes a signalled run *exit*
+    rather than pause on its way to being killed anyway."""
+    import os
+    import signal as _signal
+
+    from kuiva.util.signals import StopRequested, clear, pending
+
+    path = tmp_path / "b_signal.h5"
+
+    def kill_at_two(info):
+        if info["iteration"] == 2:
+            os.kill(os.getpid(), _signal.SIGUSR1)      # never SIGTERM in a test
+        return None
+
+    stopped = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2,
+                     checkpoint=path, checkpoint_options=dict(min_interval=3600.0),
+                     signals=("USR1",), callback=kill_at_two, max_iter=50,
+                     report=False).run()
+
+    assert not stopped.converged and stopped.orbital.n_iterations == 3
+    assert stopped.signals.fired and pending() is not None
+    assert path.exists() and kuiva.read_checkpoint(path).iteration == 3
+    assert "stopped by" in stopped.summary() and "SIGUSR1" in stopped.summary()
+    assert any("SIGUSR1" in r.getMessage() for r in kuiva_caplog.records)
+    # ⚠ the handler is a loan: the stage gave it back
+    assert _signal.getsignal(_signal.SIGUSR1) is _signal.SIG_DFL
+
+    with pytest.raises(StopRequested, match="was not started"):
+        NEVPT2(stopped).run()
+    with pytest.raises(StopRequested, match="was not started"):
+        CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2,
+               report=False).run()
+
+    clear()                                            # the next job is a new process
+    assert CASCI(stopped, n_states=2, report=False).run().energies.size == 2
+
+
+def test_nothing_is_caught_unless_signals_are_asked_for(cas):
+    """⚠ Never a default: a library that installs signal handlers behind your back breaks
+    embedding, test runners and notebooks."""
+    import signal as _signal
+
+    assert cas.signals is None
+    assert _signal.getsignal(_signal.SIGTERM) is _signal.SIG_DFL
+
+
 # --- checkpoint / restart through the class layer --------------------------------------------
 
 def test_restart_continues_the_calculation(ref, cas, tmp_path):

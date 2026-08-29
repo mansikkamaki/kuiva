@@ -73,6 +73,20 @@ the last one to show for it. Three things about it are worth knowing:
   margin -- and the final write is then forced past the cadence rules, because that
   checkpoint is the result rather than insurance.
 
+`signals=` is the other half: the kill nobody announced -- `scancel`, a preemption, a
+`SIGTERM` at the wall. `signals=True` catches SIGTERM/SIGUSR1/SIGUSR2 and stops the run at
+the next macro-iteration boundary with its checkpoint written, through the same decision the
+deadline uses. This example arms it below, where nothing will send one; a batch script buys
+the lead time with `#SBATCH --signal=B:USR1@600`.
+
+⚠ Three things about it are deliberate, and the first is why it is not simply always on:
+handlers are **opt-in and installed only while the stage runs**, because a library that
+installs them behind your back breaks embedding, test runners and notebooks; a **second**
+signal is not waited for, so a repeated kill acts at once; and the request is **process-wide
+and outlives the stage**, so the next long stage refuses to start rather than beginning work
+this process will not live to finish. That last one is what makes a signalled run *exit*
+rather than merely pause.
+
 WHAT TO LOOK FOR IN THE OUTPUT
 ------------------------------
 * the interrupted run stopping cleanly from inside the optimizer's callback -- a run that
@@ -92,6 +106,7 @@ from __future__ import annotations
 import math
 import os
 import shutil
+import signal
 from pathlib import Path
 from typing import List
 
@@ -208,7 +223,7 @@ def main() -> int:
     with timing.timer("CASSCF (uninterrupted)") as t_full:
         full = kuiva.CASSCF(reference, n_states=N_STATES, max_iter=MAX_ITER,
                             conv_grad=CONV_GRAD, checkpoint=straight_chk,
-                            deadline=WALL_BUDGET_S, **selection).run()
+                            deadline=WALL_BUDGET_S, signals=True, **selection).run()
     log.info("%s", full.summary())
 
     # ----------------------------------------------------------------------------------
@@ -219,7 +234,8 @@ def main() -> int:
         first_leg = kuiva.CASSCF(reference, n_states=N_STATES, max_iter=MAX_ITER,
                                  conv_grad=CONV_GRAD, checkpoint=interrupted_chk,
                                  callback=stop_after(INTERRUPT_AT),
-                                 deadline=WALL_BUDGET_S, **selection).run()
+                                 deadline=WALL_BUDGET_S, signals=True,
+                                 **selection).run()
 
     stored = read_checkpoint(interrupted_chk)
     out.subsection(log, "What is on disk")
@@ -241,7 +257,7 @@ def main() -> int:
     with timing.timer("CASSCF (resumed)") as t_leg2:
         resumed = kuiva.CASSCF(reference, n_states=N_STATES, max_iter=MAX_ITER,
                                conv_grad=CONV_GRAD, restart=interrupted_chk,
-                               deadline=WALL_BUDGET_S).run()
+                               deadline=WALL_BUDGET_S, signals=True).run()
     log.info("%s", resumed.summary())
 
     out.entries(log, [
@@ -299,6 +315,12 @@ def main() -> int:
         # an answer -- which is exactly what the check is for.
         "the wall budget was never needed": not any(
             stage.deadline.fired for stage in (full, first_leg, resumed)),
+        # ⚠ Nothing sends a signal here, so this asserts the quiet half of the contract: an
+        # armed handler that was never used changes nothing at all, and gives the process's
+        # own handlers back when the stage ends.
+        "no signal arrived, and none of the arming changed anything": (
+            not any(stage.signals.fired for stage in (full, first_leg, resumed))
+            and signal.getsignal(signal.SIGTERM) is signal.SIG_DFL),
     }
     failures = report(checks)
 

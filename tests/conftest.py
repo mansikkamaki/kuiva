@@ -64,6 +64,22 @@ def _fresh_memory_budget():
     resources.clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_pending_stop_request():
+    """Clear any stop-by-signal request between tests, for the same reason as the budget above.
+
+    ⚠ Worse than the budget if it leaks, and worse in a way that looks like nothing: a stop
+    request is process-global (a signal is delivered to the process, not to a stage), and a
+    pending one makes **every** later long stage refuse to start. One test sending a signal
+    would fail a dozen unrelated ones several files later.
+    """
+    from kuiva.util import signals
+
+    signals.clear()
+    yield
+    signals.clear()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _report_thread_width():
     """⚠ Report the BLAS thread width, and warn if it exceeds the reference cap of 4.

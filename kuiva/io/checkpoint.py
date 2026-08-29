@@ -556,6 +556,12 @@ class CheckpointPolicy:
     happens inside :meth:`write` and makes the write cheaper than the reserve allowed for.
     ⚠ Nothing here polls a clock inside a loop; the deadline is consulted once per
     macro-iteration, at the point where a checkpoint is already being considered.
+
+    ``signals`` is a :class:`kuiva.util.signals.SignalStop` and is the *other* stop cause —
+    a kill that was never announced, where nothing can be predicted. The two are handled by
+    one piece of code here because from this side they are the same question ("does this
+    iteration end the run?") with the same consequence (force the write, then stop); the
+    signal is asked first, being free, and it names itself in the warning it prints.
     """
 
     def __init__(self, path, *, solver=None, budget_gb: Optional[float] = None,
@@ -563,7 +569,7 @@ class CheckpointPolicy:
                  cost_fraction: Optional[float] = None,
                  ci_vectors: bool = True, metadata: Optional[Dict[str, str]] = None,
                  n_active_elec: Optional[int] = None, enabled: bool = True,
-                 deadline=None, chain=None) -> None:
+                 deadline=None, signals=None, chain=None) -> None:
         self.path = Path(path)
         self.solver = solver
         self.budget_gb = (res.checkpoint_budget_gb() if budget_gb is None
@@ -577,6 +583,7 @@ class CheckpointPolicy:
         self.n_active_elec = n_active_elec
         self.enabled = bool(enabled)
         self.deadline = deadline
+        self.signals = signals
         self.chain = chain
         self.stats = CheckpointStats()
         self._last_write = time.time()
@@ -594,13 +601,19 @@ class CheckpointPolicy:
         :meth:`write` keeps its own guard around the file itself.
 
         Returns ``False`` — the optimizer's stop signal — when the deadline says another
-        macro-iteration cannot finish and be saved; the checkpoint that makes that stop worth
-        making has been written by then.
+        macro-iteration cannot finish and be saved, or when a signal has asked the run to
+        stop; the checkpoint that makes that stop worth making has been written by then.
         """
         converged = bool(info.get("converged"))
         if self.deadline is not None:
             self.deadline.observe(info.get("wall", 0.0))
-        stop, write_seconds = False, 0.0
+        # The signal is asked first and costs nothing: an unannounced kill is already on its
+        # way, so there is no arithmetic to do and no point pricing a write against a clock
+        # that has stopped mattering.
+        cause = None
+        if self.signals is not None and not converged and self.signals.should_stop():
+            cause = self.signals
+        write_seconds = 0.0
         if self.enabled:
             try:
                 checkpoint = self.from_info(info)
@@ -609,19 +622,20 @@ class CheckpointPolicy:
                             "calculation continues, but there is no restart point for it",
                             info.get("iteration"), type(exc).__name__, exc)
                 self.stats.n_skipped += 1
-                if self.deadline is not None and not converged:
-                    stop = self.deadline.should_stop()
+                if cause is None and self.deadline is not None and not converged:
+                    cause = self.deadline if self.deadline.should_stop() else None
             else:
-                if self.deadline is not None and not converged:
+                if cause is None and self.deadline is not None and not converged:
                     write_seconds = checkpoint.size_gb() / self._disk_bandwidth()
-                    stop = self.deadline.should_stop(write_seconds)
-                self.write(checkpoint, force=converged or stop)
-        elif self.deadline is not None and not converged:
-            stop = self.deadline.should_stop()
+                    if self.deadline.should_stop(write_seconds):
+                        cause = self.deadline
+                self.write(checkpoint, force=converged or cause is not None)
+        elif cause is None and self.deadline is not None and not converged:
+            cause = self.deadline if self.deadline.should_stop() else None
         chained = None if self.chain is None else self.chain(info)
-        if stop:
-            self.deadline.announce(info, write_seconds=write_seconds,
-                                   wrote=str(self.path) if self.stats.n_written else None)
+        if cause is not None:
+            cause.announce(info, write_seconds=write_seconds,
+                           wrote=str(self.path) if self.stats.n_written else None)
             return False
         return chained
 

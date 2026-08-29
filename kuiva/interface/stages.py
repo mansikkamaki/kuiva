@@ -61,6 +61,7 @@ import numpy as np
 from ..util import output as out
 from ..util.logging import get_logger
 from .pyscf_bridge import ScalarX2CData, validate_scf_controls
+from ..util.signals import raise_if_pending, stop_context
 from .api import (Molecule, SpinorReference as _SpinorData, active_space_for,
                   project_to_basis as _project_to_basis, projected_active_space,
                   property_matrices as _property_matrices, scalar_x2c_reference,
@@ -572,6 +573,22 @@ class CASSCF(_Stage):
     ⚠ With ``checkpoint=``, the final write is **forced** past the cadence rules and happens
     before the stop; without one, the run still exits cleanly but keeps nothing, and says so.
 
+    ``signals=`` is the other half of the same problem: the kill nobody announced —
+    ``scancel``, a preemption, ``SIGTERM`` at the wall. ``signals=True`` catches
+    ``SIGTERM``/``SIGUSR1``/``SIGUSR2`` (Slurm's ``--signal=B:USR1@<seconds>`` sends the
+    second at a lead time you choose), and a sequence names them instead. The run then stops
+    at the next macro-iteration boundary with its checkpoint written, exactly as the deadline
+    does.
+
+    ⚠ **Off by default, and installed only while this stage runs**: a library that installs
+    signal handlers behind your back breaks embedding, test runners and notebooks, so the
+    previous dispositions are restored when the stage ends, exception or not. ⚠ **A second
+    signal is not waited for** — the handlers step aside and it acts at once. ⚠ **The
+    request outlives this stage**: a :class:`NEVPT2`, :class:`CASCI` or
+    :class:`PseudospinExport` started afterwards refuses with
+    :class:`~kuiva.util.signals.StopRequested` rather than beginning work the process will
+    not live to finish, which is what makes a signalled run *exit* rather than merely pause.
+
     Starting from a smaller (or larger) basis
     -----------------------------------------
     ``project_from=`` takes a **finished stage of the same molecule in a different basis** —
@@ -646,7 +663,7 @@ class CASSCF(_Stage):
                  graph=None, checkpoint=None, restart=None,
                  checkpoint_options: Optional[Dict[str, Any]] = None,
                  callback: Optional[Callable[[dict], Optional[bool]]] = None,
-                 deadline=None,
+                 deadline=None, signals=None,
                  preserve_symmetry: bool = False, project_from=None,
                  projection: Optional[Dict[str, Any]] = None,
                  report: bool = True, **optimizer_options) -> None:
@@ -676,7 +693,11 @@ class CASSCF(_Stage):
         # ⚠ Resolved at construction, like every other option here: deadline="slurm" outside
         # a Slurm job is a mistake that must surface now, not after the first hour.
         from ..util.deadline import Deadline
+        from ..util.signals import SignalStop
         self.deadline = Deadline.resolve(deadline)
+        # Same rule: signals= off the main thread cannot be honoured and is refused here
+        # rather than at the first hour of the run.
+        self.signals = SignalStop.resolve(signals)
         self.callback, self.report = callback, bool(report)
         self.optimizer_options = dict(optimizer_options)
 
@@ -900,7 +921,7 @@ class CASSCF(_Stage):
                               restart=self.restart,
                               checkpoint_options=self.checkpoint_options,
                               solver_options=self.solver_options, callback=self.callback,
-                              deadline=self.deadline,
+                              deadline=self.deadline, signals=self.signals,
                               report=self.report, **self.optimizer_options)
         self.outcome = outcome
         #: What the property stages consume, under the name :class:`CASCI` uses for it too,
@@ -992,11 +1013,15 @@ class CASSCF(_Stage):
                                                      sort_keys=True)
             policy = CheckpointPolicy(self.checkpoint, solver=solver, metadata=metadata,
                                       n_active_elec=self.space.n_elec, chain=self.callback,
-                                      deadline=self.deadline,
+                                      deadline=self.deadline, signals=self.signals,
                                       **(self.checkpoint_options or {}))
             hook = policy.callback
-        elif self.deadline is not None:
-            hook = self.deadline.as_callback(chain=self.callback)
+        elif self.deadline is not None or self.signals is not None:
+            hook = self.callback
+            if self.deadline is not None:
+                hook = self.deadline.as_callback(chain=hook)
+            if self.signals is not None:
+                hook = self.signals.as_callback(chain=hook)
         driver = optimize_orbitals_events if self._adaptive else optimize_orbitals
         if self.report:
             out.section(log, "CASSCF (DMRG solver)")
@@ -1005,9 +1030,12 @@ class CASSCF(_Stage):
                 resumed.report(log)
             if self.deadline is not None:
                 self.deadline.report(log)
+            if self.signals is not None:
+                self.signals.report(log)
+        raise_if_pending("this DMRG-CASSCF")
         if self.deadline is not None:
             # ⚠ The granularity is a macro-iteration, and on this route one of those holds a
-            # whole DMRG solve: the deadline can refuse to start another, never interrupt one.
+            # whole DMRG solve: neither stop cause can interrupt one, only refuse the next.
             self.deadline.assert_room("this DMRG-CASSCF")
         # ⚠ The truncation weight is the tensor network's primary quality number, and without
         # this it appeared nowhere at INFO: the sweep table is at DEBUG (one table per sweep
@@ -1019,9 +1047,12 @@ class CASSCF(_Stage):
         w_disc = ((out.col_sci("w_disc"),
                    lambda: (float("nan") if solver.last is None
                             else float(solver.last.max_discarded))),)
-        result = driver(ref.factors, h_ao, orbitals, self.space.spaces, solver,
-                        e_nuc=ref.data.e_nuc, callback=hook, report=self.report,
-                        extra_columns=w_disc, **optimizer_options)
+        # ⚠ The handlers live exactly as long as the optimization; the previous dispositions
+        # come back afterwards, exception or not.
+        with stop_context(self.signals):
+            result = driver(ref.factors, h_ao, orbitals, self.space.spaces, solver,
+                            e_nuc=ref.data.e_nuc, callback=hook, report=self.report,
+                            extra_columns=w_disc, **optimizer_options)
 
         # The optimizer's last solve may sit at a rejected trial step; the states this stage
         # reports must belong to the returned orbitals. One warm solve pins them there and
@@ -1228,9 +1259,13 @@ class CASSCF(_Stage):
             # without it.
             entries.append(("largest discarded weight",
                             "{:.3e}".format(self.max_discarded)))
-        if self.deadline is not None and self.deadline.fired:
-            # ⚠ Beside "converged: False", not instead of it: an unconverged result and the
-            # reason it is unconverged are two different things a reader needs.
+        # ⚠ Beside "converged: False", not instead of it: an unconverged result and the
+        # reason it is unconverged are two different things a reader needs.
+        if self.signals is not None and self.signals.fired:
+            request = self.signals.requested
+            entries.append(("stopped by", "a signal ({})".format(
+                request.describe() if request is not None else "requested")))
+        elif self.deadline is not None and self.deadline.fired:
             entries.append(("stopped by", "the deadline ({})".format(self.deadline.source)))
         if self.project_from is not None:
             entries.append(("projected active-space overlap",
@@ -1401,6 +1436,7 @@ class CASCI(_Stage):
 
     def _execute(self) -> None:
         from .api import casci as _api_casci
+        raise_if_pending("this CASCI")
         if self.avas is not None and self.report:
             self.avas.report(log)
         self.result = _api_casci(
@@ -1527,6 +1563,9 @@ class NEVPT2(_Stage):
         self.options = dict(options)
 
     def _execute(self) -> None:
+        # ⚠ Hours of work with no checkpoint of its own: starting one after a stop has been
+        # requested spends the process's last seconds on something nobody will see.
+        raise_if_pending("this NEVPT2")
         ref = self.reference_stage.reference
         cas = self.states_stage
         if cas.solver_kind == "dmrg":
@@ -1720,6 +1759,7 @@ class PseudospinExport(_Stage):
         from ..props.pseudospin import pseudospin_from_model, write_pseudospin
         from ..spinor.expand import spin_operator
 
+        raise_if_pending("this pseudospin export")
         cas = self.casscf
         ref = cas.reference_stage.reference
         spaces = cas.active.spaces
