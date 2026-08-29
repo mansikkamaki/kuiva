@@ -2064,7 +2064,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.30.2.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.30.3.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -2080,7 +2080,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.30.2'
+import kuiva; kuiva.__version__          # '0.30.3'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

@@ -50,6 +50,18 @@ however many digits it agrees to. Weigh a new check by what it can *fail on*, no
 tightly it agrees. Every test carries an explicit tolerance and a note on the physically
 meaningful one.
 
+⚠ **A check that selects states is bound by the same rule as a calculation: its count must land
+on a manifold boundary.** Two levels separated by `gap` are resolved as *vectors* only to
+`~eps*||H||/gap`, so a density averaged over one of a near-degenerate group and not the other
+inherits that floor no matter how well either solve converged — tightening a solver tolerance
+does nothing. One test asserted a state-averaged 2-RDM at `1e-9` across a `9.07e-07 Eh` gap
+whose floor was `2.7e-09`; it passed in isolation, failed one full-suite run in several, and
+the only thing that varied was BLAS reduction order. **The fingerprint is the ratio**: where
+the boundary is clean the two-particle error equals the one-particle error, and where it cuts a
+near-degeneracy the two-particle error runs several times larger. The fix is the count, never
+the tolerance — and a check that selects states should assert its own boundary gap, so a later
+basis or geometry change fails *there* rather than intermittently somewhere else.
+
 ## Layout
 
 | Path | Role |

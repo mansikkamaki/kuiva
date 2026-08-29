@@ -124,10 +124,25 @@ def test_the_pair_degeneracy_is_exact_and_the_states_span_the_conjugate_pair(n2_
 
 def test_the_rdms_and_the_energy_agree_with_the_general_path(n2_labelled):
     """The solver contract: whatever a mode does internally, what comes out is the same objects
-    in the same convention. Here the two routes select the *same* six states, so the
-    state-averaged density must agree to the RDM tolerance."""
+    in the same convention. Here the two routes select the *same* states, so the
+    state-averaged density must agree to the RDM tolerance.
+
+    ⚠ **The count is four pairs, and the reason is the rule this project applies everywhere
+    else: a state count must land on a manifold boundary.** At three pairs it does not — in
+    this spectrum the third pair sits **9.07e-07 Eh** from the fourth, and a density averaged
+    over one of two levels that close inherits the eigenvector resolution floor
+    ``~eps*||H||/gap`` ≈ 2.7e-09, which is *above* the 1e-9 this test asserts. Measured
+    consequence, and it is why this test failed intermittently before 2026-08-29: at three
+    pairs ``d(2-RDM)`` swings 1.8e-10 … 8.4e-10 with nothing but BLAS reduction order, up to
+    **7x larger** than the 1-RDM error beside it. At four pairs the boundary gap is 3.6e-02 Eh,
+    the two-particle error *equals* the one-particle error (6.1e-11 … 1.9e-10 over one to eight
+    threads — pure rounding), and the tolerance below is unchanged. Tightening the Davidson
+    criterion does nothing: both solves are already converged past 1e-12, so this was never a
+    convergence question.
+    """
     h, eri, labels = n2_labelled
-    combined = _solver(labels, n_states={"1E1/2u": 3}, kramers="restricted")
+    n_pairs, n_sel = 4, 8
+    combined = _solver(labels, n_states={"1E1/2u": n_pairs}, kramers="restricted")
     result = combined.solve_active(h, eri)
     # The general path's own states, restricted to the same conjugate pair of sectors and
     # averaged with the same equalized weights. ⚠ A state-averaged density over *complete*
@@ -140,12 +155,26 @@ def test_the_rdms_and_the_energy_agree_with_the_general_path(n2_labelled):
     group = labels.group
     unit = [table.sectors.index(group.label_of(n)) for n in ("1E1/2u", "2E1/2u")]
     weight = table.sector_weights(plain.vectors)
-    inside = np.nonzero(weight[:, unit].sum(axis=1) > 1.0 - 1e-8)[0][:6]
-    assert inside.size == 6
+    qualifying = np.nonzero(weight[:, unit].sum(axis=1) > 1.0 - 1e-8)[0]
+    inside = qualifying[:n_sel]
+    assert inside.size == n_sel
+    # ⚠ The guard that keeps the assertions below meaningful, and the one that would have
+    # caught this: the count must not cut a near-degenerate group. A basis, geometry or
+    # threshold change that closes this gap makes the RDM comparison a measurement of
+    # eigenvector resolution rather than of the solver contract — and it fails *here*, saying
+    # so, instead of failing one run in several on a tolerance that looks arbitrary.
+    rest = [int(i) for i in qualifying if int(i) not in set(inside.tolist())]
+    boundary_gap = (abs(plain.energies[rest[0]] - plain.energies[inside[-1]]) if rest
+                    else float("inf"))
+    assert boundary_gap > 1.0e-3, (
+        "the {}-state selection ends {:.3e} Eh from the next state of the same sector pair; "
+        "two levels that close are resolved as vectors only to ~eps*||H||/gap, so the RDM "
+        "comparison below would measure that and not the solver contract"
+        .format(n_sel, boundary_gap))
     assert np.allclose(np.sort(result.energies), np.sort(plain.energies[inside]),
                        atol=ENERGY_TOL)
     gamma, gamma2 = cas_rdms(general.space, plain.vectors[inside],
-                             np.full(6, 1.0 / 6.0), enforce_kramers=False)
+                             np.full(n_sel, 1.0 / n_sel), enforce_kramers=False)
     assert np.abs(result.gamma - gamma).max() < 1e-9
     assert np.abs(result.gamma2 - gamma2).max() < 1e-9
 
