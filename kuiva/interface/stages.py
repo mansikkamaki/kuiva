@@ -512,8 +512,25 @@ class CASSCF(_Stage):
         topology: a :class:`~kuiva.dmrg.NetworkGraph`, or ``"mutual-information"`` /
         ``"fiedler"`` to build one from a :class:`CheapCI` upstream. The converged orbitals
         are finished with one warm solve carrying the boundary diagnostic.
-        ⚠ Checkpoint/restart of the network state is not wired into this layer; ask for it
-        or drive :mod:`kuiva.dmrg` directly.
+        ``checkpoint=``/``restart=`` work on this route too and write **two** files: the
+        ordinary CASSCF checkpoint carries the trajectory — orbitals, RDMs,
+        orbital-optimizer state — and a sibling ``*.network.h5`` file carries the network
+        state itself, rolling, at the end of each completed sweep
+        (:mod:`kuiva.dmrg.checkpoint`). A restart resumes the trajectory and warm-starts
+        the network from that sibling; ⚠ an absent or unfitting network file warns and
+        starts the network cold, which costs time and not correctness. ``restart=`` needs
+        the frozen-chart driver — the event-gated one (``adaptive=True``, or a
+        ``bond_steps=`` ladder) does not resume an optimizer state.
+
+        Production controls, all through ``solver_options``: ``bond_schedule=`` ramps
+        the cap per sweep inside the first solve and ``expansion=`` perturbs its
+        truncations (the deterministic subspace expansion — see
+        :func:`kuiva.dmrg.sweep.solve_ttn`); ``bond_steps=[64, 128, 256]`` is the
+        per-macro-iteration cap ladder, a sequence of chart changes offered through the
+        propose/adopt seam — giving it selects the event-gated driver automatically, and
+        each rung is adopted only when it lowers the energy at fixed integrals. The
+        ``E(w_disc -> 0)`` extrapolation is a separate driver over a converged problem:
+        :func:`kuiva.dmrg.bond_series`.
 
     Remaining keyword options go to the orbital optimizer (``mode``, ``max_iter``,
     ``conv_grad``, ``conv_energy``, ``max_step``, and for the event-gated driver ``tau``,
@@ -653,9 +670,6 @@ class CASSCF(_Stage):
                                    n_active=n_active, n_active_elec=n_active_elec,
                                    threshold=threshold, restart=restart)
         elif avas is None and restart is not None:
-            if solver == "dmrg":
-                raise ValueError("restart= is the conventional-CI checkpoint route; the "
-                                 "network state is not checkpointed by this layer")
             if not Path(restart).exists():
                 raise ValueError("restart checkpoint {!r} does not exist".format(restart))
         if avas is not None:
@@ -702,17 +716,26 @@ class CASSCF(_Stage):
                 raise ValueError(
                     "solver='dmrg' needs solver_options=dict(max_bond=...): an uncapped "
                     "tree state allocates charge-sector-maximal bond dimensions")
-            if checkpoint is not None:
-                raise ValueError("checkpoint= stores CI vectors and is the conventional-CI "
-                                 "route; the network state is not checkpointed by this "
-                                 "layer")
             _check_options(self.solver_options,
                            _allowed_options(DMRGSolver.__init__,
                                             exclude=("self", "n_elec", "n_roots", "weights",
-                                                     "graph", "initial_state")),
+                                                     "graph", "initial_state",
+                                                     "checkpoint", "restart")),
                            "CASSCF solver_options (DMRGSolver; the topology is the "
-                           "stage-level graph= option)")
-            self._adaptive = bool(self.solver_options.get("adaptive", False))
+                           "stage-level graph= option, and checkpoint=/restart= are the "
+                           "stage-level arguments — the network-state file is derived "
+                           "from them)")
+            # bond_steps is a ladder of chart changes, and chart changes are events: it
+            # routes the optimization through the event-gated driver exactly as
+            # adaptive=True does, so the two share every consequence below.
+            self._adaptive = bool(self.solver_options.get("adaptive", False)) \
+                or self.solver_options.get("bond_steps") is not None
+            if restart is not None and self._adaptive:
+                raise ValueError(
+                    "restart= on the DMRG route needs the frozen-chart driver: the "
+                    "event-gated one (adaptive=True, or a bond_steps= ladder) re-derives "
+                    "its space by proposals and does not resume an optimizer state. "
+                    "Restart without them, or drive kuiva.mcscf directly")
             driver = optimize_orbitals_events if self._adaptive else optimize_orbitals
             allowed = _allowed_options(
                 driver, exclude=("factors", "h_ao", "c_spinor", "spaces", "ci_solver",
@@ -845,21 +868,89 @@ class CASSCF(_Stage):
         self._energies = np.asarray(outcome.ci.total_energies, dtype=float)
 
     def _execute_dmrg(self) -> None:
+        import json
+
         from ..dmrg import DMRGSolver
-        from ..mcscf.casci import BOUNDARY_MARGIN
+        from ..mcscf.casci import BOUNDARY_MARGIN, ActiveSpace
         from ..mcscf.events import optimize_orbitals_events
         from ..mcscf.orbopt import CASIntegrals, optimize_orbitals
 
         ref = self.reference_stage.reference
         h_ao = ref.h_one_electron()
-        orbitals = self._orbitals if self._orbitals is not None else ref.spinors_in_ao()
+        optimizer_options = dict(self.optimizer_options)
+        resumed = None
+        if self.restart is not None:
+            # ⚠ Read failure on an explicit restart is an ERROR that propagates, exactly as
+            # on the conventional-CI route: the user asked to resume, and silently starting
+            # over wastes what the file protects.
+            from ..io.checkpoint import read_checkpoint
+            resumed = read_checkpoint(self.restart)
+            restored = ActiveSpace(spaces=resumed.spaces, n_elec=resumed.n_active_elec,
+                                   description="restored from {}".format(self.restart))
+            if self.space is not None and (
+                    not np.array_equal(self.space.spaces.active, restored.spaces.active)
+                    or self.space.n_elec != restored.n_elec):
+                raise ValueError(
+                    "the checkpoint at {} holds CAS({}, {}) and the arguments ask for "
+                    "CAS({}, {}); a restart continues the calculation that was "
+                    "interrupted, so leave the active space out or make it match"
+                    .format(self.restart, restored.n_elec, restored.n_active,
+                            self.space.n_elec, self.space.n_active))
+            self.space = restored
+            orbitals = np.ascontiguousarray(resumed.coeff)
+        else:
+            orbitals = self._orbitals if self._orbitals is not None else ref.spinors_in_ao()
         options = dict(self.solver_options)
+        from ..dmrg.checkpoint import NetworkCheckpointPolicy, network_state_path
+        if self.checkpoint is not None:
+            # The cadence knobs of checkpoint_options= govern both files: they are
+            # statements about the machine (budget, disk, interval), not about which
+            # object is being protected.
+            shared = {k: v for k, v in (self.checkpoint_options or {}).items()
+                      if k in ("budget_gb", "min_interval", "cost_fraction")}
+            options["checkpoint"] = NetworkCheckpointPolicy(
+                network_state_path(self.checkpoint), **shared)
+        if resumed is not None:
+            network_file = network_state_path(self.restart)
+            if network_file.is_file():
+                options["restart"] = network_file
+            else:
+                log.warning("no network-state file at %s beside the checkpoint; the "
+                            "restart resumes the orbital trajectory and the first solve "
+                            "rebuilds the network from scratch (time, not correctness)",
+                            network_file)
         solver = DMRGSolver(self.space.n_elec, n_roots=self.n_states,
                             weights=self.weights, graph=self._resolve_graph(), **options)
+        # Resolve the default topology now, so the solver's space_key names a real chart:
+        # a restart compared against "dmrg:unset" would clear curvature that belongs to
+        # exactly this surface.
+        solver._ensure_chart(self.space.n_active)
+        if resumed is not None:
+            from .api import _check_restart_state_average
+            _check_restart_state_average(resumed, solver, self.restart)
+            # ⚠ The LIVE solver's key, never the file's own (see api.casscf): handing the
+            # checkpoint its own key back would compare the file with itself and restore
+            # curvature across any chart change without a word.
+            optimizer_options.update(resumed.optimizer_kwargs(
+                space_key=solver.space_key()))
+        hook = self.callback
+        policy = None
+        if self.checkpoint is not None:
+            from ..io.checkpoint import CheckpointPolicy
+            metadata = {"active_space": self.space.description}
+            if ref.data.soc is not None:
+                metadata["hamiltonian"] = json.dumps(ref.data.soc.provenance(),
+                                                     sort_keys=True)
+            policy = CheckpointPolicy(self.checkpoint, solver=solver, metadata=metadata,
+                                      n_active_elec=self.space.n_elec, chain=self.callback,
+                                      **(self.checkpoint_options or {}))
+            hook = policy.callback
         driver = optimize_orbitals_events if self._adaptive else optimize_orbitals
         if self.report:
             out.section(log, "CASSCF (DMRG solver)")
             self.space.report(log)
+            if resumed is not None:
+                resumed.report(log)
         # ⚠ The truncation weight is the tensor network's primary quality number, and without
         # this it appeared nowhere at INFO: the sweep table is at DEBUG (one table per sweep
         # times many macro-iterations is noise in a file that IS the output), so a production
@@ -871,8 +962,8 @@ class CASSCF(_Stage):
                    lambda: (float("nan") if solver.last is None
                             else float(solver.last.max_discarded))),)
         result = driver(ref.factors, h_ao, orbitals, self.space.spaces, solver,
-                        e_nuc=ref.data.e_nuc, callback=self.callback, report=self.report,
-                        extra_columns=w_disc, **self.optimizer_options)
+                        e_nuc=ref.data.e_nuc, callback=hook, report=self.report,
+                        extra_columns=w_disc, **optimizer_options)
 
         # The optimizer's last solve may sit at a rejected trial step; the states this stage
         # reports must belong to the returned orbitals. One warm solve pins them there and
@@ -890,6 +981,21 @@ class CASSCF(_Stage):
         self.graph = solver.graph
         self._energies = np.asarray(solver.last.energies, dtype=float) + ints.e_core
         self.max_discarded = float(solver.last.max_discarded)
+        self.checkpoint_path = str(policy.path) if policy is not None else None
+        self.network_checkpoint_path = (str(solver.checkpoint.path)
+                                        if solver.checkpoint is not None else None)
+        if policy is not None and self.report:
+            policy.report(log)
+            if solver.checkpoint is not None:
+                solver.checkpoint.report(log)
+        if policy is not None and solver.checkpoint is not None \
+                and solver.checkpoint.n_written == 0:
+            # ⚠ Stated plainly, not buried: the trajectory file protects the calculation,
+            # and losing the network state costs a restart's first solve its warm start —
+            # time, not correctness.
+            out.note(log, "no network state was written (see the policy lines above): a "
+                          "restart resumes the orbital trajectory and rebuilds the "
+                          "network from scratch on its first solve")
         if self.report:
             out.entries(log, [
                 ("state energies [Eh]", ", ".join(out.E_FMT.format(e)
@@ -947,15 +1053,24 @@ class CASSCF(_Stage):
 
         Spin-orbit coupling off: ``2S+1`` is the term multiplicity, read straight off. On:
         ``S`` is not conserved and the number measures how pure the spin still is. ⚠ Per
-        block and never per state (:mod:`kuiva.props.spin`), and available on the
-        ``solver="ci"`` route only — it applies ``S`` to the CI vectors.
+        block and never per state (:mod:`kuiva.props.spin`). Available on **both** solver
+        routes through one implementation: the CI solver applies ``S`` to the CI vectors
+        through the excitation map, the network solver contracts the same quantities
+        through each root's own densities, and ``props`` duck-types the difference away.
+        The out-of-active-space correction is a property of the *orbitals* and is the
+        same code on both routes.
         """
         self._check_ran()
-        from .api import spin_analysis as _spin
         if self.solver_kind != "ci":
-            raise ValueError("<S^2> is evaluated through the determinant excitation map, so "
-                             "it needs solver='ci'; the tensor-network route does not carry "
-                             "the equivalent contraction")
+            from ..props.spin import spin_analysis as _spin_states
+            ref = self.reference_stage.reference
+            result = _spin_states(self.solver, self.coeff, self.active.spaces,
+                                  ref.data.s_ao, self._energies, tol_cm=tol_cm,
+                                  has_soc=ref.data.has_soc)
+            if report:
+                result.report(log)
+            return result
+        from .api import spin_analysis as _spin
         return _spin(self.reference_stage.reference, self.outcome, tol_cm=tol_cm,
                      report=report)
 
@@ -965,16 +1080,76 @@ class CASSCF(_Stage):
         ⚠ **Inference, not a computed quantity**, which is why it is its own report and
         never a column of the state table. See :func:`kuiva.interface.api.assign_states`.
         Building the moment matrices it needs on the spin-orbit route costs one transition-
-        density pass; pass ``matrices=`` (from a finished :class:`PropertyDump`) to reuse
-        one already built.
+        density pass (on either solver route — the network solver contracts its transition
+        densities through the applied-string Gram); pass ``matrices=`` (from a finished
+        :class:`PropertyDump`) to reuse one already built.
         """
         self._check_ran()
         from .api import assign_states
         if self.solver_kind != "ci":
-            raise ValueError("the assignment needs <S^2> and the moment matrices, both of "
-                             "which come from the conventional-CI route; use solver='ci'")
+            return self._assign_network(matrices=matrices, tol_cm=tol_cm, report=report)
         return assign_states(self.reference_stage.reference, self.outcome,
                              matrices=matrices, tol_cm=tol_cm, report=report)
+
+    def _assign_network(self, *, matrices, tol_cm: float, report: bool):
+        """The assignment on the network route: same evidence, network contractions.
+
+        Mirrors :func:`kuiva.interface.api.assign_states` — one spectrum, blocked once —
+        with the moment matrices built from the solver's own transition densities. The
+        run carries no non-abelian classification on this route, so no irrep column is
+        offered.
+        """
+        from ..props.assign import assign_terms
+        from ..props.multiplet import analyse_spectrum
+
+        ref = self.reference_stage.reference
+        if matrices is None and ref.data.has_soc:
+            matrices = self._network_property_matrices()
+        # One spectrum, blocked once: the blocking energies come from the matrices when
+        # there are any, so the multiplet analysis and the <S^2> blocks pair up by
+        # construction rather than by luck.
+        energies = self._energies if matrices is None else matrices.energies
+        from ..props.spin import spin_analysis as _spin_states
+        spin = _spin_states(self.solver, self.coeff, self.active.spaces,
+                            ref.data.s_ao, energies, tol_cm=tol_cm,
+                            has_soc=ref.data.has_soc)
+        multiplets = (matrices.analyse(tol_cm=tol_cm) if matrices is not None
+                      else analyse_spectrum(self._energies, tol_cm=tol_cm))
+        result = assign_terms(multiplets, spin, irreps=None)
+        if report:
+            spin.report(log)
+            result.report(log)
+        return result
+
+    def _network_property_matrices(self, comments: Sequence[str] = ()):
+        """``H`` and the moment matrices from the network's transition densities.
+
+        The same assembly as :func:`kuiva.interface.api.property_matrices`, with the
+        transition densities contracted through the network instead of the excitation
+        map. ⚠ For the assignment's evidence only — the formatted products keep their
+        routes: the property dump is the conventional-CI product, the pseudospin export
+        the network one.
+        """
+        from ..props.dump import property_matrices as _matrices
+
+        ref = self.reference_stage.reference
+        if ref.data.properties is None:
+            raise ValueError("this reference carries no angular-momentum integrals; it "
+                             "was not built by the front-end")
+        tdm = self.solver.transition_densities()
+        provenance: Dict[str, object] = {
+            "active_space": self.active.description or "explicit spinor indices",
+            "n_active_spinors": int(self.active.n_active),
+            "n_active_electrons": int(self.active.n_elec),
+            "n_states": int(self._energies.size),
+            "casscf_solver": self.solver_kind,
+        }
+        if ref.data.soc is not None:
+            provenance["hamiltonian"] = ref.data.soc.provenance()
+        provenance["basis"] = dict(ref.data.basis_meta)
+        return _matrices(self.coeff, self.active.spaces, tdm, self._energies,
+                         ref.data.properties, ref.data.s_ao, provenance=provenance,
+                         active_space=self.active.description, comments=comments)
 
     def _summary_entries(self):
         entries = [
@@ -1013,29 +1188,35 @@ class NEVPT2(_Stage):
 
     Wraps :func:`kuiva.pt.nevpt2.sc_nevpt2`; options (``frozen_core``, ``deleted_virtual``,
     ``shift``, ``imaginary_shift``, ``fock``, ``classes``, ...) are its keywords, validated
-    eagerly. Needs a ``solver="ci"`` CASSCF: a tensor-network reference has no stored CI
-    vectors, and the network-backed contraction it would need is not built.
+    eagerly. Works on **both** solver routes through the driver's engine seam: the
+    conventional-CI CASSCF supplies its stored CI vectors, a ``solver="dmrg"`` CASSCF
+    supplies its converged network through the network-backed contraction provider
+    (:mod:`kuiva.pt.network`).
+
+    ⚠ **On the network route the correction is a PARTIAL E2 — six of the eight classes.**
+    The primed single-external classes (``Sr (-1')``, ``Si (+1')``) are not served by the
+    network provider yet (the scalable route is a per-label perturber network, a separate
+    piece of work); they are skipped with a warning, :attr:`result` ``.complete`` is
+    ``False``, the report prints the total as PARTIAL, and a partial correction is not
+    comparable with another program's NEVPT2. The refusal machinery is the driver's
+    standing one, not a special case.
 
     After :meth:`run`: :attr:`e2` [Eh, per state], :attr:`total_energies`,
     :attr:`class_energies`, :meth:`multiplets`, and the full
     :class:`~kuiva.pt.nevpt2.NEVPT2Result` as :attr:`result`.
     """
 
-    _EXCLUDE = ("factors", "h_ao", "c_spinor", "spaces", "civecs", "n_elec", "energies",
-                "weights", "e_nuc")
+    _EXCLUDE = ("factors", "h_ao", "c_spinor", "spaces", "civecs", "solver", "n_elec",
+                "energies", "weights", "e_nuc")
 
     def __init__(self, casscf: CASSCF, **options) -> None:
         super().__init__()
+        from ..pt.network import sc_nevpt2_dmrg
         from ..pt.nevpt2 import sc_nevpt2
         self.casscf = self._finished(casscf, CASSCF, "NEVPT2")
-        if casscf.solver_kind != "ci":
-            raise ValueError(
-                "NEVPT2 needs the conventional-CI CASSCF (its per-state RDMs come from the "
-                "stored CI vectors); a tensor-network reference would need a network-backed "
-                "contraction provider, which is not built. Re-run the CASSCF with "
-                "solver='ci' if the active space allows it")
         self.reference_stage = casscf.reference_stage
-        _check_options(options, _allowed_options(sc_nevpt2, exclude=self._EXCLUDE),
+        _check_options(options, _allowed_options(sc_nevpt2, sc_nevpt2_dmrg,
+                                                 exclude=self._EXCLUDE),
                        "NEVPT2")
         if "classes" in options and options["classes"] is not None:
             from ..pt.classes import excitation_class
@@ -1044,13 +1225,23 @@ class NEVPT2(_Stage):
         self.options = dict(options)
 
     def _execute(self) -> None:
-        from ..pt.nevpt2 import sc_nevpt2
         ref = self.reference_stage.reference
-        oc = self.casscf.outcome
-        self.result = sc_nevpt2(ref.factors, ref.h_one_electron(), oc.coeff,
-                                oc.active.spaces, oc.ci.vectors, oc.active.n_elec,
-                                energies=oc.ci.energies, e_nuc=ref.data.e_nuc,
-                                **self.options)
+        if self.casscf.solver_kind == "dmrg":
+            from ..pt.network import sc_nevpt2_dmrg
+            cas = self.casscf
+            # energies default to the finishing solve's spectrum at the converged
+            # orbitals, which is exactly what the driver's state-averaging gate needs.
+            self.result = sc_nevpt2_dmrg(ref.factors, ref.h_one_electron(), cas.coeff,
+                                         cas.active.spaces, cas.solver,
+                                         cas.active.n_elec, e_nuc=ref.data.e_nuc,
+                                         **self.options)
+        else:
+            from ..pt.nevpt2 import sc_nevpt2
+            oc = self.casscf.outcome
+            self.result = sc_nevpt2(ref.factors, ref.h_one_electron(), oc.coeff,
+                                    oc.active.spaces, oc.ci.vectors, oc.active.n_elec,
+                                    energies=oc.ci.energies, e_nuc=ref.data.e_nuc,
+                                    **self.options)
         self.e2 = self.result.e2
         self.total_energies = self.result.total_energies
         self.class_energies = self.result.class_energies

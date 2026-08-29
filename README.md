@@ -672,8 +672,9 @@ cas.spin_analysis().report()      # <S^2> per degenerate block
 cas.assign()                      # the label, the evidence, the fit residual
 ```
 
-`spin_analysis()` applies `S` to the CI vectors — one contraction of the excitation map the CI
-already builds, not a 2-RDM per state. With spin–orbit coupling **off** the block value is
+`spin_analysis()` works on **both** solver routes through one implementation: the CI solver
+applies `S` to its vectors — one contraction of the excitation map it already builds — and the
+tensor-network solver contracts the same quantities through each root's own densities. With spin–orbit coupling **off** the block value is
 `S(S+1)` exactly and `2S+1` is the term multiplicity, read straight off. With it **on** `S` is
 not conserved, and the same number measures how pure the spin of a level still is: how much a
 `^6H_{15/2}` label is really worth. ⚠ It is reported **per degenerate block and never per
@@ -697,8 +698,9 @@ against the leakage line printed with it, not against an integer.
 evidence and a fit residual beside each row, and never a column of the state table. A block
 whose evidence does not add up is labelled `?` rather than given the nearest plausible term —
 which is the normal and correct outcome for the crystal-field levels of a complex, since those
-are not `2J+1` manifolds at all. Both need `solver="ci"`; the tensor-network route carries no
-equivalent contraction.
+are not `2J+1` manifolds at all. On the tensor-network route the moment matrices behind the g
+evidence come from transition densities contracted through the network (an applied-string Gram,
+phase-arbitrary exactly as the CI's are), so both calls work on either solver.
 
 #### ⚠ Before you set `n_states`: four questions
 
@@ -782,7 +784,12 @@ cas = kuiva.CASSCF(pre, solver="dmrg", n_states=4, graph="mutual-information",
   which routes the optimization through the event-gated driver so that network-topology changes
   are adopted only when they lower the energy at fixed integrals. `graph=` seeds the topology:
   a `NetworkGraph`, or `"mutual-information"` / `"fiedler"` to build one from a `CheapCI`
-  upstream. ⚠ Checkpoint/restart of the network state is not wired into this layer.
+  upstream. `checkpoint=`/`restart=` work here too and write **two** files: the ordinary
+  trajectory checkpoint (orbitals, RDMs, optimizer state; no CI vectors — the network has
+  none), and a sibling `*.network.h5` holding the network state itself, written rolling at
+  the end of each completed sweep. A restart resumes the trajectory exactly and warm-starts
+  the network from the sibling; an absent or unfitting sibling warns and the first solve
+  starts cold, which costs time and never correctness. `restart=` needs `adaptive=False`.
 
   **The environment cache pages to scratch under memory pressure** (default on). The cache —
   one `D^2 x D_op` tensor per directed bond — is the solver's dominant memory object at
@@ -792,6 +799,25 @@ cas = kuiva.CASSCF(pre, solver="dmrg", n_states=4, graph="mutual-information",
   scratch, and a machine with no scratch directory configured gets the refusal it always
   got, naming the knob. `environment_resident_gb` (on `solve_ttn`) additionally caps the
   resident set below the memory limit.
+
+  **Production controls**, all in `solver_options`: `bond_schedule=[16, 32, 64]` ramps the
+  cap per sweep inside the first solve (the manifold is the final cap; convergence is only
+  declared at it); `expansion=1e-4` perturbs its truncations to escape a local minimum — the
+  *deterministic* subspace expansion of Hubig et al. (2015), which is White's density-matrix
+  noise (2005) evaluated instead of sampled, chosen because the deterministic term keeps
+  degenerate Schmidt groups exactly degenerate so the group-complete truncation still means
+  what it says, and because no RNG enters any trajectory (it decays off over the first
+  sweeps; energies stay variational at every strength; the reported `w_disc` is always the
+  ensemble's own); and `bond_steps=[64, 128, 256]` is the per-macro-iteration cap ladder —
+  each rung is a chart change offered through the propose/adopt seam and adopted only when
+  it lowers the energy at fixed integrals, so giving it selects the event-gated driver
+  automatically, and a rung refused for gaining too little is a measurement that the
+  current cap suffices. The `E(w_disc -> 0)` extrapolation — the number a tensor-network
+  paper quotes — is a separate driver over a converged problem: `kuiva.dmrg.bond_series`
+  runs a warm-started ascending-D series at fixed integrals and fits each root, and it
+  reports the extrapolate **with the series and its fit residual beside it, never alone**
+  (an exact series is reported exact, and a residual comparable to the claimed correction
+  warns that the series is not in the linear regime).
 
   ⚠ **Read `w_disc`.** The iteration table gains a column carrying the largest discarded
   weight of that macro-iteration's sweeps, and the stage report gives the final value; both
@@ -915,7 +941,9 @@ pt.multiplets()                                   # barycentres beside the per-s
   eigensolver's arbitrary basis; the barycentre does not.** No contraction fixes this, so the
   treatment is reporting rather than repair: `multiplets()` gives barycentres *beside* the
   per-state energies, with the member spread visible.
-- Needs a `solver="ci"` CASSCF: a tensor-network reference has no stored CI vectors.
+- Works on both solver routes: the conventional-CI CASSCF supplies its stored CI vectors;
+  a `solver="dmrg"` CASSCF goes through the network-backed contraction provider — ⚠ six of
+  the eight classes today, so its `E2` is a loud **partial** sum (see *Limitations*).
 
 ### `PropertyDump(source, path, ...)` and `PseudospinExport(casscf, path, ...)`
 
@@ -1129,6 +1157,23 @@ A whole lattice is given as arrays rather than as tuples:
 - ⚠ A charge closer than 0.5 bohr to a nucleus is **refused**: the density polarizes onto it
   without bound and the SCF converges to a number that means nothing.
 
+- ⚠ **What an embedding is worth, measured, and it differs by shell.** For a 3d complex
+  (TiCl3 in a model +-1 lattice) the field moves ligand-field levels by up to 926 cm^-1 and the
+  ground doublet's g by <=0.17, lifting its axial `gx = gy` degeneracy. For a 4f complex
+  (CeCl3) it moves the levels ten times *less* — 89 cm^-1, the shielded shell — but **rewrites
+  the ground doublet's g tensor**: (0.880, 2.531, 2.531) -> (0.709, 1.361, 3.501). A
+  lanthanide doublet's composition inside its `2J+1` manifold is what the crystal field fixes,
+  so **a gas-phase Ln g tensor is a different quantity, not an approximate one**.
+- ⚠ **How big the field must be is a property of the CUT, not of the radius.** Truncating an
+  ionic lattice on a **sphere never converges** — measured, +-100 cm^-1 out to 2900 charges,
+  with no trend, because the surface multipoles do not vanish with radius. An **Evjen-weighted
+  cube** (face 1/2, edge 1/4, corner 1/8) is converged to a few cm^-1 at **~300 charges** and
+  to 0.1 cm^-1 by 2200. Check the convergence of the lattice's own potential and field gradient
+  at the metal before trusting a spectrum: it is free and it shows the same split.
+- **Cost is not a consideration at any realistic size**: the bare potential is one batched grid
+  integral, measured at **41 ms per 1000 charges**, so a 12 000-charge lattice adds 0.5 s to a
+  3 s ingestion.
+
 Generating a charge field — an Ewald fit from a crystal structure — is **not** part of Kuiva;
 the list is the input.
 
@@ -1229,6 +1274,15 @@ not matched. They are listed because they are invisible in the output otherwise.
   [The nuclear charge model](#the-nuclear-charge-model)). DIRAC defaults to the Gaussian one,
   so this is usually the first thing to match, and the difference is a genuine physical effect
   that **grows with Z**: below 1e-6 relative on a neon j-splitting, ~3e-3 on mercury's.
+  ⚠ **Those are CORE numbers and a valence property moves ~40x less** (measured): the
+  *valence* 2P splitting of Tl (Z = 81) shifts by 6.8e-05 relative, and a ground-doublet **g
+  factor never moves by more than 1.2e-05** anywhere from B to CeCl3 — two to six orders below
+  the error the method already has against an analytic Lande g. So the option is worth turning
+  on for one identified case, a heavy-element **ligand-field** spectrum quoted to better than
+  ~0.1 cm^-1 absolute or ~2e-04 relative (CeCl3's crystal-field splittings shift by 0.111 cm^-1,
+  and a ligand field amplifies the free ion's effect ~35x) — and it is never what fixes a g
+  factor. ⚠ It costs a second four-component atomic solve per element (~40 min for Tl or Ce on
+  a laptop-class box), paid once ever and cached.
 - **Speed of light.** `c = 137.03599967994` a.u., PySCF's value. Other codes ship other
   determinations; the difference is in the last digits but is not zero.
 - **The decoupling is done in the decontracted basis** and the result contracted back, which is
@@ -1731,7 +1785,9 @@ macro-iteration under an adaptive budget, with the converged one always written.
 orbitals and orbital-rotation state, the active-space RDMs, the state energies and the run
 metadata; CI vectors only below a size threshold, as a Davidson warm start. Four-index
 integrals are never stored — a restart regenerates them, which is cheap because the expensive
-atomic solves have their own persistent cache.
+atomic solves have their own persistent cache. A DMRG-CASSCF writes a second, sibling file
+(`*.network.h5`) with the network state, rolling at the end of each completed sweep under the
+same cadence knobs; its restart is a warm start, and its loss costs time, never correctness.
 
 ⚠ **Failure semantics are the opposite of a cache's, on purpose.** A checkpoint *write* failure
 is a warning and the run continues; a *read* failure on an explicitly requested restart is an
@@ -1766,8 +1822,8 @@ built) or `compiled kernels: native ...` (with one), and in the latter case quan
 | 1 | `01_scf_and_reference` | the front end end to end: scalar X2C SCF → orthonormal working basis → Kramers-paired spinors → factorized integrals, each stage checked; the SCF's convergence controls — the refusal, the stability analysis and `guess_from=`; and the two things a coupled pair of centres needs, the broken-symmetry guess and fragment localization | ~17 s |
 | 2 | `02_atomic_spin_orbit` | fine structure of a free atom: the exact 2 + 4 splitting of a p shell, Landé g factors with no free parameter, what two-electron screening changes, and `⟨S²⟩` with the term assignment it supports | ~2 s |
 | 3 | `03_casscf_ligand_field` | the flagship calculation: a state-averaged two-component CASSCF on TiCl₃, its active space stated as orbital character **and** built a second way by AVAS, the five Kramers doublets of the d¹ ligand field, and a term assignment that correctly refuses to name them | ~3 min |
-| 4 | `04_dmrg_casscf` | the tensor-network solver: a cheap CI, a tree topology built from its entanglement, and a DMRG-CASSCF reproducing the exact CI through the same orbital optimizer | ~4 min |
-| 5 | `05_nevpt2` | dynamic correlation: SC-NEVPT2 on the oxygen atom, its eight-class decomposition, term energies moving towards experiment while the degeneracies survive | ~3 s |
+| 4 | `04_dmrg_casscf` | the tensor-network solver: a cheap CI, a tree topology built from its entanglement, a DMRG-CASSCF reproducing the exact CI through the same orbital optimizer, the two checkpoint files of the network route, and `⟨S²⟩` with the assignment on both solver routes | ~4 min |
+| 5 | `05_nevpt2` | dynamic correlation: SC-NEVPT2 on the oxygen atom, its eight-class decomposition, term energies moving towards experiment while the degeneracies survive — and the same correction from a tensor-network reference, honestly partial | ~30 s |
 | 6 | `06_property_export` | the two products: the property-matrix dump and the OuluSpin pseudospin export, reaching the same g values by two independent routes | ~4 min |
 | 7 | `07_checkpoint_restart` | a CASSCF checkpointed every macro-iteration, interrupted, and resumed from disk to the same energy | ~3 min |
 | 8 | `08_slater_condon` | the extras: Slater–Condon parameters `F^k`, `G^k`, `R^k` and spin–orbit constants `ζ` of a free scandium atom, from an average-of-configuration reference | ~1 min |
@@ -1951,13 +2007,14 @@ The release is usable for production work **with care**, and this is what the ca
   manifold exactly as a plain count can**, so the state-average boundary diagnostic stays what
   catches it. Non-abelian symmetry adaptation is out of scope, and labelling states by
   non-abelian irreps is not implemented.
-- **NEVPT2 is strongly contracted only, on a conventional-CI reference.** FIC and
+- **NEVPT2 is strongly contracted only.** FIC and
   quasi-degenerate variants are not implemented and are not planned — the artificial multiplet
   splitting they would cure is four orders of magnitude below the size at which a splitting
-  means different physics. A tensor-network reference has no NEVPT2 route: it would need a
-  network-backed contraction provider, which is not built.
-- **The tensor-network state is not checkpointed** through the class API, so a DMRG-CASSCF
-  cannot be interrupted and resumed the way a conventional-CI one can.
+  means different physics. ⚠ A tensor-network reference reaches NEVPT2 through the
+  network-backed contraction provider with **six of the eight classes**: the primed
+  single-external ones (`Sr`, `Si`) are not served yet, so that `E2` is a **partial** sum —
+  skipped with a warning, marked incomplete on the result, printed as PARTIAL — and is not
+  comparable with a complete NEVPT2.
 - **One node, shared memory.** There is no MPI and no distributed tensor layer. Memory, not
   core count, is the scaling limit.
 - ⚠ **A term label is an inference and is printed as one.** `assign()` derives `^{2S+1}L_J`
@@ -1968,23 +2025,32 @@ The release is usable for production work **with care**, and this is what the ca
   outcome for the crystal-field levels of a complex: those are not `2J+1` manifolds, so the
   inversion has nothing to invert. Do not quote a label without the residual next to it.
   `<S^2>` itself is a measurement and is trustworthy — but only per **degenerate block**
-  (a single state's value inside one is basis-dependent), and only on `solver="ci"`: the
-  tensor-network route carries no equivalent contraction and both calls refuse it by name.
+  (a single state's value inside one is basis-dependent). Both calls work on either solver
+  route; the tensor-network side contracts the same quantities through per-root densities
+  and network transition densities.
 - **Magnetic properties themselves are out of scope.** Kuiva writes the operator matrices; the
   ITO / Stevens / crystal-field decomposition is an external code's job.
 - **Four-component methods are out of scope.** Four-component machinery exists inside the code
   as an *ingredient* of the two-electron picture change, not as a method path.
 - **An unrestricted reference gives spinors that are not Kramers paired**, so an active space
   cannot be taken as a contiguous spinor range there.
-- **Absolute total energies** are not the quantity this code is tuned for: the Cholesky
-  threshold default was decided on *relative* energies, and no usable threshold makes an
-  absolute total accurate to 1e-8 Eh.
+- **Absolute total energies are bounded by the basis, not by the code's defaults.** The
+  Cholesky threshold default was decided on *relative* energies, where the factorization error
+  largely cancels: at the default `1e-8` a 20-state Bi spectrum is right to 1.5e-04 cm⁻¹ while
+  its absolute total is off by 3.7e-07 Eh — a factor of ~530. The factorization is a knob
+  rather than a floor, and tightening it to `1e-10` brings the absolute total inside 1e-8 Eh
+  on every system measured, for ~25% more auxiliary vectors. ⚠ That is worth doing only when
+  two totals are compared *in the same basis*: walking x2c-SVPall-2c → TZVP → QZVP moves an
+  absolute total by 1.7e-01 to 7.6e-01 Eh and then by a further 5.5e-03 to 9.9e-02 Eh, still
+  unconverged at QZVP — so for any total energy actually being quoted the threshold is the
+  smallest error present by six to eight orders of magnitude. ⚠ A Kuiva total also omits the mean-field `ΔG` (see above), so it is
+  not directly comparable with a four-component total in any case.
 
 ---
 
 ## Versioning
 
-**Version 0.28.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.30.1.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -2000,7 +2066,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.28.0'
+import kuiva; kuiva.__version__          # '0.30.1'
 ```
 
 - the run banner prints it, so the version is in the **output file**;
@@ -2343,7 +2409,14 @@ generate validation reference data live with that code, in `tests/`.
   DOI:10.1021/acs.jctc.8b00098. State-averaged DMRG in a shared basis: J. J. Dorando,
   J. Hachmann, G. K.-L. Chan, _J. Chem. Phys._ **127**, 084109 (2007), DOI:10.1063/1.2768360.
   Dynamic block selection: Ö. Legeza, J. Röder, B. A. Hess, _Phys. Rev. B_ **67**, 125114
-  (2003), DOI:10.1103/PhysRevB.67.125114. Automatic structural optimization of tree tensor
+  (2003), DOI:10.1103/PhysRevB.67.125114. The truncation perturbation (density-matrix
+  noise / subspace expansion, implemented as the deterministic expansion): S. R. White,
+  _J. Chem. Phys._ **122**, 084108 (2005), DOI:10.1063/1.1854132; C. Hubig, I. P. McCulloch,
+  U. Schollwöck, F. A. Wolf, _Phys. Rev. B_ **91**, 155115 (2015),
+  DOI:10.1103/PhysRevB.91.155115. Energy extrapolation in the discarded weight:
+  G. K.-L. Chan, M. Head-Gordon, _J. Chem. Phys._ **116**, 4462 (2002), DOI:10.1063/1.1449459;
+  R. Olivares-Amaya, W. Hu, N. Nakatani, S. Sharma, J. Yang, G. K.-L. Chan, _J. Chem. Phys._
+  **142**, 034102 (2015), DOI:10.1063/1.4905329. Automatic structural optimization of tree tensor
   networks (the adaptive-topology moves): T. Hikihara, H. Ueda, K. Okunishi, K. Harada,
   T. Nishino, _Phys. Rev. Research_ **5**, 013031 (2023), DOI:10.1103/PhysRevResearch.5.013031.
   Symmetry-blocked tensors: S. Singh, R. N. C. Pfeifer, G. Vidal, _Phys. Rev. B_ **83**, 115125
@@ -2377,6 +2450,10 @@ generate validation reference data live with that code, in `tests/`.
   matrix-free precedent for full-CI solvers in PySCF's `mrpt.NEVPT`. `kuiva` goes one step
   further and contracts the integrals into one perturber vector per external label, so no
   rank-3 or rank-4 object is formed at all.
+- **NEVPT2 on a DMRG reference.** S. Guo, M. A. Watson, W. Hu, Q. Sun, G. K.-L. Chan,
+  _J. Chem. Theory Comput._ **12**, 1583 (2016), DOI:10.1021/acs.jctc.6b00118 — the
+  precedent; `kuiva`'s network provider serves the same primitives through applied-string
+  Gram contractions instead of stored higher densities.
 - **Level shifts for intruder states.** B. O. Roos, K. Andersson, _Chem. Phys. Lett._ **245**,
   215 (1995), DOI:10.1016/0009-2614(95)01010-7 (real); N. Forsberg, P.-Å. Malmqvist,
   _Chem. Phys. Lett._ **274**, 196 (1997), DOI:10.1016/S0009-2614(97)00669-6 (imaginary).

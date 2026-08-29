@@ -327,8 +327,12 @@ def test_the_blocking_follows_the_spectrum_it_is_given(boron_soc):
                        np.sort(plain.state_s_squared), atol=1e-12)
 
 
-def test_spin_analysis_refuses_a_solver_without_the_excitation_map():
-    """A tensor-network reference has no ``one_body_moments``; that must say so, not guess."""
+def test_spin_analysis_refuses_a_solver_without_one_body_moments():
+    """A solver providing no ``one_body_moments`` must say so, not guess.
+
+    Both real solvers provide it now — the CI through the excitation map, the network
+    through per-root densities — so the refusal guards whatever third solver comes next.
+    """
     class Stub:
         pass
 

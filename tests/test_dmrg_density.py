@@ -103,6 +103,69 @@ def test_network_rdms_match_ci_exact_rdms(graph):
     assert abs(e_net - float(np.dot(result.weights, result.energies))) < E_TOL
 
 
+def test_state_rdms_match_ci_per_root():
+    """Per-root (gamma, Gamma) against the CI-exact per-state RDMs, elementwise.
+
+    A random spectrum is non-degenerate, so each eigenvector is unique up to a phase and
+    a same-state density is phase-invariant — elementwise comparison is legitimate.
+    """
+    from kuiva.rdm.rdm import RDMBuilder
+
+    n, k, n_roots = 6, 2, 3
+    h, eri = random_spinor_integrals(n, seed=15)
+    tpl, op, state, result = solved(n, k, h, eri, n_roots=n_roots)
+    ci = FullCISolver(n, k, n_states=n_roots, enforce_kramers=False)
+    ref = ci.solve_active(h, eri)
+    assert np.max(np.abs(result.energies - ref.energies)) < E_TOL
+
+    from kuiva.dmrg.density import state_rdms
+    builder = RDMBuilder(ci.space)
+    for r, (gamma, gamma2) in enumerate(state_rdms(tpl, state)):
+        g_ci, g2_ci = builder(ref.vectors[r], enforce_kramers=False)
+        assert np.max(np.abs(gamma - g_ci)) < RDM_TOL, "root {}".format(r)
+        assert np.max(np.abs(gamma2 - g2_ci)) < RDM_TOL, "root {}".format(r)
+
+
+@pytest.mark.parametrize("graph", [None, TREE], ids=["path", "tree"])
+def test_transition_rdm1s_match_ci(graph):
+    """gamma^{IJ} against the CI's transition densities, through the phase freedom.
+
+    Each root carries an arbitrary phase on both routes, so an off-diagonal block is
+    compared through |gamma^{IJ}_pq| elementwise (one global phase per (I, J) pair);
+    the diagonal blocks are phase-invariant and compared directly. Hermiticity
+    gamma^{IJ}_pq = conj(gamma^{JI}_qp) is asserted exactly as a structure check.
+    """
+    from kuiva.dmrg.density import transition_rdm1s
+
+    n, k, n_roots = 6, 2, 3
+    h, eri = random_spinor_integrals(n, seed=16)
+    tpl, op, state, result = solved(n, k, h, eri, n_roots=n_roots, graph=graph)
+    ci = FullCISolver(n, k, n_states=n_roots, enforce_kramers=False)
+    ref = ci.solve_active(h, eri)
+    assert np.max(np.abs(result.energies - ref.energies)) < E_TOL
+
+    tdm_net = transition_rdm1s(op, state)
+    tdm_ci = ci.transition_densities(ref.vectors)
+    assert tdm_net.shape == tdm_ci.shape == (n_roots, n_roots, n, n)
+    assert np.max(np.abs(tdm_net - np.conj(tdm_net.transpose(1, 0, 3, 2)))) < RDM_TOL
+    for i in range(n_roots):
+        assert np.max(np.abs(tdm_net[i, i] - tdm_ci[i, i])) < RDM_TOL
+    assert np.max(np.abs(np.abs(tdm_net) - np.abs(tdm_ci))) < RDM_TOL
+
+
+def test_transition_diagonal_reproduces_the_production_rdm1():
+    # the diagonal blocks of the applied-string route against the environments route:
+    # two contractions sharing no intermediate
+    from kuiva.dmrg.density import state_rdms, transition_rdm1s
+
+    n, k, n_roots = 6, 2, 2
+    h, eri = random_spinor_integrals(n, seed=17)
+    tpl, op, state, result = solved(n, k, h, eri, n_roots=n_roots)
+    tdm = transition_rdm1s(op, state)
+    for r, (gamma, _) in enumerate(state_rdms(tpl, state)):
+        assert np.max(np.abs(tdm[r, r] - gamma)) < 1e-10
+
+
 def test_extraction_is_fill_independent():
     # the channels the template reads are label-determined and unit, so the extracted
     # RDMs cannot depend on which coefficients the environment TTNO was filled with

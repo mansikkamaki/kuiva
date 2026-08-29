@@ -183,9 +183,25 @@ def test_nevpt2_stage(cas, tmp_path):
     assert np.allclose(dump.matrices.energies, np.asarray(pt.total_energies, dtype=float))
 
 
-def test_nevpt2_refuses_a_network_reference(cas_dmrg):
-    with pytest.raises(ValueError, match="solver='ci'"):
-        NEVPT2(cas_dmrg)
+def test_nevpt2_on_a_network_reference_is_loudly_partial(cas, cas_dmrg, kuiva_caplog):
+    """The network route reaches NEVPT2 through the provider seam — six of eight classes,
+    and the partiality is visible everywhere it could mislead."""
+    pt_ci = NEVPT2(cas, report=False).run()
+    pt_net = NEVPT2(cas_dmrg, report=False).run()
+    assert pt_ci.result.complete
+    assert not pt_net.result.complete
+    assert pt_net.result.missing == ("Sr", "Si")
+    assert any("PARTIAL" in r.getMessage() for r in kuiva_caplog.records)
+    # same molecule, independently converged orbitals: the six served classes agree to
+    # how well the two CASSCFs agree, far tighter than any physical statement
+    served = [n for n in pt_ci.class_energies if n not in ("Sr", "Si")
+              and np.all(np.isfinite(pt_ci.class_energies[n]))]
+    assert len(served) == 6
+    for name in served:
+        assert np.max(np.abs(pt_ci.class_energies[name]
+                             - pt_net.class_energies[name])) < 5e-6, name
+    ci_six = sum(pt_ci.class_energies[n] for n in served)
+    assert np.max(np.abs(pt_net.e2 - ci_six)) < 5e-6
 
 
 # --- shape 3: DMRG-CASSCF + pseudospin export ------------------------------------------------
@@ -196,15 +212,103 @@ def test_dmrg_casscf_matches_ci(cas, cas_dmrg):
     assert cas_dmrg.solver.last.max_bond_dim <= 16
 
 
+@pytest.fixture(scope="module")
+def cas_dmrg_term(ref):
+    # the whole ^2P term on the network route, for the analysis-layer parity tests: the
+    # term-complete average is what makes the g evidence (and hence the labels) exact.
+    # Three modes per node, deliberately: this six-root average spans the ENTIRE
+    # CAS(1, 6) space, and on any finer bipartition some two-site window cannot hold all
+    # six roots — which the solver rightly refuses rather than truncating the ensemble.
+    from kuiva.dmrg import NetworkGraph
+    graph = NetworkGraph(2, [(0, 1)], contents=[(0, 1, 2), (3, 4, 5)])
+    return CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=6,
+                  solver="dmrg", solver_options=dict(max_bond=16), graph=graph,
+                  report=False).run()
+
+
+def test_dmrg_spin_analysis_matches_ci(cas_term, cas_dmrg_term):
+    """``<S^2>`` per block, network route against CI route — one implementation of the
+    out-of-space correction, two implementations of the in-space square."""
+    ci = cas_term.spin_analysis()
+    net = cas_dmrg_term.spin_analysis()
+    assert [n for _, n in net.blocks] == [n for _, n in ci.blocks] == [2, 4]
+    # one electron: <S^2> = 3/4 exactly, with SOC on, on both routes
+    assert np.allclose(net.block_s_squared, 0.75, atol=1e-6)
+    assert np.max(np.abs(net.block_s_squared - ci.block_s_squared)) < 1e-5
+    assert net.has_soc
+    assert 0.0 < net.leakage < 1e-2                      # orbitals, not the CI method
+
+
+def test_dmrg_assignment_offers_the_lande_labels(cas_dmrg_term):
+    """The same three-way inference as the CI route (dimension, <S^2>, inverted Lande g),
+    with every piece of evidence contracted through the network."""
+    assignment = cas_dmrg_term.assign(report=False)
+    assert assignment.has_soc
+    assert assignment.labels() == ("^2P_1/2", "^2P_3/2")
+    assert [t.size for t in assignment.terms] == [2, 4]
+    assert [t.j for t in assignment.terms] == [0.5, 1.5]
+
+
 def test_dmrg_needs_max_bond(ref):
     with pytest.raises(ValueError, match="max_bond"):
         CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, solver="dmrg")
 
 
-def test_dmrg_checkpoint_is_refused(ref, tmp_path):
-    with pytest.raises(ValueError, match="network state"):
-        CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, solver="dmrg",
-               solver_options=dict(max_bond=16), checkpoint=tmp_path / "x.h5")
+def test_dmrg_checkpoint_and_restart(ref, cas_dmrg, tmp_path):
+    """The interim DMRG checkpoint: the ordinary trajectory file, written and resumed.
+
+    The trajectory file carries the orbitals, RDMs and optimizer state and deliberately
+    **no** CI vectors and no state energies — a ``SweepResult`` has neither, and the
+    checkpoint layer records nothing rather than storing a different quantity under
+    those names. The network state goes to the sibling ``*.network.h5`` file, rolling,
+    and the restart picks both up: the trajectory exactly, the network as a warm start.
+    """
+    from kuiva.dmrg.checkpoint import network_state_path, read_network_state
+    from kuiva.io.checkpoint import read_checkpoint
+
+    path = tmp_path / "b_dmrg.h5"
+    stopped = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2,
+                     solver="dmrg", solver_options=dict(max_bond=16), max_iter=2,
+                     checkpoint=path, checkpoint_options=dict(min_interval=0.0),
+                     report=False).run()
+    assert path.exists()
+    assert stopped.checkpoint_path == str(path)
+    chk = read_checkpoint(path)
+    assert chk.ci_vectors is None
+    assert chk.state_energies.size == 0
+    assert chk.space_key is not None and chk.space_key.startswith("dmrg:")
+    network = network_state_path(path)
+    assert stopped.network_checkpoint_path == str(network)
+    assert network.is_file()
+    _, meta = read_network_state(network)
+    assert meta["space_key"] == chk.space_key
+    # the restart takes its active space from the file (giving none is the point)
+    resumed = CASSCF(ref, restart=path, n_states=2, solver="dmrg",
+                     solver_options=dict(max_bond=16), max_iter=60, report=False).run()
+    assert resumed.converged
+    assert abs(resumed.energy - cas_dmrg.energy) < E_TOL
+
+
+def test_dmrg_restart_with_a_different_state_average_is_refused(ref, tmp_path):
+    path = tmp_path / "b_dmrg_sa.h5"
+    CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2,
+           solver="dmrg", solver_options=dict(max_bond=16), max_iter=1,
+           checkpoint=path, checkpoint_options=dict(min_interval=0.0),
+           report=False).run()
+    with pytest.raises(ValueError, match="state average"):
+        CASSCF(ref, restart=path, n_states=3, solver="dmrg",
+               solver_options=dict(max_bond=16), report=False).run()
+
+
+def test_dmrg_restart_refuses_the_adaptive_driver(ref, tmp_path):
+    path = tmp_path / "x.h5"
+    path.touch()
+    with pytest.raises(ValueError, match="frozen-chart"):
+        CASSCF(ref, restart=path, n_states=2, solver="dmrg",
+               solver_options=dict(max_bond=16, adaptive=True))
+    with pytest.raises(ValueError, match="frozen-chart"):
+        CASSCF(ref, restart=path, n_states=2, solver="dmrg",
+               solver_options=dict(max_bond=16, bond_steps=[8, 16]))
 
 
 def test_graph_needs_the_dmrg_solver(ref):

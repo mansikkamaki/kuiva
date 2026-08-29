@@ -384,6 +384,257 @@ def _perm_inversions(p: Sequence[int]) -> int:
     return sum(1 for i in range(len(p)) for j in range(i + 1, len(p)) if p[i] > p[j])
 
 
+def _overlap_pairs(graph, center: int, parent: np.ndarray,
+                   order_leafward: Sequence[int], bra, ket) -> np.ndarray:
+    """``M[I, J] = <bra_I|ket_J>`` over every root pair of two applied states.
+
+    The cross-root generalization of :func:`_overlap`: the subtree messages depend only
+    on the isometries (which every root shares), so they are built once and the root
+    pairing happens only at the center closure — one contraction per ket root, one
+    ``vdot`` per pair. Same dirty-subtree shortcut, same conventions.
+    """
+    bra_t, bra_c, bra_mod = bra
+    ket_t, ket_c, ket_mod = ket
+    touched = bra_mod | ket_mod
+    dirty: Dict[int, bool] = {}
+    msgs: Dict[int, Optional[BlockTensor]] = {}
+    for u in order_leafward:
+        if u == center:
+            continue
+        p = int(parent[u])
+        children = [x for x in sorted(graph.neighbors(u)) if x != p]
+        is_dirty = (u in touched) or any(dirty[c] for c in children)
+        dirty[u] = is_dirty
+        if not is_dirty:
+            msgs[u] = None
+            continue
+        nbrs = sorted(graph.neighbors(u))
+        t = _Lab(ket_t[u], [("b", u, x) for x in nbrs] + [("p", u)])
+        for c in children:
+            if msgs[c] is not None:
+                t = t.dot(_Lab(msgs[c], [("bra", c), ("ket", c)]),
+                          [(("b", u, c), ("ket", c))])
+        bra_lab = _Lab(bra_t[u].conj(), [("cb", u, x) for x in nbrs] + [("cp",)])
+        pairs = [(("p", u), ("cp",))]
+        for c in children:
+            pairs.append(((("bra", c) if msgs[c] is not None else ("b", u, c)),
+                          ("cb", u, c)))
+        t = t.dot(bra_lab, pairs)
+        msgs[u] = t.to([("cb", u, p), ("b", u, p)])
+
+    nbrs = sorted(graph.neighbors(center))
+    n_roots = len(ket_c)
+    m = np.zeros((n_roots, n_roots), dtype=np.complex128)
+    for j in range(n_roots):
+        t = _Lab(ket_c[j], [("b", center, x) for x in nbrs] + [("p", center)])
+        labels = []
+        for x in nbrs:
+            if msgs.get(x) is not None:
+                t = t.dot(_Lab(msgs[x], [("bra", x), ("ket", x)]),
+                          [(("b", center, x), ("ket", x))])
+                labels.append(("bra", x))
+            else:
+                labels.append(("b", center, x))
+        kt = t.to(labels + [("p", center)])
+        for i in range(n_roots):
+            val = 0.0 + 0.0j
+            for row, blk in zip(kt.sectors, kt.blocks):
+                b = bra_c[i].find(row)
+                if b is not None:
+                    val += np.vdot(b, blk)                 # vdot conjugates the bra
+            m[i, j] = val
+    return m
+
+
+def transition_rdm1s(ttno: TTNO, state: TTNState) -> np.ndarray:
+    """``gamma^{IJ}_pq = <psi_I| a+_p a_q |psi_J>`` over every root pair.
+
+    Returns ``(n_roots, n_roots, n, n)`` — the network counterpart of
+    :meth:`kuiva.mcscf.casci.FullCISolver.transition_densities`, in the same
+    ``<I|E_pq|J>`` convention, so :func:`kuiva.props.dump.property_matrices` consumes it
+    unchanged. The diagonal blocks reproduce the per-root 1-RDMs exactly (asserted in the
+    tests against :func:`network_rdms` with one-hot weights).
+
+    Route: ``<psi_I|a+_p a_q|psi_J> = <a_p psi_I | a_q psi_J>`` — the same applied-string
+    Gram as :func:`network_rdm` at rank 1, with bra and ket taken from **different**
+    roots (:func:`_overlap_pairs`). ⚠ The single-annihilation string is odd, so both
+    sides carry the explicit Jordan-Wigner ``Z`` tail (:func:`annihilation_term`); the
+    tails cancel in the overlap only because *both* sides carry them.
+
+    ⚠ **Phases are per state and arbitrary**: an off-diagonal block is defined up to the
+    phase difference of its two roots, exactly as the CI route's is up to the
+    eigensolver's phases. Everything downstream (the moment matrices of the property
+    layer) is consumed through phase-invariant reductions only.
+    """
+    graph = state.graph
+    n = sum(len(c) for c in graph.contents)
+    n_roots = state.n_roots
+    parent, preorder = graph.parents(state.center)
+    order_leafward = [int(x) for x in reversed(preorder)]
+    with timer("network transition densities: applied states"):
+        applied = [_apply_term(ttno, state, annihilation_term((m,))) for m in range(n)]
+    gamma = np.empty((n_roots, n_roots, n, n), dtype=np.complex128)
+    with timer("network transition densities: overlaps"):
+        for p in range(n):
+            for q in range(n):
+                gamma[:, :, p, q] = _overlap_pairs(graph, state.center, parent,
+                                                   order_leafward, applied[p], applied[q])
+    return gamma
+
+
+#: Sentinel for :func:`koopmans_gram`: the row is the unmodified reference itself.
+IDENTITY_TERM = "identity"
+
+
+def _applied_or_none(ttno: TTNO, state: TTNState, term):
+    if term is None:
+        return None
+    if term == IDENTITY_TERM:
+        return (list(state.tensors), list(state.centers), frozenset())
+    return _apply_term(ttno, state, term)
+
+
+def _sandwich_pair(graph, center: int, parent: np.ndarray,
+                   order_leafward: Sequence[int], cache: EnvironmentCache,
+                   ttno: TTNO, bra, ket, root: int) -> complex:
+    """``<bra_root| H |ket_root>`` for two applied states sharing the state's bonds.
+
+    The three-layer (bra, TTNO, ket) tree contraction with the clean-subtree shortcut:
+    a subtree neither side modified contributes exactly the standard environment of the
+    unmodified state, served by ``cache``; only the dirty paths are recomputed per pair,
+    which is what keeps a Gram over ``n^2`` strings affordable.
+    """
+    bra_t, bra_c, bra_mod = bra
+    ket_t, ket_c, ket_mod = ket
+    touched = bra_mod | ket_mod
+    dirty: Dict[int, bool] = {}
+    msgs: Dict[int, Optional[BlockTensor]] = {}
+    for u in order_leafward:
+        if u == center:
+            continue
+        p = int(parent[u])
+        children = [x for x in sorted(graph.neighbors(u)) if x != p]
+        is_dirty = (u in touched) or any(dirty[c] for c in children)
+        dirty[u] = is_dirty
+        if not is_dirty:
+            msgs[u] = None
+            continue
+        nbrs = sorted(graph.neighbors(u))
+        t = _Lab(ket_t[u], [("b", u, x) for x in nbrs] + [("p", u)])
+        for c in children:
+            env = msgs[c] if msgs[c] is not None else cache.get(c, u)
+            t = t.dot(_Lab(env, [("bra", c), ("op", c), ("ket", c)]),
+                      [(("b", u, c), ("ket", c))])
+        t = t.dot(_w_lab(ttno, u, p),
+                  [(("op", c), ("op", c)) for c in children] + [(("p", u), ("pi",))])
+        t = t.dot(_Lab(bra_t[u].conj(), [("cb", u, x) for x in nbrs] + [("cp",)]),
+                  [(("bra", c), ("cb", u, c)) for c in children] + [(("po",), ("cp",))])
+        msgs[u] = t.to([("cb", u, p), ("op_out",), ("b", u, p)])
+
+    nbrs = sorted(graph.neighbors(center))
+    t = _Lab(ket_c[root], [("b", center, x) for x in nbrs] + [("p", center)])
+    for x in nbrs:
+        env = msgs[x] if msgs.get(x) is not None else cache.get(x, center)
+        t = t.dot(_Lab(env, [("bra", x), ("op", x), ("ket", x)]),
+                  [(("b", center, x), ("ket", x))])
+    t = t.dot(_w_lab(ttno, center, None),
+              [(("op", x), ("op", x)) for x in nbrs] + [(("p", center), ("pi",))])
+    # Close against the bra center by block matching (vdot conjugates the bra) — a full
+    # tensordot to a scalar is not a BlockTensor, and this is _overlap's own idiom.
+    kt = t.to([("bra", x) for x in nbrs] + [("po",)])
+    total = 0.0 + 0.0j
+    for row, blk in zip(kt.sectors, kt.blocks):
+        b = bra_c[root].find(row)
+        if b is not None:
+            total += np.vdot(b, blk)
+    return complex(total)
+
+
+def koopmans_gram(ttno_h: TTNO, state: TTNState, root: int, terms,
+                  energy: float) -> Tuple[np.ndarray, np.ndarray]:
+    """``(S, K)`` over applied ladder-string states of **one** root: ``S_ab =
+    <chi_a|chi_b>`` and ``K_ab = <chi_a|(H_act - E)|chi_b>``.
+
+    The network counterpart of :meth:`kuiva.pt.contractions.ShiftedSpace.gram` — the
+    denominator kernels of the SC-NEVPT2 ``(+-2)`` and ``(0')`` classes, contracted
+    through the network instead of through a shifted determinant space. ``terms`` is a
+    sequence of :class:`~kuiva.dmrg.ttno.ProductTerm` (**even** strings only — an odd
+    string needs the explicit Jordan-Wigner tail of :func:`annihilation_term`, and
+    nothing here adds one), ``None`` for an identically vanishing row (a coincident
+    label), or :data:`IDENTITY_TERM` for the reference itself. ``ttno_h`` must be the
+    active Hamiltonian the reference was converged on — for a CASSCF reference, the
+    Dyall active Hamiltonian, which the pseudo-canonicalization leaves untouched.
+
+    Both matrices are Hermitian by construction (only the upper triangle is contracted)
+    whatever the reference's convergence; what a *truncated* reference costs is that
+    ``K`` rows involving the reference are only approximately what an eigenvector would
+    give, which is the same statement the provider's Hermiticity diagnostics make.
+    """
+    for term in terms:
+        if term is None or term == IDENTITY_TERM:
+            continue
+        # Parity of a pure fermionic string equals its particle-number change mod 2, and
+        # the compiler truncates the JW tail below the string's lowest mode — sound for
+        # even strings only (module docstring). Refuse rather than return a Gram that is
+        # wrong by exactly a fermionic sign pattern no Hermiticity check can see.
+        delta_n = sum(_charge_shift(mat, FERMION_MODE).n for mat in term.mats)
+        if delta_n % 2 != 0:
+            raise ValueError(
+                "koopmans_gram takes even ladder strings only: an odd string needs the "
+                "explicit Jordan-Wigner tail (annihilation_term), which these terms do "
+                "not carry")
+    graph = state.graph
+    parent, preorder = graph.parents(state.center)
+    order_leafward = [int(x) for x in reversed(preorder)]
+    with timer("network Koopmans Gram: applied states"):
+        applied = [_applied_or_none(ttno_h, state, t) for t in terms]
+    m = len(applied)
+    overlap = np.zeros((m, m), dtype=np.complex128)
+    koopmans = np.zeros((m, m), dtype=np.complex128)
+    cache = EnvironmentCache(ttno_h, state)
+    try:
+        with timer("network Koopmans Gram: sandwiches"):
+            for a in range(m):
+                if applied[a] is None:
+                    continue
+                for b in range(a, m):
+                    if applied[b] is None:
+                        continue
+                    s_ab = _overlap_pairs(graph, state.center, parent, order_leafward,
+                                          applied[a], applied[b])[root, root]
+                    h_ab = _sandwich_pair(graph, state.center, parent, order_leafward,
+                                          cache, ttno_h, applied[a], applied[b], root)
+                    k_ab = h_ab - float(energy) * s_ab
+                    overlap[a, b] = s_ab
+                    koopmans[a, b] = k_ab
+                    if b != a:
+                        overlap[b, a] = np.conj(s_ab)
+                        koopmans[b, a] = np.conj(k_ab)
+    finally:
+        cache.release_all()
+    return overlap, koopmans
+
+
+def state_rdms(template: TTNOTemplate, state: TTNState, *,
+               ttno: Optional[TTNO] = None) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Per-root ``(gamma, Gamma)`` — one one-hot pass of the production path per root.
+
+    The per-state counterpart of :func:`network_rdms`, for the analysis layer
+    (``<S^2>``, term assignment): each root's own densities, **no** state averaging and
+    therefore no averaging gate — the same deliberate exemption the CI route's per-state
+    RDMs carry (a single state's densities are what a per-state diagnostic is made of;
+    the gate is a statement about an ensemble).
+    """
+    op = template.ttno if ttno is None else ttno
+    out: List[Tuple[np.ndarray, np.ndarray]] = []
+    for r in range(state.n_roots):
+        weights = np.zeros(state.n_roots)
+        weights[r] = 1.0
+        envs = node_environments(op, state, weights)
+        out.append(template.rdms_from_environments(envs))
+    return out
+
+
 def network_rdm(ttno: TTNO, state: TTNState, rank: int, *,
                 energies: Optional[Sequence[float]] = None,
                 n_elec: Optional[int] = None,
@@ -482,4 +733,5 @@ def network_rdm(ttno: TTNO, state: TTNState, rank: int, *,
     return gamma
 
 
-__all__ = ["network_rdms", "network_rdm", "node_environments", "annihilation_term"]
+__all__ = ["network_rdms", "network_rdm", "node_environments", "annihilation_term",
+           "state_rdms", "transition_rdm1s", "koopmans_gram", "IDENTITY_TERM"]

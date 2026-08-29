@@ -85,8 +85,8 @@ from ..util import resources as res
 from ..util import threads
 from ..util.logging import get_logger
 from ..util.timing import timer
-from .block import (BlockTensor, QuantumNumber, Space, block_tensor_gb, qr, svd,
-                    tensordot)
+from .block import (BlockTensor, QuantumNumber, Space, TruncationInfo, block_tensor_gb,
+                    fuse, qr, svd, tensordot)
 from .graph import NetworkGraph
 from .sparse import SparseW, dot_sparse
 from .ttno import TTNO
@@ -765,6 +765,9 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
               davidson_tol: float = 1e-8, on_split: str = "raise",
               page_environments: bool = True,
               environment_resident_gb: Optional[float] = None,
+              checkpoint=None,
+              bond_schedule: Optional[Sequence[int]] = None,
+              expansion: float = 0.0, expansion_sweeps: int = 6,
               report: bool = True) -> SweepResult:
     """State-averaged two-site DMRG to energy stationarity (module docstring).
 
@@ -788,6 +791,40 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
     ``report=False`` moves the sweep table to DEBUG — for a solver called once per
     CASSCF macro-iteration, whose driver already owns the INFO table (INFO is the
     output file, and sixty inner tables in it are noise, not output).
+
+    ``checkpoint`` is a callable ``checkpoint(state, sweep=, energies=, converged=)``
+    invoked at the end of **each completed sweep** — rolling network-state checkpointing
+    (:class:`kuiva.dmrg.checkpoint.NetworkCheckpointPolicy`), which owns its own cadence
+    and failure semantics; this loop only reports the sweep. It is called once more at
+    convergence with ``converged=True`` (that write is unconditional by the policy's own
+    rule), and never during the boundary diagnostic, whose extra roots are discarded.
+
+    Production controls
+    -------------------
+    ``bond_schedule`` ramps the cap **within this solve**: entry ``s`` caps sweep
+    ``s + 1``, the last entry holds from there on, and it must equal ``max_bond`` (or
+    supplies it when ``max_bond`` is ``None``). The variational manifold is defined by
+    the final cap alone, so the ramp is an iteration strategy, not a chart change —
+    convergence is therefore only *declared* on sweeps running at the final cap.
+
+    ``expansion`` (``alpha``) enriches every truncation with the ``alpha``-scaled
+    operator-channel columns of :func:`_expansion_columns` — the deterministic
+    two-site, ensemble form of the subspace expansion (Hubig et al. 2015), which is
+    White's density-matrix perturbation (2005) evaluated instead of sampled. The choice
+    of the deterministic form over the sampled one is deliberate and load-bearing for
+    the degenerate-group truncation rule: the ensemble density plus the H-channel term
+    commutes with time reversal whenever the ensemble and ``H`` do, so degenerate
+    Schmidt groups stay degenerate to rounding and the group-complete cut keeps meaning
+    what it says — a *sampled* perturbation would split them by ``O(alpha)`` and turn
+    the group rule into a coin toss (it would also put an RNG into an example's
+    trajectory, which the reproducibility rules forbid). ``alpha`` decays by 4x each
+    sweep and is off after ``expansion_sweeps``; convergence is only declared on
+    unperturbed sweeps. The energies are Davidson eigenvalues and stay variational at
+    every ``alpha``; the reported ``w_disc`` is always the **ensemble's own** discarded
+    weight, recomputed from the committed projections when the expansion is active,
+    never the augmented density's. ⚠ Cost: the truncation SVD's column count grows by
+    the operator bond dimension while ``alpha`` is on — pay it in the first sweeps,
+    where it buys escape from a local minimum, not at convergence.
     """
     graph = state.graph
     n_roots = state.n_roots
@@ -796,6 +833,24 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
         else np.asarray(weights, dtype=float) / float(np.sum(weights))
     if requested.size != n_roots:
         raise ValueError("{} weights for {} roots".format(requested.size, n_roots))
+    schedule = None
+    if bond_schedule is not None:
+        schedule = [int(d) for d in bond_schedule]
+        if not schedule or any(d <= 0 for d in schedule) \
+                or any(b < a for a, b in zip(schedule, schedule[1:])):
+            raise ValueError("bond_schedule must be a non-empty ascending sequence of "
+                             "positive caps, got {}".format(bond_schedule))
+        if max_bond is None:
+            max_bond = schedule[-1]
+        elif schedule[-1] != int(max_bond):
+            raise ValueError(
+                "bond_schedule ends at {} but max_bond is {}. The final cap defines the "
+                "variational manifold (it is what a solver's space_key names), so the "
+                "two must be one number — drop max_bond or make them agree"
+                .format(schedule[-1], max_bond))
+    alpha0 = float(expansion)
+    if alpha0 < 0.0:
+        raise ValueError("expansion must be non-negative, got {}".format(expansion))
 
     pager = None
     if page_environments or environment_resident_gb is not None:
@@ -828,18 +883,29 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
             t0 = time.perf_counter()
             max_disc = 0.0
             max_dim = 0
+            cap = max_bond if schedule is None \
+                else schedule[min(sweep - 1, len(schedule) - 1)]
+            alpha = alpha0 * 4.0 ** (1 - sweep) if sweep <= int(expansion_sweeps) else 0.0
             for u, v in graph.sweep_schedule(state.center):
                 energies, w_used, info, _ = _update_bond(
-                    ttno, state, cache, u, v, requested, n_elec, trunc_tol, max_bond,
-                    davidson_tol, on_split)
+                    ttno, state, cache, u, v, requested, n_elec, trunc_tol, cap,
+                    davidson_tol, on_split, expansion=alpha)
                 max_disc = max(max_disc, info.discarded_weight)
                 max_dim = max(max_dim, info.bond_dim)
             e_sa = float(np.dot(w_used, energies))
             de = None if e_prev is None else e_sa - e_prev
             history.append(e_sa)
             table.row(sweep, e_sa, de, max_disc, max_dim, time.perf_counter() - t0)
-            if de is not None and abs(de) < conv_tol:
+            # ⚠ Only a sweep at the final cap and without the expansion may declare
+            # convergence: a ramp sweep is stationary on a smaller manifold than the one
+            # the solve promises, and a perturbed truncation is not the fixed point.
+            final_form = (schedule is None or sweep >= len(schedule)) and alpha == 0.0
+            if final_form and de is not None and abs(de) < conv_tol:
                 converged = True
+            if checkpoint is not None:
+                checkpoint(state, sweep=sweep, energies=[float(e) for e in energies],
+                           converged=converged)
+            if converged:
                 break
             e_prev = e_sa
     table.end("converged" if converged else "NOT converged in {} sweeps".format(
@@ -881,7 +947,7 @@ def _sweep_weights(energies: np.ndarray, requested: np.ndarray,
 
 
 def _update_bond(ttno, state, cache, u, v, requested, n_elec, trunc_tol, max_bond,
-                 davidson_tol, on_split, extra_roots=0):
+                 davidson_tol, on_split, extra_roots=0, expansion=0.0):
     """One two-site update; with ``extra_roots`` it also returns the state-average boundary gap.
 
     ⚠ Extra roots are solved and *discarded* — they never enter the average or the
@@ -890,7 +956,8 @@ def _update_bond(ttno, state, cache, u, v, requested, n_elec, trunc_tol, max_bon
     prob, energies, w_used, roots, gap = _solve_local(ttno, state, cache, u, v,
                                                       requested, davidson_tol,
                                                       extra_roots=extra_roots)
-    info = _commit_split(state, cache, prob, roots, w_used, trunc_tol, max_bond)
+    info = _commit_split(state, cache, prob, roots, w_used, trunc_tol, max_bond,
+                         expansion=expansion)
     return energies, w_used, info, gap
 
 
@@ -955,7 +1022,7 @@ def _phys_axis(labels):
 
 
 def _commit_split(state, cache, prob, roots, w_used, trunc_tol, max_bond, *,
-                  graph=None, left_labels=None):
+                  graph=None, left_labels=None, expansion=0.0):
     """Split the merged ensemble across ``(u, v)`` and move the center to ``v``.
 
     ``graph`` is the topology to commit under (default: the incumbent ``state.graph``)
@@ -974,6 +1041,11 @@ def _commit_split(state, cache, prob, roots, w_used, trunc_tol, max_bond, *,
     else:
         left_axes = tuple(sorted(labels.index(l) for l in left_labels))
     stacked = _stack_roots(roots, w_used)
+    if expansion > 0.0:
+        # The augmented ensemble: same left legs, extra alpha-scaled columns, ONE svd —
+        # the single truncation path, degenerate-group rule included, is untouched.
+        stacked = _concat_aux(stacked, _expansion_columns(prob, stacked),
+                              float(expansion))
     u_iso, _, _, info = svd(stacked, left_axes, tol=trunc_tol, max_bond=max_bond)
 
     # node u: [bonds ascending, phys last]; the new bond is u_iso's last leg
@@ -1000,7 +1072,94 @@ def _commit_split(state, cache, prob, roots, w_used, trunc_tol, max_bond, *,
     state.tensors[v] = None
     state.center = v
     cache.refresh(u, v)
+    if expansion > 0.0:
+        # ⚠ The svd's discarded weight belongs to the AUGMENTED density (ensemble plus
+        # alpha-scaled expansion columns), which is not the quality number w_disc means
+        # everywhere else. The ensemble's own is recovered exactly from the projections
+        # just computed: the roots are unit vectors, so 1 - sum_r w_r ||U^+ m_r||^2.
+        kept = sum(float(w) * float(c.norm()) ** 2 for c, w in zip(centers, w_used))
+        info = TruncationInfo(bond_dim=info.bond_dim, n_discarded=info.n_discarded,
+                              discarded_weight=max(0.0, 1.0 - kept),
+                              smallest_kept=info.smallest_kept,
+                              largest_discarded=info.largest_discarded)
     return info
+
+
+def _expansion_columns(prob: _LocalProblem, stacked: BlockTensor) -> BlockTensor:
+    """The subspace-expansion enrichment: the ``u``-side half of ``H_eff`` applied to the
+    ensemble, operator channel left open.
+
+    Contract the ``sqrt(w)``-stacked ensemble with node ``u``'s environments and W tensor
+    only — the ``v`` side untouched — and leave the operator-channel leg toward ``v``
+    open. The result spans, on the ``u``-side (row) legs, exactly the directions the
+    Hamiltonian connects the current ensemble to: appending its columns to the
+    truncation's input is the two-site, ensemble form of the subspace expansion of Hubig,
+    McCulloch, Schollwoeck & Wolf, Phys. Rev. B 91, 155115 (2015), and — because the SVD
+    of the augmented matrix diagonalizes ``rho + alpha^2 sum_b T_b rho T_b^+`` — it is at
+    the same time the deterministic density-matrix perturbation of White, J. Chem. Phys.
+    122, 084108 (2005), evaluated instead of sampled.
+
+    Returned with the same leg order and spaces as ``stacked`` except the trailing
+    auxiliary leg, which fuses the ensemble leg with the open operator channel.
+    """
+    u = prob.u
+    t = _Lab(stacked, list(prob.labels) + [("r",)])
+    for x, env in prob.envs_u:
+        t = t.dot(env, [(("b", u, x), ("ket", x))])
+    t = t.dot(prob.w_u, [(("op", x), ("op", x)) for x in prob.branches_u]
+              + [(("p", u), ("pi",))])
+    relabel = []
+    for lab in t.labels:
+        if lab[0] == "bra":
+            relabel.append(("b", u, lab[1]))
+        elif lab == ("po",):
+            relabel.append(("p", u))
+        else:
+            relabel.append(lab)
+    ordered = _Lab(t.t, relabel).to(list(prob.labels) + [("r",), ("op_out",)])
+    fused, _ = fuse(ordered, (ordered.ndim - 2, ordered.ndim - 1))
+    return fused.transpose(list(range(1, fused.ndim)) + [0])
+
+
+def _concat_aux(a: BlockTensor, b: BlockTensor, scale: float) -> BlockTensor:
+    """``[a | scale * b]`` along the trailing auxiliary leg; every other leg shared.
+
+    The augmented ensemble the expansion feeds to the **one** truncation path: one
+    :func:`svd` call on the result performs the perturbed weighted-density-matrix
+    truncation with the degenerate-group discipline intact. The two operands must agree
+    on everything but the auxiliary leg — asserted, because a mismatch here would be a
+    sign or flux bookkeeping error upstream that the concatenation must not paper over.
+    """
+    ax = a.ndim - 1
+    if b.ndim != a.ndim or a.spaces[:ax] != b.spaces[:ax] \
+            or a.signs[:ax] != b.signs[:ax] or a.signs[ax] != b.signs[ax] \
+            or a.charge != b.charge:
+        raise ValueError("expansion columns do not share the ensemble's legs; this is a "
+                         "sign or flux bookkeeping error upstream")
+    sa, sb = a.spaces[ax], b.spaces[ax]
+
+    def dim_of(space: Space, qn) -> int:
+        return int(space.dims[space.qns.index(qn)]) if qn in space.qns else 0
+
+    qns = sorted(set(sa.qns) | set(sb.qns))
+    combined = Space([(qn, dim_of(sa, qn) + dim_of(sb, qn)) for qn in qns])
+    sector_of = {qn: k for k, qn in enumerate(qns)}
+    merged: Dict[tuple, np.ndarray] = {}
+    for tensor, offset_fn, factor in ((a, lambda q: 0, 1.0),
+                                      (b, lambda q: dim_of(sa, q), float(scale))):
+        for row, block in zip(tensor.sectors, tensor.blocks):
+            qn = tensor.spaces[ax].qns[int(row[ax])]
+            key = tuple(int(i) for i in row[:ax]) + (sector_of[qn],)
+            out = merged.get(key)
+            if out is None:
+                out = np.zeros(block.shape[:-1] + (int(combined.dims[sector_of[qn]]),),
+                               dtype=np.complex128)
+                merged[key] = out
+            start = offset_fn(qn)
+            out[..., start:start + block.shape[-1]] += factor * block
+    rows = np.array(sorted(merged), dtype=np.int64).reshape(len(merged), a.ndim)
+    blocks = [np.ascontiguousarray(merged[tuple(int(i) for i in row)]) for row in rows]
+    return BlockTensor(a.spaces[:ax] + (combined,), a.signs, a.charge, rows, blocks)
 
 
 def _stack_roots(roots: List[BlockTensor], weights: np.ndarray) -> BlockTensor:

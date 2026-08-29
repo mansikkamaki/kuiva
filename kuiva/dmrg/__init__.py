@@ -50,6 +50,10 @@ from .manifold import (EffectiveModel, ManifoldResult, SiteSpace, UnderResolved,
                        DEFAULT_MULTIPLET_WEIGHT_TOL)
 from .density import (annihilation_term, network_rdm, network_rdms,
                       node_environments)
+from .extrapolate import BondSeriesResult, bond_series
+from .checkpoint import (NETWORK_SCHEMA_VERSION, NetworkCheckpointError,
+                         NetworkCheckpointPolicy, network_checkpoint_gb,
+                         network_state_path, read_network_state, write_network_state)
 from .solver import DMRGSolver, NetworkProposal
 
 __all__ = ["QuantumNumber", "Space", "BlockTensor", "FuseRecord", "TruncationInfo",
@@ -70,4 +74,7 @@ __all__ = ["QuantumNumber", "Space", "BlockTensor", "FuseRecord", "TruncationInf
            "solve_manifold", "MULTIPLET_GAP_RATIO_WARN",
            "DEFAULT_MULTIPLET_WEIGHT_TOL",
            "TTNOTemplate", "annihilation_term", "network_rdm", "network_rdms",
-           "node_environments", "DMRGSolver", "NetworkProposal"]
+           "node_environments", "DMRGSolver", "NetworkProposal",
+           "NETWORK_SCHEMA_VERSION", "NetworkCheckpointError", "NetworkCheckpointPolicy",
+           "network_checkpoint_gb", "network_state_path", "read_network_state",
+           "write_network_state", "BondSeriesResult", "bond_series"]

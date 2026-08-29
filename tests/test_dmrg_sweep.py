@@ -221,3 +221,58 @@ def test_tensordot_matches_dense():
     assert np.max(np.abs(c.to_dense() - ref)) < 1e-13
     with pytest.raises(ValueError, match="signs"):
         tensordot(a, b, ([0], [1]))                     # equal signs: flux cannot cancel
+
+
+# --- production controls: the per-sweep bond schedule and the subspace expansion ------------
+
+def test_bond_schedule_ramps_and_still_reaches_the_exact_answer():
+    n, k = 6, 2
+    h, eri = random_spinor_integrals(n, seed=31)
+    result = solve(NetworkGraph.path(n), h, eri, k, n_roots=2,
+                   bond_schedule=[4, 8, 200], max_bond=200)
+    assert result.converged
+    # convergence may only be declared at the final cap, so the ramp sweeps all ran
+    assert result.n_sweeps >= 3
+    ref = exact_energies(n, k, h, eri, 2)
+    assert np.max(np.abs(result.energies - ref)) < E_TOL
+
+
+def test_bond_schedule_supplies_max_bond_and_refuses_a_contradiction():
+    n, k = 6, 2
+    h, eri = random_spinor_integrals(n, seed=32)
+    op = compile_ttno(NetworkGraph.path(n), hamiltonian_product_terms(h, eri))
+    state = random_state(op, k, 200, rng=np.random.default_rng(32))
+    result = solve_ttn(op, state, bond_schedule=[8, 200], max_bond=None,
+                       boundary_check=0, report=False)
+    assert result.converged                              # max_bond taken from the ramp
+    assert abs(result.energies[0] - exact_energies(n, k, h, eri, 1)[0]) < E_TOL
+    with pytest.raises(ValueError, match="one number"):
+        solve(NetworkGraph.path(n), h, eri, k, bond_schedule=[8, 64], max_bond=200)
+    with pytest.raises(ValueError, match="ascending"):
+        solve(NetworkGraph.path(n), h, eri, k, bond_schedule=[64, 8], max_bond=8)
+
+
+def test_expansion_changes_no_converged_number():
+    # at a saturating cap the enrichment columns are redundant directions: the energies,
+    # and the ENSEMBLE discarded weight the result reports, must be exactly the
+    # unperturbed story
+    n, k = 6, 2
+    h, eri = random_spinor_integrals(n, seed=33)
+    plain = solve(NetworkGraph.path(n), h, eri, k, n_roots=2)
+    perturbed = solve(NetworkGraph.path(n), h, eri, k, n_roots=2, expansion=1e-3)
+    assert perturbed.converged
+    assert np.max(np.abs(perturbed.energies - plain.energies)) < E_TOL
+    assert perturbed.max_discarded < 1e-12               # the ensemble's own, not the
+    #                                                      augmented density's
+
+
+def test_expansion_preserves_kramers_degeneracy():
+    """⚠ The load-bearing property of the DETERMINISTIC expansion: the perturbed density
+    commutes with time reversal whenever the ensemble and H do, so a Kramers pair's
+    Schmidt values stay degenerate and the group-complete truncation keeps meaning what
+    it says. A sampled (stochastic) perturbation would split them by O(alpha)."""
+    n, k = 6, 3
+    h, eri = kramers_spinor_integrals(3, seed=34)        # 3 pairs -> 6 spinors
+    result = solve(NetworkGraph.path(n), h, eri, k, n_roots=2, expansion=1e-3)
+    assert result.converged
+    assert abs(result.energies[1] - result.energies[0]) < 1e-8

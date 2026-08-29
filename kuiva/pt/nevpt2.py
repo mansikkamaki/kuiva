@@ -556,6 +556,75 @@ def sc_nevpt2(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
     -------
     :class:`NEVPT2Result`
     """
+    engine = _CIEngine(civecs, spaces.n_active, int(n_elec))
+    return _drive(engine, factors, h_ao, c_spinor, spaces, int(n_elec),
+                  energies=energies, weights=weights, e_nuc=e_nuc, classes=classes,
+                  fock=fock, frozen_core=frozen_core, deleted_virtual=deleted_virtual,
+                  shift=shift, imaginary_shift=imaginary_shift, norm_cutoff=norm_cutoff,
+                  degeneracy_tol=degeneracy_tol, on_split=on_split, report=report)
+
+
+class _CIEngine:
+    """The conventional-CI half of the driver: CI vectors in, densities and providers out.
+
+    The reference-specific seam the shared loop (:func:`_drive`) runs on. Its network
+    twin lives in :mod:`kuiva.pt.network`; both serve the same four things — a state
+    count, the averaged density that defines ``H0``, a per-state density for the
+    measurement-only state-specific Fock, and one contraction provider per state — and
+    the loop learns nothing else about where the reference came from.
+    """
+
+    kind = "conventional CI"
+
+    def __init__(self, civecs: np.ndarray, n_active: int, n_elec: int) -> None:
+        self.vectors = np.atleast_2d(np.ascontiguousarray(civecs, dtype=np.complex128))
+        self.n_states = int(self.vectors.shape[0])
+        self.space = CASSpace(int(n_active), int(n_elec))
+        if self.vectors.shape[1] != self.space.ndet:
+            raise ValueError("CI vectors have length {}, but CAS({}, {}) has {} "
+                             "determinants".format(self.vectors.shape[1], n_elec,
+                                                   n_active, self.space.ndet))
+        self.builder = RDMBuilder(self.space)
+        self._shifted: Optional[ShiftedSpaces] = None
+
+    def averaged_gamma(self, equalized: np.ndarray) -> np.ndarray:
+        return self.builder(self.vectors, equalized, enforce_kramers=False)[0]
+
+    def state_gamma(self, state: int) -> np.ndarray:
+        return self.builder(self.vectors[state], enforce_kramers=False)[0]
+
+    def provider(self, state: int, h_act: np.ndarray, eri_act: np.ndarray):
+        if self._shifted is None:
+            # Built once for the run, not per state: the active Hamiltonian is the same
+            # for every state (the canonicalization never rotates the active block) and
+            # a sigma workspace per state would charge the memory budget n_states times
+            # for one array. See contractions.ShiftedSpaces.
+            self._shifted = ShiftedSpaces(self.space.n_spinor, self.space.n_elec,
+                                          h_act, eri_act)
+        return CIContractionProvider(self.space, self.vectors[state], h_act, eri_act,
+                                     builder=self.builder, spaces=self._shifted)
+
+    def release(self) -> None:
+        if self._shifted is not None:
+            self._shifted.release()
+
+
+def _drive(engine, factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
+           spaces: OrbitalSpaces, n_elec: int, *,
+           energies=None, weights=None, e_nuc: float = 0.0, classes=None,
+           fock: str = "state-averaged", frozen_core=None, deleted_virtual=None,
+           shift: float = 0.0, imaginary_shift: bool = False,
+           norm_cutoff: float = DEFAULT_NORM_CUTOFF,
+           degeneracy_tol: float = DEFAULT_DEGENERACY_TOL,
+           on_split: str = "raise", report: bool = True) -> NEVPT2Result:
+    """The shared SC-NEVPT2 loop over one reference-specific ``engine``.
+
+    Everything reference-independent lives here — the pseudo-canonicalization, the
+    frozen/deleted selection, the class loop with its intruder and imaginary-part
+    diagnostics, the assembly and the reporting — and the engine supplies only what
+    :class:`_CIEngine`'s docstring lists. ⚠ This is :func:`sc_nevpt2`'s validated body,
+    factored so a second reference type is a second engine and not a second loop.
+    """
     if fock not in FOCK_MODES:
         raise ValueError("fock must be one of {}, got {!r}".format(list(FOCK_MODES), fock))
     if fock == "state-specific":
@@ -568,17 +637,10 @@ def sc_nevpt2(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
                     "resulting E2 is not the parameter-free one and the two may not be mixed "
                     "in one comparison", "an imaginary" if imaginary_shift else "a real", shift)
 
-    vectors = np.atleast_2d(np.ascontiguousarray(civecs, dtype=np.complex128))
-    n_states = int(vectors.shape[0])
+    n_states = int(engine.n_states)
     names = tuple(classes) if classes is not None else available_classes()
     for name in names:
         excitation_class(name)                              # refuse an unknown name up front
-
-    space = CASSpace(spaces.n_active, int(n_elec))
-    if vectors.shape[1] != space.ndet:
-        raise ValueError("CI vectors have length {}, but CAS({}, {}) has {} determinants"
-                         .format(vectors.shape[1], n_elec, spaces.n_active, space.ndet))
-    builder = RDMBuilder(space)
 
     if report:
         out.subsection(log, "SC-NEVPT2")
@@ -587,6 +649,7 @@ def sc_nevpt2(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
             ("inactive / virtual spinors",
              "{} / {}".format(spaces.n_inactive, spaces.n_virtual)),
             ("states", n_states),
+            ("reference", engine.kind),
             ("zeroth-order Fock", fock),
             ("level shift [Eh]", "{:.3e}{}".format(shift, " (imaginary)" if imaginary_shift
                                                    else "") if shift else "none"),
@@ -599,14 +662,12 @@ def sc_nevpt2(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
     equalized = (state_average_weights(_require_energies(energies, n_states), n_elec, weights,
                                        tol=degeneracy_tol, on_split=on_split)
                  if n_states > 1 else np.ones(1))
-    averaged = (builder(vectors, equalized, enforce_kramers=False)[0]
-                if fock == "state-averaged" else None)
+    averaged = engine.averaged_gamma(equalized) if fock == "state-averaged" else None
 
     e_casscf = np.zeros(n_states)
     per_state: List[Dict[str, ClassResult]] = []
     canonical: Optional[CanonicalOrbitals] = None
     blocks: Optional[IntegralBlocks] = None
-    shifted: Optional[ShiftedSpaces] = None
     correlated: Optional[CorrelatedSpaces] = None
     # State-independent class results, reused across states. ⚠ Only populated with the
     # state-averaged Fock, where every state shares one set of canonical orbitals and one
@@ -618,7 +679,7 @@ def sc_nevpt2(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
                 if blocks is not None:
                     blocks.release()
                 gamma_h0 = (averaged if fock == "state-averaged"
-                            else builder(vectors[state], enforce_kramers=False)[0])
+                            else engine.state_gamma(state))
                 canonical = pseudo_canonicalize(factors, h_ao, c_spinor, spaces, gamma_h0,
                                                 e_nuc=e_nuc)
                 correlated = select_correlated(canonical.eps_inactive, canonical.eps_virtual,
@@ -633,16 +694,8 @@ def sc_nevpt2(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
                                         inactive_keep=correlated.inactive,
                                         virtual_keep=correlated.virtual)
             ints = canonical.ints
-            if shifted is None:
-                # Built once for the run, not per state: the active Hamiltonian is the same for
-                # every state (the canonicalization never rotates the active block) and a
-                # sigma workspace per state would charge the memory budget n_states times for one
-                # array. See contractions.ShiftedSpaces.
-                shifted = ShiftedSpaces(spaces.n_active, int(n_elec),
-                                        ints.h_active_effective(), ints.active_eri())
-            provider = CIContractionProvider(space, vectors[state],
-                                             ints.h_active_effective(), ints.active_eri(),
-                                             builder=builder, spaces=shifted)
+            provider = engine.provider(state, ints.h_active_effective(),
+                                       ints.active_eri())
             if energies is not None:
                 active_hamiltonian_check(provider, float(np.asarray(energies)[state]))
             e_casscf[state] = (float(np.asarray(energies)[state]) + ints.e_core
@@ -666,8 +719,7 @@ def sc_nevpt2(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
     finally:
         if blocks is not None:
             blocks.release()
-        if shifted is not None:
-            shifted.release()
+        engine.release()
 
     result = _assemble(per_state, names, e_casscf, canonical, fock, shift, imaginary_shift,
                        correlated)
@@ -747,6 +799,18 @@ def _evaluate_classes(names: Sequence[str], ctx: ClassContext, state: int,
     for name in names:
         spec = excitation_class(name)
         if spec.status == "planned":
+            continue
+        # ⚠ The declared-capability seam: a class asks the provider only for the
+        # primitives it registered in `requires`, so a provider that does not serve one
+        # of them (the network provider and the primed single-external classes) skips
+        # the class here — visibly, and the assembly then refuses to call the sum E2.
+        unsupported = [p for p in spec.requires if not hasattr(ctx.provider, p)]
+        if unsupported:
+            if state == 0:
+                log.warning(
+                    "class %s is SKIPPED: this contraction provider (%s) does not serve "
+                    "%s. The sum below is a PARTIAL E2 and the result says so",
+                    name, type(ctx.provider).__name__, ", ".join(unsupported))
             continue
         reuse = shared is not None and spec.state_independent
         if reuse and name in shared:

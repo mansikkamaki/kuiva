@@ -224,7 +224,42 @@ def main() -> int:
     ])
 
     # ----------------------------------------------------------------------------------
-    # 6. Assert.
+    # 6. The same correction from a tensor-network reference -- and what it cannot yet do.
+    # ----------------------------------------------------------------------------------
+    # NEVPT2 accepts a solver="dmrg" CASSCF through the network-backed contraction
+    # provider: the same driver, the same classes, with the determinant-space vectors
+    # replaced by network contractions. ⚠ Six of the eight classes: the primed
+    # single-external ones (Sr, Si) are not served yet, so the network E2 is a PARTIAL
+    # sum -- skipped with a warning, marked incomplete on the result, printed as PARTIAL
+    # in the report -- and is not comparable with a complete NEVPT2. What IS comparable,
+    # and is compared below, is each served class against the conventional-CI value.
+    #
+    # Three modes per node: this fifteen-root average spans the whole CAS(4, 6) space,
+    # and on a finer bipartition some two-site window could not hold all fifteen roots.
+    from kuiva.dmrg import NetworkGraph
+    out.section(log, "The network route")
+    graph = NetworkGraph(2, [(0, 1)], contents=[(0, 1, 2), (3, 4, 5)])
+    cas_net = kuiva.CASSCF(reference, character=("O", "p"), n_active=N_ACTIVE,
+                           n_active_elec=N_ACTIVE_ELEC, n_states=N_STATES,
+                           solver="dmrg", solver_options=dict(max_bond=64), graph=graph,
+                           mode="second-order", max_iter=60, conv_grad=1e-6,
+                           report=False).run()
+    pt_net = kuiva.NEVPT2(cas_net, report=False).run()
+    served = tuple(n for n in pt.class_energies if n not in pt_net.result.missing)
+    class_gap = max(float(np.max(np.abs(pt.class_energies[n]
+                                        - pt_net.class_energies[n]))) for n in served)
+    out.entries(log, [
+        ("classes served on the network route", ", ".join(served)),
+        ("classes missing (per-label perturber network not built)",
+         ", ".join(pt_net.result.missing)),
+        ("reported complete", pt_net.result.complete, "",
+         "the network E2 is a PARTIAL sum and says so"),
+        ("largest class-by-class gap to the CI route", class_gap, "Eh",
+         "independently converged orbitals", out.SCI_FMT),
+    ])
+
+    # ----------------------------------------------------------------------------------
+    # 7. Assert.
     # ----------------------------------------------------------------------------------
     spread = max(m.corrected_spread_cm for m in manifolds)
     terms_cm = {label: (m.e_corrected - e_cor0) * HARTREE_TO_CM
@@ -250,6 +285,9 @@ def main() -> int:
                                                               - EXPERIMENT_CM["1S0"]),
         "freezing the 1s freezes exactly the two 1s spinors": frozen.result.n_frozen == 2,
         "a restricted class list is reported as partial": not partial.result.complete,
+        "the network-route correction is reported as partial":
+            not pt_net.result.complete and pt_net.result.missing == ("Sr", "Si"),
+        "the six served classes agree with the CI route": class_gap < 1.0e-5,
     }
     failures = report(checks)
 

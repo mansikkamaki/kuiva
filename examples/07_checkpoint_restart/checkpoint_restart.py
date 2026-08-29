@@ -35,9 +35,11 @@ checkpoint at a *converged* iteration is always written. The vectors are a David
 start, which is why they are the first thing dropped: losing them costs the next solve its
 order of magnitude, and nothing else. A thinned checkpoint still restarts the calculation.
 
-⚠ **A tensor-network state is not checkpointed at all**, by this layer or any other: a
-``solver="dmrg"`` CASSCF refuses ``checkpoint=`` and ``restart=`` rather than write a file
-that could not resume it. Everything below is the conventional-CI route.
+A ``solver="dmrg"`` CASSCF checkpoints too, into **two** files: this same trajectory file
+(without CI vectors -- the network has none) and a sibling ``*.network.h5`` holding the
+network state itself, written rolling at the end of each completed sweep. A restart resumes
+the trajectory exactly and warm-starts the network from the sibling; example 4 shows the
+two files. Everything below is the conventional-CI route.
 
 ⚠ **Same energy, not the same bits.** The checkpoint restores the orbitals, the quasi-Newton
 curvature memory, the trust radius and the eigensolver's guess exactly. What it cannot

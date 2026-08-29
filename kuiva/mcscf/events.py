@@ -370,11 +370,18 @@ def optimize_orbitals_events(
                       "2nd" if step.second_order else "qn", tag, t_it.wall,
                       *[getter() for _, getter in extra_columns])
         if callback is not None:
+            # Extended additively with the same keys the plain driver carries — the
+            # orbitals, the RDMs, the spaces and the optimizer are what a checkpoint
+            # writer (kuiva.io.checkpoint.CheckpointPolicy) needs, and they are already
+            # in hand here. A callback that ignores them is unaffected.
             info = {"iteration": it, "energy": energy, "grad_norm": gnorm, "de": de,
                     "second_order": step.second_order, "converged": converged,
                     "n_hessian_matvec": opt.n_hessian_matvec, "wall": t_it.wall,
                     "event": tag, "n_adoptions": n_adoptions,
-                    "space_key": solver.space_key()}
+                    "space_key": solver.space_key(),
+                    "coeff": c, "gamma": gamma, "gamma2": gamma2, "spaces": spaces,
+                    "optimizer": opt, "trust": opt.trust, "history": history,
+                    "ci_solver": solver, "e_nuc": e_nuc}
             if callback(info) is False:
                 log.warning("orbital optimization stopped by callback at iteration %d "
                             "(|g| = %.3e); the result is the last iterate, not a converged "

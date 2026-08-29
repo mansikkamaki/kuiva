@@ -40,7 +40,18 @@ WHAT TO LOOK FOR IN THE OUTPUT
 * the topology the mutual information produced: ten nodes and nine edges, a *tree* rather
   than a chain, with no sweep, operator or environment code aware of the difference;
 * the two CASSCF energies agreeing to well below the convergence threshold, and the
-  largest bond dimension the network actually needed staying far under the cap.
+  largest bond dimension the network actually needed staying far under the cap;
+* the two checkpoint files the network route writes: the ordinary trajectory checkpoint
+  (which ``restart=`` resumes, exactly as in example 7) and the sibling ``*.network.h5``
+  holding the network state itself, written rolling at the end of each completed sweep.
+  A restart resumes the trajectory exactly and warm-starts the network from the sibling;
+  losing the sibling costs the first solve its warm start, never the answer;
+* the spin analysis and the term assignment running on the network route through the same
+  props implementation the CI route uses;
+* the bond-dimension series behind the E(w_disc -> 0) extrapolation protocol -- which on
+  this small active space honestly reports "exact, nothing to extrapolate" rather than
+  fitting rounding noise. Production controls (a per-sweep cap ramp, the deterministic
+  subspace expansion, a per-macro-iteration cap ladder) ride ``solver_options``.
 
 A NOTE ON THE ORBITAL OPTIMIZER
 -------------------------------
@@ -196,10 +207,18 @@ def main() -> int:
     # can be passed directly. solver_options go to the network solver, optimizer options
     # (mode, max_iter, conv_grad) to the shared orbital optimizer -- the same one the exact
     # CI just used, unchanged.
+    # checkpoint= works on the network route too and writes TWO files: the ordinary
+    # trajectory checkpoint (orbitals, RDMs, optimizer state -- the same file the
+    # conventional-CI route writes, restart= resumes it), and a sibling *.network.h5
+    # carrying the network state itself, rolling, at the end of each completed sweep.
+    # Losing the sibling costs a restart's first solve its warm start -- time, never
+    # correctness -- which is why the two are separate files with separate cadences.
+    checkpoint_file = OUTPUT / (NAME + ".h5")
     network = kuiva.CASSCF(pre, n_states=N_STATES, solver="dmrg",
                            solver_options=dict(max_bond=MAX_BOND),
                            graph="mutual-information", mode="quasi-newton",
-                           max_iter=MAX_ITER, conv_grad=CONV_GRAD).run()
+                           max_iter=MAX_ITER, conv_grad=CONV_GRAD,
+                           checkpoint=checkpoint_file).run()
     log.info("%s", network.summary())
 
     graph = network.graph
@@ -215,6 +234,18 @@ def main() -> int:
     out.note(log, "the solver is tree-native and nothing in the sweep, the operators or")
     out.note(log, "the environments knows 'left' from 'right'; a chain is the special case")
     out.note(log, "where the tree happens to be a path.")
+
+    # The two checkpoint files, and what a restart of each recovers: the trajectory
+    # exactly, the network as a warm start.
+    from kuiva.dmrg.checkpoint import read_network_state
+    saved_state, saved_meta = read_network_state(network.network_checkpoint_path)
+    out.subsection(log, "The two checkpoint files")
+    out.entries(log, [
+        ("trajectory (orbitals, RDMs, optimizer)", Path(network.checkpoint_path).name),
+        ("network state (rolling, per sweep)",
+         Path(network.network_checkpoint_path).name),
+        ("saved network marked converged", str(saved_meta["converged"])),
+    ])
 
     # ----------------------------------------------------------------------------------
     # 4. Side by side.
@@ -245,7 +276,56 @@ def main() -> int:
     ])
 
     # ----------------------------------------------------------------------------------
-    # 5. Assert.
+    # 5. The analysis layer on the network route.
+    # ----------------------------------------------------------------------------------
+    # <S^2> and the term assignment run on BOTH solver routes through one props
+    # implementation: the CI applies S to its vectors through the determinant excitation
+    # map, the network contracts the same quantities through each root's own densities,
+    # and the out-of-active-space correction -- a property of the orbitals, not of the CI
+    # method -- is the same code either way. The two routes optimized their own orbitals,
+    # so the values agree to how well both are converged, not bitwise.
+    spin_ci = exact.spin_analysis()
+    spin_net = network.spin_analysis()
+    out.section(log, "Spin analysis on both routes")
+    out.entries(log, [
+        ("<S^2> of the ground doublet (CI route)",
+         float(spin_ci.block_s_squared[0]), "", "", "{:.6f}"),
+        ("<S^2> of the ground doublet (network route)",
+         float(spin_net.block_s_squared[0]), "", "", "{:.6f}"),
+        ("out-of-active-space leakage (network route)",
+         float(spin_net.leakage), "hbar", "orbitals, not method", "{:.2e}"),
+    ])
+    # The assignment is an inference and prints as its own report with the evidence and
+    # a residual beside every row; a ligand-field block whose numbers do not fit a free
+    # ion's Lande pattern is offered "?" rather than a guess.
+    network.assign(tol_cm=1.0, report=True)
+
+    # ----------------------------------------------------------------------------------
+    # 6. The bond-dimension series and the w_disc -> 0 extrapolation.
+    # ----------------------------------------------------------------------------------
+    # The number a tensor-network paper quotes is not the energy at the largest
+    # affordable bond dimension but the extrapolate of a SERIES: solve at ascending caps,
+    # record each cap's discarded weight, fit E(w_disc -> 0). kuiva.dmrg.bond_series runs
+    # that protocol at fixed integrals, warm-starting each cap from the previous one, and
+    # reports the extrapolate WITH the series and its fit residual beside it -- never
+    # alone. On an active space this small the truncation may never bite, and the driver
+    # then says "exact, nothing to extrapolate" instead of fitting rounding noise.
+    from kuiva.dmrg import TTNOTemplate, bond_series
+    from kuiva.mcscf.orbopt import CASIntegrals
+
+    out.section(log, "Bond-dimension series at the converged orbitals")
+    ref_data = reference.reference
+    ints = CASIntegrals.build(ref_data.factors, ref_data.h_one_electron(), network.coeff,
+                              network.active.spaces, e_nuc=ref_data.data.e_nuc)
+    op = TTNOTemplate(graph).fill(ints.h_active_effective(), ints.active_eri())
+    series = bond_series(op, network.active.n_elec, [4, MAX_BOND], n_roots=N_STATES,
+                         seed=7)
+    out.entry(log, "E_SA at the largest cap + e_core",
+              float(series.sa_energies[-1] + ints.e_core), unit="Eh", fmt=out.E_FMT,
+              note="must reproduce the CASSCF's own state average")
+
+    # ----------------------------------------------------------------------------------
+    # 7. Assert.
     # ----------------------------------------------------------------------------------
     checks = {
         "the conventional-CI CASSCF converged": bool(exact.converged),
@@ -259,6 +339,18 @@ def main() -> int:
             int(network.solver.last.max_bond_dim) <= MAX_BOND,
         "the cheap CI found the expected fractional occupations":
             int(np.sum(np.asarray(pre.occupations) > 0.1)) == 2,
+        "both checkpoint files exist":
+            Path(network.checkpoint_path).is_file()
+            and Path(network.network_checkpoint_path).is_file(),
+        "the saved network state matches the converged topology":
+            saved_state.graph == graph and bool(saved_meta["converged"]),
+        "the two routes agree on <S^2> of the ground doublet":
+            abs(float(spin_net.block_s_squared[0])
+                - float(spin_ci.block_s_squared[0])) < 1.0e-4,
+        "the d^1 doublet is a spin doublet on the network route":
+            abs(float(spin_net.block_s_squared[0]) - 0.75) < 5.0e-3,
+        "the series' largest cap reproduces the CASSCF state average":
+            abs(float(series.sa_energies[-1]) + ints.e_core - network.energy) < 1.0e-7,
     }
     failures = report(checks)
 

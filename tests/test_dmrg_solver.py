@@ -171,3 +171,120 @@ def test_space_key_is_stable_across_solves_and_names_the_chart():
     solver.solve(ints)
     assert solver.space_key() == key                     # bond re-derivation is not a
     assert "D16" in key and key.startswith("dmrg")       # chart change (module docstring)
+
+
+# --- the analysis contract: one_body_moments and transition densities -----------------------
+
+class _PlainInts:
+    """Duck-typed integrals over given (h, eri)."""
+
+    e_core = 0.0
+
+    def __init__(self, h, eri):
+        self._h, self._eri = h, eri
+
+    def h_active_effective(self):
+        return self._h
+
+    def active_eri(self):
+        return self._eri
+
+
+def test_one_body_moments_match_the_ci_route():
+    """The network square (per-root 2-RDM route) against the CI square (excitation map).
+
+    The two implementations share nothing — one contracts <a+ a a+ a> through the
+    network densities, the other computes ||A|I>||^2 through the determinant excitation
+    map — which is what makes the agreement a check rather than a tautology. A random
+    spectrum is non-degenerate, so per-state values are basis-independent up to a phase
+    that every one of these quantities is invariant under.
+    """
+    from test_ci_strings import random_spinor_integrals
+
+    n, k, n_roots = 6, 2, 3
+    h, eri = random_spinor_integrals(n, seed=41)
+    rng = np.random.default_rng(41)
+    ops = rng.standard_normal((2, n, n)) + 1j * rng.standard_normal((2, n, n))
+    ops = 0.5 * (ops + ops.conj().transpose(0, 2, 1))
+
+    net = DMRGSolver(k, max_bond=200, n_roots=n_roots, enforce_kramers=False, seed=7)
+    net.solve(_PlainInts(h, eri))
+    ci = FullCISolver(n, k, n_states=n_roots, enforce_kramers=False)
+    ref = ci.solve_active(h, eri)
+    assert np.max(np.abs(net.last.energies - ref.energies)) < 1e-8
+
+    e_net, sq_net, rdm_net = net.one_body_moments(ops)
+    e_ci, sq_ci, rdm_ci = ci.one_body_moments(ops)
+    assert np.max(np.abs(e_net - e_ci)) < 1e-8
+    assert np.max(np.abs(sq_net - sq_ci)) < 1e-8
+    assert np.max(np.abs(rdm_net - rdm_ci)) < 1e-8
+
+
+def test_one_body_moments_refuse_vectors_and_a_cold_solver():
+    solver = DMRGSolver(2, max_bond=8)
+    with pytest.raises(RuntimeError, match="solve first"):
+        solver.one_body_moments(np.zeros((1, 4, 4)))
+    with pytest.raises(ValueError, match="no CI vectors"):
+        solver.one_body_moments(np.zeros((1, 4, 4)), vectors=np.zeros((1, 6)))
+
+
+def test_non_hermitian_operators_are_refused():
+    net = DMRGSolver(2, max_bond=16, enforce_kramers=False)
+    net.solve(FragmentInts())
+    n = FragmentInts().n
+    bad = np.zeros((1, n, n), dtype=complex)
+    bad[0, 0, 1] = 1.0
+    with pytest.raises(ValueError, match="non-Hermitian"):
+        net.one_body_moments(bad)
+
+
+# --- the bond-step ladder: cap changes as chart-change events -------------------------------
+
+def test_bond_steps_climb_through_propose_and_adopt():
+    """A mid-run cap change is a chart change: D is in the key and moves only via adopt."""
+    from test_ci_strings import random_spinor_integrals
+
+    n, k = 6, 2                                          # even k: random integrals are
+    h, eri = random_spinor_integrals(n, seed=51)         # not time-reversal symmetric
+    ints = _PlainInts(h, eri)
+    solver = DMRGSolver(k, max_bond=200, bond_steps=[3, 200], enforce_kramers=False,
+                        seed=3)
+    e_low, _, _ = solver.solve(ints)
+    assert "D3" in solver.space_key()
+    proposal = solver.propose(ints)
+    assert proposal is not None
+    assert "D200" in proposal.key
+    assert proposal.energy <= e_low + 1e-10              # a larger cap is variational
+    solver.adopt(proposal.key)
+    assert "D200" in solver.space_key()
+    e_high, _, _ = solver.solve(ints)
+    assert abs(e_high - exact_energies(n, k, h, eri, 1)[0]) < 1e-8
+    assert solver.propose(ints) is None                  # ladder exhausted, not adaptive
+
+
+def test_bond_steps_under_the_event_driver(system):
+    # the ladder rides the same event seam the topology proposals use: the driver adopts
+    # a rung variationally at fixed integrals and the run converges on the final chart
+    factors, h_ao, c0, spaces = system
+    solver = DMRGSolver(2, max_bond=12, bond_steps=[2, 12], n_roots=1,
+                        enforce_kramers=False, seed=2)
+    result = optimize_orbitals_events(factors, h_ao, c0, spaces, solver,
+                                      max_iter=60, mode="second-order",
+                                      conv_grad=1e-4, report=False)
+    assert result.converged
+    assert "D12" in solver.space_key()                   # the ladder was climbed
+    ci = FullCISolver(4, 2, n_states=1, enforce_kramers=False)
+    r_ci = optimize_orbitals(factors, h_ao, c0, spaces, ci, max_iter=40,
+                             mode="second-order", conv_grad=1e-4, report=False)
+    assert abs(result.energy - r_ci.energy) < 1e-7
+
+
+def test_bond_steps_validation():
+    with pytest.raises(ValueError, match="ascending"):
+        DMRGSolver(2, max_bond=16, bond_steps=[16, 8])
+    with pytest.raises(ValueError, match="one number"):
+        DMRGSolver(2, max_bond=32, bond_steps=[8, 16])
+    with pytest.raises(ValueError, match="does not combine"):
+        DMRGSolver(2, max_bond=16, bond_steps=[8, 16], restart="nowhere.h5")
+    with pytest.raises(ValueError, match="must agree"):
+        DMRGSolver(2, max_bond=16, bond_steps=[8, 16], bond_schedule=[4, 16])

@@ -226,9 +226,11 @@ def spin_squared_states(solver, s_active: np.ndarray, *,
 
     Parameters
     ----------
-    solver : an object with ``one_body_moments`` — :class:`kuiva.mcscf.casci.FullCISolver`.
-        ⚠ Duck-typed on purpose: ``props`` does not import ``mcscf``. A tensor-network
-        reference has no such method and this refuses rather than approximating.
+    solver : an object with ``one_body_moments`` — :class:`kuiva.mcscf.casci.FullCISolver`
+        or :class:`kuiva.dmrg.DMRGSolver`. ⚠ Duck-typed on purpose: ``props`` imports
+        neither ``mcscf`` nor ``dmrg``. The CI route evaluates the square through the
+        excitation map, the network route through each root's own 1- and 2-RDM; a solver
+        providing neither refuses rather than approximating.
     s_active : ``(3, n_act, n_act)`` — the spin operator over the **active** spinors.
     inactive_trace : ``(3,)`` — ``Tr_inactive(s_k)``, from
         :func:`kuiva.props.dump.inactive_moment`.
@@ -239,10 +241,10 @@ def spin_squared_states(solver, s_active: np.ndarray, *,
     """
     if not hasattr(solver, "one_body_moments"):
         raise NotImplementedError(
-            "<S^2> is evaluated by applying S to the CI vectors, which needs the "
-            "determinant excitation map; {} does not provide one_body_moments(). Only the "
-            "conventional-CI route carries this today -- a tensor-network reference would "
-            "need the same quantity contracted through the network"
+            "<S^2> is evaluated through the solver's one_body_moments(), which {} does "
+            "not provide. The conventional-CI solver applies S to the CI vectors through "
+            "the determinant excitation map; the tensor-network solver contracts the "
+            "same quantities through each root's own densities"
             .format(type(solver).__name__))
     s_act = np.ascontiguousarray(s_active, dtype=np.complex128)
     if s_act.ndim != 3 or s_act.shape[0] != 3:
