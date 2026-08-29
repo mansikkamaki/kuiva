@@ -37,6 +37,7 @@ import numpy as np
 import pytest
 
 import kuiva
+import kuiva.util.deadline
 from kuiva.interface.stages import (CASCI, CASSCF, CheapCI, NEVPT2, PropertyDump,
                                     PseudospinExport, Reference, ScalarSCF)
 
@@ -506,6 +507,71 @@ def test_pseudospin_export_takes_the_stage_that_optimized_the_orbitals(cas):
     ci = CASCI(cas, n_states=2, report=False).run()
     with pytest.raises(TypeError, match="finished CASSCF"):
         PseudospinExport(ci, "unused.psd")
+
+
+# --- the wall-clock deadline through the stage -----------------------------------------------
+
+class _Countdown(kuiva.util.deadline.Deadline):
+    """A deadline on a scripted clock: expires after ``stop_after`` macro-iterations.
+
+    The mechanism itself — the queue probes, the reserve arithmetic, the forced write — is
+    tested in ``test_deadline.py``; what these tests add is that the stage carries it, so
+    they assert the *decision* and never the machine's speed.
+    """
+
+    def __init__(self, stop_after):
+        super().__init__(duration=1e9, source="a scripted clock", safety=0.0)
+        self.stop_after, self.seen = int(stop_after), 0
+
+    def observe(self, seconds):
+        super().observe(seconds)
+        self.seen += 1
+
+    def remaining(self):
+        return 0.0 if self.seen >= self.stop_after else 1e9
+
+
+def test_there_is_no_deadline_unless_one_is_asked_for(ref, cas):
+    """⚠ The default that matters: a cluster with no queue limit is an ordinary place to
+    run, so nothing is read, nothing is printed and nothing stops the run early."""
+    assert cas.deadline is None
+    # "auto" is the portable spelling — it must run unchanged where there is no queue
+    stage = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2,
+                   deadline="auto", report=False)
+    assert stage.deadline is not None and stage.deadline.unlimited
+    assert abs(stage.run().energy - cas.energy) < E_TOL
+
+
+def test_a_queue_deadline_that_cannot_be_read_refuses_at_construction(ref, monkeypatch):
+    """⚠ Eager, like every other option here, and a refusal rather than a silent absence:
+    a run that asked for the allocation's limit and did not get one is killed at the wall
+    with nothing written and nothing in the output saying the request failed."""
+    for name in ("SLURM_JOB_ID", "SLURM_JOBID", "SLURM_JOB_END_TIME"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ValueError, match="could not be read"):
+        CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, deadline="slurm")
+
+
+def test_the_deadline_stops_the_stage_and_leaves_a_restart_point(ref, tmp_path,
+                                                                 kuiva_caplog):
+    """The cadence here suppresses every ordinary write (an hour of minimum interval), so
+    the file existing proves the deadline forced the final one — and the summary says the
+    result is an iterate rather than an answer."""
+    path = tmp_path / "b_deadline.h5"
+    stopped = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2,
+                     checkpoint=path, checkpoint_options=dict(min_interval=3600.0),
+                     deadline=_Countdown(stop_after=2), max_iter=50, report=False).run()
+
+    assert not stopped.converged
+    assert stopped.orbital.n_iterations == 2
+    assert stopped.deadline.fired
+    assert path.exists() and kuiva.read_checkpoint(path).iteration == 2
+    assert "stopped by" in stopped.summary()
+    assert any("deadline" in r.getMessage() for r in kuiva_caplog.records)
+
+    # and it is a restart point, not just a file
+    resumed = CASSCF(ref, restart=path, n_states=2, max_iter=60, report=False).run()
+    assert resumed.converged
 
 
 # --- checkpoint / restart through the class layer --------------------------------------------

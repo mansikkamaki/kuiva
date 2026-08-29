@@ -543,6 +543,35 @@ class CASSCF(_Stage):
     ``event_interval``, ...). ``mode="second-order"`` is the right explicit choice for a
     heavy element or a large state average.
 
+    Stopping before the allocation does
+    -----------------------------------
+    ``deadline=`` makes the run stop *itself*, in time to write a checkpoint, instead of
+    being killed at a queue's wall limit with only the last checkpoint to show for it:
+
+    ``None`` (the default)
+        No deadline. Nothing is read, nothing is printed, nothing ever stops the run early
+        — which is what a cluster with no time limit needs, and why it is the default.
+    ``"6h"``, ``"90m"``, ``"24:00:00"``, ``21600``
+        A budget of your own. ⚠ It starts when the **stage is constructed**, not when it is
+        run — build the stage next to its ``run()``, or use the queue's limit, which is an
+        absolute instant and cannot drift this way. ⚠ A bare numeric *string* is refused,
+        because ``"60"`` is sixty minutes to Slurm and sixty seconds here.
+    ``"slurm"`` / ``"queue"``
+        This batch allocation's own time limit, read once from ``$SLURM_JOB_END_TIME`` and
+        then from ``scontrol``. ⚠ **Refuses** if it cannot be read: an explicit request
+        that silently produced no deadline is the one outcome worse than either.
+    ``"auto"``
+        The queue's limit where there is one, and no deadline where there is not, stated
+        either way. The portable spelling for a script that runs on a laptop, on an
+        unlimited cluster and inside a queue without being edited.
+
+    ⚠ **The granularity is one macro-iteration.** The run stops between them and nowhere
+    else, so the decision is predictive: it stops when the time left is less than the
+    longest recent iteration plus the estimated checkpoint write plus a stated margin. One
+    CI solve, and on the DMRG route one whole network solve, cannot be interrupted.
+    ⚠ With ``checkpoint=``, the final write is **forced** past the cadence rules and happens
+    before the stop; without one, the run still exits cleanly but keeps nothing, and says so.
+
     Starting from a smaller (or larger) basis
     -----------------------------------------
     ``project_from=`` takes a **finished stage of the same molecule in a different basis** —
@@ -617,6 +646,7 @@ class CASSCF(_Stage):
                  graph=None, checkpoint=None, restart=None,
                  checkpoint_options: Optional[Dict[str, Any]] = None,
                  callback: Optional[Callable[[dict], Optional[bool]]] = None,
+                 deadline=None,
                  preserve_symmetry: bool = False, project_from=None,
                  projection: Optional[Dict[str, Any]] = None,
                  report: bool = True, **optimizer_options) -> None:
@@ -643,6 +673,10 @@ class CASSCF(_Stage):
         self.solver_options = dict(solver_options or {})
         self.checkpoint, self.restart = checkpoint, restart
         self.checkpoint_options = checkpoint_options
+        # ⚠ Resolved at construction, like every other option here: deadline="slurm" outside
+        # a Slurm job is a mistake that must surface now, not after the first hour.
+        from ..util.deadline import Deadline
+        self.deadline = Deadline.resolve(deadline)
         self.callback, self.report = callback, bool(report)
         self.optimizer_options = dict(optimizer_options)
 
@@ -866,6 +900,7 @@ class CASSCF(_Stage):
                               restart=self.restart,
                               checkpoint_options=self.checkpoint_options,
                               solver_options=self.solver_options, callback=self.callback,
+                              deadline=self.deadline,
                               report=self.report, **self.optimizer_options)
         self.outcome = outcome
         #: What the property stages consume, under the name :class:`CASCI` uses for it too,
@@ -957,14 +992,23 @@ class CASSCF(_Stage):
                                                      sort_keys=True)
             policy = CheckpointPolicy(self.checkpoint, solver=solver, metadata=metadata,
                                       n_active_elec=self.space.n_elec, chain=self.callback,
+                                      deadline=self.deadline,
                                       **(self.checkpoint_options or {}))
             hook = policy.callback
+        elif self.deadline is not None:
+            hook = self.deadline.as_callback(chain=self.callback)
         driver = optimize_orbitals_events if self._adaptive else optimize_orbitals
         if self.report:
             out.section(log, "CASSCF (DMRG solver)")
             self.space.report(log)
             if resumed is not None:
                 resumed.report(log)
+            if self.deadline is not None:
+                self.deadline.report(log)
+        if self.deadline is not None:
+            # ⚠ The granularity is a macro-iteration, and on this route one of those holds a
+            # whole DMRG solve: the deadline can refuse to start another, never interrupt one.
+            self.deadline.assert_room("this DMRG-CASSCF")
         # ⚠ The truncation weight is the tensor network's primary quality number, and without
         # this it appeared nowhere at INFO: the sweep table is at DEBUG (one table per sweep
         # times many macro-iterations is noise in a file that IS the output), so a production
@@ -1184,6 +1228,10 @@ class CASSCF(_Stage):
             # without it.
             entries.append(("largest discarded weight",
                             "{:.3e}".format(self.max_discarded)))
+        if self.deadline is not None and self.deadline.fired:
+            # ⚠ Beside "converged: False", not instead of it: an unconverged result and the
+            # reason it is unconverged are two different things a reader needs.
+            entries.append(("stopped by", "the deadline ({})".format(self.deadline.source)))
         if self.project_from is not None:
             entries.append(("projected active-space overlap",
                             "{:.6f}".format(self.projection.fidelity)))

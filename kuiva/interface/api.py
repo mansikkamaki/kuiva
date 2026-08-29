@@ -921,7 +921,7 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
            n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
            n_states=1, weights=None, coeff: Optional[np.ndarray] = None,
            checkpoint=None, restart=None, checkpoint_options: Optional[Dict] = None,
-           solver_options: Optional[Dict] = None, callback=None,
+           solver_options: Optional[Dict] = None, callback=None, deadline=None,
            preserve_symmetry: bool = False, report: bool = True, classify: bool = True,
            **optimizer_kwargs):
     """State-averaged two-component CASSCF — the calculation this program exists for.
@@ -946,6 +946,16 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
 
     ``optimizer_kwargs`` pass through to :func:`kuiva.mcscf.orbopt.optimize_orbitals`
     (``mode``, ``max_iter``, ``conv_grad``, ``conv_energy``, ``max_step``, ...).
+
+    Stopping in time
+    ----------------
+    ``deadline=`` makes the run stop itself while there is still time to write a checkpoint:
+    ``"6h"`` or ``21600`` for a budget of your own, ``"slurm"`` for this batch allocation's
+    own limit, ``"auto"`` for that limit where there is one and no deadline where there is
+    not. ⚠ **The default is no deadline at all** — a cluster with no time limit is an
+    ordinary place to run — and an explicitly named source that cannot be read refuses
+    rather than leaving the run unprotected. See :mod:`kuiva.util.deadline`; with
+    ``checkpoint=`` given, the final write happens *before* the stop.
 
     Symmetry
     --------
@@ -980,6 +990,9 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
     """
     from ..io.checkpoint import CheckpointPolicy, read_checkpoint
     from ..mcscf.casci import ActiveSpace, FullCISolver, casscf as _casscf
+    from ..util.deadline import Deadline
+
+    deadline = Deadline.resolve(deadline)
 
     resumed = None
     if restart is not None:
@@ -1011,6 +1024,10 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
         space.report(log)
         if resumed is not None:
             resumed.report(log)
+        if deadline is not None:
+            deadline.report(log)
+    if deadline is not None:
+        deadline.assert_room("this CASSCF")
 
     solver_options = dict(solver_options or {})
     if space.labels is not None:
@@ -1035,8 +1052,14 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
                                                  sort_keys=True)
         policy = CheckpointPolicy(checkpoint, solver=solver, metadata=metadata,
                                   n_active_elec=space.n_elec, chain=callback,
-                                  **(checkpoint_options or {}))
+                                  deadline=deadline, **(checkpoint_options or {}))
         hook = policy.callback
+    elif deadline is not None:
+        # ⚠ Without a checkpoint there is nothing to write before the stop, and the deadline
+        # is worth having anyway: a run that stops itself exits cleanly and its output file
+        # is complete, where one killed at the wall ends mid-line. The warning it raises says
+        # that nothing was saved.
+        hook = deadline.as_callback(chain=callback)
 
     if preserve_symmetry:
         labels = reference.spinor_labels

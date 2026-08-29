@@ -678,7 +678,8 @@ be the identity.
 
 The states: `n_states`, `weights`. The optimizer: `mode` (`"auto"`, `"quasi-newton"`,
 `"second-order"`), `max_iter`, `conv_grad`, `conv_energy`, `max_step`, `callback`.
-Checkpointing: `checkpoint=path`, `restart=path`, `checkpoint_options`.
+Checkpointing: `checkpoint=path`, `restart=path`, `checkpoint_options`. Stopping in time:
+`deadline=` (below).
 
 #### After the run: `<S^2>`, and a term label with its evidence
 
@@ -1667,6 +1668,11 @@ allow_overcommit = false  # downgrade every memory refusal to a warning
 Anything passed explicitly to a call overrides the environment, which overrides the
 configuration file.
 
+⚠ Kuiva reads no *scheduler* variable unless it is asked to: `$SLURM_JOB_ID` and
+`$SLURM_JOB_END_TIME` are consulted only by `deadline="slurm"`/`"queue"`/`"auto"` (see
+[Stopping before the queue does](#stopping-before-the-queue-does-deadline)), never on its
+own initiative.
+
 ### Threads: one number
 
 ```bash
@@ -1861,6 +1867,67 @@ is a warning and the run continues; a *read* failure on an explicitly requested 
 error that propagates, because silently starting over wastes exactly the hours the file existed
 to protect. A schema mismatch refuses; a changed code fingerprint only warns.
 
+### Stopping before the queue does: `deadline=`
+
+A checkpoint is what survives a job being killed. `deadline=` is how the job stops itself
+first, while there is still time to write one.
+
+```python
+cas = kuiva.CASSCF(ref, checkpoint="run.h5", deadline="slurm", **space).run()
+```
+
+| `deadline=` | what it does |
+|---|---|
+| `None` *(the default)* | **no deadline.** Nothing is read, nothing is printed, nothing stops the run early |
+| `"6h"`, `"90m"`, `"24:00:00"`, `21600` | a budget of your own, starting when the stage is *constructed* |
+| `"slurm"` / `"queue"` | this batch allocation's own time limit — and **refuses** if it cannot be read |
+| `"auto"` | that limit where there is one, no deadline where there is not, stated either way |
+
+⚠ **No deadline is the default, and it is a decision rather than an omission.** A cluster
+with no queue time limit is an ordinary place to run; a deadline invented for such a run
+could only ever end it early for no reason. Nothing is read from the environment unless you
+ask for it.
+
+⚠ **An explicitly named source that cannot be read refuses.** `deadline="slurm"` outside a
+Slurm job raises at once, naming both ways out. The alternative — quietly running with no
+deadline — is the one outcome worse than either: the job is killed at the wall twelve hours
+later and nothing in the output ever said the request had failed. `"auto"` is the spelling
+for a script that has to run on a laptop, on an unlimited cluster and inside a queue without
+being edited.
+
+**Where the limit comes from.** Slurm's is read once, at the start: from
+`$SLURM_JOB_END_TIME` (free, needs no client binaries, contacts nothing) and then from
+`scontrol show job`. ⚠ Once, never in a loop — polling the controller from every
+macro-iteration of every job is what makes a scheduler slow for everyone — so an allocation
+*extended* after the run started is not noticed, and the run stops at the limit it was told
+about. A job with no time limit (`EndTime=Unknown`) produces a deadline that never fires and
+says so. Another queue system is two functions and one registry entry in
+`kuiva.util.deadline`; nothing else in the program learns a scheduler's name.
+
+⚠ **The decision is predictive, not reactive.** Stopping when the budget is already spent is
+stopping too late, because the checkpoint is written *afterwards*. The run stops when
+
+```
+time left  <  longest recent macro-iteration  +  estimated checkpoint write  +  margin
+```
+
+Every term but the last is measured — the iteration times from the optimizer's own table,
+the write from the measured disk bandwidth — and the margin (60 s) is printed with the rest.
+The final write is then **forced** past the cadence rules, exactly as a converged one is,
+because that checkpoint is the result and not insurance.
+
+⚠ **A budget's clock starts when the stage is built, not when it is run**, so build the
+stage next to its `.run()`. A queue limit is an absolute instant and cannot drift this way.
+⚠ **A bare numeric string is refused** — `"60"` is sixty *minutes* to Slurm's `--time` and
+would be sixty *seconds* here, and a factor of sixty in a deadline is what ends an
+allocation with nothing written. Write `60`, or `"60m"`.
+
+⚠ **The granularity is one macro-iteration.** The run stops between them and nowhere else: a
+CI solve, a DMRG solve and an NEVPT2 excitation class cannot be interrupted, and if one
+macro-iteration outlives the allocation no deadline can help. A run that has less than the
+margin left when it starts is refused rather than started. Without `checkpoint=` a deadline
+still stops the run cleanly, and says plainly that nothing was saved.
+
 ---
 
 ## Examples
@@ -1892,7 +1959,7 @@ built) or `compiled kernels: native ...` (with one), and in the latter case quan
 | 4 | `04_dmrg_casscf` | the tensor-network solver: a cheap CI, a tree topology built from its entanglement, a DMRG-CASSCF reproducing the exact CI through the same orbital optimizer, the two checkpoint files of the network route, and `⟨S²⟩` with the assignment on both solver routes | ~4 min |
 | 5 | `05_nevpt2` | dynamic correlation: SC-NEVPT2 on the oxygen atom, its eight-class decomposition, term energies moving towards experiment while the degeneracies survive — and the same correction from a tensor-network reference, honestly partial | ~30 s |
 | 6 | `06_property_export` | the two products: the property-matrix dump and the OuluSpin pseudospin export, reaching the same g values by two independent routes | ~4 min |
-| 7 | `07_checkpoint_restart` | a CASSCF checkpointed every macro-iteration, interrupted, and resumed from disk to the same energy | ~3 min |
+| 7 | `07_checkpoint_restart` | a CASSCF checkpointed every macro-iteration, interrupted, and resumed from disk to the same energy, under a wall-clock `deadline=` | ~3 min |
 | 8 | `08_slater_condon` | the extras: Slater–Condon parameters `F^k`, `G^k`, `R^k` and spin–orbit constants `ζ` of a free scandium atom, from an average-of-configuration reference | ~1 min |
 | 9 | `09_basis_projection` | converging the CASSCF in a cheap basis and continuing it in the production one: `project_from=`, what the projection carries, what it measures, and the reverse direction | ~3 min |
 
@@ -2117,7 +2184,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.31.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.32.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -2133,7 +2200,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.31.0'
+import kuiva; kuiva.__version__          # '0.32.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

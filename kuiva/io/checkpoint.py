@@ -541,6 +541,21 @@ class CheckpointPolicy:
     ⚠ A user-supplied ``callback`` is chained rather than replaced, and its return value is
     passed through — that is how a wall-clock budget and checkpointing coexist on the
     optimizer's single hook.
+
+    The deadline
+    ------------
+    ``deadline`` is a :class:`kuiva.util.deadline.Deadline`, and it lives **here** rather
+    than beside the policy for one reason: the write and the stop are one decision. At the
+    end of each macro-iteration the policy hands the deadline that iteration's wall time and
+    its own estimate of what writing *this* checkpoint would cost, and if the answer is that
+    another iteration cannot finish and be saved, the checkpoint is written **forced** — past
+    the minimum interval and the cost rule, exactly as a converged one is, because this one
+    is the result rather than insurance — and the callback returns ``False`` to stop the run.
+
+    ⚠ The write estimate uses the **unthinned** size, so it can only over-estimate: thinning
+    happens inside :meth:`write` and makes the write cheaper than the reserve allowed for.
+    ⚠ Nothing here polls a clock inside a loop; the deadline is consulted once per
+    macro-iteration, at the point where a checkpoint is already being considered.
     """
 
     def __init__(self, path, *, solver=None, budget_gb: Optional[float] = None,
@@ -548,7 +563,7 @@ class CheckpointPolicy:
                  cost_fraction: Optional[float] = None,
                  ci_vectors: bool = True, metadata: Optional[Dict[str, str]] = None,
                  n_active_elec: Optional[int] = None, enabled: bool = True,
-                 chain=None) -> None:
+                 deadline=None, chain=None) -> None:
         self.path = Path(path)
         self.solver = solver
         self.budget_gb = (res.checkpoint_budget_gb() if budget_gb is None
@@ -561,6 +576,7 @@ class CheckpointPolicy:
         self.metadata = dict(metadata or {})
         self.n_active_elec = n_active_elec
         self.enabled = bool(enabled)
+        self.deadline = deadline
         self.chain = chain
         self.stats = CheckpointStats()
         self._last_write = time.time()
@@ -576,7 +592,15 @@ class CheckpointPolicy:
         optimizer's loop and killed the calculation instead, which is the same promise broken
         one step earlier. Everything from ``from_info`` onwards is therefore guarded here, and
         :meth:`write` keeps its own guard around the file itself.
+
+        Returns ``False`` — the optimizer's stop signal — when the deadline says another
+        macro-iteration cannot finish and be saved; the checkpoint that makes that stop worth
+        making has been written by then.
         """
+        converged = bool(info.get("converged"))
+        if self.deadline is not None:
+            self.deadline.observe(info.get("wall", 0.0))
+        stop, write_seconds = False, 0.0
         if self.enabled:
             try:
                 checkpoint = self.from_info(info)
@@ -585,9 +609,21 @@ class CheckpointPolicy:
                             "calculation continues, but there is no restart point for it",
                             info.get("iteration"), type(exc).__name__, exc)
                 self.stats.n_skipped += 1
+                if self.deadline is not None and not converged:
+                    stop = self.deadline.should_stop()
             else:
-                self.write(checkpoint, force=bool(info.get("converged")))
-        return None if self.chain is None else self.chain(info)
+                if self.deadline is not None and not converged:
+                    write_seconds = checkpoint.size_gb() / self._disk_bandwidth()
+                    stop = self.deadline.should_stop(write_seconds)
+                self.write(checkpoint, force=converged or stop)
+        elif self.deadline is not None and not converged:
+            stop = self.deadline.should_stop()
+        chained = None if self.chain is None else self.chain(info)
+        if stop:
+            self.deadline.announce(info, write_seconds=write_seconds,
+                                   wrote=str(self.path) if self.stats.n_written else None)
+            return False
+        return chained
 
     def from_info(self, info: dict) -> CASSCFCheckpoint:
         """Build a checkpoint from the optimizer's iteration info dict.

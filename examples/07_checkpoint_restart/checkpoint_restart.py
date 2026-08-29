@@ -52,6 +52,27 @@ warning and the run continues; a failed *read* on an explicitly requested restar
 error that propagates, because silently starting over wastes exactly the hours the file
 existed to protect. A schema-version mismatch refuses outright.
 
+STOPPING BEFORE THE ALLOCATION DOES
+-----------------------------------
+The other half of surviving a batch queue. `deadline=` makes the run stop *itself* while
+there is still time to write a checkpoint, instead of being killed at the wall with only
+the last one to show for it. Three things about it are worth knowing:
+
+* ⚠ **there is no default.** A cluster with no queue time limit is an ordinary place to
+  run, and a deadline invented for such a run could only ever end it early for no reason.
+  `deadline=None` reads nothing, prints nothing and stops nothing;
+* the two ways to set one: a budget of your own (`deadline=300`, `"6h"`, `"24:00:00"`), or
+  the batch allocation's own limit -- `deadline="slurm"`, read once from
+  `$SLURM_JOB_END_TIME` and then from `scontrol`, which **refuses** if it cannot be read
+  because a request that silently produced no deadline is the worst of the outcomes.
+  `deadline="auto"` is the portable spelling: that limit where there is one, none where
+  there is not, stated either way;
+* ⚠ **the decision is predictive.** Stopping when the time is already spent is stopping too
+  late, because the checkpoint is written *afterwards*. The run stops when the time left is
+  less than the longest recent macro-iteration plus the estimated write plus a stated
+  margin -- and the final write is then forced past the cadence rules, because that
+  checkpoint is the result rather than insurance.
+
 WHAT TO LOOK FOR IN THE OUTPUT
 ------------------------------
 * the interrupted run stopping cleanly from inside the optimizer's callback -- a run that
@@ -71,7 +92,6 @@ from __future__ import annotations
 import math
 import os
 import shutil
-import time
 from pathlib import Path
 from typing import List
 
@@ -93,8 +113,10 @@ R_TICL = 2.25
 #: The 3d shell, the ground Kramers doublet.
 N_ACTIVE, N_ACTIVE_ELEC, N_STATES = 10, 1, 2
 
-#: Budgets, all explicit. The wall budget is enforced from inside the optimizer so that
-#: termination never depends on convergence, and a stopped run keeps what it finished.
+#: Budgets, all explicit. The wall budget is a `deadline=`, enforced from inside the
+#: optimizer so that termination never depends on convergence, and a stopped run keeps what
+#: it finished. In seconds, as a number: a bare numeric *string* is refused, because "300"
+#: is five hours to Slurm's --time and would be five minutes here.
 MAX_ITER, CONV_GRAD, INTERRUPT_AT, WALL_BUDGET_S = 40, 1.0e-4, 6, 300.0
 
 #: The restarted and the uninterrupted run are compared at the eigensolver's own residual
@@ -122,34 +144,20 @@ def prepare_output() -> Path:
     return path
 
 
-def wall_budget(deadline: float):
-    """Stop the optimization from inside when the budget is spent.
+def stop_after(iteration: int):
+    """Simulate an interrupted job: stop cleanly at ``iteration``, keeping the checkpoint.
 
-    The callback sees one dict per macro-iteration and returns False to stop. Returning
-    False is a clean stop: the checkpoint written at that iteration is complete and
-    resumable, which is exactly what an external ``kill`` does not give you.
+    The optimizer's callback sees one dict per macro-iteration and returns False to stop.
+    This one is a demonstration; the wall-clock budget beside it is `deadline=` below, and
+    the two coexist on the single hook because the checkpoint policy chains them.
     """
-    def callback(info: dict):
-        if time.time() > deadline:
-            log.warning("wall budget of %.0f s spent at iteration %d (|g| = %.2e); "
-                        "stopping cleanly", WALL_BUDGET_S, info["iteration"],
-                        info["grad_norm"])
-            return False
-        return None
-    return callback
-
-
-def stop_after(iteration: int, deadline: float):
-    """Simulate an interrupted job: stop cleanly at ``iteration``, keeping the checkpoint."""
-    budget = wall_budget(deadline)
-
     def callback(info: dict):
         if info["iteration"] >= iteration:
             log.warning("stopping at iteration %d to demonstrate the restart; the "
                         "checkpoint written at this iteration is what the second leg "
                         "resumes from", info["iteration"])
             return False
-        return budget(info)
+        return None
     return callback
 
 
@@ -192,23 +200,26 @@ def main() -> int:
     # 2. The uninterrupted run, checkpointing every macro-iteration.
     # ----------------------------------------------------------------------------------
     out.section(log, "CASSCF, uninterrupted")
-    deadline = time.time() + WALL_BUDGET_S
+    # deadline=<seconds> is a budget of this run's own. In a batch job it is instead
+    # deadline="slurm" -- the allocation's own limit, read from the scheduler -- or
+    # deadline="auto", which uses that limit where there is one and runs without a deadline
+    # where there is not. ⚠ There is no default: a cluster with no time limit is an ordinary
+    # place to run, and an invented deadline could only ever end such a run early.
     with timing.timer("CASSCF (uninterrupted)") as t_full:
         full = kuiva.CASSCF(reference, n_states=N_STATES, max_iter=MAX_ITER,
                             conv_grad=CONV_GRAD, checkpoint=straight_chk,
-                            callback=wall_budget(deadline), **selection).run()
+                            deadline=WALL_BUDGET_S, **selection).run()
     log.info("%s", full.summary())
 
     # ----------------------------------------------------------------------------------
     # 3. The same calculation, interrupted.
     # ----------------------------------------------------------------------------------
     out.section(log, "CASSCF, interrupted at iteration {}".format(INTERRUPT_AT))
-    deadline = time.time() + WALL_BUDGET_S
     with timing.timer("CASSCF (first leg)") as t_leg1:
         first_leg = kuiva.CASSCF(reference, n_states=N_STATES, max_iter=MAX_ITER,
                                  conv_grad=CONV_GRAD, checkpoint=interrupted_chk,
-                                 callback=stop_after(INTERRUPT_AT, deadline),
-                                 **selection).run()
+                                 callback=stop_after(INTERRUPT_AT),
+                                 deadline=WALL_BUDGET_S, **selection).run()
 
     stored = read_checkpoint(interrupted_chk)
     out.subsection(log, "What is on disk")
@@ -227,11 +238,10 @@ def main() -> int:
     # disagreed with what is stored would be refused rather than reconciled, because a
     # restart continues the calculation that was interrupted.
     out.section(log, "CASSCF, resumed from the checkpoint")
-    deadline = time.time() + WALL_BUDGET_S
     with timing.timer("CASSCF (resumed)") as t_leg2:
         resumed = kuiva.CASSCF(reference, n_states=N_STATES, max_iter=MAX_ITER,
                                conv_grad=CONV_GRAD, restart=interrupted_chk,
-                               callback=wall_budget(deadline)).run()
+                               deadline=WALL_BUDGET_S).run()
     log.info("%s", resumed.summary())
 
     out.entries(log, [
@@ -283,6 +293,12 @@ def main() -> int:
         "the checkpoint carries the CI space identity":
             stored.space_key == "full-ci:{}:{}".format(N_ACTIVE, N_ACTIVE_ELEC),
         "the converged checkpoint of the straight run exists": straight_chk.exists(),
+        # ⚠ The deadline is a safety net here, not the mechanism under test: these runs
+        # converge well inside it. A fired deadline would mean the box was far slower than
+        # the budget assumed, and every number above would then be an iterate rather than
+        # an answer -- which is exactly what the check is for.
+        "the wall budget was never needed": not any(
+            stage.deadline.fired for stage in (full, first_leg, resumed)),
     }
     failures = report(checks)
 
