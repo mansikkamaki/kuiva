@@ -221,6 +221,23 @@ class System:
         core orbitals, while in a **general** set (ANO-RCC) it is the true valence 6p. Keying
         on the label would make the active space silently basis-dependent - a live instance
         of the contraction-type trap the basis policy warns about. Angular momentum is contraction-blind.
+    active_skip_pairs : int
+        ⚠ **How many Kramers pairs of that character to SKIP, and it is not optional where it
+        is nonzero.** A plain ``(atom, l)`` selection takes the *lowest* pairs of that
+        character, which is the valence shell only when nothing of the same ``l`` is filled
+        below it. That holds for every ``d`` and ``f`` system here (3d and 4f are the lowest
+        of their kind) and for boron's 2p - and for nothing else in the np^1 series: Al's 3p^1
+        selects 2p, Ga's 4p^1 selects 2p, and so on down to Tl.
+
+        ⚠ **The failure is silent in both directions that matter.** The calculation converges
+        and reports an ordinary ^2P doublet - Ga's came out at 249 400 cm^-1 against an
+        experimental 826 - and the *g values do not notice*, because a p^1 shell is Lande 2/3
+        wherever it sits. A study whose only observable is ``g`` therefore cannot verify its
+        own active space. Worse, the CASSCF sometimes repairs the wrong guess and sometimes
+        does not: Al's 2p start relaxed to the valence answer, Ga's did not.
+
+        Consume it through :func:`character_selection`, never by rebuilding the argument, and
+        check the result against :data:`EXPERIMENTAL_SPLITTING_CM` where that is defined.
     nroots : dict
         ``{multiplicity: n_roots}`` for the state-averaged calculation; multiplicity is
         2S+1. The counts are the *complete* spin-free manifolds of the active space, which
@@ -266,6 +283,7 @@ class System:
     ncas: int
     nelecas: int
     active_l: str = ""
+    active_skip_pairs: int = 0
     nroots: Dict[int, int] = field(default_factory=lambda: {1: 1})
     soc_states_override: Optional[int] = None
     scalar_nroots: Optional[Dict[int, int]] = None
@@ -368,25 +386,29 @@ SYSTEMS: Tuple[System, ...] = (
     System(
         key="al", label="Al", atoms=_atom("Al"), charge=0, spin=1,
         basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
-        ncas=3, nelecas=1, active_l="p", nroots={2: 3}, tier1=False,
+        ncas=3, nelecas=1, active_l="p", active_skip_pairs=3,  # 2p lie below
+        nroots={2: 3}, tier1=False,
         physics_note="3p^1, Z=13, np^1 series; experimental 2P splitting 112 cm-1 (NIST ASD)",
     ),
     System(
         key="ga", label="Ga", atoms=_atom("Ga"), charge=0, spin=1,
         basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
-        ncas=3, nelecas=1, active_l="p", nroots={2: 3}, tier1=False,
+        ncas=3, nelecas=1, active_l="p", active_skip_pairs=6,  # 2p+3p lie below
+        nroots={2: 3}, tier1=False,
         physics_note="4p^1, Z=31, np^1 series; experimental 2P splitting 826 cm-1 (NIST ASD)",
     ),
     System(
         key="in", label="In", atoms=_atom("In"), charge=0, spin=1,
         basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
-        ncas=3, nelecas=1, active_l="p", nroots={2: 3}, tier1=False,
+        ncas=3, nelecas=1, active_l="p", active_skip_pairs=9,  # 2p+3p+4p lie below
+        nroots={2: 3}, tier1=False,
         physics_note="5p^1, Z=49, np^1 series; experimental 2P splitting 2213 cm-1 (NIST ASD)",
     ),
     System(
         key="tl", label="Tl", atoms=_atom("Tl"), charge=0, spin=1,
         basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
-        ncas=3, nelecas=1, active_l="p", nroots={2: 3}, tier1=False,
+        ncas=3, nelecas=1, active_l="p", active_skip_pairs=12,  # 2p+3p+4p+5p lie below
+        nroots={2: 3}, tier1=False,
         physics_note="6p^1, Z=81, the heavy end of the np^1 series and where a relativistic "
                      "property correction should be largest; experimental 2P splitting "
                      "7793 cm-1 (NIST ASD)",
@@ -560,6 +582,44 @@ SYSTEMS: Tuple[System, ...] = (
 SYSTEMS_BY_KEY: Dict[str, System] = {s.key: s for s in SYSTEMS}
 
 
+#: Experimental ^2P splittings of the np^1 series (NIST ASD; the same numbers each system's
+#: ``physics_note`` quotes), cm^-1. ⚠ **The guard against a core-shell selection**: a computed
+#: splitting that is not within a small factor of these did not land on the valence shell, and
+#: it is the only cheap check that catches it — the g values cannot.
+EXPERIMENTAL_SPLITTING_CM: Dict[str, float] = {
+    "b": 33.0, "al": 112.0, "ga": 826.0, "in": 2213.0, "tl": 7793.0,
+}
+
+
+def character_selection(system: System, *, centres=None) -> Dict:
+    """How this system's active space is stated to ``api.casscf`` / ``api.casci``.
+
+    ⚠ **The one place the ordinal window is applied**, so a consumer cannot forget it. With
+    ``active_skip_pairs`` zero this is the plain ``character=(atom, l)`` form; with it nonzero
+    the selection becomes the fragment-list form ``[(atom, l, n_spinors, skip)]``, which is the
+    *only* way to name a valence shell that has filled shells of the same ``l`` below it (see
+    :class:`System`). Rebuilding either form at a call site is how the np^1 series came to be
+    measured on core 2p orbitals.
+
+    ``centres`` overrides which atoms carry the character; the default is every atom of the
+    active element, which is what a multi-centre active space needs.
+    """
+    if not system.active_l:
+        raise ValueError(
+            "{} has no active_l: its active space is the frontier spinor window, not a "
+            "character selection".format(system.key))
+    n_active_spinor = 2 * system.ncas
+    if centres is None:
+        element = system.atoms[0][0]
+        centres = [i for i, (sym, _) in enumerate(system.atoms) if sym == element]
+    if system.active_skip_pairs:
+        return dict(character=[(centres, system.active_l, n_active_spinor,
+                                system.active_skip_pairs)],
+                    n_active_elec=system.nelecas)
+    return dict(character=(centres, system.active_l), n_active=n_active_spinor,
+                n_active_elec=system.nelecas)
+
+
 def get(key: str) -> System:
     if key not in SYSTEMS_BY_KEY:
         raise KeyError(f"unknown system {key!r}; known: {sorted(SYSTEMS_BY_KEY)}")
@@ -576,4 +636,5 @@ def fast() -> Tuple[System, ...]:
     return tuple(s for s in SYSTEMS if not s.slow)
 
 
-__all__ = ["Atom", "System", "SYSTEMS", "SYSTEMS_BY_KEY", "fast", "for_tier2", "get"]
+__all__ = ["Atom", "EXPERIMENTAL_SPLITTING_CM", "System", "SYSTEMS", "SYSTEMS_BY_KEY",
+           "character_selection", "fast", "for_tier2", "get"]

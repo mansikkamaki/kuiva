@@ -65,32 +65,25 @@ from progress import Heartbeat                                               # n
 EH_TO_CM = 219474.6313632
 WALL_BUDGET_S = 9.5 * 60
 
-#: (key, n_states, is_lanthanide, skip_pairs).
+#: (key, n_states, is_lanthanide).
 #:
-#: ⚠ **`skip_pairs` is not optional on this series and getting it wrong is silent.** The plain
-#: ``character=(atom, l)`` form takes the *lowest* Kramers pairs of that character, and for
-#: every member above boron the lowest p pairs are **core**: Al's 3p¹ selects 2p, Ga's 4p¹
-#: selects 2p, and the calculation runs, converges and reports a perfectly ordinary ²P
-#: doublet — Ga's came out at 249 400 cm⁻¹ against an experimental 826. Worse, the *g values*
-#: do not notice, because a p¹ shell is Landé 2/3 wherever it sits, so a study that checks only
-#: `g` cannot catch this. The count is the number of filled p shells below the valence one:
-#: 2p (Al), 2p+3p (Ga), 2p+3p+4p (In), 2p+3p+4p+5p (Tl), three pairs each.
-#: Validated against the experimental ²P splittings recorded in ``systems.py``.
+#: ⚠ The valence-shell selection is carried by each system's ``active_skip_pairs`` and
+#: applied by ``systems.character_selection``; every splitting below is checked against
+#: experiment, which is the only cheap guard that catches a core-shell selection.
 CASES = (
-    ("b",     6, False,  0),
-    ("al",    6, False,  3),
-    ("ga",    6, False,  6),
-    ("in",    6, False,  9),
-    ("tl",    6, False, 12),
-    ("ce3p", 14, True,   0),
-    ("ticl3", 10, False, 0),
-    ("cecl3", 14, True,  0),
+    ("b",  6, False),
+    ("al",  6, False),
+    ("ga",  6, False),
+    ("in",  6, False),
+    ("tl",  6, False),
+    ("ce3p", 14, True),
+    ("ticl3", 10, False),
+    ("cecl3", 14, True),
 )
 
-#: Experimental ²P splittings (NIST ASD, quoted in ``systems.py``), cm⁻¹ — the check that the
-#: ordinal window named the valence shell and not a core one.
-EXPERIMENTAL_SPLITTING_CM = {"b": 33.0, "al": 112.0, "ga": 826.0, "in": 2213.0,
-                             "tl": 7793.0}
+#: The check that the ordinal window named the valence shell and not a core one; the numbers
+#: live beside the systems, not here.
+EXPERIMENTAL_SPLITTING_CM = sysdef.EXPERIMENTAL_SPLITTING_CM
 
 #: Bars the verdict is read against, fixed before any number existed.
 #: ⚠ The g bar is the margin the property record agrees with OpenMolcas at; the splitting bars
@@ -119,24 +112,16 @@ def _system(key: str) -> sysdef.System:
 
 
 def one_side(system, n_states: int, nuclear_model: str, *, memory_gb: float,
-             screening: str, skip_pairs: int = 0) -> Dict[str, object]:
+             screening: str) -> Dict[str, object]:
     """One full pipeline with the stated nuclear model; returns levels and reductions."""
     t0, c0 = time.time(), time.process_time()
     mol = api.Molecule(atoms=system.atoms, basis=system.basis, charge=system.charge,
                        spin=system.spin, nuclear_model=nuclear_model)
     reference = api.spinor_reference(mol, screening=screening, memory_gb=memory_gb)
     t_ref = time.time() - t0
-    # ⚠ The ordinal window is the FRAGMENT-LIST form: a bare 4-tuple is not a single
-    # selection, and `n_active` is carried inside the fragment rather than beside it.
-    if skip_pairs:
-        selection = dict(character=[(system.atoms[0][0], system.active_l,
-                                     2 * system.ncas, skip_pairs)])
-    else:
-        selection = dict(character=(system.atoms[0][0], system.active_l),
-                         n_active=2 * system.ncas)
-    outcome = api.casscf(reference, n_active_elec=system.nelecas,
-                         n_states=n_states, mode="second-order", conv_grad=1e-6,
-                         report=False, **selection)
+    # ⚠ Through the shared helper, which is the one place the ordinal window is applied.
+    outcome = api.casscf(reference, n_states=n_states, mode="second-order", conv_grad=1e-6,
+                         report=False, **sysdef.character_selection(system))
     props = reference.data.properties
     tdm = outcome.ci.transition_densities()
     matrices = property_matrices(outcome.coeff, outcome.active.spaces, tdm,
@@ -239,7 +224,7 @@ def main() -> int:
 
     hb = Heartbeat("nuclear_model_valence", budget_seconds=args.wall_budget_min * 60,
                    meta={"cases": [c[0] for c in CASES]})
-    for i, (key, n_states, lanth, skip) in enumerate(CASES):
+    for i, (key, n_states, lanth) in enumerate(CASES):
         if only and key not in only:
             continue
         if lanth and not args.include_lanthanide:
@@ -253,12 +238,13 @@ def main() -> int:
         hb.tick(i, stage="{}: point".format(key))
         print("  {} [{} states]".format(key, n_states), flush=True)
         point = one_side(system, n_states, "point", memory_gb=args.memory_gb,
-                         screening=args.screening, skip_pairs=skip)
+                         screening=args.screening)
         hb.tick(i, stage="{}: gaussian".format(key))
         gaussian = one_side(system, n_states, "gaussian", memory_gb=args.memory_gb,
-                            screening=args.screening, skip_pairs=skip)
+                            screening=args.screening)
         rec = {"label": system.label, "basis": system.basis, "n_states": n_states,
-               "screening": args.screening, "skip_pairs": int(skip),
+               "screening": args.screening,
+               "skip_pairs": int(system.active_skip_pairs),
                "experimental_splitting_cm": EXPERIMENTAL_SPLITTING_CM.get(key),
                "construction": "SA-CASSCF over {} roots, CAS({}, {} spinors), {}, "
                                "screening={}".format(n_states, system.nelecas,

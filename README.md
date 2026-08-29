@@ -603,6 +603,20 @@ character=("Ti", "d"), n_active=20                    # the lowest TEN d pairs: 
 character=[("Ti", "d", 10), ("Ti", "d", 10, 5)]       # the same twenty, named as two shells
 ```
 
+⚠ **The same window is what names a valence shell that has filled shells of the same `l`
+below it, and forgetting it fails silently.** `character=(atom, l)` takes the **lowest**
+qualifying pairs, which is the valence shell only when nothing of that `l` is filled beneath —
+true for 3d and 4f, and false for every `p` shell above the second row. `character=("Ga", "p")`
+selects Ga's **2p core**, not its 4p valence electron, and the calculation converges and reports
+an entirely ordinary spectrum. Two things make this worth stating rather than leaving to the
+populations: `g` values cannot detect it, because a `p¹` shell is Landé 2/3 whichever shell it
+occupies; and whether the CASSCF repairs the wrong starting guess depends on the Hamiltonian
+rather than on the active space — measured, the same Ga selection lands on the valence answer
+with `screening="none"` and on a ²P splitting of 249 400 cm⁻¹ (against an experimental 826)
+with the default `screening="x2camf"`. **Count the filled shells of that `l` and skip them**
+(`("Ga", "p", 6, 6)` — 2p and 3p are six pairs), and check the result: a computed splitting
+against a published one is the cheapest check that catches this.
+
 The fourth element of a fragment is `skip_pairs`: how many qualifying pairs to step over
 before taking its own. The second form therefore reads *"the five lowest d pairs on Ti, plus
 the next five"* — the same twenty spinors as the first, but recorded as two fragments, which
@@ -2050,7 +2064,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.30.1.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.30.2.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -2066,7 +2080,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.30.1'
+import kuiva; kuiva.__version__          # '0.30.2'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

@@ -186,10 +186,13 @@ def run_case(case: Case, beat, memory_gb: float = 4.0) -> Dict[str, object]:
     reference = api.spinor_reference(mol, screening=case.screening, memory_gb=memory_gb,
                                      property_picture_change=True)
     beat("{}: reference done".format(case.name))
-    outcome = api.casscf(reference, character=(system.atoms[0][0], system.active_l),
-                         n_active=2 * system.ncas, n_active_elec=system.nelecas,
-                         n_states=case.n_states, mode="second-order", conv_grad=1e-6,
-                         report=False)
+    # ⚠ Through the shared helper, never rebuilt here: a plain (atom, l) selection takes the
+    # LOWEST pairs of that character, which above boron is the 2p core. That is how this
+    # series was measured before 2026-08-29 — converged, unremarkable, and undetectable from
+    # the g values, since a p^1 shell is Lande 2/3 whichever shell it sits in.
+    outcome = api.casscf(reference, n_states=case.n_states, mode="second-order",
+                         conv_grad=1e-6, report=False,
+                         **systems.character_selection(system))
     beat("{}: casscf converged={}".format(case.name, outcome.converged))
 
     props = reference.data.properties
