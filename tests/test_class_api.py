@@ -37,7 +37,7 @@ import numpy as np
 import pytest
 
 import kuiva
-from kuiva.interface.stages import (CASSCF, CheapCI, NEVPT2, PropertyDump,
+from kuiva.interface.stages import (CASCI, CASSCF, CheapCI, NEVPT2, PropertyDump,
                                     PseudospinExport, Reference, ScalarSCF)
 
 G_E = 2.00231930436256
@@ -405,6 +405,109 @@ def test_dmrg_casscf_on_the_entanglement_topology(pre, cas):
     assert np.max(np.abs(seeded.energies - cas.energies)) < 1e-5    # see the note above
 
 
+# --- the CASCI stage: a spectrum at fixed orbitals --------------------------------------------
+
+def test_casci_reproduces_the_casscf_spectrum_at_its_own_orbitals(cas_term):
+    """The identity that says the stage runs the calculation it claims to: the CASSCF's own
+    last CI is a CASCI at its converged orbitals over its own state average, so asking for
+    that again must return the same numbers — inheriting both the orbitals and the space,
+    neither of which is restated here."""
+    ci = CASCI(cas_term, n_states=6, report=False).run()
+    assert ci.active is cas_term.active
+    assert np.array_equal(ci.coeff, cas_term.coeff)
+    assert np.max(np.abs(ci.energies - cas_term.energies)) < KRAMERS_TOL
+    assert abs(ci.energy - cas_term.energy) < KRAMERS_TOL
+    assert ci.solver_kind == "ci"
+
+
+def test_casci_at_the_guess_orbitals_is_above_the_casscf(ref, cas):
+    """The variational statement, and the reason the stage exists: the same functional over
+    the same two states is *higher* at the reference's guess orbitals than at the optimized
+    ones. Both numbers are state-averaged energies of one active space, so their order is a
+    theorem rather than a measurement."""
+    guess = CASCI(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2,
+                  report=False).run()
+    assert guess.active.description == cas.active.description
+    assert guess.energy > cas.energy
+    assert guess.energy - cas.energy < 1e-2          # a guess, not a different calculation
+
+
+def test_casci_inherits_from_a_cheap_ci(pre):
+    """The third upstream: the pre-optimized orbitals and the space stated on that stage."""
+    ci = CASCI(pre, n_states=6, report=False).run()
+    assert ci.active is pre.space
+    assert np.array_equal(ci.coeff, pre.orbitals)
+    assert abs(ci.energies[1] - ci.energies[0]) < KRAMERS_TOL
+
+
+def test_casci_carries_the_solver_options(cas_term):
+    """``solver_options`` reach the CI solver, and the Kramers-restricted mode is what it
+    claims to be — the same six states from three time-reversal pairs."""
+    general = CASCI(cas_term, n_states=6, report=False).run()
+    restricted = CASCI(cas_term, n_states=6, report=False,
+                       solver_options=dict(kramers="restricted")).run()
+    assert np.max(np.abs(restricted.energies - general.energies)) < KRAMERS_TOL
+    assert restricted.result.n_apply < general.result.n_apply
+
+
+def test_casci_feeds_nevpt2_and_the_property_dump(cas_term, tmp_path):
+    """Downstream is the whole point of it being a stage: the analytic Lande factors come
+    back through the dump, and the perturbation runs on the CASCI reference."""
+    ci = CASCI(cas_term, n_states=6, report=False).run()
+    dump = PropertyDump(ci, tmp_path / "b_casci.props", report=False).run()
+    levels = dump.matrices.analyse()
+    assert [level.size for level in levels] == [2, 4]
+    assert all(abs(g - G_LANDE[level.size]) < 2e-3
+               for level in levels for g in level.g_values)
+    assert dump.states_stage is ci
+    pt = NEVPT2(ci, report=False).run()
+    assert pt.result.complete
+    assert abs(pt.total_energies[1] - pt.total_energies[0]) < 1e-8
+    # the CASCI at the CASSCF's own orbitals over its own average IS that CASSCF's last CI,
+    # so the correction is the one the CASSCF reference would have got
+    assert np.max(np.abs(pt.e2 - NEVPT2(cas_term, report=False).run().e2)) < 1e-10
+
+
+def test_a_statement_about_orbitals_belongs_to_those_orbitals(ref, cas, pre):
+    """⚠ The rule the stage's refusals encode, twice. A character selection reads atomic
+    populations off the reference's own SCF orbitals; the CI here runs at orbitals that have
+    moved, so re-running it could legitimately return a different set and the spectrum would
+    not be the one belonging to them — with nothing in the output saying so. ``coeff=`` is
+    the same question asked from the other side."""
+    with pytest.raises(ValueError, match="character="):
+        CASCI(cas, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2)
+    with pytest.raises(ValueError, match="character="):
+        CASCI(pre, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2)
+    with pytest.raises(ValueError, match="two answers"):
+        CASCI(cas, coeff=cas.coeff, n_states=2)
+    with pytest.raises(ValueError, match="coeff="):
+        CASCI(ref, coeff=cas.coeff, character=("B", "p"), n_active=6, n_states=2)
+    # a selection argument with no selection is not silently ignored either
+    with pytest.raises(ValueError, match="n_active_elec="):
+        CASCI(cas, n_active_elec=1, n_states=2)
+    # ... and on a bare Reference there is nothing to inherit, so it must be stated
+    with pytest.raises(ValueError, match="active space"):
+        CASCI(ref, n_states=2)
+
+
+def test_casci_runs_at_orbitals_of_its_own(ref, cas):
+    """The one place ``coeff=`` is accepted: a Reference upstream, where there is nothing to
+    inherit and the orbitals came from somewhere else. The space is then stated as indices,
+    which is a statement about exactly those orbitals."""
+    ci = CASCI(ref, active=cas.active.spaces.active.tolist(), n_active_elec=1,
+               coeff=cas.coeff, n_states=2, report=False).run()
+    assert np.max(np.abs(ci.energies - cas.energies)) < KRAMERS_TOL
+
+
+def test_pseudospin_export_takes_the_stage_that_optimized_the_orbitals(cas):
+    # ⚠ Not an oversight: the export re-solves its model space from the integrals the
+    # orbitals define and never looks at the CI states, so it belongs on the stage that
+    # produced the orbitals
+    ci = CASCI(cas, n_states=2, report=False).run()
+    with pytest.raises(TypeError, match="finished CASSCF"):
+        PseudospinExport(ci, "unused.psd")
+
+
 # --- checkpoint / restart through the class layer --------------------------------------------
 
 def test_restart_continues_the_calculation(ref, cas, tmp_path):
@@ -457,7 +560,8 @@ def test_fragment_counts_must_divide(ref):
 def test_top_level_exports():
     assert kuiva.CASSCF is CASSCF and kuiva.Reference is Reference
     assert set(kuiva.__all__) >= {"Molecule", "ScalarSCF", "Reference", "CheapCI",
-                                  "CASSCF", "NEVPT2", "PropertyDump", "PseudospinExport"}
+                                  "CASSCF", "CASCI", "NEVPT2", "PropertyDump",
+                                  "PseudospinExport"}
 
 
 # --- the public surface: what a bare `import kuiva` reaches ---------------------------------

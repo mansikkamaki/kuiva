@@ -217,8 +217,9 @@ set_verbosity("DEBUG")                  # per-macro-iteration detail; "TRACE" fo
 | `Reference` | `ScalarSCF` | orthonormal working basis, Kramers-paired spinor guess, factorized two-electron integrals | `.reference`, `.nspinor` |
 | `CheapCI` *(optional)* | `Reference` | cheap selected-CI pre-optimization: physical active orbitals, entanglement | `.orbitals`, `.occupations`, `.entropy`, `.mutual_information` |
 | `CASSCF` | `Reference` or `CheapCI` | state-averaged two-component CASSCF, `solver="ci"` or `"dmrg"` | `.energy`, `.energies`, `.coeff`, `.converged` |
-| `NEVPT2` *(optional)* | `CASSCF` | SC-NEVPT2, per state, by excitation class | `.e2`, `.total_energies`, `.class_energies` |
-| `PropertyDump` | `CASSCF` or `NEVPT2` | the property-matrix file: `H`, `mu_x`, `mu_y`, `mu_z` | `.matrices`, `.path` |
+| `CASCI` *(optional)* | `Reference`, `CheapCI` or `CASSCF` | a full CI at **fixed** orbitals: a spectrum, a symmetry mode or an active space varied without a second orbital optimization | `.energy`, `.energies`, `.coeff`, `.result` |
+| `NEVPT2` *(optional)* | `CASSCF` or `CASCI` | SC-NEVPT2, per state, by excitation class | `.e2`, `.total_energies`, `.class_energies` |
+| `PropertyDump` | `CASSCF`, `CASCI` or `NEVPT2` | the property-matrix file: `H`, `mu_x`, `mu_y`, `mu_z` | `.matrices`, `.path` |
 | `PseudospinExport` | `CASSCF` | local multiplets, `H_eff` and moments on a pseudospin product basis | `.model`, `.g_values`, `.path` |
 
 **One contract, obeyed by all of them** — learn one, guess the rest:
@@ -924,11 +925,64 @@ Example 9 is this workflow end to end. The lower-level entry point is
 `kuiva.interface.api.project_to_basis`, which returns the projected coefficients and the
 diagnostics without running anything.
 
-### `NEVPT2(casscf, **options)`
+### `CASCI(upstream, ...)` — a spectrum at fixed orbitals
+
+A full CI over the active space at orbitals that are **not** re-optimized. `upstream` is any
+finished stage that carries orbitals — a `CASSCF` (the usual one), a `CheapCI`, or a plain
+`Reference` for the CI at the SCF guess — and the orbitals and the active space come from it.
+This is where a scan is written: what varies is the number of states, a per-irrep request, the
+CI symmetry mode, a Davidson tolerance, or the active space restated against those same
+orbitals.
+
+```python
+cas      = kuiva.CASSCF(ref, character=("Ti", "d"), n_active=10,
+                        n_active_elec=1, n_states=2).run()   # orbitals for the ground doublet
+spectrum = kuiva.CASCI(cas, n_states=10).run()               # all ten, at those orbitals
+spectrum = kuiva.CASCI(cas, n_states=10,
+                       solver_options=dict(kramers="restricted")).run()   # same ten, cheaper
+```
+
+Optimizing the orbitals for the states you want and then reading the full spectrum off them is
+the ordinary shape of a ligand-field calculation, and it is what the second line above costs:
+one CI solve instead of a second orbital optimization.
+
+⚠ **Two rules, and they are one rule stated twice: a statement about orbitals belongs to the
+orbitals it was made against.**
+
+- `character=` and `avas=` read atomic populations off the **reference's own SCF orbitals**, so
+  they may be stated only on a `Reference` upstream, where those are also the orbitals the CI
+  runs at. On a `CheapCI` or `CASSCF` upstream the space is inherited, and an active space
+  varied at fixed orbitals is stated as `active=[spinor indices]` — a statement about the
+  orbital set at hand. The orbitals have moved, so re-running a character selection against
+  them may legitimately return a *different* set, and the spectrum would then not be the one
+  belonging to those orbitals, with nothing in the output saying so. Restating it is refused
+  rather than reconciled.
+- `coeff=` is accepted only where there is nothing to inherit — on a `Reference` upstream, for
+  orbitals that came from somewhere else — and then together with `active=` for the same
+  reason. Elsewhere the chain already answers *"which orbitals"*, and two answers to that is
+  how a state set and an orbital set stop matching.
+
+The state-averaging gate applies exactly as it does to a `CASSCF`: weights are equalized inside
+a degenerate block and a count that splits one is refused. What does not run is the
+state-average **boundary diagnostic** — that is a statement about an orbital trajectory, and
+there is none here. ⚠ A CASCI energy is variational at those orbitals and nothing more: over a
+state average the upstream CASSCF did not optimize, the orbitals are not stationary for it, and
+the levels can order themselves differently from a CASSCF over the same states.
+
+It feeds `NEVPT2` and `PropertyDump` exactly as a `CASSCF` does — but not `PseudospinExport`,
+which consumes converged *orbitals* rather than states and so belongs on the stage that
+optimized them.
+
+The function underneath is `kuiva.interface.api.casci`, which takes the orbitals as `coeff=`
+and is what to drive when there is no stage to hang them on.
+
+### `NEVPT2(source, **options)`
 
 Strongly contracted NEVPT2 on a converged reference — post-processing, per state, decomposed by
 excitation class. It consumes the converged orbitals and CI vectors and changes no
-wavefunction. Options: `frozen_core`, `deleted_virtual`, `shift`, `imaginary_shift`, `fock`,
+wavefunction. `source` is a finished `CASSCF` or `CASCI`; ⚠ on a `CASCI` the total is
+`E(CASCI) + E2`, a different reference from `E(CASSCF) + E2` and not comparable with it.
+Options: `frozen_core`, `deleted_virtual`, `shift`, `imaginary_shift`, `fock`,
 `classes`.
 
 ```python
@@ -994,18 +1048,17 @@ path. Reaching for one is a deliberate step off the documented path; each is sti
 same memory limit, the same provenance records and the same state-averaging gate as a stage,
 being the same code underneath.
 
-(The `kuiva.` top level itself stays thin on purpose. Besides `Molecule` and the seven stage
+(The `kuiva.` top level itself stays thin on purpose. Besides `Molecule` and the eight stage
 classes it carries only the *read* counterparts of what those stages write — `read_dump`,
 `read_pseudospin`, `read_checkpoint`, `PropertyMatrices`, `PseudospinModel` — because reading
 a stored product back is how two calculations get compared at all.)
 
 | call | what it is for |
 |---|---|
-| `api.casci(reference, ...)` | a full CI at **fixed** orbitals over a chosen active space — the scan primitive. Same space, same states, many orbital sets or geometries, no orbital optimization. `coeff=` runs it on converged CASSCF orbitals, or on a set read from a checkpoint. |
 | `api.property_matrices(reference, source)` | the `H` and `mu` matrices **without writing a file**, for comparing two calculations in memory through `.analyse()`. `api.property_dump` is this plus the write. |
 | `api.active_space_for(reference, character=..., n_active=...)` | resolve an active-space request into the object the drivers take, so it can be inspected or reused before a run is committed to. |
 | `api.avas_active_space(reference, atom=..., l=...)` | the AVAS space **and its rotated orbitals**, so the projection eigenvalues can be looked at before a run is committed to a threshold. The stage form is `avas=`. |
-| `api.spin_analysis(reference, source)`, `api.assign_states(reference, source)` | `<S^2>` per degenerate block, and the term-assignment offer built on it, for a bare `api.casci` result — which has no stage to call `.spin_analysis()` / `.assign()` on. |
+| `api.spin_analysis(reference, source)`, `api.assign_states(reference, source)` | `<S^2>` per degenerate block, and the term-assignment offer built on it, for a result produced by hand — a bare `api.casci` or a driver call, which has no stage to call `.spin_analysis()` / `.assign()` on. |
 | `api.projected_active_space(plan, target, n_active_elec)` | the target-basis active space a projection lands on, for driving `api.project_to_basis` by hand instead of through `project_from=`. |
 | `SpinorReference.h_one_electron()` | the `(2·nao, 2·nao)` one-electron Hamiltonian in the AO basis: the full two-component X2C operator with spin–orbit coupling ingested, and the spin-free one lifted to two components without it. This is the operator the correlated energy is an expectation value of. |
 | `api.memory_plan(nao, ...)` | the phase-by-phase memory estimate the pre-flight prints, as data. Every entry is a function of dimensions only, so it answers "will this fit?" before any array — or any SCF — exists. |
@@ -2064,7 +2117,7 @@ The release is usable for production work **with care**, and this is what the ca
 
 ## Versioning
 
-**Version 0.30.3.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
+**Version 0.31.0.** The number is `MAJOR.MINOR.PATCH` and reads as usual:
 
 | part | moves when |
 |---|---|
@@ -2080,7 +2133,7 @@ identifies exactly one state of the code — which is the point of printing it.
 itself:
 
 ```python
-import kuiva; kuiva.__version__          # '0.30.3'
+import kuiva; kuiva.__version__          # '0.31.0'
 ```
 
 - the run banner prints it, so the version is in the **output file**;

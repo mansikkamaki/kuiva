@@ -44,8 +44,11 @@ any real calculation:
 
 2. **Which states the orbitals are optimized for.** The CASSCF here averages over the
    ground Kramers doublet only -- that is the state whose orbitals are wanted -- and the
-   full spectrum is then a CASCI at those fixed orbitals. Averaging over all ten from the
-   start would optimize the orbitals for an average nobody asked about.
+   full spectrum is then a `CASCI` stage at those fixed orbitals, which is one CI solve
+   rather than a second orbital optimization. Averaging over all ten from the start would
+   optimize the orbitals for an average nobody asked about. ⚠ The CASCI restates nothing
+   about the active space and may not: it inherits it, because a `character=` selection
+   reads its populations off the reference's SCF orbitals and these orbitals have moved.
 
 3. **Where the state average stops.** A state-averaged CASSCF is exactly as symmetric as
    the set it averages over. A count that stops *inside* a near-degenerate manifold makes
@@ -152,8 +155,7 @@ from typing import List
 import numpy as np
 
 import kuiva
-from kuiva.interface.api import (assign_states, avas_active_space, casci,
-                                 spin_analysis)
+from kuiva.interface.api import assign_states, avas_active_space, spin_analysis
 from kuiva.props.multiplet import HARTREE_TO_CM
 from kuiva.props.population import orbital_populations
 from kuiva.util import output as out
@@ -388,16 +390,24 @@ def main() -> int:
     # ----------------------------------------------------------------------------------
     # 3. The spectrum, as a CASCI at the converged orbitals.
     # ----------------------------------------------------------------------------------
-    # The stage classes are a thin layer over the module drivers, and the drivers stay
-    # public: a CASCI at fixed orbitals is one call to interface.api.casci.
+    # This is the whole reason the CASCI stage exists: the orbitals were optimized for the
+    # ground doublet, and the other four doublets are one CI solve away at those same
+    # orbitals -- not a second orbital optimization.
     #
-    # The active space is given as the spinor INDICES the CASSCF actually used, not as
-    # character again. The orbitals have moved, so re-running a character selection could
-    # legitimately return a different set and the spectrum would not be the one belonging
-    # to these orbitals.
+    # ⚠ Nothing about the active space is restated here, and it may not be. The stage
+    # inherits it from the CASSCF, because a selection belongs to the orbitals it was made
+    # against: character= reads its atomic populations off the reference's SCF orbitals,
+    # these orbitals have moved, and re-running the selection could legitimately return a
+    # different set -- at which point the spectrum would not be the one belonging to them,
+    # with nothing in the output saying so. The stage refuses a restated character= for
+    # exactly that reason; an active space genuinely varied at fixed orbitals is stated as
+    # active=[spinor indices], which IS a statement about the orbitals at hand.
+    #
+    # The stage is a thin layer over the drivers, which stay public: the same thing by hand
+    # is interface.api.casci(reference, coeff=..., active=..., n_active_elec=...), which is
+    # what to reach for when the orbitals came from somewhere with no stage to hang them on.
     out.section(log, "The spin-orbit spectrum at the converged orbitals")
-    spectrum = casci(reference.reference, n_states=N_STATES_CI, coeff=cas.coeff,
-                     active=cas.active.spaces.active, n_active_elec=N_ACTIVE_ELEC)
+    spectrum = kuiva.CASCI(cas, n_states=N_STATES_CI).run().result
     splittings = spectrum_table("TiCl3 d^1 in D3h", spectrum.total_energies)
 
     out.entries(log, [
@@ -462,9 +472,8 @@ def main() -> int:
     #     set and not of the method. That is checked at every solve rather than assumed,
     #     and an unrestricted reference is refused rather than silently mishandled.
     out.subsection(log, "The same spectrum, Kramers-restricted")
-    restricted = casci(reference.reference, n_states=N_STATES_CI, coeff=cas.coeff,
-                       active=cas.active.spaces.active, n_active_elec=N_ACTIVE_ELEC,
-                       kramers="restricted", report=False)
+    restricted = kuiva.CASCI(cas, n_states=N_STATES_CI, report=False,
+                             solver_options=dict(kramers="restricted")).run().result
     mode_shift = float(np.max(np.abs(restricted.total_energies
                                      - spectrum.total_energies))) * HARTREE_TO_CM
     out.entries(log, [
@@ -495,10 +504,9 @@ def main() -> int:
     out.subsection(log, "The same spectrum, selected per irrep")
     fermion = [reference.reference.spinor_labels.group.irrep_name(t)
                for t in reference.reference.spinor_labels.group.labels(fermion=True)]
-    per_irrep = casci(reference.reference,
-                      n_states={name: N_STATES_CI // len(fermion) for name in fermion},
-                      coeff=cas.coeff, active=cas.active.spaces.active,
-                      n_active_elec=N_ACTIVE_ELEC, enforce_kramers=False, report=False)
+    per_irrep = kuiva.CASCI(
+        cas, n_states={name: N_STATES_CI // len(fermion) for name in fermion},
+        solver_options=dict(enforce_kramers=False), report=False).run().result
     irrep_shift = float(np.max(np.abs(np.sort(per_irrep.total_energies)
                                       - spectrum.total_energies))) * HARTREE_TO_CM
     irrep_counts = {name: sum(1 for x in per_irrep.irreps if x == name) for name in fermion}
@@ -531,9 +539,8 @@ def main() -> int:
     # a multiplet's dimension is then fixed by theory, so a state count that cuts one is
     # refused instead of producing a plausible average over a fragment.
     out.subsection(log, "The multiplets, in the full double group")
-    unclassified = casci(reference.reference, n_states=N_STATES_CI, coeff=cas.coeff,
-                         active=cas.active.spaces.active, n_active_elec=N_ACTIVE_ELEC,
-                         classify=False, report=False)
+    unclassified = kuiva.CASCI(cas, n_states=N_STATES_CI, classify=False,
+                               report=False).run().result
     full = reference.reference.symmetry.full_group
     multiplets = list(spectrum.multiplets or ())
     distinct = sorted(set(multiplets))
@@ -564,9 +571,8 @@ def main() -> int:
     # unit of a Kramers-restricted per-irrep selection is therefore that pair: five states
     # of 1E1/2 come back as ten, the five and their partners in 2E1/2.
     out.subsection(log, "Both symmetries at once")
-    combined = casci(reference.reference, n_states={fermion[0]: N_STATES_CI // 2},
-                     coeff=cas.coeff, active=cas.active.spaces.active,
-                     n_active_elec=N_ACTIVE_ELEC, kramers="restricted", report=False)
+    combined = kuiva.CASCI(cas, n_states={fermion[0]: N_STATES_CI // 2}, report=False,
+                           solver_options=dict(kramers="restricted")).run().result
     combined_shift = float(np.max(np.abs(np.sort(combined.total_energies)
                                          - spectrum.total_energies))) * HARTREE_TO_CM
     out.entries(log, [

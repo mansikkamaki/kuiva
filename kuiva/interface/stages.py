@@ -5,6 +5,12 @@
     ScalarSCF -> Reference -> (CheapCI) -> CASSCF -> (NEVPT2) -> PropertyDump
                                                              \\-> PseudospinExport
 
+:class:`CASCI` is the fixed-orbital sibling of :class:`CASSCF`: it takes any stage that
+carries orbitals — a :class:`Reference`, a :class:`CheapCI` or a finished :class:`CASSCF` —
+and feeds :class:`NEVPT2` and :class:`PropertyDump` exactly as a :class:`CASSCF` does. It is
+where a scan at fixed orbitals is written: a state count, a symmetry mode or an active space
+varied without paying for a second orbital optimization.
+
 **The uniform contract, which every class here obeys** — learn one, guess the rest:
 
 * the **constructor takes the finished upstream stage** plus keyword options, and validates
@@ -62,8 +68,8 @@ from .api import (Molecule, SpinorReference as _SpinorData, active_space_for,
 
 log = get_logger(__name__)
 
-__all__ = ["ScalarSCF", "Reference", "CheapCI", "CASSCF", "NEVPT2", "PropertyDump",
-           "PseudospinExport"]
+__all__ = ["ScalarSCF", "Reference", "CheapCI", "CASSCF", "CASCI", "NEVPT2",
+           "PropertyDump", "PseudospinExport"]
 
 
 def _allowed_options(*funcs, exclude: Sequence[str] = ()) -> set:
@@ -708,6 +714,10 @@ class CASSCF(_Stage):
                          "e_nuc", "n_states", "weights", "solver", "active",
                          "solver_options", "callback", "report", "optimizer_state",
                          "start_iteration", "space_key", "history", "extra_columns"))
+            # api.casscf's own, and named rather than swept in with the rest of that
+            # function's keywords: those are this stage's explicit arguments and letting
+            # them through here would let one be given twice.
+            allowed.add("classify")
             _check_options(self.optimizer_options, allowed, "CASSCF (orbital optimizer)")
         else:
             from ..dmrg import DMRGSolver
@@ -858,6 +868,10 @@ class CASSCF(_Stage):
                               solver_options=self.solver_options, callback=self.callback,
                               report=self.report, **self.optimizer_options)
         self.outcome = outcome
+        #: What the property stages consume, under the name :class:`CASCI` uses for it too,
+        #: so a consumer of either stage asks one question. The network route has no such
+        #: object -- its states live in the solver -- and deliberately does not set it.
+        self.states = outcome
         self.active = outcome.active
         self.solver = outcome.solver
         self.orbital = outcome.orbital
@@ -1181,15 +1195,254 @@ class CASSCF(_Stage):
         return entries
 
 
-# --- 5. SC-NEVPT2 ---------------------------------------------------------------------------
+# --- 5. the fixed-orbital CI -----------------------------------------------------------------
+
+class CASCI(_Stage):
+    """A full CI at **fixed orbitals** — the scan primitive of this API.
+
+    ``upstream`` is any finished stage that carries orbitals: a :class:`CASSCF` (the usual
+    one — spend one converged orbital set on a second spectrum without paying for a second
+    optimization), a :class:`CheapCI`, or a plain :class:`Reference` (the CI at the SCF
+    guess, which is what a CASSCF starts from). The orbitals come from that stage and so
+    does the active space; what is varied here is everything else — the number of states, a
+    per-irrep request, the CI symmetry mode, a Davidson tolerance, or the active space
+    restated against those same orbitals::
+
+        cas      = kuiva.CASSCF(ref, character=("Ti", "d"), n_active=10,
+                                n_active_elec=1, n_states=2).run()   # orbitals for the doublet
+        spectrum = kuiva.CASCI(cas, n_states=10).run()       # all ten, at those orbitals
+
+    ⚠ **Two rules, and they are one rule stated twice: a statement about orbitals belongs
+    to the orbitals it was made against.**
+
+    * ``character=`` and ``avas=`` read atomic populations off the *reference's own* SCF
+      orbitals, so they may be stated only on a :class:`Reference` upstream — where those
+      are also the orbitals the CI runs at. On a :class:`CheapCI` or :class:`CASSCF`
+      upstream the space is **inherited**, and an active space varied at fixed orbitals is
+      stated as ``active=`` (spinor indices into the orbital set at hand, or an already
+      resolved ``ActiveSpace``), which is a statement about exactly those orbitals. The
+      orbitals have moved, so re-running a character selection against them may
+      legitimately return a different set — and the spectrum would then not be the one
+      belonging to these orbitals, with nothing in the output saying so.
+    * ``coeff=`` is accepted only where there is nothing to inherit: on a
+      :class:`Reference` upstream, for orbitals that came from somewhere else (a
+      checkpoint, another program), and then with ``active=`` for the same reason.
+      Elsewhere the chain already answers "which orbitals", and two answers to that is how
+      a state set and an orbital set stop matching.
+
+    ``n_states`` is a count, or a per-irrep mapping ``{irrep: n}`` wherever :class:`CASSCF`
+    accepts one. ``solver_options`` are :class:`~kuiva.mcscf.casci.FullCISolver`'s —
+    ``kramers="restricted"``, ``conv_tol``, ``enforce_kramers``, ``degeneracy_tol``, ... —
+    and ``classify=False`` switches off the full-double-group labelling of the converged
+    blocks.
+
+    ⚠ **The state-averaging gate applies here exactly as it does to a CASSCF**: the weights
+    are equalized inside a degenerate block and a count that splits one is refused. What
+    does *not* run is the state-average boundary diagnostic, which is a statement about an
+    orbital *trajectory* and there is none here.
+
+    Feeds :class:`NEVPT2` and :class:`PropertyDump` exactly as a :class:`CASSCF` does — but
+    not :class:`PseudospinExport`, which consumes converged orbitals rather than states and
+    therefore belongs on the stage that produced them.
+
+    A ``solver="dmrg"`` CASSCF is a legal upstream as well — an exact CI at network-converged
+    orbitals is a real check on a truncated result — but this is the conventional CI, so its
+    determinant ceiling applies and past it the memory ledger refuses before it allocates.
+
+    After :meth:`run`: :attr:`energy` (state-averaged), :attr:`energies` (total state
+    energies [Eh]), :attr:`coeff`, :attr:`active`, the
+    :class:`~kuiva.mcscf.casci.CASCIResult` as :attr:`result`, and
+    :meth:`spin_analysis` / :meth:`assign` as on :class:`CASSCF`.
+    """
+
+    #: The arguments that configure an active-space *selection*, for the refusal below. A
+    #: stage that inherits its space must not silently ignore one of these.
+    _SELECTION = ("n_active", "n_active_elec", "threshold")
+
+    def __init__(self, upstream, *, active=None, character=None,
+                 n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
+                 threshold: Optional[float] = None, avas=None, n_states=1, weights=None,
+                 coeff: Optional[np.ndarray] = None,
+                 solver_options: Optional[Dict[str, Any]] = None,
+                 classify: bool = True, report: bool = True) -> None:
+        super().__init__()
+        from ..mcscf.casci import FullCISolver
+        self._finished(upstream, (Reference, CheapCI, CASSCF), "CASCI")
+        self.upstream = upstream
+        self.reference_stage = (upstream if isinstance(upstream, Reference)
+                                else upstream.reference_stage)
+        #: The CI method behind this stage, in the vocabulary :class:`CASSCF` uses for it, so
+        #: that a consumer of either stage asks one question. A fixed-orbital CI is the
+        #: conventional-CI route by construction.
+        self.solver_kind = "ci"
+        self.state_request = dict(n_states) if isinstance(n_states, dict) else None
+        self.n_states = (sum(int(v) for v in n_states.values())
+                         if self.state_request is not None else int(n_states))
+        self.weights = weights
+        self.classify, self.report = bool(classify), bool(report)
+        self.solver_options = dict(solver_options or {})
+        _check_options(self.solver_options,
+                       _allowed_options(FullCISolver.__init__,
+                                        exclude=("self", "n_spinor", "n_elec", "n_states",
+                                                 "weights")),
+                       "CASCI solver_options (FullCISolver)")
+
+        inherits = not isinstance(upstream, Reference)
+        what = type(upstream).__name__
+        if inherits and (character is not None or avas is not None):
+            raise ValueError(
+                "character= and avas= select against the orbitals the reference's own SCF "
+                "produced, and this CASCI runs at the {}'s orbitals instead: those have "
+                "moved, so the selection could legitimately return a different set and the "
+                "spectrum would not be the one belonging to them. The space is inherited "
+                "from the {} (leave it out), or state it as active=[spinor indices], which "
+                "is a statement about the orbitals at hand".format(what, what))
+        if coeff is not None:
+            if inherits:
+                raise ValueError(
+                    "coeff= and a {} upstream are two answers to 'which orbitals', and two "
+                    "answers is how a state set and an orbital set stop matching. Build this "
+                    "stage on the Reference to run at orbitals of your own, or on the {} to "
+                    "run at its".format(what, what))
+            if character is not None or avas is not None:
+                raise ValueError(
+                    "character= and avas= select against the reference's own SCF orbitals "
+                    "and coeff= replaces them, so the selection would not describe the "
+                    "orbitals the CI runs at; state the space as active=[spinor indices]")
+        stated = [name + "=" for name, value in zip(self._SELECTION,
+                                                    (n_active, n_active_elec, threshold))
+                  if value is not None]
+        if stated and inherits and active is None and character is None and avas is None:
+            # Silently ignoring these would leave a run whose active space is not the one
+            # its arguments describe -- on a Reference upstream they fall through to the
+            # "no active space was stated" guidance instead, which is the real problem there.
+            raise ValueError(
+                "{} tune an active-space selection and none was requested here: this stage "
+                "inherits its active space from the {}. Drop them, or state the space with "
+                "active=[spinor indices]".format(", ".join(stated), what))
+
+        self.avas = None
+        if avas is not None:
+            if n_active_elec is not None:
+                avas = dict(avas, n_active_elec=n_active_elec)
+            self.avas, self._orbitals = _resolve_avas(
+                self.reference_stage, upstream, avas, active=active, character=character,
+                n_active=n_active, threshold=threshold, what="CASCI")
+            self.space = self.avas.space
+            return
+        if coeff is not None:
+            self._orbitals = np.ascontiguousarray(coeff)
+        elif isinstance(upstream, CASSCF):
+            self._orbitals = upstream.coeff
+        elif isinstance(upstream, CheapCI):
+            self._orbitals = upstream.orbitals
+        else:
+            self._orbitals = None                # the reference's own guess spinors
+        if active is not None or character is not None:
+            self.space = _resolve_space(self.reference_stage, active=active,
+                                        character=character, n_active=n_active,
+                                        n_active_elec=n_active_elec, threshold=threshold,
+                                        what="CASCI")
+        elif inherits:
+            self.space = (upstream.active if isinstance(upstream, CASSCF)
+                          else upstream.space)
+        else:
+            _resolve_space(self.reference_stage, active=None, character=None, n_active=None,
+                           n_active_elec=None, threshold=None,
+                           what="CASCI")                     # raises with the guidance
+
+    def _execute(self) -> None:
+        from .api import casci as _api_casci
+        if self.avas is not None and self.report:
+            self.avas.report(log)
+        self.result = _api_casci(
+            self.reference_stage.reference, active=self.space,
+            n_states=(self.state_request if self.state_request is not None
+                      else self.n_states),
+            weights=self.weights, coeff=self._orbitals, report=self.report,
+            classify=self.classify, **self.solver_options)
+        #: The same object under the two names the rest of the layer knows it by: `ci` is
+        #: what a CASSCF calls its spectrum, `states` is what the property stages consume.
+        self.ci = self.states = self.result
+        self.active = self.space
+        self.solver = self.result.solver
+        self._energies = np.asarray(self.result.total_energies, dtype=float)
+
+    # -- results ------------------------------------------------------------------------------
+
+    @property
+    def energy(self) -> float:
+        """State-averaged total energy [Eh] — ⚠ at these orbitals, which are not
+        stationary for this average unless the upstream CASSCF optimized exactly it."""
+        self._check_ran()
+        return float(self.result.energy)
+
+    @property
+    def energies(self) -> np.ndarray:
+        """Total state energies [Eh], ascending — the spin-orbit spectrum."""
+        self._check_ran()
+        return self._energies
+
+    @property
+    def coeff(self) -> np.ndarray:
+        """The spinor coefficients (AO basis) the CI was solved at."""
+        self._check_ran()
+        return self.result.coeff
+
+    def spin_analysis(self, *, tol_cm: float = 1.0, report: bool = False):
+        """``<S^2>`` per degenerate block; see :meth:`CASSCF.spin_analysis`."""
+        self._check_ran()
+        from .api import spin_analysis as _spin
+        return _spin(self.reference_stage.reference, self.result, tol_cm=tol_cm,
+                     report=report)
+
+    def assign(self, *, matrices=None, tol_cm: float = 1.0, report: bool = True):
+        """Offer a term label per degenerate block; ⚠ inference, see :meth:`CASSCF.assign`."""
+        self._check_ran()
+        from .api import assign_states
+        return assign_states(self.reference_stage.reference, self.result,
+                             matrices=matrices, tol_cm=tol_cm, report=report)
+
+    def _summary_entries(self):
+        if self.avas is not None:
+            orbitals = "the AVAS-rotated reference orbitals"
+        elif isinstance(self.upstream, CASSCF):
+            orbitals = "the converged CASSCF orbitals"
+        elif isinstance(self.upstream, CheapCI):
+            orbitals = "the pre-optimized orbitals"
+        elif self._orbitals is not None:
+            orbitals = "given as coeff="
+        else:
+            orbitals = "the reference's guess spinors"
+        return [
+            ("active space", "CAS({}, {})  {}".format(self.active.n_elec,
+                                                      self.active.n_active,
+                                                      self.active.description)),
+            ("orbitals", orbitals),
+            ("<E> [Eh]", out.E_FMT.format(self.energy)),
+            ("E(state 0) [Eh]", out.E_FMT.format(float(self._energies[0]))),
+            ("states", str(self._energies.size)),
+            ("determinants", str(self.solver.ndet)),
+            ("applications of H", str(self.result.n_apply)),
+        ]
+
+
+# --- 6. SC-NEVPT2 ---------------------------------------------------------------------------
 
 class NEVPT2(_Stage):
-    """SC-NEVPT2 dynamic correlation on a converged CASSCF — post-processing, per state.
+    """SC-NEVPT2 dynamic correlation on a converged reference — post-processing, per state.
+
+    ``source`` is a finished :class:`CASSCF` or :class:`CASCI`: the correction is a
+    post-processing step over converged orbitals and their states, and whether those
+    orbitals were optimized for this state average is the caller's statement, not this
+    stage's. ⚠ On a :class:`CASCI` the reference is a CASCI wavefunction and the total is
+    ``E(CASCI) + E2`` — a different reference from ``E(CASSCF) + E2`` and not comparable
+    with it.
 
     Wraps :func:`kuiva.pt.nevpt2.sc_nevpt2`; options (``frozen_core``, ``deleted_virtual``,
     ``shift``, ``imaginary_shift``, ``fock``, ``classes``, ...) are its keywords, validated
     eagerly. Works on **both** solver routes through the driver's engine seam: the
-    conventional-CI CASSCF supplies its stored CI vectors, a ``solver="dmrg"`` CASSCF
+    conventional-CI route supplies its stored CI vectors, a ``solver="dmrg"`` CASSCF
     supplies its converged network through the network-backed contraction provider
     (:mod:`kuiva.pt.network`).
 
@@ -1209,12 +1462,13 @@ class NEVPT2(_Stage):
     _EXCLUDE = ("factors", "h_ao", "c_spinor", "spaces", "civecs", "solver", "n_elec",
                 "energies", "weights", "e_nuc")
 
-    def __init__(self, casscf: CASSCF, **options) -> None:
+    def __init__(self, source, **options) -> None:
         super().__init__()
         from ..pt.network import sc_nevpt2_dmrg
         from ..pt.nevpt2 import sc_nevpt2
-        self.casscf = self._finished(casscf, CASSCF, "NEVPT2")
-        self.reference_stage = casscf.reference_stage
+        #: The stage whose orbitals and states are being corrected -- a CASSCF or a CASCI.
+        self.states_stage = self._finished(source, (CASSCF, CASCI), "NEVPT2")
+        self.reference_stage = source.reference_stage
         _check_options(options, _allowed_options(sc_nevpt2, sc_nevpt2_dmrg,
                                                  exclude=self._EXCLUDE),
                        "NEVPT2")
@@ -1226,9 +1480,9 @@ class NEVPT2(_Stage):
 
     def _execute(self) -> None:
         ref = self.reference_stage.reference
-        if self.casscf.solver_kind == "dmrg":
+        cas = self.states_stage
+        if cas.solver_kind == "dmrg":
             from ..pt.network import sc_nevpt2_dmrg
-            cas = self.casscf
             # energies default to the finishing solve's spectrum at the converged
             # orbitals, which is exactly what the driver's state-averaging gate needs.
             self.result = sc_nevpt2_dmrg(ref.factors, ref.h_one_electron(), cas.coeff,
@@ -1236,11 +1490,13 @@ class NEVPT2(_Stage):
                                          cas.active.n_elec, e_nuc=ref.data.e_nuc,
                                          **self.options)
         else:
+            # One path for both conventional-CI stages: a CASSCF and a CASCI differ in where
+            # their orbitals came from, and the perturbation consumes only the orbitals, the
+            # active space and the CI vectors -- which they carry under the same names.
             from ..pt.nevpt2 import sc_nevpt2
-            oc = self.casscf.outcome
-            self.result = sc_nevpt2(ref.factors, ref.h_one_electron(), oc.coeff,
-                                    oc.active.spaces, oc.ci.vectors, oc.active.n_elec,
-                                    energies=oc.ci.energies, e_nuc=ref.data.e_nuc,
+            self.result = sc_nevpt2(ref.factors, ref.h_one_electron(), cas.coeff,
+                                    cas.active.spaces, cas.ci.vectors, cas.active.n_elec,
+                                    energies=cas.ci.energies, e_nuc=ref.data.e_nuc,
                                     **self.options)
         self.e2 = self.result.e2
         self.total_energies = self.result.total_energies
@@ -1261,7 +1517,7 @@ class NEVPT2(_Stage):
         ]
 
 
-# --- 6. the two formatted products -----------------------------------------------------------
+# --- 7. the two formatted products -----------------------------------------------------------
 
 class PropertyDump(_Stage):
     """The property-matrix file: ``H``, ``mu_x, mu_y, mu_z`` and ``d_x, d_y, d_z`` in the SOC
@@ -1273,11 +1529,11 @@ class PropertyDump(_Stage):
     the operator and its invariants; oscillator strengths and radiative rates are the external
     property code's job, as the crystal-field analysis is.
 
-    ``source`` is a finished ``solver="ci"`` :class:`CASSCF` — or a finished :class:`NEVPT2`,
-    in which case the corrected energies replace the diagonal **and the header records the
-    hybrid protocol** (``H`` from perturbation theory, ``mu`` from the CASSCF states); that
-    substitution is available only through this argument, never as a flag, so the file and
-    its provenance cannot be separated.
+    ``source`` is a finished ``solver="ci"`` :class:`CASSCF` or :class:`CASCI` — or a
+    finished :class:`NEVPT2` on either, in which case the corrected energies replace the
+    diagonal **and the header records the hybrid protocol** (``H`` from perturbation theory,
+    ``mu`` from the CASSCF states); that substitution is available only through this
+    argument, never as a flag, so the file and its provenance cannot be separated.
 
     After :meth:`run`: :attr:`matrices` (compare only through its phase-invariant
     :meth:`~kuiva.props.dump.PropertyMatrices.analyse`) and :attr:`path`.
@@ -1287,15 +1543,17 @@ class PropertyDump(_Stage):
                  include_dipole: bool = True, comments: Sequence[str] = (),
                  inactive_tol: Optional[float] = None, report: bool = True) -> None:
         super().__init__()
-        self._finished(source, (CASSCF, NEVPT2), "PropertyDump")
+        self._finished(source, (CASSCF, CASCI, NEVPT2), "PropertyDump")
         self.source = source
-        self.casscf = source if isinstance(source, CASSCF) else source.casscf
-        if self.casscf.solver_kind != "ci":
+        #: The stage that produced the states -- a CASSCF or a CASCI, reached through the
+        #: NEVPT2 when the energies are corrected ones.
+        self.states_stage = (source.states_stage if isinstance(source, NEVPT2) else source)
+        if self.states_stage.solver_kind != "ci":
             raise ValueError(
                 "the property dump needs the transition densities of the conventional-CI "
-                "CASSCF; the tensor-network route to properties is the pseudospin export "
+                "solver; the tensor-network route to properties is the pseudospin export "
                 "(PseudospinExport)")
-        data = self.casscf.reference_stage.reference.data
+        data = self.states_stage.reference_stage.reference.data
         if data.properties is None:
             raise ValueError("this reference carries no angular-momentum integrals; it was "
                              "not built by the front-end")
@@ -1307,8 +1565,9 @@ class PropertyDump(_Stage):
 
     def _execute(self) -> None:
         kwargs = {} if self.inactive_tol is None else {"inactive_tol": self.inactive_tol}
-        matrices = _property_matrices(self.casscf.reference_stage.reference,
-                                      self.casscf.outcome, comments=self.comments, **kwargs)
+        matrices = _property_matrices(self.states_stage.reference_stage.reference,
+                                      self.states_stage.states, comments=self.comments,
+                                      **kwargs)
         if isinstance(self.source, NEVPT2):
             from ..pt.nevpt2 import corrected_property_matrices
             matrices = corrected_property_matrices(matrices, self.source.result)
@@ -1327,14 +1586,15 @@ class PropertyDump(_Stage):
         pass.
         """
         self._check_ran()
-        return self.casscf.assign(matrices=self.matrices, tol_cm=tol_cm, report=report)
+        return self.states_stage.assign(matrices=self.matrices, tol_cm=tol_cm, report=report)
 
     def _summary_entries(self):
         return [
             ("file", str(self.path)),
             ("states", str(self.matrices.n_states)),
             ("energies", "NEVPT2-corrected (hybrid protocol, recorded)"
-             if isinstance(self.source, NEVPT2) else "CASSCF"),
+             if isinstance(self.source, NEVPT2)
+             else type(self.states_stage).__name__),
         ]
 
 
@@ -1348,6 +1608,11 @@ class PseudospinExport(_Stage):
     pseudospin labels, and the formatted file is written. Works from either CASSCF solver —
     the manifold loop re-solves the network from the integrals either way (warm topology
     from a DMRG run when available).
+
+    ⚠ **This one takes a CASSCF and not a :class:`CASCI`**, unlike :class:`PropertyDump`:
+    what it consumes is the converged *orbitals*, not the states — the model space is
+    re-solved from the integrals those orbitals define — so it belongs on the stage that
+    optimized them, and a CASCI's orbitals are always some other stage's.
 
     ``sites`` partitions the **active spinors** (by position in the active list) into the
     local multiplet sites; ``None`` uses the structure discovered from the converged state's

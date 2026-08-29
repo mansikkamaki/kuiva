@@ -9,6 +9,9 @@ A calculation is a short script of stage objects, re-exported here and documente
     ScalarSCF -> Reference -> (CheapCI) -> CASSCF -> (NEVPT2) -> PropertyDump
                                                              \\-> PseudospinExport
 
+``CASCI`` is the fixed-orbital sibling of ``CASSCF`` — a spectrum, a symmetry mode or an
+active space varied at one converged orbital set — and feeds the same stages after it.
+
 Each constructor takes the finished stage before it, ``.run()`` is the only expensive call,
 and results are plain attributes. The function API underneath (``kuiva.interface.api`` and
 the module drivers) is public and unchanged; ``README.md`` is the manual.
@@ -20,7 +23,7 @@ the module drivers) is public and unchanged; ``README.md`` is the manual.
 #: ``[tool.setuptools.dynamic]``, the run banner prints it, every stored product records it,
 #: and the documents quoting it are held in step by test. Keep it a plain literal: setuptools parses this file
 #: statically and a computed version would not be readable without importing the package.
-__version__ = "0.30.3"
+__version__ = "0.31.0"
 
 #: The class API (kuiva/interface/stages.py) and the Molecule container, re-exported at the
 #: top level so a user script reads ``kuiva.CASSCF(...)``. Resolved lazily (PEP 562): the
@@ -48,6 +51,7 @@ _TOP_LEVEL = {
     "Reference": "kuiva.interface.stages",
     "CheapCI": "kuiva.interface.stages",
     "CASSCF": "kuiva.interface.stages",
+    "CASCI": "kuiva.interface.stages",
     "NEVPT2": "kuiva.interface.stages",
     "PropertyDump": "kuiva.interface.stages",
     "PseudospinExport": "kuiva.interface.stages",
