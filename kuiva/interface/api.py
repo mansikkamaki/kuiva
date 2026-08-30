@@ -7,6 +7,7 @@ multireference layer consumes. This is the single public entry point for the fro
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -1009,6 +1010,11 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
         # ⚠ Read failure on an explicit restart is an ERROR that propagates:
         # the user asked to resume, and silently starting over wastes what the file protects.
         resumed = read_checkpoint(restart)
+        # ⚠ Before the active space, because an active space that matches says nothing about
+        # whether these are even the same molecule's orbitals.
+        from ..io.checkpoint import SYSTEM_KEY, check_system, system_fingerprint
+        check_system(resumed.metadata.get(SYSTEM_KEY), system_fingerprint(reference), restart,
+                     what="the checkpoint")
         space = ActiveSpace(spaces=resumed.spaces, n_elec=resumed.n_active_elec,
                             description="restored from {}".format(restart))
         if active is not None or character is not None:
@@ -1062,7 +1068,11 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
     hook = callback
     policy = None
     if checkpoint is not None:
+        from ..io.checkpoint import SYSTEM_KEY, system_fingerprint
         metadata = {"active_space": space.description}
+        fingerprint = system_fingerprint(reference)
+        if fingerprint is not None:
+            metadata[SYSTEM_KEY] = fingerprint
         if reference.data.soc is not None:
             metadata["hamiltonian"] = json.dumps(reference.data.soc.provenance(),
                                                  sort_keys=True)
@@ -1115,6 +1125,171 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
         outcome.checkpoint_path = str(policy.path)
         if report:
             policy.report(log)
+    return outcome
+
+
+def casscf_from_checkpoint(reference: SpinorReference, path, *, n_states=None, weights=None,
+                           solver_options: Optional[Dict] = None,
+                           boundary_check: Optional[int] = None,
+                           require_converged: bool = True,
+                           report: bool = True, classify: bool = True) -> "CASSCFOutcome":
+    """Materialize a **finished** CASSCF from its checkpoint — no optimization at all.
+
+    A checkpoint restores a *running* optimization; this restores a *finished* one. The gap it
+    closes is a real and expensive one: an hours-long CASSCF whose property dump was never
+    requested, or whose gauge origin turned out to be wrong, was re-run from the SCF, because
+    the only way back into the file was to re-enter the optimizer with nothing left to do —
+    which ends its table ``NOT converged in 0 macro-iterations`` on a calculation that
+    converged the day before.
+
+    What comes back is an ordinary :class:`~kuiva.mcscf.casci.CASSCFOutcome`, so
+    :func:`property_matrices`, :func:`kuiva.pt.nevpt2.sc_nevpt2` and a further
+    :func:`casci` at these orbitals all take it unchanged.
+
+    ⚠ **The states are re-solved at the stored orbitals, seeded by the stored CI vectors.**
+    That is deliberately not the same as reading a wavefunction out of the file:
+
+    * with the vectors present — which is what the converged write exists to guarantee — the
+      Davidson starts *at* the answer and converges in about one iteration, so the cost is one
+      integral transform and the vectors' value shows up as exactly the warm start they are.
+      The recovered states are the stored ones, degenerate-block phases included, which is what
+      lets :mod:`kuiva.pt`'s checkpoint recognise this reference as the one it was computed on;
+    * with the vectors thinned away the solve is cold. It costs one CASCI and produces the same
+      *spectrum*, but inside a degenerate manifold the eigensolver's basis is arbitrary and this
+      is a different arbitrary basis. Nothing phase-invariant changes, which is everything a
+      property file is compared through — but it is a different set of vectors and says so.
+
+    Everything else regenerates from the orbitals, which is why nothing else is stored: the
+    integrals, the RDMs and the transition densities are all functions of them.
+
+    ``n_states``/``weights`` **default from the file** and are checked when given. That split
+    is the whole difference between this and ``casscf(restart=)``: a restart continues an
+    optimization whose settings the caller restates, and this configures nothing — there is no
+    trajectory left to define, so taking the file's word is the only reading that can be right.
+    ⚠ A file that predates the recorded state average cannot supply one, and then ``n_states``
+    is required rather than guessed.
+
+    ⚠ **The boundary diagnostic that comes back is the converged-orbital one only**
+    (:attr:`~kuiva.mcscf.casci.CASSCFOutcome.boundary`); ``boundary_initial`` is ``None``.
+    The starting-orbital check is a statement about a *trajectory*, and the trajectory belongs
+    to the run that wrote the file. ``boundary_check=0`` switches the measurement off.
+
+    ``require_converged=False`` accepts an unconverged file and warns: its orbitals are an
+    iterate rather than a result, and every number built on them inherits that.
+    """
+    from ..io.checkpoint import (STATE_AVERAGE_KEY, SYSTEM_KEY, check_system,
+                                 parse_state_average_key, read_checkpoint, system_fingerprint)
+    from ..mcscf.casci import (BOUNDARY_MARGIN, ActiveSpace, CASSCFOutcome, FullCISolver,
+                               _boundary_or_warning, casci as _casci)
+    from ..mcscf.orbopt import CASSCFResult
+
+    stored = read_checkpoint(path)
+    check_system(stored.metadata.get(SYSTEM_KEY), system_fingerprint(reference), path,
+                 what="the checkpoint")
+    if not stored.converged:
+        message = (
+            "the checkpoint at {} was written at iteration {} of a run that had NOT "
+            "converged (|g| = {:.2e}). Its orbitals are an iterate, not a result".format(
+                path, stored.iteration, stored.grad_norm))
+        if require_converged:
+            raise ValueError(
+                message + "; finish the optimization with casscf(restart=...) first, or pass "
+                "require_converged=False if an unconverged iterate is what you meant")
+        log.warning("%s, and every number built on them inherits that", message)
+
+    if str(stored.space_key or "").startswith("dmrg"):
+        # ⚠ Not refused: the orbitals are the valuable half of the file and the pseudospin
+        # export re-solves the network from the integrals at them, so blocking this would
+        # block the route the file was written for. What is stated is that the *states* come
+        # back from a conventional CI, which is a different solver from the one that produced
+        # them -- and if the active space is past that solver's ceiling the memory refusal
+        # says so in its own terms rather than being pre-empted here.
+        log.warning("the checkpoint at %s was written by a tensor-network CASSCF (space key "
+                    "%r). Its orbitals are restored unchanged, but the states are re-solved "
+                    "by conventional CI at them: that is a different solver, and at a large "
+                    "active space it is a different method rather than the same answer",
+                    path, stored.space_key)
+
+    file_states, file_weights = parse_state_average_key(stored.metadata.get(STATE_AVERAGE_KEY))
+    if n_states is None:
+        if file_states is None:
+            raise ValueError(
+                "the checkpoint at {} predates the recorded state average, so the number of "
+                "states cannot be read from it; state n_states= (and weights=, if the run "
+                "used any) as the run was given them".format(path))
+        n_states = file_states
+        if weights is None:
+            weights = file_weights
+    if isinstance(n_states, dict):
+        # ⚠ Refused rather than flattened to its total. The file records the per-irrep request
+        # faithfully, but the labels it was resolved against belong to the *guess* spinors and
+        # a converged CASSCF's orbitals are not those -- so there is nothing here to resolve it
+        # against, and summing it would silently select the lowest N instead.
+        raise ValueError(
+            "the checkpoint at {} was written for a per-irrep state selection ({}), and the "
+            "irrep labels it was resolved against belong to the reference's guess orbitals "
+            "rather than to the converged ones in the file. Materialize it with an explicit "
+            "n_states=<count>, which selects the lowest N and is a different -- and stated -- "
+            "request".format(path, n_states))
+
+    space = ActiveSpace(spaces=stored.spaces, n_elec=stored.n_active_elec,
+                        description=stored.metadata.get("active_space")
+                        or "restored from {}".format(path))
+    orbitals = np.ascontiguousarray(stored.coeff)
+    if report:
+        out.section(log, "CASSCF (materialized from a checkpoint)")
+        space.report(log)
+        stored.report(log)
+
+    options = dict(solver_options or {})
+    solver = FullCISolver(space.spaces.n_active, space.n_elec, n_states=n_states,
+                          weights=weights, **options)
+    # The same refusal a restart gets, and for the same reason: a different state average is a
+    # different calculation. Here it can only fire on a restated one -- the defaulted path took
+    # its value from this very key.
+    _check_restart_state_average(stored, solver, path)
+    if stored.ci_vectors is not None:
+        solver.set_guess(stored.ci_vectors)
+    else:
+        log.warning("the checkpoint at %s carries no CI vectors -- the budget thinned them "
+                    "away -- so the states are re-solved cold at the stored orbitals. The "
+                    "spectrum is the same; inside a degenerate manifold the eigensolver's "
+                    "basis is arbitrary and this is a different one, so the vectors are not "
+                    "element-for-element the ones the run ended with", path)
+
+    from ..ci.strings import CASSpace
+    classifier = _classifier_for(reference, space, orbitals,
+                                 CASSpace(space.spaces.n_active, space.n_elec),
+                                 classify=classify)
+    ci = _casci(reference.factors, reference.h_one_electron(), orbitals, space.spaces,
+                space.n_elec, e_nuc=reference.data.e_nuc, solver=solver, report=report,
+                classifier=classifier)
+    ci.description = space.description
+
+    margin = BOUNDARY_MARGIN if boundary_check is None else int(boundary_check)
+    from ..spinor.expand import spin_operator
+    boundary = _boundary_or_warning(
+        solver, reference.factors, reference.h_one_electron(), orbitals, space.spaces,
+        reference.data.e_nuc, margin, where="converged orbitals",
+        level=logging.INFO if report else logging.DEBUG,
+        spin_ao_2c=spin_operator(np.asarray(reference.data.s_ao)), gamma=ci.gamma)
+
+    orbital = CASSCFResult(
+        energy=float(stored.energy), coeff=orbitals, gamma=ci.gamma, gamma2=ci.gamma2,
+        converged=bool(stored.converged), n_iterations=int(stored.iteration),
+        grad_norm=float(stored.grad_norm),
+        history=[float(h) for h in np.asarray(stored.history).ravel()])
+    outcome = CASSCFOutcome(orbital=orbital, ci=ci, active=space, solver=solver,
+                            checkpoint_path=str(path), boundary=boundary,
+                            boundary_initial=None)
+    if report:
+        out.entries(log, [
+            ("materialized from", str(path)),
+            ("iteration in the file", stored.iteration),
+            ("CI vectors", "restored (warm)" if stored.ci_vectors is not None
+             else "re-solved cold (thinned from the file)"),
+            ("boundary at the starting orbitals", "belongs to the run that wrote the file"),
+        ])
     return outcome
 
 
@@ -1325,5 +1500,5 @@ __all__ = ["Molecule", "ScalarX2CData", "SpinorReference", "scalar_x2c_reference
            "spinor_reference", "build_mole", "memory_plan",
            "project_to_basis", "projected_active_space",
            "active_space_for", "avas_active_space", "localize_active_space",
-           "casci", "casscf",
+           "casci", "casscf", "casscf_from_checkpoint",
            "property_matrices", "property_dump", "spin_analysis", "assign_states"]

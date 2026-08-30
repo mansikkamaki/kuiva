@@ -1,9 +1,9 @@
-"""Example 7 -- checkpointing: a CASSCF interrupted part way through and resumed.
+"""Example 7 -- checkpointing: a CASSCF interrupted, resumed, and finished from its file.
 
     source setup.sh          # once per shell
     python checkpoint_restart.py
 
-Runs in three to four minutes on TiCl3 and writes ``output/checkpoint_restart.out``.
+Runs in a few minutes on TiCl3 and writes ``output/checkpoint_restart.out``.
 
 WHAT THIS SHOWS
 ---------------
@@ -16,24 +16,44 @@ iteration 6 and resumed from disk. The two must land on the same energy, in a co
 total number of macro-iterations -- ``max_iter`` counts *total* iterations across the
 restart, so an interrupted run costs what an uninterrupted one would.
 
+It then does two things a *finished* file makes possible. ``CASSCF.from_checkpoint`` reads
+the converged run back as a stage that reports itself converged and feeds everything
+downstream, so a dump or a correction that was never requested does not cost the CASSCF
+again. And SC-NEVPT2 gets a checkpoint of its own, written per excitation class.
+
 WHAT IS IN THE FILE, AND WHAT DELIBERATELY IS NOT
 -------------------------------------------------
-Always written, because they are small and precious: the orbitals and the orbital-rotation
-state, the active-space density matrices, the converged state energies, and the metadata
-that identifies the calculation.
+Always written, because they are small beside the orbitals or because they say which
+calculation the orbitals belong to: the orbitals themselves, the orbital partition, the
+1-RDM, the converged state energies, the state average, the Hamiltonian provenance and a
+fingerprint of the *system* -- the molecule, the basis, the nuclear model, the gauge origin.
+That last one is what makes a restart against the wrong file an error rather than a
+plausible number: an orthonormal set of the right dimension optimizes to something whatever
+molecule it came from.
 
 Never written, because they regenerate deterministically from the orbitals: the four-index
-integrals and the density-fitting or Cholesky intermediates. A restart rebuilds them. For a
-heavy element the expensive part of that rebuild would be the four-component atomic
-calculation behind the two-electron spin-orbit term -- which is why *that* has a persistent
-cache of its own, keyed on the element rather than on the iterate.
+integrals and the density-fitting or Cholesky intermediates, the 3- and 4-RDMs, and the
+transition densities. A restart rebuilds them. For a heavy element the expensive part of
+that rebuild would be the four-component atomic calculation behind the two-electron
+spin-orbit term -- which is why *that* has a persistent cache of its own, keyed on the
+element rather than on the iterate.
 
-Written by policy under a budget: the CI vectors, and only below a size threshold. Kuiva
-estimates the write cost and *thins* -- drops the vectors -- or skips outright when a
-checkpoint would cost more than a few per cent of the compute since the last one, but a
-checkpoint at a *converged* iteration is always written. The vectors are a Davidson warm
-start, which is why they are the first thing dropped: losing them costs the next solve its
-order of magnitude, and nothing else. A thinned checkpoint still restarts the calculation.
+Written by policy, and given up in a fixed order when the budget bites. ⚠ **The order is by
+what it costs to get the thing back, not by what it costs to store**:
+
+1. the 2-RDM -- one contraction away from the CI vectors that are still there, and the term
+   that grows as the fourth power of the active space;
+2. the CI vectors -- one CI solve at the stored orbitals. They are a Davidson warm start,
+   worth an order of magnitude on the next solve and nothing after that;
+3. the quasi-Newton curvature -- not regenerable at all, only discardable: a cold start at
+   the same orbitals converges and pays a few extra macro-iterations for it. Each of those
+   is a CI solve plus an integral transform, which is why it is last.
+
+⚠ **A converged checkpoint inverts that and stores no curvature at all.** Nothing resumes a
+converged optimization, and on a large basis the curvature scales with the rotation-parameter
+count while everything else scales with the active space -- so it is most of the file
+everybody keeps. What that file does need is the CI vectors, because they are what lets the
+finished calculation be materialized without re-solving it from cold.
 
 A ``solver="dmrg"`` CASSCF checkpoints too, into **two** files: this same trajectory file
 (without CI vectors -- the network has none) and a sibling ``*.network.h5`` holding the
@@ -99,7 +119,45 @@ WHAT TO LOOK FOR IN THE OUTPUT
   the same energy;
 * the active space coming *from the file* on restart. It is not restated here; a restart
   continues the calculation that was interrupted, and a restated space that disagreed with
-  the file would be refused rather than reconciled.
+  the file would be refused rather than reconciled;
+* the converged checkpoint reporting what it dropped -- ``curvature``, and nothing else;
+* the materialized CASSCF reporting the run's own energy, and taking its state count from
+  the file rather than from the call: there is no optimization left to configure, so the
+  file's word is the only reading that can be right. ⚠ The one diagnostic that does *not*
+  come back is the boundary check at the *starting* orbitals, because that is a statement
+  about a trajectory and the trajectory is over;
+* the perturbation's table -- eight scalars per (state, class) pair, so a few kilobytes
+  whatever the active space, and no reference in it at all.
+
+FINISHING A CALCULATION THAT IS ALREADY OVER
+--------------------------------------------
+``restart=`` resumes a running optimization; ``CASSCF.from_checkpoint`` materializes a
+finished one. Both exist because re-entering the optimizer with nothing left to do ends its
+table "NOT converged in 0 macro-iterations" on a calculation that converged hours earlier.
+
+Nothing is optimized. The orbitals come back exactly and the states are re-solved at them,
+seeded by the stored CI vectors -- which starts the eigensolver at the answer, so the cost is
+one integral transform. ⚠ With the vectors thinned away the solve is cold: the *spectrum* is
+the same, but inside a degenerate manifold the eigensolver's basis is arbitrary and this is a
+different arbitrary basis. Nothing phase-invariant changes, which is everything a property
+file is compared through, but the run says so rather than leaving it to be discovered.
+
+SC-NEVPT2, CLASS BY CLASS
+-------------------------
+The correction loops over states and, inside that, over eight independent excitation
+classes, and it is hours of work on a large reference. A job that dies in the last class
+loses every class before it -- and the insurance is nearly free, because one class result is
+eight scalars. The whole table is kilobytes whatever the active space, so unlike the CASSCF
+file this one never has to choose what to give up; the only cadence knob is a minimum
+interval, which rations filesystem calls rather than bytes.
+
+⚠ **It stores no reference.** The orbitals and the CI vectors have one owner and it is the
+CASSCF checkpoint; what this file keeps is a digest of them, and a restart against a
+different reference is refused rather than merged into the table. The reason is physical:
+inside a degenerate manifold the CI's basis is arbitrary and the per-state corrections carry
+an arbitrary share of the manifold's internal spread, so resuming across a re-solved
+reference would compute some members in one basis and some in another -- and the manifold's
+barycentre, which is the quantity that means something, would belong to neither run.
 """
 from __future__ import annotations
 
@@ -110,8 +168,11 @@ import signal
 from pathlib import Path
 from typing import List
 
+import numpy as np
+
 import kuiva
 from kuiva.io.checkpoint import read_checkpoint
+from kuiva.pt.checkpoint import read_nevpt2_checkpoint
 from kuiva.util import output as out
 from kuiva.util import timing
 from kuiva.util.logging import add_file_handler, get_logger
@@ -271,7 +332,86 @@ def main() -> int:
     ])
 
     # ----------------------------------------------------------------------------------
-    # 5. Side by side.
+    # 5. Finishing a calculation that is already over.
+    # ----------------------------------------------------------------------------------
+    # ⚠ `restart=` resumes a *running* optimization; `from_checkpoint` materializes a
+    # *finished* one. The difference is the whole reason both exist: re-entering the
+    # optimizer with nothing left to do ends its table "NOT converged in 0 macro-iterations"
+    # on a calculation that converged hours earlier.
+    #
+    # Nothing is optimized below. The orbitals come back from the file exactly; the states
+    # are re-solved at them, seeded by the stored CI vectors, which starts the eigensolver
+    # at the answer. That is why the converged checkpoint keeps its CI vectors and drops its
+    # quasi-Newton curvature instead: nothing resumes a converged run, and on a large basis
+    # the curvature is the majority of the file.
+    out.section(log, "The finished CASSCF, read back from its file")
+    with timing.timer("CASSCF (materialized)") as t_back:
+        recovered = kuiva.CASSCF.from_checkpoint(straight_chk, reference).run()
+    log.info("%s", recovered.summary())
+
+    converged_chk = read_checkpoint(straight_chk)
+    out.entries(log, [
+        ("energy from the file", recovered.energy, "Eh", "", out.E_FMT),
+        ("difference from the run", abs(recovered.energy - full.energy), "Eh", "",
+         out.SCI_FMT),
+        ("states re-solved at the stored orbitals", recovered.n_states, "",
+         "n_states came from the file, not from this call"),
+        ("thinned away by the converged write",
+         ", ".join(converged_chk.dropped) or "nothing"),
+        ("boundary at the starting orbitals", "not in the file", "",
+         "it is a statement about a trajectory, and the trajectory is over"),
+    ])
+
+    # ----------------------------------------------------------------------------------
+    # 6. The perturbation's own checkpoint.
+    # ----------------------------------------------------------------------------------
+    # SC-NEVPT2 loops over states and, inside that, over eight independent excitation
+    # classes. A job that dies in the last class loses every class before it -- and the
+    # insurance is nearly free, because one class result is eight scalars. The whole table
+    # is kilobytes whatever the active space, so there is no budget to weigh here: unlike
+    # the CASSCF file, this one never has to choose what to give up.
+    #
+    # ⚠ It stores no reference. The orbitals and the CI vectors have one owner and it is the
+    # CASSCF checkpoint; what this file keeps is a *digest* of them, and a restart against a
+    # different reference is refused rather than merged into the table. The reason is
+    # physical: inside a degenerate manifold the CI's basis is arbitrary, so resuming across
+    # a re-solved reference would compute some members in one basis and some in another, and
+    # the manifold's barycentre would belong to neither run.
+    out.section(log, "SC-NEVPT2, checkpointed by class")
+    e2_chk = OUTPUT / "ticl3_nevpt2.chk"
+    if e2_chk.exists():
+        e2_chk.unlink()
+    with timing.timer("NEVPT2 (first run)") as t_pt:
+        correction = kuiva.NEVPT2(recovered, checkpoint=e2_chk).run()
+    log.info("%s", correction.summary())
+
+    table_on_disk = read_nevpt2_checkpoint(e2_chk)
+    table_on_disk.report(log)
+    out.entries(log, [
+        ("checkpoint file", str(e2_chk.relative_to(HERE))),
+        ("size", e2_chk.stat().st_size / 1024.0, "kB", "",
+         "{:.1f}"),
+    ])
+
+    # A restart over a table that is already complete: every (state, class) pair is read
+    # rather than evaluated. A real restart resumes a *partial* table the same way -- this
+    # is that mechanism with nothing left to do, which is what makes it cheap to show.
+    with timing.timer("NEVPT2 (restarted)") as t_pt_restart:
+        resumed_pt = kuiva.NEVPT2(recovered, restart=e2_chk).run()
+
+    # ⚠ `restart=` reads and `checkpoint=` writes, here as on the CASSCF stage. A resumed run
+    # that is to keep protecting itself is given both, usually the same path.
+    rebuilt = kuiva.NEVPT2.from_checkpoint(e2_chk, recovered, report=False).run()
+    out.entries(log, [
+        ("E2 of the lowest state", correction.e2[0], "Eh", "", out.E_FMT),
+        ("restarted run, same state", resumed_pt.e2[0], "Eh", "", out.E_FMT),
+        ("assembled from the file", rebuilt.e2[0], "Eh", "", out.E_FMT),
+        ("first run", t_pt.wall, "s", "", "{:.2f}"),
+        ("restart, evaluating nothing", t_pt_restart.wall, "s", "", "{:.2f}"),
+    ])
+
+    # ----------------------------------------------------------------------------------
+    # 7. Side by side.
     # ----------------------------------------------------------------------------------
     out.section(log, "Summary")
     table = out.Table(log, [
@@ -292,7 +432,7 @@ def main() -> int:
               "read cpu [s] in the timing table for cost")
 
     # ----------------------------------------------------------------------------------
-    # 6. Assert.
+    # 8. Assert.
     # ----------------------------------------------------------------------------------
     checks = {
         "the uninterrupted run converged": bool(full.converged),
@@ -309,6 +449,27 @@ def main() -> int:
         "the checkpoint carries the CI space identity":
             stored.space_key == "full-ci:{}:{}".format(N_ACTIVE, N_ACTIVE_ELEC),
         "the converged checkpoint of the straight run exists": straight_chk.exists(),
+        # ⚠ Materialization is exact on the stored total: the energy is the file's number,
+        # not one re-derived from re-solved states.
+        "the materialized CASSCF reports the run's own energy":
+            recovered.energy == full.energy,
+        "the materialized CASSCF reports itself converged": bool(recovered.converged),
+        "its state count came from the file": recovered.n_states == N_STATES,
+        # ⚠ The inversion: a converged run is never resumed, so the file everybody keeps
+        # carries the CI vectors and not the curvature.
+        "the converged checkpoint dropped its curvature and kept its vectors":
+            ("curvature" in converged_chk.dropped
+             and converged_chk.ci_vectors is not None),
+        "the perturbation's table is complete": table_on_disk.complete,
+        # Nothing is recomputed on either route, so anything but exact equality would mean
+        # the table is not what the run produced.
+        "a restart over a complete table reproduces E2 exactly":
+            bool(np.array_equal(correction.e2, resumed_pt.e2)),
+        "the file assembles back into the same correction":
+            bool(np.array_equal(correction.e2, rebuilt.e2)),
+        # ⚠ The design claim, asserted against the bytes rather than against the docstring.
+        "the perturbation checkpoint carries no reference (< 128 kB)":
+            e2_chk.stat().st_size < 128 * 1024,
         # ⚠ The deadline is a safety net here, not the mechanism under test: these runs
         # converge well inside it. A fired deadline would mean the box was far slower than
         # the budget assumed, and every number above would then be an iterate rather than

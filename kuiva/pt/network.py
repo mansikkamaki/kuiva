@@ -259,6 +259,20 @@ class _NetworkEngine:
 
     kind = "tensor network (DMRG)"
 
+    def reference_arrays(self):
+        """What identifies this reference beyond the orbitals, for the checkpoint's digest.
+
+        ⚠ **The network state is deliberately not in it, and cannot be.** A DMRG solve is not
+        bitwise reproducible across a restart — a different sweep order, a different
+        truncation tie-break — so hashing the tensors would refuse every legitimate restart.
+        What is hashed instead is the converged **spectrum**, which the driver already carries
+        as ``energies=``, plus the root count. The consequence is stated rather than hidden:
+        on this route a resumed correction is protected against a different *calculation* and
+        not against a re-solved network whose degenerate-manifold basis has rotated. The CI
+        route, where the vectors are exactly reproducible, is protected against both.
+        """
+        return {"n_roots": int(self.n_states), "backend": self.kind}
+
     def __init__(self, template, state, n_elec: int, *, check: bool = True) -> None:
         self.template = template
         self.state = state
@@ -302,7 +316,9 @@ def sc_nevpt2_dmrg(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces,
                    imaginary_shift: bool = False,
                    norm_cutoff: Optional[float] = None,
                    degeneracy_tol: Optional[float] = None,
-                   on_split: str = "raise", report: bool = True) -> NEVPT2Result:
+                   on_split: str = "raise", checkpoint=None, restart=None,
+                   checkpoint_options=None, deadline=None, signals=None,
+                   report: bool = True) -> NEVPT2Result:
     """SC-NEVPT2 on a converged DMRG-CASSCF — :func:`kuiva.pt.nevpt2.sc_nevpt2`'s
     network sibling, sharing its whole loop through the engine seam.
 
@@ -339,7 +355,9 @@ def sc_nevpt2_dmrg(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces,
                   else float(norm_cutoff),
                   degeneracy_tol=DEFAULT_DEGENERACY_TOL if degeneracy_tol is None
                   else float(degeneracy_tol),
-                  on_split=on_split, report=report)
+                  on_split=on_split, checkpoint=checkpoint, restart=restart,
+                  checkpoint_options=checkpoint_options, deadline=deadline, signals=signals,
+                  report=report)
 
 
 __all__ = ["NetworkContractionProvider", "sc_nevpt2_dmrg"]

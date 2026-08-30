@@ -106,8 +106,9 @@ References
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -117,6 +118,7 @@ from ..mcscf.orbopt import CASIntegrals, OrbitalSpaces, averaged_fock
 from ..rdm.rdm import DEFAULT_DEGENERACY_TOL, RDMBuilder, state_average_weights
 from ..util import output as out
 from ..util.logging import get_logger
+from ..util.signals import StopRequested
 from ..util.timing import timer
 from .blocks import IntegralBlocks
 from .classes import (DEFAULT_NORM_CUTOFF, EPS_DEGENERACY_RTOL, ClassContext, ClassResult,
@@ -519,6 +521,9 @@ def sc_nevpt2(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
               norm_cutoff: float = DEFAULT_NORM_CUTOFF,
               degeneracy_tol: float = DEFAULT_DEGENERACY_TOL,
               on_split: str = "raise",
+              checkpoint=None, restart=None,
+              checkpoint_options: Optional[Dict[str, Any]] = None,
+              deadline=None, signals=None,
               report: bool = True) -> NEVPT2Result:
     """SC-NEVPT2 on converged orbitals and CI vectors.
 
@@ -561,7 +566,9 @@ def sc_nevpt2(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
                   energies=energies, weights=weights, e_nuc=e_nuc, classes=classes,
                   fock=fock, frozen_core=frozen_core, deleted_virtual=deleted_virtual,
                   shift=shift, imaginary_shift=imaginary_shift, norm_cutoff=norm_cutoff,
-                  degeneracy_tol=degeneracy_tol, on_split=on_split, report=report)
+                  degeneracy_tol=degeneracy_tol, on_split=on_split, checkpoint=checkpoint,
+                  restart=restart, checkpoint_options=checkpoint_options, deadline=deadline,
+                  signals=signals, report=report)
 
 
 class _CIEngine:
@@ -575,6 +582,15 @@ class _CIEngine:
     """
 
     kind = "conventional CI"
+
+    def reference_arrays(self) -> Dict[str, Any]:
+        """What identifies this reference beyond the orbitals, for the checkpoint's digest.
+
+        ⚠ The CI vectors are in it. See :mod:`kuiva.pt.checkpoint`: inside a degenerate
+        manifold the CI's basis is arbitrary, so resuming against a re-solved reference would
+        compute some members of a manifold in one basis and some in another.
+        """
+        return {"civecs": self.vectors}
 
     def __init__(self, civecs: np.ndarray, n_active: int, n_elec: int) -> None:
         self.vectors = np.atleast_2d(np.ascontiguousarray(civecs, dtype=np.complex128))
@@ -616,7 +632,9 @@ def _drive(engine, factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray
            shift: float = 0.0, imaginary_shift: bool = False,
            norm_cutoff: float = DEFAULT_NORM_CUTOFF,
            degeneracy_tol: float = DEFAULT_DEGENERACY_TOL,
-           on_split: str = "raise", report: bool = True) -> NEVPT2Result:
+           on_split: str = "raise", checkpoint=None, restart=None,
+           checkpoint_options: Optional[Dict[str, Any]] = None,
+           deadline=None, signals=None, report: bool = True) -> NEVPT2Result:
     """The shared SC-NEVPT2 loop over one reference-specific ``engine``.
 
     Everything reference-independent lives here — the pseudo-canonicalization, the
@@ -624,7 +642,18 @@ def _drive(engine, factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray
     diagnostics, the assembly and the reporting — and the engine supplies only what
     :class:`_CIEngine`'s docstring lists. ⚠ This is :func:`sc_nevpt2`'s validated body,
     factored so a second reference type is a second engine and not a second loop.
+
+    ``checkpoint`` writes and ``restart`` reads — the same split the CASSCF driver makes, so
+    a resumed run that is to keep protecting itself is given both, usually the same path. The
+    granularity is one
+    ``(state, class)`` pair, which is the only boundary this stage has: a class evaluation
+    cannot be interrupted. ⚠ The classes it skips on a restart are the ones the file holds,
+    and everything they were computed *from* is rebuilt — the canonicalization and the
+    integral blocks are functions of the orbitals, and they are the stage's whole memory
+    footprint.
     """
+    from .checkpoint import (NEVPT2Checkpoint, NEVPT2CheckpointPolicy, check_resumable,
+                             options_digest, read_nevpt2_checkpoint, reference_digest)
     if fock not in FOCK_MODES:
         raise ValueError("fock must be one of {}, got {!r}".format(list(FOCK_MODES), fock))
     if fock == "state-specific":
@@ -641,6 +670,42 @@ def _drive(engine, factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray
     names = tuple(classes) if classes is not None else available_classes()
     for name in names:
         excitation_class(name)                              # refuse an unknown name up front
+
+    # ⚠ The identity of this correction, computed before anything expensive: a restart that is
+    # not a continuation of the file must be refused now, not after the first class.
+    reference_key = reference_digest(c_spinor, spaces, n_elec, energies=energies,
+                                     **engine.reference_arrays())
+    options_key = options_digest(
+        fock=fock, frozen_core=frozen_core, deleted_virtual=deleted_virtual, shift=shift,
+        imaginary_shift=imaginary_shift, norm_cutoff=norm_cutoff,
+        degeneracy_tol=degeneracy_tol, on_split=on_split, classes=list(names),
+        weights=None if weights is None else [float(w) for w in np.asarray(weights).ravel()],
+        e_nuc=float(e_nuc), engine=engine.kind)
+    stored = None
+    if restart is not None:
+        # ⚠ Read failure on an explicit restart is an ERROR that propagates.
+        stored = read_nevpt2_checkpoint(restart)
+        check_resumable(stored, reference_key=reference_key, options_key=options_key,
+                        n_states=n_states, class_names=names, path=restart)
+        if report:
+            stored.report(log)
+    table = NEVPT2Checkpoint(
+        reference_key=reference_key, options_key=options_key, n_states=n_states,
+        class_names=tuple(names), fock=str(fock), shift=float(shift),
+        imaginary_shift=bool(imaginary_shift),
+        e_casscf=np.full(n_states, np.nan),
+        entries={} if stored is None else dict(stored.entries))
+    policy = None
+    if checkpoint is not None or deadline is not None or signals is not None:
+        # ⚠ A deadline or a signal with no `checkpoint=` still gets a policy: the run stops
+        # cleanly and says that it kept nothing, which is the same arrangement the CASSCF
+        # driver makes. ⚠ `restart=` reads and `checkpoint=` writes, exactly as on the CASSCF
+        # driver -- a resumed run that is to keep protecting itself is given both, and the
+        # same path twice is the ordinary way to do it. Making `restart=` write on its own
+        # would be one surface behaving differently from the other for no stated reason.
+        policy = NEVPT2CheckpointPolicy(
+            checkpoint, table, enabled=checkpoint is not None,
+            deadline=deadline, signals=signals, **(checkpoint_options or {}))
 
     if report:
         out.subsection(log, "SC-NEVPT2")
@@ -665,6 +730,12 @@ def _drive(engine, factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray
     averaged = engine.averaged_gamma(equalized) if fock == "state-averaged" else None
 
     e_casscf = np.zeros(n_states)
+    if stored is not None:
+        # A finished state's reference energy comes from the file: it is `E(active) + e_core`,
+        # and `e_core` belongs to a canonicalization that a skipped state never builds.
+        table.e_casscf = np.array(stored.e_casscf, dtype=float)
+        table.served_classes = tuple(stored.served_classes)
+        e_casscf = np.where(np.isfinite(table.e_casscf), table.e_casscf, 0.0)
     per_state: List[Dict[str, ClassResult]] = []
     canonical: Optional[CanonicalOrbitals] = None
     blocks: Optional[IntegralBlocks] = None
@@ -673,8 +744,21 @@ def _drive(engine, factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray
     # state-averaged Fock, where every state shares one set of canonical orbitals and one
     # `eps`; see `ExcitationClass.state_independent`.
     shared: Optional[Dict[str, ClassResult]] = {} if fock == "state-averaged" else None
+    # ⚠ Printed at the first state that *builds* the selection, not at state 0: a resumed run
+    # may start anywhere, and a frozen core that went unreported would be a restriction on
+    # every number below with nothing in the output naming it.
+    reported_selection = [False]
     try:
         for state in range(n_states):
+            if table.state_finished(state):
+                # ⚠ Skipped whole: the provider is the largest per-state allocation in the
+                # run (the cached ladder-string vector sets), so a resumed state that has
+                # nothing to compute must not build one to discover that.
+                per_state.append({name: table.entries[(state, name)]
+                                  for name in table.served_classes})
+                log.debug("state %d restored from the checkpoint (%d classes)", state,
+                          len(table.served_classes))
+                continue
             if canonical is None or fock == "state-specific":
                 if blocks is not None:
                     blocks.release()
@@ -685,7 +769,8 @@ def _drive(engine, factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray
                 correlated = select_correlated(canonical.eps_inactive, canonical.eps_virtual,
                                                frozen_core=frozen_core,
                                                deleted_virtual=deleted_virtual)
-                if correlated.restricted and state == 0 and report:
+                if correlated.restricted and reported_selection[0] is False and report:
+                    reported_selection[0] = True
                     out.entries(log, [
                         ("frozen core spinors", correlated.n_frozen),
                         ("deleted virtual spinors", correlated.n_deleted),
@@ -710,22 +795,135 @@ def _drive(engine, factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray
                                fock_ai=_fock_block(ints, spaces.active, core),
                                shift=float(shift), imaginary_shift=bool(imaginary_shift),
                                norm_cutoff=float(norm_cutoff))
+            table.e_casscf[state] = e_casscf[state]
+            known = {name: table.entries[(state, name)] for name in names
+                     if table.done(state, name)}
             try:
-                per_state.append(_evaluate_classes(names, ctx, state, shared))
+                per_state.append(_evaluate_classes(names, ctx, state, shared, known=known,
+                                                   on_result=_recorder(policy, table, state)))
             finally:
                 # The cached ladder-string vector sets are the largest per-state arrays in
                 # the run; a state's are useless to the next one.
                 provider.release()
+            if not table.served_classes:
+                # The first finished state is the authority on which classes this calculation
+                # produces -- a "planned" one and one the provider does not serve are both
+                # absent, and neither can be inferred from the registry alone.
+                table.served_classes = tuple(n for n in names if n in per_state[-1])
+            if canonical is not None:
+                table.eps_inactive = canonical.eps_inactive
+                table.eps_virtual = canonical.eps_virtual
+            if correlated is not None:
+                table.n_frozen, table.n_deleted = correlated.n_frozen, correlated.n_deleted
+            if policy is not None:
+                policy.write(force=True)               # a finished state is worth a syscall
+                cause = policy.stop_cause()
+                if cause is not None and state + 1 < n_states:
+                    # ⚠ What is named is what was actually written, not what was configured:
+                    # a write that failed warns and lets the run continue, so a policy with a
+                    # path is not evidence that there is a file to restart from.
+                    wrote = str(policy.path) if policy.n_written else None
+                    cause.announce({"iteration": "state {}".format(state)}, wrote=wrote)
+                    raise StopRequested(
+                        "the SC-NEVPT2 stopped after state {} of {}; {}".format(
+                            state, n_states,
+                            "restart from {} to finish it".format(wrote) if wrote else
+                            "nothing was written, so it starts again from the first state"))
     finally:
         if blocks is not None:
             blocks.release()
         engine.release()
 
+    if policy is not None:
+        policy.write(force=True)
+    # ⚠ A run whose every state came from the file never builds a canonicalization, so the
+    # `eps` and the frozen/deleted counts come from the table instead. They are the only two
+    # things the assembly reads off those objects, which is why they are in the file at all.
+    if canonical is None and table.eps_inactive is not None:
+        canonical = _RestoredCanonical(table.eps_inactive, table.eps_virtual)
+    if correlated is None and stored is not None:
+        correlated = _RestoredSelection(table.n_frozen, table.n_deleted)
     result = _assemble(per_state, names, e_casscf, canonical, fock, shift, imaginary_shift,
                        correlated)
     if report:
         _report(result, names)
+        if policy is not None and policy.path is not None:
+            policy.report(log)
     return result
+
+
+@dataclass(frozen=True)
+class _RestoredCanonical:
+    """The two fields :func:`_assemble` reads off a :class:`CanonicalOrbitals`, restored from a
+    checkpoint. ⚠ Deliberately not a :class:`CanonicalOrbitals`: it carries no orbitals and no
+    integrals, and a type that claimed to would be one nobody could tell apart from the real
+    thing."""
+    eps_inactive: Optional[np.ndarray]
+    eps_virtual: Optional[np.ndarray]
+
+
+@dataclass(frozen=True)
+class _RestoredSelection:
+    """The two fields :func:`_assemble` reads off a :class:`CorrelatedSpaces`, restored."""
+    n_frozen: int
+    n_deleted: int
+
+
+def assemble_from_checkpoint(path, *, report: bool = True) -> NEVPT2Result:
+    """A finished :class:`NEVPT2Result` rebuilt from a complete checkpoint — no computation.
+
+    The sibling of :func:`kuiva.interface.api.casscf_from_checkpoint`, and cheaper: where a
+    CASSCF has to re-solve its CI at the stored orbitals, everything the assembly reads is
+    already in the table, so this is a file read. It exists because the file is a few
+    kilobytes and the correction it stands for is hours — a run whose ``E2`` finished and
+    whose property dump was never requested should not be recomputed to write one.
+
+    ⚠ **It refuses an incomplete table**, naming the state it stopped at: an incomplete one is
+    a restart point, and assembling it would report ``nan`` for every class of every state
+    that was never reached — which arrives as a *partial* ``E2`` and reads like a method
+    limitation rather than an unfinished run. Pass it to ``restart=`` instead.
+
+    ⚠ It carries no reference. ``e_casscf`` and the corrected totals are the ones the run
+    recorded; nothing here re-derives them, and the digests in the file are what says which
+    reference they belong to.
+    """
+    from .checkpoint import read_nevpt2_checkpoint
+
+    stored = read_nevpt2_checkpoint(path)
+    if not stored.complete:
+        raise ValueError(
+            "the NEVPT2 checkpoint at {} is a restart point, not a finished correction: {} of "
+            "{} (state, class) pairs are done and it stops at state {}. Finish it with "
+            "restart={!r} rather than assembling it, which would report every class of every "
+            "unreached state as absent and call the total a partial E2"
+            .format(path, stored.n_done, stored.n_pairs, stored.first_incomplete_state(),
+                    str(path)))
+    if report:
+        out.subsection(log, "SC-NEVPT2 (assembled from a checkpoint)")
+        stored.report(log)
+    result = _assemble(stored.per_state(), stored.class_names,
+                       np.asarray(stored.e_casscf, dtype=float),
+                       _RestoredCanonical(stored.eps_inactive, stored.eps_virtual),
+                       stored.fock, stored.shift, stored.imaginary_shift,
+                       _RestoredSelection(stored.n_frozen, stored.n_deleted))
+    if report:
+        _report(result, stored.class_names)
+    return result
+
+
+def _recorder(policy, table, state: int):
+    """The ``on_result`` hook that files each finished ``(state, class)`` pair.
+
+    Returns ``None`` without a policy, so the class loop pays nothing for a run that is not
+    checkpointing — the hook is not called at all rather than called and discarded.
+    """
+    if policy is None:
+        return None
+
+    def record(state_index: int, name: str, entry, wall: float) -> None:
+        policy.record(state_index, name, entry, wall=wall)
+
+    return record
 
 
 #: What the property dump's header must say when its diagonal has been NEVPT2 corrected. ⚠ A file
@@ -793,8 +991,16 @@ def _require_energies(energies, n_states: int):
 
 
 def _evaluate_classes(names: Sequence[str], ctx: ClassContext, state: int,
-                      shared: Optional[Dict[str, ClassResult]] = None
-                      ) -> Dict[str, ClassResult]:
+                      shared: Optional[Dict[str, ClassResult]] = None,
+                      known: Optional[Dict[str, ClassResult]] = None,
+                      on_result=None) -> Dict[str, ClassResult]:
+    """One state's class table.
+
+    ``known`` holds results a checkpoint already carries for this state: they are adopted
+    unevaluated, which is the whole of what a restart saves. ⚠ They are still passed to
+    ``on_result``, so the file that supplied them is rewritten with them in it — a resumed run
+    that dies again must leave behind everything the first one did, not only its own share.
+    """
     results: Dict[str, ClassResult] = {}
     for name in names:
         spec = excitation_class(name)
@@ -813,18 +1019,37 @@ def _evaluate_classes(names: Sequence[str], ctx: ClassContext, state: int,
                     name, type(ctx.provider).__name__, ", ".join(unsupported))
             continue
         reuse = shared is not None and spec.state_independent
+        if known is not None and name in known:
+            results[name] = known[name]
+            if reuse:
+                # A state-independent class restored for state 0 is the answer for every
+                # state, exactly as a freshly evaluated one is; without this a resumed run
+                # recomputes the MP2-like bulk for every later state it touches.
+                shared.setdefault(name, known[name])
+            if on_result is not None:
+                on_result(state, name, known[name], 0.0)
+            continue
         if reuse and name in shared:
             # ⚠ Not an optimization to be clever about: `Sijrs` is the MP2-like bulk and the
             # most expensive class on any real system (n_c^2 n_v^2), and recomputing an
             # identical answer once per state is the difference between a state average being
             # affordable and not.
             results[name] = shared[name]
+            # ⚠ Recorded for this state all the same: the checkpoint's table is what a
+            # finished result is reassembled from, and a pair missing from it reads as a
+            # class that produced no energy — which turns a complete E2 into a partial one.
+            if on_result is not None:
+                on_result(state, name, shared[name], 0.0)
             continue
+        tic = time.time()
         with timer("NEVPT2 class {}".format(name)):
             results[name] = spec.evaluate(ctx)
+        wall = time.time() - tic
         if reuse:
             shared[name] = results[name]
         entry = results[name]
+        if on_result is not None:
+            on_result(state, name, entry, wall)
         if entry.max_imaginary > 1e-8 * max(abs(entry.norm), 1.0):
             log.warning("state %d, class %s: a quantity that is real by construction carried "
                         "an imaginary part of %.3e. That is a conjugation error somewhere in "
@@ -1010,5 +1235,6 @@ def _report_multiplets(result: NEVPT2Result) -> None:
 
 __all__ = ["CanonicalOrbitals", "CorrelatedSpaces", "MultipletCorrection", "NEVPT2Result",
            "FOCK_MODES", "ACTIVE_INVARIANCE_TOL", "DEFAULT_MULTIPLET_TOL_CM",
-           "MULTIPLET_TOL_CM", "DUMP_PROTOCOL", "corrected_property_matrices",
-           "pseudo_canonicalize", "sc_nevpt2", "select_correlated"]
+           "MULTIPLET_TOL_CM", "DUMP_PROTOCOL", "assemble_from_checkpoint",
+           "corrected_property_matrices", "pseudo_canonicalize", "sc_nevpt2",
+           "select_correlated"]

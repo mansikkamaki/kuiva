@@ -250,6 +250,129 @@ def test_dmrg_assignment_offers_the_lande_labels(cas_dmrg_term):
     assert [t.j for t in assignment.terms] == [0.5, 1.5]
 
 
+# --- materializing finished stages from their checkpoints ---------------------------------
+#
+# ⚠ These are the end-to-end statement that a file is enough to *finish* a calculation rather
+# than only to resume one: the dump and the correction below are computed from stored
+# orbitals, and the run that produced them is gone.
+
+def test_a_finished_casscf_is_materialized_from_its_checkpoint(ref, cas_term, tmp_path):
+    """`from_checkpoint` reproduces the stage the file was written by, with no optimization.
+
+    ⚠ The energies are compared **bitwise on the stored total** and to KRAMERS_TOL on the
+    re-solved spectrum: the orbitals come back exactly, and the states are re-solved at them
+    from the stored CI vectors, which starts Davidson at the answer.
+    """
+    path = tmp_path / "b_term.h5"
+    written = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=6,
+                     checkpoint=path, checkpoint_options=dict(min_interval=0.0),
+                     report=False).run()
+    assert written.converged
+
+    back = CASSCF.from_checkpoint(path, ref, report=False).run()
+
+    assert back.converged and back.ran
+    assert back.energy == written.energy               # the file's number, not a re-derived one
+    assert back.n_states == written.n_states           # defaulted from the state-average record
+    np.testing.assert_allclose(back.energies, written.energies, atol=KRAMERS_TOL)
+    np.testing.assert_array_equal(back.coeff, written.coeff)
+    # ⚠ The trajectory diagnostic belongs to the run that wrote the file and is not invented.
+    assert back.boundary_initial is None
+    assert back.boundary is not None
+
+
+def test_a_materialized_casscf_feeds_the_property_dump(ref, tmp_path):
+    """The gap this closes: a converged run whose dump was never requested. The g value here
+    comes from orbitals that exist only in a file."""
+    path = tmp_path / "b_props.h5"
+    CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=6,
+           checkpoint=path, checkpoint_options=dict(min_interval=0.0), report=False).run()
+
+    back = CASSCF.from_checkpoint(path, ref, report=False).run()
+    dump = PropertyDump(back, tmp_path / "props.out", report=False).run()
+
+    levels = dump.matrices.analyse()
+    assert [level.size for level in levels] == [2, 4]
+    assert all(abs(g - G_LANDE[level.size]) < 2e-3
+               for level in levels for g in level.g_values)
+
+
+def test_materializing_an_unconverged_checkpoint_is_refused(ref, tmp_path):
+    """⚠ Its orbitals are an iterate, not a result, and every number built on them inherits
+    that. The override exists and says so."""
+    path = tmp_path / "b_stopped.h5"
+    CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=6, max_iter=1,
+           checkpoint=path, checkpoint_options=dict(min_interval=0.0), report=False).run()
+
+    with pytest.raises(ValueError, match="had NOT converged"):
+        CASSCF.from_checkpoint(path, ref, report=False).run()
+    CASSCF.from_checkpoint(path, ref, require_converged=False, report=False).run()
+
+
+def test_materializing_against_a_different_system_is_refused(scf, ref, tmp_path):
+    """⚠ The check that did not exist: an orthonormal set of the right dimension optimizes to
+    a plausible number whatever molecule it came from."""
+    path = tmp_path / "b_system.h5"
+    CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=6,
+           checkpoint=path, checkpoint_options=dict(min_interval=0.0), report=False).run()
+
+    other = Reference(ScalarSCF(kuiva.Molecule([("C", (0.0, 0.0, 0.0))],
+                                               basis="x2c-SVPall-2c", spin=2),
+                                memory_gb=4.0, screening="none").run()).run()
+    with pytest.raises(ValueError, match="different system"):
+        CASSCF.from_checkpoint(path, other, report=False).run()
+
+
+def test_a_finished_nevpt2_is_materialized_from_its_checkpoint(ref, cas_term, tmp_path):
+    """The correction's own file, assembled back into a stage that a dump accepts.
+
+    ⚠ Exact equality throughout: nothing is recomputed, so anything but a bitwise match would
+    mean the table is not what the run produced.
+    """
+    path = tmp_path / "b_e2.h5"
+    written = NEVPT2(cas_term, checkpoint=path,
+                     checkpoint_options=dict(min_interval=0.0)).run()
+
+    back = NEVPT2.from_checkpoint(path, cas_term, report=False).run()
+
+    np.testing.assert_array_equal(written.e2, back.e2)
+    np.testing.assert_array_equal(written.total_energies, back.total_energies)
+    assert back.result.complete == written.result.complete
+    assert back.result.n_frozen == written.result.n_frozen
+
+    dump = PropertyDump(back, tmp_path / "corrected.out", report=False).run()
+    assert "SC-NEVPT2" in (tmp_path / "corrected.out").read_text()
+    assert dump.matrices.n_states == written.e2.size
+
+
+def test_a_nevpt2_restart_finishes_an_interrupted_table(ref, cas_term, tmp_path):
+    """End to end at the stage level: a table missing its later states, and a restart that
+    reaches the same numbers. ⚠ The interruption is simulated by removing whole states, which
+    is what a real one leaves — the driver finishes a state before it claims one.
+
+    (The stop cause itself is driven at the function level, in ``test_nevpt2_checkpoint``,
+    where a stub can stand in for a signal that a stage's eager ``signals=`` validation
+    rightly refuses.)
+    """
+    from kuiva.pt.checkpoint import read_nevpt2_checkpoint, write_nevpt2_checkpoint
+
+    path = tmp_path / "b_e2_stop.h5"
+    whole = NEVPT2(cas_term, checkpoint=path,
+                   checkpoint_options=dict(min_interval=0.0)).run()
+
+    stored = read_nevpt2_checkpoint(path)
+    assert stored.complete
+    stored.entries = {key: value for key, value in stored.entries.items() if key[0] == 0}
+    stored.e_casscf[1:] = np.nan
+    write_nevpt2_checkpoint(path, stored)
+    assert not read_nevpt2_checkpoint(path).complete
+
+    resumed = NEVPT2(cas_term, restart=path, checkpoint=path,
+                     checkpoint_options=dict(min_interval=0.0)).run()
+    np.testing.assert_array_equal(whole.e2, resumed.e2)
+    assert read_nevpt2_checkpoint(path).complete
+
+
 def test_dmrg_needs_max_bond(ref):
     with pytest.raises(ValueError, match="max_bond"):
         CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, solver="dmrg")

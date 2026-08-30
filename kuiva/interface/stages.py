@@ -566,6 +566,14 @@ class CASSCF(_Stage):
         either way. The portable spelling for a script that runs on a laptop, on an
         unlimited cluster and inside a queue without being edited.
 
+    ⚠ **``restart=`` resumes a RUNNING optimization; :meth:`from_checkpoint` materializes a
+    FINISHED one.** Both exist because re-entering the optimizer with nothing left to do ends
+    its table ``NOT converged in 0 macro-iterations`` on a calculation that converged hours
+    earlier. The two also default differently, and that is the distinction rather than a
+    convenience: a restart continues a run whose settings the caller restates and the file
+    only checks, while a materialization configures nothing and therefore takes
+    ``n_states``/``weights`` from the file.
+
     ⚠ **The granularity is one macro-iteration.** The run stops between them and nowhere
     else, so the decision is predictive: it stops when the time left is less than the
     longest recent iteration plus the estimated checkpoint write plus a stated margin. One
@@ -700,6 +708,9 @@ class CASSCF(_Stage):
         self.signals = SignalStop.resolve(signals)
         self.callback, self.report = callback, bool(report)
         self.optimizer_options = dict(optimizer_options)
+        #: Set by :meth:`from_checkpoint`; ``None`` on an ordinary stage. Its presence is what
+        #: makes :meth:`run` materialize a finished calculation instead of optimizing one.
+        self._materialize: Optional[Dict[str, Any]] = None
 
         self.project_from = project_from
         self.projection_options = dict(projection or {})
@@ -910,8 +921,50 @@ class CASSCF(_Stage):
         else:
             self._execute_dmrg()
 
+    @classmethod
+    def from_checkpoint(cls, path, reference, *, n_states=None, weights=None,
+                        solver_options: Optional[Dict[str, Any]] = None,
+                        boundary_check: Optional[int] = None,
+                        require_converged: bool = True,
+                        report: bool = True, classify: bool = True) -> "CASSCF":
+        """A **finished** CASSCF stage read back from its checkpoint — nothing is optimized.
+
+        ``restart=`` resumes a running optimization; this materializes one that already
+        ended::
+
+            ref = kuiva.Reference(scf).run()
+            cas = kuiva.CASSCF.from_checkpoint("run.h5", ref)      # no macro-iterations
+            kuiva.PropertyDump(cas, "props.out").run()             # the dump nobody asked for
+
+        The result is an ordinary :class:`CASSCF`, so :class:`PropertyDump`,
+        :class:`NEVPT2`, :class:`CASCI` and :class:`PseudospinExport` all take it unchanged.
+        See :func:`kuiva.interface.api.casscf_from_checkpoint` for what is checked, what is
+        re-solved and why: in short, the file's system fingerprint must match ``reference``,
+        the states are re-solved at the stored orbitals seeded by the stored CI vectors, and
+        ``n_states``/``weights`` default from the file because there is no optimization left
+        to configure.
+
+        ⚠ **Only the converged-orbital boundary diagnostic comes back.** The starting-orbital
+        one is a statement about a trajectory and belongs to the run that wrote the file.
+        """
+        stage = cls(reference, restart=path,
+                    n_states=1 if n_states is None else n_states, weights=weights,
+                    solver_options=solver_options, report=report, classify=classify)
+        stage._materialize = {"n_states": n_states, "weights": weights,
+                              "solver_options": solver_options,
+                              "boundary_check": boundary_check,
+                              "require_converged": require_converged,
+                              "classify": classify}
+        return stage
+
     def _execute_ci(self) -> None:
         from .api import casscf as _api_casscf
+        if self._materialize is not None:
+            from .api import casscf_from_checkpoint
+            self._adopt_ci(casscf_from_checkpoint(self.reference_stage.reference,
+                                                  self.restart, report=self.report,
+                                                  **self._materialize))
+            return
         outcome = _api_casscf(self.reference_stage.reference, active=self.space,
                               n_states=(self.state_request if self.state_request is not None
                                         else self.n_states),
@@ -923,6 +976,15 @@ class CASSCF(_Stage):
                               solver_options=self.solver_options, callback=self.callback,
                               deadline=self.deadline, signals=self.signals,
                               report=self.report, **self.optimizer_options)
+        self._adopt_ci(outcome)
+
+    def _adopt_ci(self, outcome) -> None:
+        """Publish a conventional-CI outcome as this stage's results.
+
+        One place, so an optimized stage and one materialized from a checkpoint present
+        exactly the same attributes to everything downstream — which is the whole point of
+        :meth:`from_checkpoint` returning a :class:`CASSCF` rather than something new.
+        """
         self.outcome = outcome
         #: What the property stages consume, under the name :class:`CASCI` uses for it too,
         #: so a consumer of either stage asks one question. The network route has no such
@@ -936,6 +998,11 @@ class CASSCF(_Stage):
         self.boundary_initial = outcome.boundary_initial
         self.checkpoint_path = outcome.checkpoint_path
         self._energies = np.asarray(outcome.ci.total_energies, dtype=float)
+        # ⚠ A materialized stage was constructed before the file was read, so its declared
+        # space and state count were placeholders. They are the file's now, and every
+        # consumer that asks the stage rather than the outcome sees the same answer.
+        self.space = outcome.active
+        self.n_states = int(np.asarray(outcome.ci.energies).size)
 
     def _execute_dmrg(self) -> None:
         import json
@@ -953,8 +1020,13 @@ class CASSCF(_Stage):
             # ⚠ Read failure on an explicit restart is an ERROR that propagates, exactly as
             # on the conventional-CI route: the user asked to resume, and silently starting
             # over wastes what the file protects.
-            from ..io.checkpoint import read_checkpoint
+            from ..io.checkpoint import (SYSTEM_KEY, check_system, read_checkpoint,
+                                         system_fingerprint)
             resumed = read_checkpoint(self.restart)
+            # ⚠ Before the active space, exactly as on the conventional-CI route: a matching
+            # active space says nothing about whether these are the same molecule's orbitals.
+            check_system(resumed.metadata.get(SYSTEM_KEY), system_fingerprint(ref),
+                         self.restart, what="the checkpoint")
             restored = ActiveSpace(spaces=resumed.spaces, n_elec=resumed.n_active_elec,
                                    description="restored from {}".format(self.restart))
             if self.space is not None and (
@@ -1007,7 +1079,11 @@ class CASSCF(_Stage):
         policy = None
         if self.checkpoint is not None:
             from ..io.checkpoint import CheckpointPolicy
+            from ..io.checkpoint import SYSTEM_KEY, system_fingerprint
             metadata = {"active_space": self.space.description}
+            fingerprint = system_fingerprint(ref)
+            if fingerprint is not None:
+                metadata[SYSTEM_KEY] = fingerprint
             if ref.data.soc is not None:
                 metadata["hamiltonian"] = json.dumps(ref.data.soc.provenance(),
                                                      sort_keys=True)
@@ -1538,6 +1614,32 @@ class NEVPT2(_Stage):
     comparable with another program's NEVPT2. The refusal machinery is the driver's
     standing one, not a special case.
 
+    Checkpointing and restart
+    -------------------------
+    ``checkpoint=path`` writes the per-``(state, class)`` table as it fills and ``restart=``
+    resumes from one, skipping the classes the file already holds
+    (:mod:`kuiva.pt.checkpoint`). ⚠ They are separate arguments here as on :class:`CASSCF`,
+    and a resumed run that is to keep protecting itself passes **both**, usually the same
+    path: ``restart=`` alone reads the file and does not write it. ⚠ **The file is kilobytes
+    whatever the active space** — a class result is eight scalars — so there is no size
+    question here and no byte budget; the only cadence knob is
+    ``checkpoint_options=dict(min_interval=...)``, which rations filesystem calls rather
+    than bytes.
+
+    ⚠ **It stores no reference.** The orbitals and the CI vectors belong to the CASSCF
+    checkpoint, and what is kept here is a *digest* of them. A restart against a different
+    reference — different orbitals, different active space, different state energies or
+    different CI vectors — is **refused**, because inside a degenerate manifold the CI's
+    basis is arbitrary and resuming across a re-solved reference would compute some members
+    of a manifold in one basis and some in another. The practical consequence:
+    :meth:`CASSCF.from_checkpoint` reproduces the vectors exactly when they survived the
+    CASSCF file's thinning, and only then do the two restarts compose.
+
+    ``deadline=`` and ``signals=`` stop the correction **between classes**, which is the only
+    boundary this stage has, with the finished ones written first. ⚠ The stop raises
+    :class:`~kuiva.util.signals.StopRequested` rather than returning a partial ``E2``: a
+    correction that stopped is not a smaller correction, and the file is what finishes it.
+
     After :meth:`run`: :attr:`e2` [Eh, per state], :attr:`total_energies`,
     :attr:`class_energies`, :meth:`multiplets`, and the full
     :class:`~kuiva.pt.nevpt2.NEVPT2Result` as :attr:`result`.
@@ -1553,6 +1655,9 @@ class NEVPT2(_Stage):
         #: The stage whose orbitals and states are being corrected -- a CASSCF or a CASCI.
         self.states_stage = self._finished(source, (CASSCF, CASCI), "NEVPT2")
         self.reference_stage = source.reference_stage
+        #: Set by :meth:`from_checkpoint`; ``None`` on an ordinary stage. Popped before the
+        #: option check, because it is this class's own marker and not one of the driver's.
+        self._materialize = options.pop("_materialize", None)
         _check_options(options, _allowed_options(sc_nevpt2, sc_nevpt2_dmrg,
                                                  exclude=self._EXCLUDE),
                        "NEVPT2")
@@ -1560,11 +1665,58 @@ class NEVPT2(_Stage):
             from ..pt.classes import excitation_class
             for name in options["classes"]:
                 excitation_class(name)                       # refuse an unknown name now
+        # ⚠ Resolved at construction, as on every other stage: deadline="slurm" outside a
+        # Slurm job, or signals= off the main thread, is a mistake that must surface now and
+        # not after the first class.
+        from ..util.deadline import Deadline
+        from ..util.signals import SignalStop
+        if "deadline" in options:
+            options["deadline"] = Deadline.resolve(options["deadline"])
+        if "signals" in options:
+            options["signals"] = SignalStop.resolve(options["signals"])
+        if options.get("restart") is not None and not Path(options["restart"]).exists():
+            raise ValueError("restart checkpoint {!r} does not exist"
+                             .format(str(options["restart"])))
         self.options = dict(options)
 
+    @classmethod
+    def from_checkpoint(cls, path, source, *, report: bool = True) -> "NEVPT2":
+        """A **finished** NEVPT2 stage read back from a complete checkpoint — no computation.
+
+        The sibling of :meth:`CASSCF.from_checkpoint`, and cheaper: everything the assembly
+        reads is already in the table, so this is a file read rather than a re-solve. It is
+        what lets a correction that finished hours ago reach a :class:`PropertyDump` that was
+        never asked for::
+
+            cas = kuiva.CASSCF.from_checkpoint("run.h5", ref)
+            pt2 = kuiva.NEVPT2.from_checkpoint("e2.h5", cas)
+            kuiva.PropertyDump(pt2, "props.out").run()
+
+        ``source`` is the stage the correction belongs to, and it is what the corrected
+        energies are attached to downstream. ⚠ **The file's reference digest is not checked
+        against it** — the digest identifies the run that wrote the table, and a stage
+        materialized from a *thinned* CASSCF checkpoint legitimately differs from it inside a
+        degenerate manifold. What that means in practice is that the ``H`` of the resulting
+        dump comes from the file and its ``mu`` from ``source``; pairing a table with the
+        wrong source is the one mistake this cannot see, so pass the stage the correction was
+        computed on.
+
+        ⚠ An **incomplete** table is refused with the state it stopped at: pass it to
+        ``restart=`` and finish it instead.
+        """
+        stage = cls(source, _materialize={"path": path, "report": bool(report)})
+        return stage
+
     def _execute(self) -> None:
-        # ⚠ Hours of work with no checkpoint of its own: starting one after a stop has been
-        # requested spends the process's last seconds on something nobody will see.
+        if self._materialize is not None:
+            from ..pt.nevpt2 import assemble_from_checkpoint
+            self.result = assemble_from_checkpoint(self._materialize["path"],
+                                                   report=self._materialize["report"])
+            self._publish()
+            return
+        # ⚠ Hours of work: starting one after a stop has been requested spends the process's
+        # last seconds on something nobody will see. The stage now has a checkpoint of its
+        # own, so a stop that arrives *during* it is handled between classes instead.
         raise_if_pending("this NEVPT2")
         ref = self.reference_stage.reference
         cas = self.states_stage
@@ -1585,6 +1737,11 @@ class NEVPT2(_Stage):
                                     cas.active.spaces, cas.ci.vectors, cas.active.n_elec,
                                     energies=cas.ci.energies, e_nuc=ref.data.e_nuc,
                                     **self.options)
+        self._publish()
+
+    def _publish(self) -> None:
+        """The attributes a finished stage carries, in one place so a computed correction and
+        one assembled from a checkpoint present the same surface."""
         self.e2 = self.result.e2
         self.total_energies = self.result.total_energies
         self.class_energies = self.result.class_energies

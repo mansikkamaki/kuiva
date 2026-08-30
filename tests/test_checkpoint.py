@@ -652,3 +652,201 @@ def test_an_exception_building_a_checkpoint_warns_and_the_run_continues(system, 
     assert policy.stats.n_written == 0 and policy.stats.n_skipped == 2
     assert any("could not assemble the checkpoint" in r.message
                for r in kuiva_caplog.records)
+
+
+# --- the thinning ladder, and the converged write that inverts it ------------------------------
+#
+# ⚠ Every one of these is about *which* rung is given up, never about size for its own sake.
+# The ordering claim is "cheapest to regenerate first", and each test names the cost it is
+# protecting: one RDM contraction, one CI solve, a few macro-iterations.
+
+def _curvature_present(checkpoint):
+    from kuiva.io.checkpoint import CURVATURE_KEYS
+    return any(checkpoint.optimizer_state.get(key) is not None for key in CURVATURE_KEYS)
+
+
+def test_the_ladder_gives_up_the_2rdm_before_the_ci_vectors(tmp_path):
+    """⚠ ``gamma2`` first because it is one contraction away from the vectors that are still
+    there — and it is also the term that grows as ``n_act**4``."""
+    original = make_checkpoint(n_active=6)
+    policy = CheckpointPolicy(tmp_path / "run.chk", budget_gb=0.9 * original.size_gb(),
+                              min_interval=0.0)
+    policy.write(original, force=True)
+
+    back = read_checkpoint(tmp_path / "run.chk")
+    assert back.dropped == ("gamma2",)
+    assert back.gamma2 is None and back.ci_vectors is not None
+    assert _curvature_present(back)
+
+
+def test_the_ladder_gives_up_the_curvature_last(tmp_path):
+    """⚠ Last because it is the only rung that cannot be regenerated at all: a cold restart at
+    the same orbitals converges, and pays extra macro-iterations for it."""
+    original = make_checkpoint(n_active=6)
+    orbitals_only = original.reduced("gamma2", "ci_vectors", "curvature")
+    policy = CheckpointPolicy(tmp_path / "run.chk",
+                              budget_gb=0.5 * (orbitals_only.size_gb()
+                                               + original.reduced("gamma2",
+                                                                  "ci_vectors").size_gb()),
+                              min_interval=0.0)
+    policy.write(original, force=True)
+
+    back = read_checkpoint(tmp_path / "run.chk")
+    assert back.dropped == ("gamma2", "ci_vectors", "curvature")
+    assert not _curvature_present(back)
+    assert back.trust_is_kept if False else back.optimizer_state["trust"] == 0.07
+
+
+def test_the_2rdm_is_never_dropped_once_the_vectors_are_gone():
+    """⚠ The ordering's premise: ``gamma2`` is cheap to lose *because* the vectors imply it.
+    Without them it is the only record of the converged density, and dropping it is refused."""
+    thinned = make_checkpoint(with_ci=False)
+    with pytest.raises(ValueError, match="only be dropped while the CI vectors are stored"):
+        thinned.reduced("gamma2")
+
+
+def test_a_converged_checkpoint_stores_no_curvature(tmp_path):
+    """The inversion. Nothing resumes a converged optimization, and on a large basis the
+    L-BFGS pairs scale with the rotation-parameter count while the rest scales with the active
+    space — so the file everybody keeps is the one that must not carry them."""
+    converged = make_checkpoint()
+    converged.converged = True
+    policy = CheckpointPolicy(tmp_path / "run.chk", budget_gb=100.0, min_interval=0.0)
+    policy.write(converged, force=True)
+
+    back = read_checkpoint(tmp_path / "run.chk")
+    assert back.converged and not _curvature_present(back)
+    assert back.dropped == ("curvature",)
+    # ⚠ What the file is *for* is still in it: this is what makes materialization cheap.
+    assert back.ci_vectors is not None and back.gamma2 is not None
+
+
+def test_a_deadline_stop_keeps_its_curvature(tmp_path):
+    """⚠ The companion, and the whole reason the test is convergence and not ``force``: a
+    deadline or a signal forces the write too, and that run *will* be resumed."""
+    stopping = make_checkpoint()
+    assert not stopping.converged
+    policy = CheckpointPolicy(tmp_path / "run.chk", budget_gb=100.0, min_interval=1e9)
+    policy.write(stopping, force=True)
+
+    back = read_checkpoint(tmp_path / "run.chk")
+    assert _curvature_present(back) and back.dropped == ()
+
+
+def test_an_absent_2rdm_round_trips_as_absent_not_as_zero(tmp_path):
+    """⚠ On disk an absent array and an empty one are the same bytes. Reading a dropped 2-RDM
+    back as a zero density is a Hermitian, plausible, wrong result — which is the reason the
+    schema version moved rather than the fields simply being added."""
+    write_checkpoint(tmp_path / "run.chk", make_checkpoint().reduced("gamma2"))
+    back = read_checkpoint(tmp_path / "run.chk")
+
+    assert back.gamma2 is None
+    assert back.dropped == ("gamma2",)
+
+
+def test_a_version_1_file_is_refused_by_name(tmp_path):
+    import h5py
+
+    write_checkpoint(tmp_path / "run.chk", make_checkpoint())
+    with h5py.File(tmp_path / "run.chk", "r+") as handle:
+        handle.attrs["schema_version"] = 1
+
+    with pytest.raises(CheckpointError, match="Version 1 stored the 2-RDM"):
+        read_checkpoint(tmp_path / "run.chk")
+
+
+# --- the system fingerprint ---------------------------------------------------------------------
+
+def test_the_system_fingerprint_separates_molecules_and_is_refused_on(kuiva_caplog):
+    """⚠ Until this existed a checkpoint carried nothing that could tell one molecule from
+    another: an orthonormal set of the right dimension optimizes to a plausible number
+    whatever it came from."""
+    from kuiva.interface.api import Molecule
+    from kuiva.io.checkpoint import check_system, system_fingerprint
+
+    class Data:
+        def __init__(self, molecule):
+            from kuiva.interface.pyscf_bridge import MoleculeSpec
+            self.molecule = MoleculeSpec.from_molecule(molecule)
+            self.nao, self.nmo, self.reference = 10, 10, "rhf"
+            self.soc = self.properties = None
+
+    def molecule(distance=1.6, basis="x2c-SVPall-2c"):
+        return Molecule([("Li", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, distance))], basis=basis)
+
+    lih = Data(molecule())
+    moved = Data(molecule(distance=1.7))
+    bigger = Data(molecule(basis="x2c-TZVPall-2c"))
+
+    assert system_fingerprint(lih) == system_fingerprint(Data(molecule()))
+    assert system_fingerprint(lih) != system_fingerprint(moved)
+    assert system_fingerprint(lih) != system_fingerprint(bigger)
+
+    with pytest.raises(ValueError, match="different system"):
+        check_system(system_fingerprint(lih), system_fingerprint(moved), "run.chk",
+                     what="the checkpoint")
+    check_system(system_fingerprint(lih), system_fingerprint(lih), "run.chk",
+                 what="the checkpoint")
+
+    # ⚠ An unrecorded digest is "cannot be compared", which is weaker than "matches" and is
+    # worded as one -- the same reading the state-average record gets.
+    kuiva_caplog.clear()
+    check_system(None, system_fingerprint(lih), "run.chk", what="the checkpoint")
+    assert any("no system fingerprint" in record.getMessage()
+               for record in kuiva_caplog.records)
+
+
+def test_a_per_irrep_request_survives_the_state_average_key():
+    """⚠ Two different ``{irrep: n}`` mappings can sum to the same count while selecting
+    different states, so a key holding only the total would let one restart as the other."""
+    from kuiva.io.checkpoint import parse_state_average_key, state_average_key
+
+    class Solver:
+        n_states = 8
+        requested_weights = None
+        requested_states = {"Ag": 4, "Au": 4}
+
+    key = state_average_key(Solver())
+    assert key != state_average_key(type("S", (Solver,), {
+        "requested_states": {"Ag": 6, "Au": 2}})())
+
+    states, weights = parse_state_average_key(key)
+    assert states == {"Ag": 4, "Au": 4} and weights is None
+
+    plain, _ = parse_state_average_key("n_states=3;weights=equal")
+    assert plain == 3
+
+
+def test_a_curvature_dropped_checkpoint_still_restarts(system, tmp_path):
+    """⚠ The mechanism, not the observable, and it caught a real defect.
+
+    ``load_state_dict`` restores the L-BFGS pairs as ``state.get("lbfgs_s", <empty>)``, so a
+    key that is *present* and ``None`` reaches ``np.asarray(None, dtype=complex128)`` and
+    raises. Dropping the curvature therefore has to **remove** the keys, and the only way to
+    see the difference is to resume from a file that dropped them: every other test passes
+    either way, because both spellings write the same bytes.
+
+    The converged write is the everyday path into this — it drops the curvature every time.
+    """
+    factors, h_ao, c0, spaces, _ = system
+    solver = frozen_rdm_solver(system)
+    kwargs = dict(e_nuc=0.0, conv_grad=1e-10, conv_energy=1e-12, report=False)
+
+    path = tmp_path / "run.chk"
+    policy = CheckpointPolicy(path, min_interval=0.0, cost_fraction=1.0, n_active_elec=2)
+    optimize_orbitals(factors, h_ao, c0, spaces, solver, max_iter=4,
+                      callback=policy.callback, **kwargs)
+    write_checkpoint(path, read_checkpoint(path).reduced("curvature"))
+
+    stripped = read_checkpoint(path)
+    assert stripped.dropped == ("curvature",)
+    assert "lbfgs_s" not in stripped.optimizer_state
+
+    resumed = optimize_orbitals(
+        factors, h_ao, stripped.coeff, stripped.spaces, solver, max_iter=8,
+        **dict(kwargs, **stripped.optimizer_kwargs(space_key=None)))
+    # ⚠ Not bitwise against the uninterrupted run, and it must not be: the curvature is gone,
+    # so this restart takes a different path to the same minimum. That is the cost the ladder
+    # prices, and asserting it away would hide a genuinely cold start.
+    assert resumed.n_iterations > stripped.iteration
+    assert resumed.energy < stripped.energy + 1e-12

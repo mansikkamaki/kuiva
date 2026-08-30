@@ -23,7 +23,7 @@ the module drivers) is public and unchanged; ``README.md`` is the manual.
 #: ``[tool.setuptools.dynamic]``, the run banner prints it, every stored product records it,
 #: and the documents quoting it are held in step by test. Keep it a plain literal: setuptools parses this file
 #: statically and a computed version would not be readable without importing the package.
-__version__ = "0.33.0"
+__version__ = "0.34.0"
 
 #: The class API (kuiva/interface/stages.py) and the Molecule container, re-exported at the
 #: top level so a user script reads ``kuiva.CASSCF(...)``. Resolved lazily (PEP 562): the
@@ -61,6 +61,7 @@ _TOP_LEVEL = {
     "read_dump": "kuiva.props.dump",
     "read_pseudospin": "kuiva.props.pseudospin",
     "read_checkpoint": "kuiva.io.checkpoint",
+    "read_nevpt2_checkpoint": "kuiva.pt.checkpoint",
 }
 
 __all__ = ["__version__"] + sorted(_TOP_LEVEL)

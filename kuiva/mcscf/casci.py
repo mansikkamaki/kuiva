@@ -684,6 +684,13 @@ class FullCISolver:
             self.n_states = int(sum(int(v) for v in n_states.values()))
         else:
             self.n_states = int(n_states)
+        #: The state selection **as it was asked for** — a count, or the ``{irrep: n}``
+        #: mapping. ⚠ Kept beside :attr:`n_states` because the two are not the same statement:
+        #: the count is what the mapping resolves to, and two different per-irrep requests can
+        #: resolve to the same total while selecting different states. A checkpoint that
+        #: recorded only the total would let one restart as the other
+        #: (:func:`kuiva.io.checkpoint.state_average_key`).
+        self.requested_states = dict(n_states) if isinstance(n_states, dict) else int(n_states)
         self.requested_weights = None if weights is None else np.asarray(weights, float)
         self.conv_tol = float(conv_tol)
         self.max_iter = int(max_iter)
