@@ -817,7 +817,7 @@ class CASSCF(_Stage):
                 driver, exclude=("factors", "h_ao", "c_spinor", "spaces", "ci_solver",
                                  "e_nuc", "callback", "report", "optimizer_state",
                                  "start_iteration", "space_key", "history",
-                                 "extra_columns"))
+                                 "extra_columns", "repair_orbitals"))
             _check_options(self.optimizer_options, allowed, "CASSCF (orbital optimizer)")
             if isinstance(graph, str):
                 if graph not in self._GRAPH_CHOICES:

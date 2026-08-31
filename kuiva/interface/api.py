@@ -918,6 +918,104 @@ def casci(reference: SpinorReference, *, active=None, character=None,
     return result
 
 
+#: Closure defect above which the orbital spans are restored (:func:`kramers_span_repair`).
+#: ⚠ **Chosen to sit in the gap between roundoff and harm, and both ends are measured.** A
+#: healthy Kramers-paired set carries 1e-15..1e-13 (so a threshold here never fires on one,
+#: and the run is bitwise what it would have been); the drift only reaches the state
+#: averaging gate's degeneracy tolerance two orders further up, so the repair engages with
+#: room to spare rather than after the damage. It is a **gate, not a tolerance**: the value
+#: says where noise stops, not how much asymmetry is acceptable.
+KRAMERS_CLOSURE_THRESHOLD = 1.0e-10
+
+
+def kramers_span_repair(reference: SpinorReference, spaces, *,
+                        threshold: float = KRAMERS_CLOSURE_THRESHOLD):
+    """A ``repair_orbitals`` callable for the orbital optimizer, or ``None``.
+
+    ⚠ **What it defends against is a drift, not a blunder.** The CASSCF rotation is a
+    general complex unitary and nothing in it holds the orbital *spaces* closed under time
+    reversal. For a time-reversal-symmetric Hamiltonian and an ensemble its symmetry leaves
+    invariant the exact gradient is symmetric too, so the exact step would preserve
+    closure — but the quasi-Newton and augmented-Hessian steps carry curvature along
+    directions the energy barely resists, and the roundoff-level asymmetry they inject is
+    amplified rather than damped. Measured on a UF3 CAS(3, 14 spinors) SA-10 reference: the
+    relative breach of the active integrals grows from 7e-21 to 5e-7 in thirteen solves and
+    the calculation dies; with this repair it plateaus at 1e-12 over sixty-eight solves and
+    the Kramers splitting stays identically zero.
+
+    ⚠ **An odd electron count is how the drift is DETECTED, not who it harms.** A rotation
+    within the active space cannot move a CI eigenvalue, so a split Kramers pair proves the
+    *subspace* has drifted; an even-electron calculation drifts the same way, has no
+    enforced degeneracy to violate, and would converge cleanly onto slightly wrong numbers
+    saying nothing at all.
+
+    ⚠ **It repairs the span and deliberately NOT the pairing of the columns**
+    (:func:`kuiva.spinor.expand.time_reversal_closed_span`, never
+    :func:`~kuiva.spinor.expand.nearest_kramers_paired`). Re-pairing is a rotation inside
+    each space: it moves no energy, density or spectrum, and it is O(1) even on an already
+    closed set — which destroys the frame the optimizer's curvature memory and pending
+    rotation are expressed in, and the optimization then makes no progress at all
+    (measured). Cost is ~1.5% of a macro-iteration and the effect on a healthy system is
+    6e-12 Eh (`ticl3`, converged, same iteration count).
+
+    ⚠ **NOT WIRED IN ANYWHERE, and it must not be until the hazard below is solved.** It is
+    kept because the diagnosis it came from is real and the machinery is the starting point
+    for a correct fix, not because it is usable as it stands.
+
+    ⚠ **The hazard: it can re-select the active space.**
+    :func:`~kuiva.spinor.expand.time_reversal_closed_span` moves each space onto its *nearest*
+    closed span, which is nearly the identity only while the defect is small. Driving a
+    CASSCF with it at every step converged an N2 CAS(6,8) 0.6 Eh **above its own SCF energy**
+    — impossible for a CAS holding the reference determinant, and therefore proof that the
+    space being optimized was no longer the one that was asked for. A correct fix constrains
+    the **rotation** so the step cannot leave the closed manifold, rather than repairing the
+    orbitals after it has.
+
+    Conditional on the measured defect: below ``threshold`` the input array is returned
+    unchanged — the same object, so the step is bitwise the one the optimizer computed.
+    Repairing unconditionally instead rewrites the orbitals every step, and even a 1e-13
+    rewrite accumulates: measured on the basis-projection example, whose CASSCF runs moved
+    between 6 and 12 macro-iterations depending only on whether an apparently inert repair
+    had run.
+
+    Returns ``None`` for an unrestricted reference, whose spinors are legitimately not
+    Kramers paired and for which there is no closed span to restore.
+    """
+    from ..spinor.expand import (SpinorBasis, time_reversal_closed_span,
+                                 time_reversal_closure_defect)
+
+    if not reference.spinors.kramers_paired:
+        return None
+    blocks = [np.asarray(b, dtype=int)
+              for b in (spaces.inactive, spaces.active, spaces.virtual)]
+    blocks = [b for b in blocks if b.size]
+    if any(b.size % 2 for b in blocks):
+        return None                     # a space holding half a pair has no paired form
+    nao = int(np.asarray(reference.data.s_ao).shape[0])
+    x = reference.orth.x
+
+    def repair(c_ao: np.ndarray) -> np.ndarray:
+        # In the WORKING basis, which is where time reversal is defined: it conjugates
+        # coefficients only, so it presumes an orthonormal real scalar basis.
+        c_work = np.vstack([reference.orth.to_working(c_ao[:nao]),
+                            reference.orth.to_working(c_ao[nao:])])
+        defect = time_reversal_closure_defect(c_work, blocks)
+        if defect <= threshold:
+            # ⚠ The INPUT ARRAY ITSELF, not a copy and not a rebuilt one: a healthy step has
+            # to come back bitwise, or the optimizer follows a different trajectory for no
+            # reason. Returning the same object also keeps the gradient memoization (keyed
+            # on object identity) valid.
+            return c_ao
+        log.debug("time-reversal closure defect %.2e over the %.0e threshold; the orbital "
+                  "spans are being restored", defect, threshold)
+        c_work = time_reversal_closed_span(c_work, blocks)
+        n_col = c_work.shape[1]
+        sb = SpinorBasis(c_work, np.zeros(n_col), np.zeros(n_col), kramers_paired=True)
+        return np.ascontiguousarray(sb.transform_scalar_basis(x, basis="ao").c)
+
+    return repair
+
+
 def casscf(reference: SpinorReference, *, active=None, character=None,
            n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
            n_states=1, weights=None, coeff: Optional[np.ndarray] = None,
@@ -1496,7 +1594,8 @@ def avas_active_space(reference: SpinorReference, *, atom, l, coeff=None,
     return result
 
 
-__all__ = ["Molecule", "ScalarX2CData", "SpinorReference", "scalar_x2c_reference",
+__all__ = ["Molecule", "ScalarX2CData", "SpinorReference", "kramers_span_repair",
+           "scalar_x2c_reference",
            "spinor_reference", "build_mole", "memory_plan",
            "project_to_basis", "projected_active_space",
            "active_space_for", "avas_active_space", "localize_active_space",

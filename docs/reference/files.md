@@ -122,12 +122,12 @@ functions (outside the standard) dropped by default and the discarded weight rec
 ## The Slater-Condon file
 
 `kuiva.extras.slater_condon_parameters(..., file=...)` writes a versioned plain-text file
-of $F^k$, $G^k$, $R^k$ and $\zeta_{nl}$ ([api](api.md#extras-atomic-slater-condon-parameters)).
+of $`F^k`$, $`G^k`$, $`R^k`$ and $`\zeta_{nl}`$ ([api](api.md#extras-atomic-slater-condon-parameters)).
 Every file states: the radial-phase convention that fixes the sign of the genuine cross
-parameters $R^k$ ($P_{nl}(r) > 0$ as $r \to \infty$; files with `format_version` < 2 carry
-eigensolver-arbitrary $R^k$ signs and may not be compared across calculations), the $R^k$
+parameters $`R^k`$ ($`P_{nl}(r) \gt 0`$ as $`r \to \infty`$; files with `format_version` < 2 carry
+eigensolver-arbitrary $`R^k`$ signs and may not be compared across calculations), the $`R^k`$
 index-ordering convention, the frozen average-of-configuration caveat, and whether the
-two-electron screening is inside $\zeta$.
+two-electron screening is inside $`\zeta`$.
 
 ## The mean-field cache
 

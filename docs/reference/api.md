@@ -86,21 +86,21 @@ result = slater_condon_parameters("Dy", "[Xe] 4f9 5d1 6s1", basis="x2c-TZVPall-2
 
 Given an element and a configuration, it converges an average-of-configuration scalar X2C
 SCF — spherical, one radial function per shell — and returns the radial parameters
-$F^k(a,b)$, $G^k(a,b)$ and $R^k(ab;cd)$ among the named shells
+$`F^k(a,b)`$, $`G^k(a,b)`$ and $`R^k(ab;cd)`$ among the named shells
 [[189]](../references.md#r189)[[85]](../references.md#r85)[[181]](../references.md#r181),
-together with the one-electron spin–orbit constants $\zeta_{nl}$, in a log table and a
+together with the one-electron spin–orbit constants $`\zeta_{nl}`$, in a log table and a
 versioned plain-text file ([files](files.md#the-slater-condon-file)).
 
-- ⚠ The genuine cross parameters $R^k(ab;cd)$ carry the **phase** of radial functions they
+- ⚠ The genuine cross parameters $`R^k(ab;cd)`$ carry the **phase** of radial functions they
   name an odd number of times, so their sign is only meaningful against a stated
   convention: Kuiva fixes each radial function positive in its outer region
-  ($P_{nl}(r) > 0$ as $r \to \infty$) and states this in every file. $F^k$, $G^k$ and
-  $\zeta$ are quadratic in every radial function and never depended on it.
+  ($`P_{nl}(r) \gt 0`$ as $`r \to \infty`$) and states this in every file. $`F^k`$, $`G^k`$ and
+  $`\zeta`$ are quadratic in every radial function and never depended on it.
 - ⚠ The parameters are **frozen average-of-configuration** values of one configuration in
   one basis: not self-consistent values for any particular term, no correlation, and not
   comparable across bases. A parameter set fitted to experiment is a different object, and
   Hartree–Fock-level values are known to sit above one. Every file states this.
-- $\zeta$ needs the two-component operator and therefore one cached four-component atomic
+- $`\zeta`$ needs the two-component operator and therefore one cached four-component atomic
   solve per element; `zeta=False` keeps the run to the SCF. The 3j symbols behind the
   angular factors are evaluated in exact rational arithmetic
   [[190]](../references.md#r190), and the hydrogenic closed forms

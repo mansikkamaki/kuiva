@@ -224,6 +224,96 @@ def nearest_kramers_paired(c: np.ndarray, blocks) -> np.ndarray:
     return out
 
 
+def time_reversal_closure_defect(c: np.ndarray, blocks) -> float:
+    """How far the worst block's **span** is from closed under time reversal.
+
+    ``max_b || T b - b (b^dag T b) ||`` over the blocks: the part of the time-reversed block
+    that does not lie back inside the block, which is zero exactly when the span is closed
+    and is basis-independent within a block (an internal rotation moves neither term).
+
+    ⚠ **Measuring this is what lets a repair be conditional, and conditional is what makes
+    it safe to switch on by default.** An unconditional repair rewrites the orbitals at every
+    step, and even a 1e-13 rewrite per step accumulates into a visibly different optimizer
+    trajectory — measured: an example's CASSCF moved between 6 and 12 macro-iterations
+    depending only on whether an inert-looking repair ran. Gated on this, a healthy step is
+    returned untouched and the trajectory is the one the optimizer would have taken anyway.
+    """
+    c = np.ascontiguousarray(c, dtype=np.complex128)
+    worst = 0.0
+    for idx in blocks:
+        idx = np.asarray(idx, dtype=int).ravel()
+        if idx.size == 0:
+            continue
+        b = c[:, idx]
+        tb = time_reverse(b)
+        worst = max(worst, float(np.max(np.abs(tb - b @ (b.conj().T @ tb)))))
+    return worst
+
+
+def time_reversal_closed_span(c: np.ndarray, blocks) -> np.ndarray:
+    """Move each block's **span** onto the nearest time-reversal-closed one, minimally.
+
+    The same first step as :func:`nearest_kramers_paired` — per block, the dominant
+    eigenspace of the symmetrized projector ``(P + T P T^-1) / 2``, which commutes with
+    ``T`` by construction — but **without rebuilding the columns as ``(u, T u)`` pairs**.
+    What comes back is the orthonormal set *closest to the input* that spans the closed
+    subspace (the polar factor of the projected block), so a block that is already closed
+    is returned unchanged to roundoff.
+
+    ⚠ **The difference from :func:`nearest_kramers_paired` is the whole point, and it is not
+    stylistic.** Re-pairing the columns is a rotation *within* each block: it changes no
+    energy, no density and no CI spectrum, and it is exactly what a consumer of the pairing
+    convention wants. But it is O(1) even on a set that is already perfectly closed —
+    measured at 1.0 on a UF3 spinor set whose time-reversal breach was 7e-21 — and an
+    orbital optimizer cannot survive that. Its curvature memory and its pending rotation are
+    expressed in the current orbital frame, so an O(1) redundant rotation injected between
+    steps makes both meaningless and the trust region collapses. An optimizer needs the
+    span corrected and the frame left alone; that is this function.
+
+    ⚠ **"Nearest" is not "almost the same", and that is a trap this function cannot check
+    for you.** The correction it applies is the size of the defect only while the defect is
+    small. Once a block has genuinely drifted, the nearest closed span is a *materially
+    different subspace*, and applying this to an active space then **re-selects it** — a
+    different calculation wearing the same name. Measured: driving an N2 CAS(6,8) CASSCF
+    with this at every step converged 0.6 Eh **above its own SCF energy**, which a CAS
+    containing the reference determinant cannot do. Use it to re-symmetrise something that
+    is already nearly closed; do not use it to rescue something that is not.
+
+    Parameters and failure mode are :func:`nearest_kramers_paired`'s: ``c`` is
+    ``(2*nbas, n)`` over an **orthonormal real** scalar basis, ``blocks`` partition the
+    columns into even-sized orbital spaces (so no Kramers pair straddles a space boundary),
+    and a block too far from closed to repair unambiguously raises rather than being
+    silently rounded onto some nearby span.
+    """
+    c = np.ascontiguousarray(c, dtype=np.complex128)
+    out = np.array(c, copy=True)
+    for idx in blocks:
+        idx = np.asarray(idx, dtype=int).ravel()
+        if idx.size == 0:
+            continue
+        if idx.size % 2:
+            raise ValueError("a Kramers-paired block has an even number of columns; block "
+                             "{} has {}".format(idx.tolist(), idx.size))
+        b = np.ascontiguousarray(out[:, idx])
+        tb = time_reverse(b)
+        d = 0.5 * (b @ b.conj().T + tb @ tb.conj().T)
+        w, v = np.linalg.eigh(d)
+        keep = np.argsort(w)[::-1][:idx.size]
+        if w[keep[-1]] <= 0.5 + 1e-6:
+            raise ValueError(
+                "the block on columns {}.. is too far from time-reversal closed to repair: "
+                "the symmetrized projector's smallest kept eigenvalue is {:.3f} (a closed "
+                "span has 1.0, and at 0.5 the nearest closed subspace is ambiguous)"
+                .format(int(idx[0]), float(w[keep[-1]])))
+        span = np.ascontiguousarray(v[:, keep])              # (2*nbas, 2m), T-closed
+        # The orthonormal basis of `span` closest to the incoming columns: the polar factor
+        # of the projection, U V^dag from its SVD. Identity when the block already lies in
+        # the closed span, which is what keeps this a no-op on a healthy step.
+        u, _s, vh = np.linalg.svd(span @ (span.conj().T @ b), full_matrices=False)
+        out[:, idx] = u @ vh
+    return out
+
+
 def fold_to_kramers_pairs(a: np.ndarray, columns=None) -> "tuple":
     """Fold a spinor-basis operator matrix onto its Kramers-pair space.
 
@@ -813,4 +903,5 @@ __all__ = ["SpinorBasis", "expand_scalar_mos", "expand_unrestricted_mos",
            "decompose_two_component", "time_reversal_residual",
            "is_time_reversal_even", "kramers_block_permutation",
            "spinor_indices", "spatial_index", "barred", "unbarred", "is_barred",
-           "fold_to_kramers_pairs", "rotate_kramers_pairs", "nearest_kramers_paired"]
+           "fold_to_kramers_pairs", "rotate_kramers_pairs", "nearest_kramers_paired",
+           "time_reversal_closed_span", "time_reversal_closure_defect"]

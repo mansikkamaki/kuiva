@@ -28,8 +28,8 @@ everything downstream:
 - The orbitals are consumed as one set (restricted) or two (unrestricted) — never by
   guessing from array shapes, which is how a `(2, nao, nmo)` array eventually gets treated
   as a different basis.
-- ⚠ **An unrestricted spinor set is orthonormal but *not* Kramers paired**: spinors $2p$ and
-  $2p+1$ are then the $p$-th α and $p$-th β orbital, which need not describe the same
+- ⚠ **An unrestricted spinor set is orthonormal but *not* Kramers paired**: spinors $`2p`$ and
+  $`2p+1`$ are then the $`p`$-th α and $`p`$-th β orbital, which need not describe the same
   spatial function. An active space on a UHF reference therefore may not be chosen as a
   contiguous spinor range — select by orbital character per spin set.
 
@@ -54,13 +54,13 @@ broken-symmetry construction of Noodleman
 The converged solution is **spin-contaminated on purpose**, and the two diagnostics are the
 point rather than caveats:
 
-- $\langle S^2 \rangle$ **between the low-spin and high-spin values** is what says the
+- $`\langle S^2 \rangle`$ **between the low-spin and high-spin values** is what says the
   determinant really is broken-symmetry — coming back at the low-spin value means the
   polarization did not survive, and Kuiva warns rather than passing it off as a converged
   UHF;
 - **the spin populations must carry the assigned signs**, which is the check no energy can
   make: a solution with the centres swapped has the same energy and the same
-  $\langle S^2 \rangle$ and is a different state.
+  $`\langle S^2 \rangle`$ and is a different state.
 
 A localization below the population floor is refused with the populations printed — a guess
 built from half-delocalized orbitals is a symmetric guess wearing a fragment label, and it

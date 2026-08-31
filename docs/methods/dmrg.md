@@ -38,9 +38,9 @@ inside factors) or *complementary* (labelled by the outside factors, coefficient
 into the flowing sum: the complementary-operator idea
 [[119]](../references.md#r119)[[120]](../references.md#r120)). Labels are complete
 descriptions of operator content, so distinct terms sharing a label genuinely share the
-state — the entire compression, taking the ab initio Hamiltonian to the classic $O(n^2)$
+state — the entire compression, taking the ab initio Hamiltonian to the classic $`O(n^2)`$
 operator bond dimension [[121]](../references.md#r121)[[122]](../references.md#r122)
-instead of the $O(n^4)$ term count, with each coefficient attached exactly once. The
+instead of the $`O(n^4)`$ term count, with each coefficient attached exactly once. The
 compiler's input is a generic operator-sum, which is a deliberate test seam: the structure
 machinery can be driven by model spin Hamiltonians with *known* exchange graphs, no
 integrals involved — and structure claims are validated against theorems and those models,
@@ -57,7 +57,7 @@ instead).
 
 - **The state average is a shared-basis average** [[127]](../references.md#r127): one tree
   of isometries, one center tensor per root. The ensemble truncation stacks the roots on an
-  auxiliary leg weighted by $\sqrt{w_r}$, so **one** SVD performs the weighted
+  auxiliary leg weighted by $`\sqrt{w_r}`$, so **one** SVD performs the weighted
   density-matrix truncation.
 - ⚠ **Every truncation keeps degenerate groups whole, through exactly one code path**: the
   SVD truncates on the *merged* singular-value spectrum across all symmetry sectors (a
@@ -89,7 +89,7 @@ instead).
 
 ⚠ **Read `w_disc`.** The largest discarded ensemble weight is the network's primary quality
 number, and every energy from this solver is quoted with it; truncation *growing* as the
-orbitals move is the signal the cap is too small. The $E(w_{\mathrm{disc}} \to 0)$
+orbitals move is the signal the cap is too small. The $`E(w_{\mathrm{disc}} \to 0)`$
 extrapolation [[131]](../references.md#r131)[[132]](../references.md#r132) is a separate
 driver over a converged problem (`kuiva.dmrg.bond_series`), reporting the extrapolate with
 the series and its fit residual beside it, never alone.
@@ -116,15 +116,15 @@ state-averaging gate, so the orbital optimizer is untouched.
 ## Densities and the local-multiplet model
 
 **Ranks 1–2, the production path**: one backward pass computes every node's operator
-environment $\partial E / \partial W_u$, and each elementary operator's expectation is read
+environment $`\partial E / \partial W_u`$, and each elementary operator's expectation is read
 out of its coefficient-attachment slot — about two sweeps' worth of environment builds per
-macro-iteration, independent of $n^4$. **Ranks 1–4, the direct-contraction path**
+macro-iteration, independent of $`n^4`$. **Ranks 1–4, the direct-contraction path**
 [[138]](../references.md#r138)[[139]](../references.md#r139): Gram matrices of *annihilated
-states* $\chi_A = a_{A_1} a_{A_2}\cdots|\psi\rangle$ — a JW string changes node tensors
-without touching any bond, so every $\chi_A$ shares the state's bond dimensions and each
+states* $`\chi_A = a_{A_1} a_{A_2}\cdots|\psi\rangle`$ — a JW string changes node tensors
+without touching any bond, so every $`\chi_A`$ shares the state's bond dimensions and each
 overlap is one tree contraction. Exact and cumulant-free (the chosen route for the NEVPT2
 densities — cumulant approximations are known intruder generators), and scope-limited by
-design: the dense $n^{2k}$ result array is refused by the memory budget long before the
+design: the dense $`n^{2k}`$ result array is refused by the memory budget long before the
 contraction count matters, which is why the perturbation is served by contractions instead
 ([nevpt2](nevpt2.md#the-network-route)).
 
@@ -134,13 +134,13 @@ manifold layer inverts the problem: each site's ensemble RDM is diagonalized (sa
 same group discipline; ⚠ the multiplet cut must land on a reported spectral gap, refused
 through a degenerate group), its dominant eigenspace becomes the site multiplet, and
 
-$$
+```math
 H_{\mathrm{eff}} = \Big(\textstyle\bigotimes_k V_k\Big)^\dagger H
                    \Big(\textstyle\bigotimes_k V_k\Big)
-$$
+```
 
 is contracted with **open multiplet indices** — the whole product family costs one
-contraction, never $\prod_k d_k$ solves. $H_{\mathrm{eff}}$ is a Rayleigh–Ritz projection
+contraction, never $`\prod_k d_k`$ solves. $`H_{\mathrm{eff}}`$ is a Rayleigh–Ritz projection
 onto an orthonormal product basis, so every model eigenvalue bounds its exact counterpart
 from above (Cauchy interlacing — asserted exactly in the tests, independent of how good the
 product approximation is); the construction is the zeroth step of the CORE program

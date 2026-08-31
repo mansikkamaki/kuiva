@@ -14,46 +14,46 @@ operators ([properties](properties.md)). Options are on the
 
 In a restricted kinetically balanced (RKB) basis
 [[25]](../references.md#r25)[[26]](../references.md#r26), with the small-component basis
-$|S\rangle = (\boldsymbol{\sigma}\cdot\mathbf{p}/2c)\,|L\rangle$, the four-component
+$`|S\rangle = (\boldsymbol{\sigma}\cdot\mathbf{p}/2c)\,|L\rangle`$, the four-component
 one-electron operator and metric are blocked as
 
-$$
+```math
 h_{4c} = \begin{pmatrix} V & T \\ T & W/4c^2 - T \end{pmatrix},
 \qquad
 S_{4c} = \begin{pmatrix} S & 0 \\ 0 & T/2c^2 \end{pmatrix},
-$$
+```
 
-with $T$ the non-relativistic kinetic energy, $V$ the nuclear attraction, and
-$W = \langle \boldsymbol{\sigma}\cdot\mathbf{p}\, V\, \boldsymbol{\sigma}\cdot\mathbf{p} \rangle$
+with $`T`$ the non-relativistic kinetic energy, $`V`$ the nuclear attraction, and
+$`W = \langle \boldsymbol{\sigma}\cdot\mathbf{p}\, V\, \boldsymbol{\sigma}\cdot\mathbf{p} \rangle`$
 (the operator whose spin-dependent part carries the one-electron spin–orbit coupling). This
 is the convention PySCF's four-component and X2C modules use, and Kuiva fixes it once so
 every backend must match it rather than invent its own.
 
-X2C finds the **decoupling matrix** $X$ relating small to large components of the
-positive-energy solutions, $C_S = X\, C_L$, from the eigenvectors of the four-component
-eigenproblem, and the **renormalization** $R$ from
+X2C finds the **decoupling matrix** $`X`$ relating small to large components of the
+positive-energy solutions, $`C_S = X\, C_L`$, from the eigenvectors of the four-component
+eigenproblem, and the **renormalization** $`R`$ from
 
-$$
+```math
 R^\dagger \tilde{S} R = S, \qquad \tilde{S} = S + X^\dagger \frac{T}{2c^2} X .
-$$
+```
 
-Any four-component operator with blocks $A_{LL}, A_{LS}, A_{SL}, A_{SS}$ then maps to the
+Any four-component operator with blocks $`A_{LL}, A_{LS}, A_{SL}, A_{SS}`$ then maps to the
 two-component picture as
 
-$$
+```math
 A_{X2C} \;=\; R^\dagger \left( A_{LL} + A_{LS} X + X^\dagger A_{SL}
               + X^\dagger A_{SS} X \right) R .
-$$
+```
 
 Three facts about this expression organize the whole relativistic layer:
 
-- Applied to $h_{4c}$ it gives the **one-electron X2C Hamiltonian** — the correlated
+- Applied to $`h_{4c}`$ it gives the **one-electron X2C Hamiltonian** — the correlated
   Hamiltonian's one-electron part, spin–orbit coupling included.
 - Applied to the spin-free part only (PySCF's `sfx2c1e` [[10]](../references.md#r10)) it
   gives the **scalar** X2C operator the SCF runs on.
-- Applied to a converged four-component **mean field** $G$ it gives the two-electron
+- Applied to a converged four-component **mean field** $`G`$ it gives the two-electron
   picture change — the content of X2CAMF [[16]](../references.md#r16), covered in
-  [soc](soc.md). That the *same* function transforms $h$ and $G$ is the method, not a
+  [soc](soc.md). That the *same* function transforms $`h`$ and $`G`$ is the method, not a
   coincidence.
 
 The decoupling is performed **in the decontracted basis** and the result contracted back —
@@ -72,23 +72,23 @@ like-for-like reference, never `"1e"`.
 
 ## Local decoupling: DLU
 
-The exact decoupling costs a dense four-component eigenproblem of dimension $4 n_{ao}$. The
+The exact decoupling costs a dense four-component eigenproblem of dimension $`4 n_{ao}`$. The
 **diagonal local approximation to the unitary decoupling transformation** (DLU
 [[27]](../references.md#r27)) replaces the single global transformation by a block-diagonal
-one over atoms: $X = \bigoplus_A X_A$, $R = \bigoplus_A R_A$, so that
+one over atoms: $`X = \bigoplus_A X_A`$, $`R = \bigoplus_A R_A`$, so that
 
-$$
+```math
 A^{DLU}_{AB} = R_A^\dagger \left( A_{LL,AB} + A_{LS,AB} X_B + X_A^\dagger A_{SL,AB}
                + X_A^\dagger A_{SS,AB} X_B \right) R_B .
-$$
+```
 
 ⚠ **Every molecular block is still transformed, including the off-diagonal ones** — that is
 the whole difference from the cruder DLH (diagonal local approximation to the
 *Hamiltonian*), which is not implemented and not wanted: it costs the same, is
 substantially worse, and breaks translational invariance, which DLU does not. Because
-block-diagonal $X$ and $R$ make the DLU expression *be* the exact `picture_change` applied
+block-diagonal $`X`$ and $`R`$ make the DLU expression *be* the exact `picture_change` applied
 to them, there is no second transformation code path that could drift: DLU differs from
-exact X2C only in how $X$ and $R$ are obtained.
+exact X2C only in how $`X`$ and $`R`$ are obtained.
 
 Where the local problem comes from is a real convention, recorded in the provenance:
 
@@ -108,9 +108,9 @@ strongly axial doublet moved by ~6% of itself, which is exactly the number a tun
 analysis reads; check it against the exact decoupling before quoting it. The DLU-transformed
 property operators remain unmeasured.
 
-`x2c_approx="atom1e"` is a third construction — PySCF's block-diagonal isolated-atom $X$
-with the full **molecular** $R$. ⚠ It is not DLU and not cheaper in scaling (the
-$O(n_{ao}^3)$ work stays in $R$); it exists because it makes the one-electron decoupling
+`x2c_approx="atom1e"` is a third construction — PySCF's block-diagonal isolated-atom $`X`$
+with the full **molecular** $`R`$. ⚠ It is not DLU and not cheaper in scaling (the
+$`O(n_{ao}^3)`$ work stays in $`R`$); it exists because it makes the one-electron decoupling
 consistent with the atomic mean field's, for anyone measuring that difference
 ([soc](soc.md#the-asymmetry-in-x)).
 
@@ -122,9 +122,9 @@ evaluated over. The nucleus is a **point charge by default** (what every committ
 reference number was produced with); `nuclear_model="gaussian"` selects the finite Gaussian
 distribution of Visscher and Dyall [[24]](../references.md#r24),
 
-$$
+```math
 \rho(r) = Z\, N\, e^{-\zeta r^2}, \qquad \zeta = \frac{3}{2\langle r^2 \rangle},
-$$
+```
 
 with the rms radius parametrized from the mass number of the most abundant isotope. One
 statement per molecule, inherited by **every** consumer — the molecular integrals, the
@@ -143,7 +143,7 @@ the Gaussian nucleus: the first thing to match in a cross-code comparison.
 
 ## The speed of light
 
-$c$ belongs to whatever produced the integrals — PySCF's $c = 137.03599967994$ on this
+$`c`$ belongs to whatever produced the integrals — PySCF's $`c = 137.03599967994`$ on this
 front end — never to a constant chosen elsewhere; the CODATA 2018 value
 [[184]](../references.md#r184) is used for reporting only. The distinction is measurable:
 building the four-component blocks at the CODATA value against PySCF integrals degrades the

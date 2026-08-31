@@ -1914,6 +1914,7 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                       optimizer_state: Optional[dict] = None, start_iteration: int = 0,
                       space_key: Optional[str] = None,
                       history: Optional[Sequence[float]] = None,
+                      repair_orbitals: Optional[Callable[[np.ndarray], np.ndarray]] = None,
                       extra_columns: Sequence[Tuple[Any, Callable[[], Any]]] = ()
                       ) -> CASSCFResult:
     """Alternate CI and orbital steps to convergence — the shared MCSCF driver.
@@ -1961,8 +1962,41 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
     ⚠ This is an *additive keyword*, deliberately, and not a restructuring of the loop below.
     That loop is the validated driver: it may grow arguments and its ``callback(info)`` dict
     may grow keys, but its control flow is not rearranged to accommodate a caller.
+
+    ``repair_orbitals(c) -> c`` is applied to the starting orbitals and to **every trial
+    rotation before its integrals are built**, so what is evaluated is what would be kept.
+
+    ⚠ **Why a rotation needs repairing at all, and why it is not cosmetic.** The rotation is
+    a general complex unitary and nothing in it constrains the orbital *spaces* to stay
+    closed under time reversal. For a time-reversal-symmetric Hamiltonian and an ensemble
+    the symmetry leaves invariant, the exact gradient is symmetric too and the exact step
+    would preserve closure — but the quasi-Newton and augmented-Hessian steps carry
+    curvature information along directions the energy barely resists, and the roundoff-level
+    asymmetry they inject is **amplified rather than damped**. Measured on a
+    UF3 CAS(3, 14 spinors) SA-10 reference: the relative time-reversal breach of the
+    active-space integrals grows from 7e-21 at the guess to 5e-7 over thirteen solves,
+    roughly a factor of ten every few iterations, and the Kramers splitting of the
+    odd-electron spectrum tracks it exactly (0 -> 1.6e-6 -> 0.13 cm^-1) until the
+    state-averaging gate refuses and the optimization dies.
+
+    ⚠ **The failure is confined to an odd electron count only in how it is DETECTED.** A
+    unitary rotation *within* the active space cannot move a CI eigenvalue, so a split
+    Kramers pair proves the active or inactive **subspace** has drifted, not merely the
+    orbital alignment inside it — and that drift corrupts an even-electron calculation
+    exactly as much while leaving no degeneracy for anything to notice. Kramers' theorem is
+    the tripwire here, not the victim.
+
+    ⚠ **No caller passes this today and the drift is an OPEN defect.** The obvious callable
+    — project each space onto its nearest time-reversal-closed span
+    (:func:`kuiva.interface.api.kramers_span_repair`) — removes the drift and is still wrong:
+    "nearest closed span" stops meaning "almost the same span" once a block has drifted, so
+    it re-selects the active space, measured as an N2 CAS(6,8) converging 0.6 Eh above its
+    own SCF energy. The keyword is kept because a correct remedy needs this seam; what a
+    correct remedy does through it is constrain the rotation, not rewrite the orbitals.
     """
     c = np.ascontiguousarray(c_spinor, dtype=np.complex128)
+    if repair_orbitals is not None:
+        c = np.ascontiguousarray(repair_orbitals(c), dtype=np.complex128)
     opt = OrbitalOptimizer(spaces, max_step=max_step, memory=memory,
                            active_active=active_active, labels=labels, mode=mode,
                            second_order_start=second_order_start, conv_grad=conv_grad)
@@ -2010,6 +2044,10 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                 de = 0.0
             else:
                 c_try = np.ascontiguousarray(c @ step.unitary)
+                if repair_orbitals is not None:
+                    # Before the integrals, so the evaluated point IS the kept point.
+                    c_try = np.ascontiguousarray(repair_orbitals(c_try),
+                                                 dtype=np.complex128)
                 ints_try = CASIntegrals.build(factors, h_ao, c_try, spaces, e_nuc=e_nuc)
                 e_try, g_try, g2_try = ci_solver(ints_try)
                 de = e_try - energy

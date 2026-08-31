@@ -12,24 +12,24 @@ Whatever the construction, the space is **whole Kramers pairs, always**: every o
 space is defined on spatial orbitals, so a scalar selection maps to contiguous spinor pairs
 and a pair is never split across a space boundary
 ([notation](../notation.md#the-spinor-basis)). The inactive count is fixed by the electron
-count — $n_{\mathrm{inactive}} = (N - n_{\mathrm{active\,elec}})/2$ pairs, never by
-counting occupied orbitals (an ROHF singly occupied orbital has occupation $> 0$ while
+count — $`n_{\mathrm{inactive}} = (N - n_{\mathrm{active\,elec}})/2`$ pairs, never by
+counting occupied orbitals (an ROHF singly occupied orbital has occupation $`\gt 0`$ while
 holding one electron, and that miscount has produced plausible wrong answers here before);
 an odd inactive spinor count is refused outright.
 
 ## Selection by orbital character
 
 The reference form: project each guess orbital's Löwdin reduced populations
-[[44]](../references.md#r44) onto a stated $(atom, l)$ character and take the **lowest**
-pairs clearing a threshold. It takes $(atom, l)$ and ⚠ **refuses a principal quantum
+[[44]](../references.md#r44) onto a stated `(atom, l)` character and take the **lowest**
+pairs clearing a threshold. It takes `(atom, l)` and ⚠ **refuses a principal quantum
 number**, because the integral library's principal-quantum AO labels count shells *within
 the basis* — a live instance of the contraction-type trap, and not the same thing as the
 physical shell. Two extensions keep the statement reproducible from what it prints:
 
-- an **ordinal window** (`skip_pairs`) names a second shell of the same $l$ — "skip the
+- an **ordinal window** (`skip_pairs`) names a second shell of the same $`l`$ — "skip the
   first six p pairs, take the next" — an ordinal within a stated
-  character-and-threshold ordering, which another program can reproduce where an $n$ label
-  cannot. ⚠ It is *required*, not optional, wherever filled shells of the same $l$ lie
+  character-and-threshold ordering, which another program can reproduce where an $`n`$ label
+  cannot. ⚠ It is *required*, not optional, wherever filled shells of the same $`l`$ lie
   below the valence one, and forgetting it fails silently twice over
   ([workflows](../guide/workflows.md#the-filled-shell-trap));
 - pooled centres: for equivalent atoms whose canonical orbitals delocalize, the populations

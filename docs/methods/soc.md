@@ -10,8 +10,8 @@ Options are on the [`ScalarSCF`](../reference/stages/ScalarSCF.md) page.
 
 ## The spinor basis, briefly
 
-Each real scalar orbital $\phi_p$ becomes the Kramers pair $(\psi_{2p}, \hat T\psi_{2p+1})$
-with $\hat T = -i\sigma_y K$ — the conventions, fixed once and relied on by the CI
+Each real scalar orbital $`\phi_p`$ becomes the Kramers pair $`(\psi_{2p}, \hat T\psi_{2p+1})`$
+with $`\hat T = -i\sigma_y K`$ — the conventions, fixed once and relied on by the CI
 addressing, are in [notation](../notation.md#the-spinor-basis)
 [[20]](../references.md#r20)[[57]](../references.md#r57). The guess carries no spin–orbit
 coupling; the coupling is introduced when the two-component wavefunction is built and
@@ -20,45 +20,45 @@ it ([casscf](casscf.md)).
 
 ## X2CAMF: the two-electron picture change
 
-Exact two-component theory would transform the two-electron operator with the same $X$ and
-$R$ as the one-electron one, which is prohibitive. X2CAMF applies the transformation to the
+Exact two-component theory would transform the two-electron operator with the same $`X`$ and
+$`R`$ as the one-electron one, which is prohibitive. X2CAMF applies the transformation to the
 converged **four-component atomic mean field** instead — the atomic version of the
 mean-field spin–orbit idea [[17]](../references.md#r17), done within X2C. Per unique
 element, a spherically averaged four-component Dirac–Hartree–Fock atom
 [[19]](../references.md#r19)[[20]](../references.md#r20)[[21]](../references.md#r21) is
-converged, its mean field $G[D_{4c}]$ is picture-changed with the identical expression the
+converged, its mean field $`G[D_{4c}]`$ is picture-changed with the identical expression the
 one-electron operator uses,
 
-$$
+```math
 \tilde G = R^\dagger \left( G_{LL} + G_{LS} X + X^\dagger G_{SL}
            + X^\dagger G_{SS} X \right) R ,
-$$
+```
 
 and what is **added** to the molecular Hamiltonian is the difference between that and what
 the molecular Hamiltonian already contains — the untransformed non-relativistic Coulomb
 operator, used unmodified by the CI:
 
-$$
+```math
 \Delta G \;=\; \tilde G \;-\; G_{nr}[\tilde D]
 \;+\; \left( h^{1e}(X_{2e}) - h^{1e}(X_{1e}) \right),
-$$
+```
 
-with $G_{nr}$ the ordinary non-relativistic $J - K$ built from the **two-component density**
-$\tilde D$ behind the four-component one. Three parts of this expression are load-bearing:
+with $`G_{nr}`$ the ordinary non-relativistic $`J - K`$ built from the **two-component density**
+$`\tilde D`$ behind the four-component one. Three parts of this expression are load-bearing:
 
-- **The subtraction is the whole ballgame.** Adding all of $\tilde G$ double-counts the
+- **The subtraction is the whole ballgame.** Adding all of $`\tilde G`$ double-counts the
   Coulomb interaction massively; a wrong subtracted term is Hermitian, time-reversal even,
   of plausible magnitude, and wrong — an error class that once needed an external
   four-component reference to find. The subtraction is implemented **once** and shared by
   the atomic (X2CAMF) and molecular (mmf) routes, so the atomic path's committed reference
   numbers validate the molecular one.
-- ⚠ **The density is $\tilde D = R^{-1} D_{LL} R^{-\dagger}$, not $R^\dagger D_{LL} R$.**
+- ⚠ **The density is $`\tilde D = R^{-1} D_{LL} R^{-\dagger}`$, not $`R^\dagger D_{LL} R`$.**
   Coefficients and densities transform oppositely
-  ([notation](../notation.md#density-matrices)), and $R$ is Hermitian positive definite but
+  ([notation](../notation.md#density-matrices)), and $`R`$ is Hermitian positive definite but
   not unitary, so the two differ substantially — while both are Hermitian with plausible
   traces, and their spin–orbit *splittings* agree to 0.2%. What separates them, by five to
   six orders of magnitude, is the X2CAMF total-energy functional against four-component
-  Dirac–Coulomb in the same basis (the $c \to \infty$ limit does **not** separate them —
+  Dirac–Coulomb in the same basis (the $`c \to \infty`$ limit does **not** separate them —
   every plausible variant passes it).
 - **The decoupling inside the correction is the converged Fock's**, following the reference
   implementation [[18]](../references.md#r18); the third term compensates for the one- and
@@ -94,7 +94,7 @@ for a light atom, tens of minutes for a lanthanide. Three things about those sol
 - **The solve is geometry-independent and cached persistently**, keyed on
   `(element, basis content, configuration, interaction, nuclear model, c)` — the basis by
   its parsed content rather than its name, the configuration canonicalized, and the speed
-  of light included so the $c \to \infty$ tests cannot be fooled by a cache hit
+  of light included so the $`c \to \infty`$ tests cannot be fooled by a cache hit
   ([configuration](../guide/configuration.md#the-atomic-mean-field-cache)).
 
 ### The interaction: Coulomb, Gaunt, Breit
@@ -108,7 +108,7 @@ product's header, is what records it.
 ### The asymmetry in X
 
 Kuiva's one-electron path uses the exact **molecular** decoupling while the AMF correction
-is atomic by construction — its $X$ and $R$ come from the atomic problem. This is standard
+is atomic by construction — its $`X`$ and $`R`$ come from the atomic problem. This is standard
 for X2CAMF and is not a bug: the atomic approximation is applied to the two-electron
 picture change, the term that would otherwise be missing entirely, while the one-electron
 part stays exact. It is recorded in the provenance, and `x2c_approx="atom1e"` makes the two

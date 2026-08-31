@@ -195,3 +195,90 @@ def test_antisymmetry_check_is_relative_not_absolute(kuiva_caplog):
     with kuiva_caplog.at_level("WARNING"):
         two_component_operator(np.eye(n), small)
     assert [r for r in kuiva_caplog.records if "antisymmetric" in r.message]
+
+
+# --- the time-reversal-closed span repair -------------------------------------------------
+# ⚠ These test the MECHANISM, not the observable that exposed it. The observable was a
+# UF3 CASSCF dying on a split Kramers pair; the mechanism is that a general complex orbital
+# rotation does not hold the orbital SPACES closed under time reversal, and that the drift
+# accumulates. An even electron count drifts identically and has no degeneracy to violate,
+# so a test written against the splitting alone would not protect the case that matters.
+
+def _kramers_paired_set(n_bas, n_col, seed=0):
+    """A Kramers-paired orthonormal spinor set: columns (u, T u) interleaved."""
+    from kuiva.spinor.expand import time_reverse
+    rng = np.random.default_rng(seed)
+    a = rng.standard_normal((2 * n_bas, n_col)) + 1j * rng.standard_normal((2 * n_bas, n_col))
+    cols = []
+    for k in range(0, n_col, 2):
+        u = a[:, k]
+        for c in cols:                                    # orthogonalize against the rest
+            u = u - c * np.vdot(c, u)
+        u = u / np.linalg.norm(u)
+        tu = time_reverse(u[:, None])[:, 0]
+        tu = tu - u * np.vdot(u, tu)
+        tu = tu / np.linalg.norm(tu)
+        cols.extend([u, tu])
+    return np.ascontiguousarray(np.stack(cols, axis=1))
+
+
+def test_time_reversal_closed_span_is_inert_on_a_closed_set():
+    """⚠ The property the optimizer depends on: a healthy step must not be moved.
+
+    ``nearest_kramers_paired`` also re-pairs the columns, which is O(1) even here — a
+    rotation inside each space that changes no energy and no spectrum but destroys the frame
+    an optimizer's curvature memory lives in.
+    """
+    from kuiva.spinor.expand import nearest_kramers_paired, time_reversal_closed_span
+    c = _kramers_paired_set(8, 8, seed=3)
+    blocks = [np.array([0, 1, 2, 3]), np.array([4, 5, 6, 7])]
+    out = time_reversal_closed_span(c, blocks)
+    assert np.max(np.abs(out - c)) < 1e-12
+    assert np.max(np.abs(out.conj().T @ out - np.eye(8))) < 1e-12
+    # and the contrast that made the first attempted fix fail
+    paired = nearest_kramers_paired(c, blocks)
+    assert np.max(np.abs(paired @ paired.conj().T - c @ c.conj().T)) < 1e-10   # same span
+    assert np.max(np.abs(paired - c)) > 1e-3                                   # other frame
+
+
+def test_time_reversal_closed_span_restores_a_drifted_space():
+    """A span rotated slightly out of closure comes back, and the columns move by O(drift)."""
+    from kuiva.spinor.expand import time_reverse, time_reversal_closed_span
+    c = _kramers_paired_set(8, 8, seed=5)
+    blocks = [np.array([0, 1, 2, 3]), np.array([4, 5, 6, 7])]
+    # a deliberately time-reversal-ODD mix of one column from each block
+    drift = 1e-6
+    bad = np.array(c, copy=True)
+    bad[:, 3] = (c[:, 3] + drift * c[:, 4]) / np.sqrt(1.0 + drift ** 2)
+    bad[:, 4] = (c[:, 4] - drift * c[:, 3]) / np.sqrt(1.0 + drift ** 2)
+
+    def closure_defect(x, idx):
+        b = x[:, idx]
+        tb = time_reverse(b)
+        return float(np.max(np.abs(tb - b @ (b.conj().T @ tb))))
+
+    assert closure_defect(bad, blocks[0]) > 1e-7
+    out = time_reversal_closed_span(bad, blocks)
+    for idx in blocks:
+        assert closure_defect(out, idx) < 1e-12
+    assert np.max(np.abs(out - bad)) < 1e-4          # moved by the drift, not by O(1)
+    assert np.max(np.abs(out.conj().T @ out - np.eye(8))) < 1e-12
+
+
+def test_time_reversal_closed_span_refuses_an_unrepairable_block():
+    """A span too far from closed has no meaningful paired form; it refuses rather than
+    rounding onto some nearby subspace."""
+    from kuiva.spinor.expand import time_reversal_closed_span
+    c = _kramers_paired_set(8, 8, seed=7)
+    bad = np.array(c, copy=True)
+    bad[:, [3, 4]] = bad[:, [4, 3]]                  # half a pair on each side of the cut
+    with pytest.raises(ValueError, match="too far from time-reversal closed"):
+        time_reversal_closed_span(bad, [np.array([0, 1, 2, 3]), np.array([4, 5, 6, 7])])
+
+
+def test_odd_block_is_refused():
+    """Half a Kramers pair belongs to no space."""
+    from kuiva.spinor.expand import time_reversal_closed_span
+    c = _kramers_paired_set(4, 4, seed=1)
+    with pytest.raises(ValueError, match="even number of columns"):
+        time_reversal_closed_span(c, [np.array([0, 1, 2])])
