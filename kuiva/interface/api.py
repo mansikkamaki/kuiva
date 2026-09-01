@@ -932,8 +932,9 @@ def kramers_span_repair(reference: SpinorReference, spaces, *,
                         threshold: float = KRAMERS_CLOSURE_THRESHOLD):
     """A ``repair_orbitals`` callable for the orbital optimizer, or ``None``.
 
-    ⚠ **What it defends against is a drift, not a blunder.** The CASSCF rotation is a
-    general complex unitary and nothing in it holds the orbital *spaces* closed under time
+    ⚠ **What it defends against is a drift, not a blunder** — and it is no longer how that
+    drift is defended against; see the two warnings below. The CASSCF rotation is a general
+    complex unitary and nothing in it holds the orbital *spaces* closed under time
     reversal. For a time-reversal-symmetric Hamiltonian and an ensemble its symmetry leaves
     invariant the exact gradient is symmetric too, so the exact step would preserve
     closure — but the quasi-Newton and augmented-Hessian steps carry curvature along
@@ -941,7 +942,8 @@ def kramers_span_repair(reference: SpinorReference, spaces, *,
     amplified rather than damped. Measured on a UF3 CAS(3, 14 spinors) SA-10 reference: the
     relative breach of the active integrals grows from 7e-21 to 5e-7 in thirteen solves and
     the calculation dies; with this repair it plateaus at 1e-12 over sixty-eight solves and
-    the Kramers splitting stays identically zero.
+    the Kramers splitting stays identically zero — which is the trap, since the constrained
+    rotation achieves the same thing without moving the space.
 
     ⚠ **An odd electron count is how the drift is DETECTED, not who it harms.** A rotation
     within the active space cannot move a CI eigenvalue, so a split Kramers pair proves the
@@ -958,18 +960,22 @@ def kramers_span_repair(reference: SpinorReference, spaces, *,
     (measured). Cost is ~1.5% of a macro-iteration and the effect on a healthy system is
     6e-12 Eh (`ticl3`, converged, same iteration count).
 
-    ⚠ **NOT WIRED IN ANYWHERE, and it must not be until the hazard below is solved.** It is
-    kept because the diagnosis it came from is real and the machinery is the starting point
-    for a correct fix, not because it is usable as it stands.
+    ⚠ **NOT WIRED IN ANYWHERE, and it must not be: the fix went in elsewhere.** The drift is
+    prevented at its cause, by constraining the **step** so that it cannot leave the closed
+    manifold at all (``kramers_rotation=`` on
+    :func:`kuiva.mcscf.orbopt.optimize_orbitals`, on by default wherever the orbitals are
+    Kramers paired), with the constrained solution then *tested* for the time-odd instability
+    a constraint could otherwise hide (``kramers_stability=``,
+    :func:`kuiva.mcscf.orbopt.measure_time_odd_curvature`) rather than assumed to be one. This function is kept as the *record* of the remedy that does not work,
+    so the week is not spent on it a second time.
 
-    ⚠ **The hazard: it can re-select the active space.**
+    ⚠ **Why it does not work: it can re-select the active space.**
     :func:`~kuiva.spinor.expand.time_reversal_closed_span` moves each space onto its *nearest*
     closed span, which is nearly the identity only while the defect is small. Driving a
     CASSCF with it at every step converged an N2 CAS(6,8) 0.6 Eh **above its own SCF energy**
     — impossible for a CAS holding the reference determinant, and therefore proof that the
-    space being optimized was no longer the one that was asked for. A correct fix constrains
-    the **rotation** so the step cannot leave the closed manifold, rather than repairing the
-    orbitals after it has.
+    space being optimized was no longer the one that was asked for. Repairing the orbitals
+    after a step cannot be made safe; constraining the step can.
 
     Conditional on the measured defect: below ``threshold`` the input array is returned
     unchanged — the same object, so the step is bitwise the one the optimizer computed.

@@ -812,6 +812,54 @@ def test_spin_noninvariance_separates_complete_from_cut_spin_multiplets():
     assert s_cut > 1e5 * max(s_whole, 1e-15)
 
 
+def test_spin_noninvariance_is_invariant_under_a_COMPLEX_change_of_frame():
+    """⚠ The property the detector's own value has to have, and the one it lacked until
+    v0.37.0: rotating the active orbitals **inside the same subspace** may not change it.
+
+    An ensemble's density either commutes with the spin rotations or it does not; which basis
+    of the active space it is expressed in cannot enter. The trap is the conjugation one
+    (``kuiva.mcscf.orbopt``'s module docstring): ``gamma`` is stored as
+    ``<a^dag_p a_q>``, the **transpose** of the density operator, so it transforms as
+    ``U^T gamma U*`` while the spin operator transforms as ``U^dag S U`` — and a measure that
+    commutes the two directly moves with the frame. ⚠ **A real ``U`` cannot see it**, which is
+    how it survived: the pre-existing detector test runs a real spin-free Hamiltonian, where
+    the two laws coincide and both forms pass. The rotation below is deliberately complex, and
+    the assertion is checked to *fail* on the unfixed expression, so it cannot pass vacuously.
+    """
+    from kuiva.mcscf.casci import ensemble_spin_noninvariance                # noqa: PLC0415
+    from kuiva.mcscf.orbopt import unitary_from_antihermitian                # noqa: PLC0415
+
+    h, eri = _spin_free_spinor_integrals(3, seed=11)
+    s_mo = _interleaved_spin_operator(3)
+    solver = FullCISolver(6, 3, n_states=20, enforce_kramers=False)
+    energies = solver.solve_active(h, eri).energies
+    start, _stop = _first_quartet(energies)
+    cut = FullCISolver(6, 3, n_states=start + 2, enforce_kramers=False)
+    gamma = cut.solve_active(h, eri).gamma                     # leaning: a cut quartet
+
+    rng = np.random.default_rng(23)
+    a = rng.standard_normal((6, 6)) + 1j * rng.standard_normal((6, 6))
+    u = unitary_from_antihermitian(a - a.conj().T)             # a genuinely complex frame
+    assert float(np.max(np.abs(np.imag(u)))) > 0.1
+    # The same physics in the rotated frame: the density operator is gamma^T -> U^dag gamma^T U
+    # (so gamma -> U^T gamma U*), the spin operator S -> U^dag S U.
+    gamma_rot = u.T @ gamma @ np.conj(u)
+    s_rot = np.stack([u.conj().T @ s_mo[k] @ u for k in range(3)])
+
+    value = ensemble_spin_noninvariance(gamma, s_mo)
+    rotated = ensemble_spin_noninvariance(gamma_rot, s_rot)
+    assert value > 0.05, "the fixture must be a leaning ensemble for this to mean anything"
+    assert abs(rotated - value) < 1e-10 * max(value, 1.0), \
+        "{:.6e} in one frame, {:.6e} in another of the same subspace".format(value, rotated)
+
+    # ...and the expression this replaced does move with the frame, by a factor of order one.
+    def unfixed(g, s):
+        scale = float(np.linalg.norm(g)) or 1.0
+        return max(float(np.linalg.norm(g @ s[k] - s[k] @ g)) / scale for k in range(3))
+
+    assert abs(unfixed(gamma_rot, s_rot) - unfixed(gamma, s_mo)) > 0.05 * value
+
+
 def test_boundary_report_carries_and_reports_the_spin_invariance(kuiva_caplog):
     """The field reaches the report, and an ambiguous boundary of a *leaning* ensemble warns
     with the mechanism named — the warning a user actually needs is the combination, because

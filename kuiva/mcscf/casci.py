@@ -945,10 +945,14 @@ class FullCISolver:
         """⚠ The Kramers-restricted path's one precondition, checked at **every** solve.
 
         ``[H, T] = 0`` is a property of the orbitals, not of the method, and a CASSCF rotates
-        the orbitals at every macro-iteration. The general-complex optimizer is free to leave
-        the Kramers-preserving subgroup; in practice it does not (the measured drift is
-        roundoff), but "in practice" is not what a mode whose whole structure rests on the
-        symmetry may run on. The check costs one pass over the active ``n^4`` — microseconds
+        the orbitals at every macro-iteration. Where the rotation is Kramers constrained — by
+        default wherever the incoming orbitals are paired, which is this path's own case — it
+        cannot leave the Kramers-preserving subgroup at all; where it is *not* (an
+        unrestricted reference, an explicit ``kramers_rotation=False``, or a constraint the
+        stability test released) it is free to, and the departure is then amplified rather
+        than roundoff-bounded, measured at a factor of ten every few macro-iterations. Either way "in practice" is not what a
+        mode whose whole structure rests on the symmetry may run on. The check costs one pass
+        over the active ``n^4`` — microseconds
         against a Davidson solve — and it is the only thing standing between a broken pairing
         and a converged, exactly degenerate, wrong spectrum.
         """
@@ -1440,7 +1444,27 @@ SPIN_LEANING_THRESHOLD = 0.05
 
 
 def ensemble_spin_noninvariance(gamma: np.ndarray, spin_mo: np.ndarray) -> float:
-    """``max_k ||[gamma, S_k]||_F / ||gamma||_F`` over the active space.
+    """``max_k ||[gamma^T, S_k]||_F / ||gamma||_F`` over the active space.
+
+    ⚠ **The transpose is the whole correctness of this function, and it is
+    :mod:`kuiva.mcscf.orbopt`'s conjugation trap in its one-particle instance.** ``gamma`` is
+    stored as ``gamma_pq = <a^dag_p a_q>`` (:func:`kuiva.ci.strings.rdm12`), which is the
+    **transpose** of the one-particle density *operator* in the orbital basis: an expectation
+    value is ``<O> = sum_pq O_pq gamma_pq = Tr(O gamma^T)``, so the operator whose commutator
+    with a spin rotation is the physical question is ``rho = gamma^T``. The two differ by
+    exactly the transformation law — ``gamma`` goes to ``U^T gamma U*`` under ``C -> C U``
+    while ``S`` goes to ``U^dag S U`` — so ``||[gamma, S]||`` is **not invariant under a
+    change of frame inside the same subspace**, which is the minimum any statement about an
+    ensemble has to be, while ``||[gamma^T, S]||`` is. Everything else in the program that
+    contracts ``gamma`` with an operator already carries the transpose
+    (:func:`kuiva.mcscf.orbopt._active_fock_ao`'s ``c_act @ gamma.T``, verified against finite
+    differences); this function did not, and it read 1.3e-03 and 2.8e-01 on two runs that had
+    converged to the **same** subspace before it was fixed (2026-08-31).
+
+    ⚠ It is invisible for a real ``gamma`` — where the transpose is the conjugate and both
+    forms agree — which is why an optimized two-component orbital set is what a test of it
+    needs. The time-reversal-odd fraction of the same density is *not* exposed to this:
+    ``Theta`` commutes with transposition, so that measure reads the same either way.
 
     Zero exactly when the state-averaged density commutes with the spin rotations, which is
     what a **term-complete** average delivers (the ensemble is invariant under separate
@@ -1471,9 +1495,9 @@ def ensemble_spin_noninvariance(gamma: np.ndarray, spin_mo: np.ndarray) -> float
         ``C_act^H  (S_AO x sigma_k/2)  C_act`` (:func:`kuiva.spinor.expand.spin_operator`
         transformed with the active columns).
     """
-    gamma = np.asarray(gamma)
-    scale = float(np.linalg.norm(gamma)) or 1.0
-    return max(float(np.linalg.norm(gamma @ spin_mo[k] - spin_mo[k] @ gamma)) / scale
+    rho = np.asarray(gamma).T                      # the density OPERATOR; see above
+    scale = float(np.linalg.norm(rho)) or 1.0
+    return max(float(np.linalg.norm(rho @ spin_mo[k] - spin_mo[k] @ rho)) / scale
                for k in range(3))
 
 #: ⚠ **Not a physical tolerance — a statement that the boundary is UNAMBIGUOUS.** Below this
@@ -1797,6 +1821,11 @@ def casscf(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: OrbitalSpace
         solver, factors, h_ao, c_spinor, spaces, e_nuc, boundary_check,
         where="starting orbitals", level=report_level, seed_warm_start=True)
 
+    # ⚠ The active electron count is what decides whether a Kramers constraint may be
+    # *released* at the converged point (even counts only —
+    # :func:`kuiva.mcscf.orbopt.measure_time_odd_curvature`), and the optimizer cannot see
+    # it: its contract is RDMs in, rotation out. Passed here, where it is known.
+    optimizer_kwargs.setdefault("n_active_elec", n_elec)
     orbital = optimize_orbitals(factors, h_ao, np.ascontiguousarray(c_spinor), spaces,
                                 solver, e_nuc=e_nuc, **optimizer_kwargs)
     if solver.last is None:                                   # pragma: no cover - defensive

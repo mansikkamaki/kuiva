@@ -31,7 +31,15 @@ program. Four questions, asked before setting `n_states`:
    average over a ~30 cm⁻¹ gap is a saddle — a 10⁻⁸-sized Kramers defect grows by orders of
    magnitude per iteration until the run is refused — while leaning averages over gaps of a
    few hundred cm⁻¹ and up were locally stable, ligand-field ground-doublet averages among
-   them.
+   them. ⚠ That growth was measured with the rotation *unconstrained*. Kuiva now constrains
+   the rotation by default wherever the orbitals are Kramers paired
+   ([casscf](../methods/casscf.md#keeping-the-orbitals-kramers-paired)), and a constrained
+   rotation cannot amplify a Kramers-breaking seed at all — so what warns you on a leaning
+   average is the **gap and the non-invariance**, not a refusal. From a start that is already
+   time-reversal broken (a restart on unconstrained orbitals, an unrestricted reference, a
+   deliberately perturbed guess) the constraint does not apply and the amplification is what
+   it always was. Either way the gap has to be read at the *symmetric* orbitals to mean
+   anything.
 4. **If it leans, where did the orbitals come from?** The case to know about is the free ion
    with several open-shell electrons: a J-only average that is locally stable at the
    symmetric orbitals still converged *from the scalar guess* to a solution with the `2J+1`

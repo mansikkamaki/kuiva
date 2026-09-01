@@ -98,7 +98,8 @@ from ..util.logging import get_logger
 from ..util.timing import timer
 from .adaptive import AdaptiveCISolver, Proposal, SolverFailure, as_adaptive_solver
 from .orbopt import (CASIntegrals, CASSCFResult, DEFAULT_MAX_STEP, OrbitalOptimizer,
-                     OrbitalSpaces, SECOND_ORDER_START)
+                     OrbitalSpaces, SECOND_ORDER_START, kramers_rotation_note,
+                     measure_time_odd_curvature, resolve_kramers_rotation)
 
 log = get_logger(__name__)
 
@@ -195,7 +196,8 @@ def optimize_orbitals_events(
         e_nuc: float = 0.0, max_iter: int = 50, conv_grad: float = 1e-4,
         conv_energy: float = 1e-8, max_step: float = DEFAULT_MAX_STEP, memory: int = 10,
         active_active: bool = False, mode: str = "auto",
-        second_order_start: float = SECOND_ORDER_START,
+        kramers_rotation: Any = "auto", n_active_elec: Optional[int] = None,
+        kramers_stability: Any = "auto", second_order_start: float = SECOND_ORDER_START,
         tau: float = DEFAULT_TAU, event_interval: int = DEFAULT_EVENT_INTERVAL,
         max_event_interval: int = DEFAULT_MAX_EVENT_INTERVAL,
         trust_floor: Optional[float] = None, keep_memory_on_adopt: bool = False,
@@ -231,6 +233,18 @@ def optimize_orbitals_events(
     ``keep_memory_on_adopt``
         Transport the L-BFGS pairs across an adoption instead of clearing them. Off by
         default — see :meth:`~kuiva.mcscf.orbopt.OrbitalOptimizer.reset_chart`.
+    ``kramers_rotation`` / ``n_active_elec`` / ``kramers_stability``
+        As in the plain driver: ``"auto"`` constrains the rotation to keep Kramers-paired
+        orbitals paired where the incoming ones are
+        (:func:`~kuiva.mcscf.orbopt.resolve_kramers_rotation`). ⚠ A chart change moves the
+        *space*, never the orbitals or the electron count, so the decision made at entry
+        holds for the whole run — an adopted space cannot make a paired orbital set unpaired.
+        ⚠ **The time-odd stability test here REPORTS and never releases**, which is the one
+        place this driver deliberately does less than the plain one: releasing the constraint
+        means continuing an unconstrained optimization from a displaced point, and on an
+        adaptive surface that is a chart change whose incumbent space was chosen for the
+        symmetric solution. What a saddle verdict means here is *re-run this unconstrained*,
+        and the warning says so. ``kramers_stability=False`` switches the measurement off.
 
     ``extra_columns``
         Solver-specific ``(Column, zero-argument getter)`` pairs appended to the iteration
@@ -242,9 +256,12 @@ def optimize_orbitals_events(
     """
     solver = as_adaptive_solver(ci_solver)
     c = np.ascontiguousarray(c_spinor, dtype=np.complex128)
+    kramers, pairing = resolve_kramers_rotation(kramers_rotation, c, spaces,
+                                                active_active=active_active)
     opt = OrbitalOptimizer(spaces, max_step=max_step, memory=memory,
                            active_active=active_active, mode=mode,
-                           second_order_start=second_order_start, conv_grad=conv_grad)
+                           second_order_start=second_order_start, conv_grad=conv_grad,
+                           kramers=kramers)
     floor = (DEFAULT_TRUST_FLOOR_FRACTION * max_step if trust_floor is None
              else float(trust_floor))
     interval = max(1, int(event_interval))
@@ -256,6 +273,8 @@ def optimize_orbitals_events(
             ("inactive / active / virtual spinors",
              "{} / {} / {}".format(spaces.n_inactive, spaces.n_active, spaces.n_virtual)),
             ("orbital rotation parameters", opt.n_parameters, "", "complex"),
+            ("rotation", "Kramers constrained" if kramers else "general complex", "",
+             kramers_rotation_note(kramers, pairing)),
             ("step engine", mode),
             ("adoption threshold tau", tau, "Eh", "variational, at fixed integrals",
              out.SCI_FMT),
@@ -391,16 +410,39 @@ def optimize_orbitals_events(
             break
 
     n_events = len(events)
+    # The time-odd stability of the constrained solution: measured here, never acted on
+    # (see the docstring). It is meaningful at a converged point and nowhere else.
+    curvature = None
+    if converged and opt.kmap is not None and kramers_stability is not False and (
+            kramers_stability is True
+            or (kramers_rotation == "auto" and n_active_elec is not None
+                and int(n_active_elec) % 2 == 0)):
+        # ⚠ The same condition the plain driver releases on, minus the release: measuring
+        # where a broken solution could not be an answer anyway (an odd count, an explicit
+        # kramers_rotation=True) would spend Hessian-vector products on a verdict nobody
+        # can act on. `True` is the diagnostic setting and measures regardless.
+        curvature = measure_time_odd_curvature(opt, ints, factors, h_ao, c, gamma, gamma2)
     if report:
         table.end("converged" if converged else
                   "NOT converged in {} macro-iterations".format(max_iter))
-        out.entries(log, [
+        entries = [
             ("second-order steps taken", opt.n_second_order_steps),
             ("Hessian-vector products", opt.n_hessian_matvec),
             ("rejected steps", opt.n_rejected),
             ("space proposals", n_events, "", "{} adopted".format(n_adoptions)),
             ("failed CI solves", n_failures),
-        ])
+        ]
+        if curvature is not None:
+            entries.append(("lowest time-odd curvature", curvature.value, "Eh/rad^2",
+                            "{}; {} products".format(curvature.verdict, curvature.n_matvec),
+                            out.SCI_FMT))
+        out.entries(log, entries)
+    if curvature is not None and curvature.unstable:
+        log.warning("the Kramers-constrained solution is a SADDLE: the orbital Hessian has "
+                    "curvature %.3e Eh/rad^2 along a time-reversal-odd rotation, so a "
+                    "time-reversal-broken solution lies below it. This driver does not "
+                    "release the constraint on an adaptive surface; re-run with "
+                    "kramers_rotation=False to follow it", curvature.value)
     if not converged:
         log.warning("orbital optimization did not converge in %d macro-iterations "
                     "(|g| = %.3e, target %.1e); the orbitals are the last iterate and may "
@@ -410,6 +452,7 @@ def optimize_orbitals_events(
         n_iterations=it, grad_norm=gnorm, history=history,
         n_hessian_matvec=opt.n_hessian_matvec,
         n_second_order_steps=opt.n_second_order_steps, n_rejected=opt.n_rejected,
+        time_odd_curvature=None if curvature is None else curvature.value,
         n_events=n_events, n_adoptions=n_adoptions, n_refusals=n_refusals,
         n_solver_failures=n_failures, event_stable=event_stable, events=events)
 

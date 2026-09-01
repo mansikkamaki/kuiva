@@ -58,6 +58,78 @@ model:
 * ``"auto"`` (default) — start cheap, escalate when the **gradient trajectory** shows the
   cheap step is not getting anywhere. The robust choice, not the cheapest one.
 
+Keeping the orbitals Kramers paired
+-----------------------------------
+``kappa`` is complex and anti-Hermitian, and nothing in that holds the orbital *spaces* closed
+under time reversal. For a time-reversal-symmetric Hamiltonian and an ensemble its symmetry
+leaves invariant, ``E(kappa) = E(Theta kappa)`` identically, so the exact gradient is
+time-reversal **even** and the exact step would preserve closure — but the quasi-Newton and
+augmented-Hessian steps carry curvature along directions the energy barely resists, and the
+roundoff-level asymmetry they inject there is **amplified rather than damped**. Measured on a
+UF3 CAS(3, 14 spinors) SA-10 reference before the constraint below existed: the relative
+time-reversal breach of the active integrals grew 7e-21 -> 5e-7 over thirteen solves, roughly
+a factor of ten every few iterations; the Kramers splitting of the odd-electron spectrum
+tracked it exactly (0 -> 1.6e-6 -> 0.13 cm^-1); and the state-averaging gate then refused
+inside a *trial* evaluation, which ended the optimization.
+
+⚠ **An odd electron count is how that drift is DETECTED, not who it harms.** A rotation
+*within* the active space cannot move a CI eigenvalue, so a split Kramers pair proves the
+**subspace** drifted, not merely the alignment inside it — and an even-electron run drifts
+identically with no enforced degeneracy for anything to notice (an N2 CAS(6,8) converged with
+a 2.6e-04 closure defect and said nothing at all). Kramers' theorem is the tripwire, not the
+victim.
+
+The remedy is a constraint on the **step** and not a repair of the orbitals after it
+(``kramers_rotation=``, resolved by :func:`resolve_kramers_rotation`, applied by
+:meth:`OrbitalOptimizer._project`). Time reversal acts on a spinor *index* as ``pbar = p ^ 1``
+with the sign ``t_p = (-1)^p``, and ``exp`` preserves the relation
+
+    kappa_pq = t_p t_q conj(kappa[pbar, qbar])
+
+because the map is multiplicative and the exponential series is real — so a ``kappa`` obeying
+it generates a rotation that takes Kramers pairs to Kramers pairs *exactly*, and the spans
+cannot leave the closed manifold at all. Imposing it is an **orthogonal projection of the real
+parameter space** (:func:`kramers_project`), so what is optimized is the restriction of the
+same problem rather than a modified one, and what the projection removes is the roundoff the
+Fock builds put into the odd directions — the exact gradient has none there.
+
+⚠ **It is a constraint, and it carries the irrep mask's caveat unchanged**: the energy it
+converges to is the lowest *time-reversal-symmetric* one, which is not the unconstrained
+optimum wherever that symmetry is spontaneously broken. ⚠ **And it presumes the incoming
+columns really are ``(psi, T psi)`` pairs**, which is why ``"auto"`` measures them rather than
+trusting a flag: an unrestricted reference's spinors are legitimately not paired, and neither
+are the active orbitals a previous *unconstrained* run converged to.
+
+Releasing it: the constrained solution is tested, not assumed
+-------------------------------------------------------------
+Spontaneous breaking is not hypothetical at an even active electron count — N2 CAS(6,8)
+converges 0.64 Eh **below** its symmetric stationary point with 42% of its density time-odd —
+and no *static* quantity separates that from the drift: both leave the symmetric point along a
+time-odd direction and both descend monotonically. What separates them is a **measurement at
+the converged point**: whether the symmetric solution is a minimum of the unconstrained
+problem, i.e. whether the orbital Hessian has negative curvature in the directions the
+constraint projected out. That is :func:`measure_time_odd_curvature` — the lowest eigenvalue
+of ``P_odd H P_odd`` by Davidson, a few tens of Hessian-vector products once per run — and
+where it is negative, :func:`optimize_orbitals` releases the constraint, steps off the saddle
+along the offending direction and continues unconstrained. The orbital analogue of the SCF's
+``stability="follow"``, and the reason the constraint can be the default at **both**
+parities: a broken solution that is real is still reached, and one that is only drift never
+is. ⚠ Measured on the two characterized cases: N2 CAS(6,8) releases at -0.34 Eh/rad^2 and
+recovers the unconstrained energy to 1.3e-09 Eh; a healthy run reports a positive curvature
+and finishes where it was.
+
+⚠ **The release is even-electron only, and that is what parity still decides.** At an odd
+count a time-reversal-broken solution has no Kramers degeneracy and the state-averaging gate
+refuses it downstream, so there is nothing to release *to* — the verdict is reported and the
+constraint kept.
+
+⚠ **The remedy that does not work, recorded so it is not tried again**: repairing the
+*orbitals* after each step by projecting every space onto its nearest time-reversal-closed
+span (:func:`kuiva.interface.api.kramers_span_repair`, still present and still wired to
+nothing). It removes the drift exactly and is wrong anyway — "nearest closed span" stops
+meaning "almost the same span" once a block has drifted, so it silently **re-selects the
+active space**, measured as an N2 CAS(6,8) converging 0.6 Eh *above its own SCF energy*.
+
 ⚠ Stability notes. The diagonal Hessian is a **preconditioner**, not a curvature
 claim: it is floored away from zero, its anisotropy is clamped (measured up to 10x too small
 on soft modes), and a persistently negative diagonal is reported rather than silently damped.
@@ -102,7 +174,7 @@ References
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -142,6 +214,29 @@ STALL_WINDOW = 15
 STALL_FACTOR = 2.0
 #: Absolute floor on the diagonal Hessian preconditioner [Eh]; see the stability note above.
 HESSIAN_FLOOR = 1.0e-3
+#: Relative pairing defect below which the incoming orbitals count as Kramers paired, and
+#: ``kramers_rotation="auto"`` therefore constrains the rotation
+#: (:func:`kuiva.spinor.expand.kramers_pairing_defect`). ⚠ **A gate, not a tolerance**: it
+#: says where roundoff stops, not how much breach is acceptable. A guess built by
+#: :func:`kuiva.spinor.expand.expand_scalar_mos` is paired to 0, a constrained optimization
+#: leaves 1e-15..1e-13 after hundreds of steps, and everything the constraint cannot be
+#: applied to — an unrestricted reference, a converged Kramers-unrestricted CASSCF's active
+#: orbitals — is O(0.1) or worse. There is nothing in between to get wrong.
+KRAMERS_PAIRING_TOL = 1.0e-10
+#: Curvature [Eh/rad^2] below which a converged Kramers-constrained solution counts as a
+#: **saddle** in the time-reversal-odd rotations the constraint forbids
+#: (:func:`measure_time_odd_curvature`). ⚠ **A gate, not a tolerance**, and the two sides of
+#: it are orders apart rather than adjacent: a genuine symmetry-breaking instability is
+#: O(0.1-1) Eh/rad^2 (N2 CAS(6,8): -0.53), while a stable solution's lowest time-odd
+#: curvature is a positive number of the same size as its stiffest even ones. What this
+#: value has to exclude is only the residual of an *imperfectly* converged optimization,
+#: whose gradient is conv_grad and whose curvature error is smaller.
+KRAMERS_STABILITY_TOL = 1.0e-3
+#: Largest rotation angle [rad] of the step that leaves a time-odd saddle when the constraint
+#: is released (:func:`kramers_release_rotation`). It only has to break the symmetry — the
+#: instability supplies the rest of the descent — so it is deliberately well inside
+#: :data:`DEFAULT_MAX_STEP` and is not a tuned quantity.
+KRAMERS_RELEASE_STEP = 0.10
 #: Relative floor, as a fraction of the median diagonal. The approximate diagonal is a poor
 #: estimate of curvature for *soft* modes specifically — measured against a numerical diagonal
 #: Hessian it is a factor 0.67 too small on average but up to 10x too small on the softest
@@ -1353,6 +1448,383 @@ def _as_optional_vector(value) -> Optional[np.ndarray]:
     return None if array.size == 0 else array
 
 
+def kramers_parameter_map(rows: np.ndarray, cols: np.ndarray,
+                          n_orb: int) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """``(mirror, sign, conjugate)`` mapping each rotation parameter to its time-reversed one.
+
+    Time reversal acts on a spinor *index* as ``pbar = p ^ 1`` with the sign ``t_p = (-1)^p``
+    (:func:`kuiva.spinor.expand.time_reversal_index_signs`), so on the rotation generator it
+    is the antilinear involution ``(Theta kappa)_pq = t_p t_q conj(kappa[pbar, qbar])``. This
+    expresses it on the **packed** parameter vector, which needs three arrays rather than one
+    permutation because ``(pbar, qbar)`` may be stored as its anti-Hermitian partner
+    ``(qbar, pbar)`` — an active-active pair, where only the upper triangle is a parameter::
+
+        Theta(v)[k] = sign[k] * (conj(v[mirror[k]]) if conjugate[k] else v[mirror[k]])
+
+    Returns ``None`` when the parameter list is **not closed** under the index swap, which is
+    the structural precondition for the constraint to exist at all: it holds whenever every
+    orbital space contains whole Kramers pairs — the rule that no orbital space may split a
+    Kramers pair, so always for a paired reference — and the irrep mask, if any, keeps a
+    pair together. It fails loudly rather than silently constraining half of a list.
+
+    ⚠ Nothing here checks that the *orbitals* are Kramers paired; that is a property of an
+    array, not of an index list, and is :func:`kuiva.spinor.expand.kramers_pairing_defect`.
+    """
+    rows = np.asarray(rows, dtype=int).ravel()
+    cols = np.asarray(cols, dtype=int).ravel()
+    if rows.size == 0:
+        return (np.zeros(0, dtype=int), np.zeros(0), np.zeros(0, dtype=bool))
+    if int(n_orb) % 2:
+        return None
+    n = int(n_orb)
+    keys = rows * n + cols
+    order = np.argsort(keys)
+    sorted_keys = keys[order]
+    if np.any(np.diff(sorted_keys) == 0):                    # pragma: no cover - defensive
+        raise ValueError("the rotation parameter list contains a duplicated (p, q) pair")
+
+    def locate(target):
+        pos = np.searchsorted(sorted_keys, target)
+        safe = np.clip(pos, 0, sorted_keys.size - 1)
+        return np.where(sorted_keys[safe] == target, order[safe], -1)
+
+    rbar, cbar = rows ^ 1, cols ^ 1
+    direct = locate(rbar * n + cbar)
+    flipped = locate(cbar * n + rbar)
+    mirror = np.where(direct >= 0, direct, flipped)
+    if np.any(mirror < 0):
+        return None
+    conjugate = direct >= 0
+    # t_p t_q, and the extra minus the anti-Hermitian storage of a flipped pair carries.
+    phase = np.where((rows % 2) == (cols % 2), 1.0, -1.0)
+    sign = np.where(conjugate, phase, -phase)
+    return mirror, sign, conjugate
+
+
+def kramers_project(vec: np.ndarray,
+                    kmap: Tuple[np.ndarray, np.ndarray, np.ndarray]) -> np.ndarray:
+    """Project a packed rotation vector onto the time-reversal-**even** subspace.
+
+    ``(v + Theta v) / 2`` through :func:`kramers_parameter_map`. ``Theta`` is orthogonal for
+    the real inner product :meth:`OrbitalOptimizer._dot` uses, so this is an orthogonal
+    projection of the real parameter space and the constrained optimization is an ordinary
+    restriction of the unconstrained one — not a modification of the step.
+    """
+    mirror, sign, conjugate = kmap
+    if vec.size == 0:
+        return vec
+    partner = vec[mirror]
+    return 0.5 * (vec + sign * np.where(conjugate, np.conj(partner), partner))
+
+
+def kramers_mirror_mean(vec: np.ndarray,
+                        kmap: Tuple[np.ndarray, np.ndarray, np.ndarray]) -> np.ndarray:
+    """Average a **real, positive** packed quantity over time-reversed parameter pairs.
+
+    For the diagonal Hessian preconditioner, whose entries are equal between a parameter and
+    its time-reversed partner for a time-reversal-symmetric problem and differ from it only by
+    roundoff. Averaging costs nothing and keeps the preconditioned direction inside the even
+    subspace exactly, where an unaveraged one would leak a little of what the projection is
+    there to remove back in at every scaling.
+    """
+    mirror, _sign, _conjugate = kmap
+    return vec if vec.size == 0 else 0.5 * (vec + vec[mirror])
+
+
+def resolve_kramers_rotation(request: Any, c_spinor: np.ndarray, spaces: OrbitalSpaces, *,
+                             active_active: bool = False,
+                             labels: Optional[np.ndarray] = None) -> Tuple[bool, float]:
+    """Decide whether to constrain the rotation, and say what the decision was made on.
+
+    ``request`` is ``"auto"`` (the default), ``True`` or ``False``; the answer is
+    ``(constrained, pairing defect)``.
+
+    ⚠ **"auto" measures the orbitals rather than trusting a flag, and that is the whole
+    point.** The constraint is expressed on the index convention ``(2p, 2p+1)`` = ``(psi,
+    T psi)``, so it is the right constraint exactly when the incoming columns *are* those
+    pairs and is an arbitrary restriction of the variational space when they are not — which
+    is not an edge case: an unrestricted reference's spinors are never paired (see
+    :func:`kuiva.spinor.expand.kramers_pairing_defect`), and neither are the active orbitals
+    a previous *unconstrained* CASSCF converged to. A flag would be right about the first
+    calculation and wrong about the restart.
+
+    ⚠ **The active electron count no longer decides this** (it did between v0.36.0 and
+    v0.37.0, when the constraint was imposed on odd counts only). A time-reversal-broken
+    solution is a legitimate variational answer at an even count — measured on N2 CAS(6,8),
+    0.64 Eh **below** the symmetric stationary point with its density 42% time-odd — so the
+    constraint could not simply be imposed there; but declining it left every even-electron
+    run exposed to the drift it exists to remove, and the parity of the electron count is
+    evidence about neither. What decides it now is a **measurement at the converged point**
+    (:func:`measure_time_odd_curvature`): the optimization is constrained, its solution is
+    tested for negative curvature along the time-odd rotations the constraint forbade, and
+    the constraint is *released* where that instability is real. Parity survives only as the
+    rule for when a release is on the table (``optimize_orbitals``): at an odd count a broken
+    solution has no Kramers degeneracy and the state-averaging gate refuses it downstream
+    anyway, so there is nothing to release to.
+
+    ``True`` refuses rather than constrains an unpaired set: an explicit request that quietly
+    did nothing (or quietly did the wrong thing) is worse than an error.
+    """
+    from ..spinor.expand import kramers_pairing_defect
+
+    if request is False:
+        return False, float("nan")
+    if request is not True and request != "auto":
+        raise ValueError("kramers_rotation must be True, False or 'auto'; got {!r}"
+                         .format(request))
+    c = np.asarray(c_spinor)
+    paired = c.ndim == 2 and c.shape[1] % 2 == 0 and c.shape[0] % 2 == 0
+    pairing = kramers_pairing_defect(c) if paired else float("inf")
+    rows, cols = spaces.rotation_pairs(active_active, labels=labels)
+    kmap = kramers_parameter_map(rows, cols, spaces.n_orb) if paired else None
+    usable = pairing <= KRAMERS_PAIRING_TOL and kmap is not None
+    if usable:
+        return True, pairing
+    if request is True:
+        if kmap is None:
+            raise ValueError(
+                "kramers_rotation=True needs a rotation parameter list closed under the "
+                "Kramers index swap: an orbital space holds half a pair, or an irrep mask "
+                "separates the partners of one")
+        raise ValueError(
+            "kramers_rotation=True needs Kramers-paired orbitals, and these are paired only "
+            "to {:.2e} (against {:.1e}): with an unrestricted reference they never are, and a "
+            "set converged by an unconstrained optimization is not either. Pass "
+            "kramers_rotation='auto', which measures this and leaves the rotation "
+            "unconstrained where the constraint would be meaningless"
+            .format(pairing, KRAMERS_PAIRING_TOL))
+    log.debug("the rotation is left unconstrained: the orbitals are Kramers paired only to "
+              "%.2e (against %.1e)%s", pairing, KRAMERS_PAIRING_TOL,
+              "" if kmap is not None else ", and the parameter list is not pair closed")
+    return False, pairing
+
+
+def kramers_rotation_note(kramers: bool, pairing: float) -> str:
+    """One phrase for the reported rotation line: what the constraint decision rests on.
+
+    The two ways a run comes back unconstrained are different statements and are never
+    printed the same way: it was asked for, or the orbitals are not Kramers pairs to begin
+    with. Whether a *constrained* run then keeps its constraint is a separate line, written
+    at the end of the optimization from :class:`TimeOddCurvature` — it is a measurement at
+    the converged point and cannot be known here.
+    """
+    if kramers:
+        return "orbitals paired to {:.0e}; spaces stay time-reversal closed".format(pairing)
+    if pairing != pairing:                                    # NaN: switched off explicitly
+        return "unconstrained by request"
+    return ("orbitals are not Kramers paired ({:.0e})".format(pairing)
+            if pairing < np.inf else "not a Kramers-paired orbital set")
+
+
+def kramers_odd_project(vec: np.ndarray,
+                        kmap: Tuple[np.ndarray, np.ndarray, np.ndarray]) -> np.ndarray:
+    """Project a packed rotation vector onto the time-reversal-**odd** subspace.
+
+    ``(v - Theta v) / 2``, the orthogonal complement of :func:`kramers_project` in the same
+    real inner product. It is the subspace the constraint removes, and therefore the one a
+    stability test has to look in: a constrained optimization is stationary against every
+    even rotation by construction, so whether its solution is a minimum of the *unconstrained*
+    problem is decided entirely here.
+    """
+    mirror, sign, conjugate = kmap
+    if vec.size == 0:
+        return vec
+    partner = vec[mirror]
+    return 0.5 * (vec - sign * np.where(conjugate, np.conj(partner), partner))
+
+
+@dataclass
+class TimeOddCurvature:
+    """Lowest curvature of the orbital Hessian along time-reversal-**odd** rotations.
+
+    ``value`` is a Ritz value and therefore an **upper bound** on the true lowest eigenvalue,
+    which is what makes the verdict one-sided and safe: a negative ``value`` *proves* negative
+    curvature whether or not the eigensolve converged, while a non-negative one establishes
+    stability only when ``converged`` is true. Both readings are reported as what they are.
+    """
+
+    value: float
+    direction: np.ndarray
+    converged: bool
+    n_matvec: int
+
+    @property
+    def unstable(self) -> bool:
+        """The symmetric solution is a saddle: a time-odd rotation lowers the energy."""
+        return self.value < -KRAMERS_STABILITY_TOL
+
+    @property
+    def verdict(self) -> str:
+        """One phrase for the reported line — never "stable" on an unconverged solve."""
+        if self.unstable:
+            return "SADDLE: a time-odd rotation lowers the energy"
+        if not self.converged:
+            return "not established: the eigensolve did not converge"
+        return "the time-reversal-symmetric solution is a minimum"
+
+
+def lowest_projected_curvature(hvp: Callable[[np.ndarray], np.ndarray], hdiag: np.ndarray,
+                               project: Callable[[np.ndarray], np.ndarray], *,
+                               tol: float = 1e-3, max_iter: int = 50,
+                               max_subspace: int = 64, n_seed: int = 3
+                               ) -> Tuple[float, np.ndarray, int, bool]:
+    """Lowest eigenpair of a symmetric operator **restricted to a subspace**, by Davidson.
+
+    ``project`` is an orthogonal projector of the real parameter space (here
+    :func:`kramers_odd_project`); every basis vector and every product is passed through it,
+    so what is diagonalized is ``P H P`` on ``range(P)`` — a restriction of the same operator,
+    not a modified one. Returns ``(eigenvalue, eigenvector, matvecs, converged)``.
+
+    The seeds are the softest directions of ``hdiag`` — where a negative curvature lives if
+    there is one — taken **deterministically** and in both the real and the imaginary
+    direction of each parameter, since the projector is real-linear and the two project
+    differently. There is no random start: a stability verdict that moved between runs of the
+    same script would be worse than none.
+
+    ``tol`` is on the residual, relative to ``max(|lambda|, 1)``. Convergence is only ever
+    needed to certify a *non-negative* answer: a negative Ritz value already bounds the true
+    lowest eigenvalue from above (see :class:`TimeOddCurvature`).
+
+    ⚠ **The budget is set by the awkward case, not the typical one.** Measured on N2
+    CAS(8,12): from the target basis' own SCF orbitals the solve converges in 8-16 products,
+    while at the *same* solution reached by projection from another basis it needs ~45 — the
+    orbital frame differs by a rotation the exact-diagonal preconditioner is much worse in,
+    and the lowest curvatures there sit in a cluster. A budget that fitted the first would
+    report "not established" on the second, which is a weaker statement than the run
+    deserves. Where it really does stall, that is what it says.
+    """
+    hdiag = np.ascontiguousarray(np.real(np.asarray(hdiag)), dtype=np.float64)
+    n = hdiag.size
+    if n == 0:
+        return 0.0, np.zeros(0, dtype=np.complex128), 0, True
+    basis: List[np.ndarray] = []
+    applied: List[np.ndarray] = []
+    n_matvec = 0
+
+    def expand(vec: np.ndarray) -> bool:
+        """Orthonormalize inside the subspace and apply the operator. False if redundant."""
+        v = project(np.asarray(vec, dtype=np.complex128))
+        for _ in range(2):                        # twice: the usual Gram-Schmidt insurance
+            for b in basis:
+                v = v - float(np.real(np.vdot(b, v))) * b
+        nrm = float(np.sqrt(np.real(np.vdot(v, v))))
+        if nrm < 1e-8:
+            return False
+        v = v / nrm
+        basis.append(v)
+        applied.append(project(hvp(v)))
+        return True
+
+    for k in np.argsort(hdiag)[:max(1, int(n_seed))]:
+        for value in (1.0 + 0.0j, 0.0 + 1.0j):
+            seed = np.zeros(n, dtype=np.complex128)
+            seed[k] = value
+            if expand(seed):
+                n_matvec += 1
+    if not basis:                                  # the subspace is empty: nothing to break
+        return 0.0, np.zeros(n, dtype=np.complex128), 0, True
+
+    lam = 0.0
+    vec = np.zeros(n, dtype=np.complex128)
+    converged = False
+    for _ in range(int(max_iter)):
+        k = len(basis)
+        s = np.empty((k, k))
+        for i in range(k):
+            for j in range(k):
+                s[i, j] = float(np.real(np.vdot(basis[i], applied[j])))
+        s = 0.5 * (s + s.T)                        # exact projection of a symmetric operator
+        vals, vecs = np.linalg.eigh(s)
+        c = vecs[:, 0]
+        lam = float(vals[0])
+        vec = sum(c[i] * basis[i] for i in range(k))
+        av = sum(c[i] * applied[i] for i in range(k))
+        r = av - lam * vec
+        resid = float(np.sqrt(np.real(np.vdot(r, r))))
+        log.debug("time-odd curvature: subspace %d, lambda %.6e, residual %.3e", k, lam,
+                  resid)
+        converged = resid <= tol * max(abs(lam), 1.0)
+        if converged or k >= max_subspace:
+            break
+        denom = hdiag - lam
+        denom = np.where(np.abs(denom) < 1e-8, 1e-8, denom)
+        if not expand(r / denom):
+            # The preconditioned residual lies in the subspace already. ⚠ Not convergence:
+            # the residual is orthogonal to the subspace by construction, so an exhausted
+            # space has a zero residual and the test above has already fired. This is the
+            # preconditioner failing to point anywhere new, and it is reported as the
+            # unconverged solve it is — nothing may call an unconverged solve stable.
+            break
+        n_matvec += 1
+    # Deterministic overall sign. ``+v`` and ``-v`` are the same physics — E(kappa) =
+    # E(Theta kappa) makes the two branches of a time-odd instability degenerate — but a run
+    # that picked them by roundoff would take two different trajectories off the saddle.
+    if vec.size:
+        lead = int(np.argmax(np.abs(vec)))
+        phase = vec[lead]
+        if phase.real < 0.0 or (phase.real == 0.0 and phase.imag < 0.0):
+            vec = -vec
+    return lam, vec, n_matvec, converged
+
+
+def measure_time_odd_curvature(opt: "OrbitalOptimizer", ints: CASIntegrals,
+                               factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
+                               gamma: np.ndarray, gamma2: np.ndarray, *,
+                               tol: float = 1e-3, max_iter: int = 50) -> TimeOddCurvature:
+    """Is the Kramers-constrained solution a minimum, or a saddle in the directions it forbids?
+
+    The orbital analogue of the SCF's stability analysis: build the exact orbital Hessian at
+    the converged point and find its lowest eigenvalue **restricted to the time-odd rotations**
+    the constraint projected out. It answers the one question the constraint cannot —
+    ``kramers_rotation`` decides whether a time-reversal-broken solution is *reachable*, and
+    only this decides whether one *exists*.
+
+    ⚠ **It is meaningful at a converged point and nowhere else.** Away from a stationary point
+    a negative curvature says nothing about the solution; the caller checks convergence first.
+
+    The Hessian is built at the caller's iterate, reusing the active Fock the optimizer's
+    gradient memo already holds, and costs one Hessian-vector product per Davidson expansion
+    — a few tens, once per run, against the many hundreds a second-order optimization spends.
+    """
+    if opt.kmap is None:
+        raise ValueError("the time-odd curvature is defined against a Kramers-constrained "
+                         "optimization; this one is unconstrained, so the whole rotation "
+                         "space was already searched")
+    with timer("time-reversal stability"):
+        # Memoized on object identity: free at the iterate the driver just evaluated.
+        opt.gradient(ints, gamma, gamma2, factors, c_spinor)
+        hess = OrbitalHessian(ints, factors, h_ao, c_spinor, gamma, gamma2, opt.rows,
+                              opt.cols, f_active_ao=getattr(opt, "_f_active_ao", None))
+        kmap = opt.kmap
+        value, direction, n_matvec, converged = lowest_projected_curvature(
+            hess.matvec, hess.exact_diagonal(),
+            lambda v: kramers_odd_project(v, kmap), tol=tol, max_iter=max_iter)
+    # Charged to the optimizer's own counter, so the reported product count and
+    # :attr:`CASSCFResult.work_units` include what the verdict cost. A measurement whose
+    # price is invisible is a measurement nobody can decide to switch off.
+    opt.n_hessian_matvec += int(n_matvec)
+    return TimeOddCurvature(value=float(value), direction=direction,
+                            converged=bool(converged), n_matvec=int(n_matvec))
+
+
+def kramers_release_rotation(direction: np.ndarray, rows: np.ndarray, cols: np.ndarray,
+                             n_orb: int, max_rotation: float = KRAMERS_RELEASE_STEP
+                             ) -> np.ndarray:
+    """The unitary that steps off a time-odd saddle, scaled to ``max_rotation`` radians.
+
+    A finite step is not a refinement of the optimizer's own: at the saddle the gradient
+    vanishes in **every** direction (the exact gradient of a time-reversal-symmetric problem
+    is time-even, and the even part is what convergence just drove to zero), so releasing the
+    constraint alone would leave the run stationary and it would converge again on the spot.
+    What breaks the symmetry is the displacement, and the instability then does the rest.
+    """
+    if direction.size == 0:
+        return np.eye(int(n_orb), dtype=np.complex128)
+    scale = float(np.max(np.abs(direction)))
+    step = direction * (float(max_rotation) / scale) if scale > 0.0 else direction
+    return unitary_from_antihermitian(_unpack(step, rows, cols, int(n_orb)))
+
+
 def _pack(mat: np.ndarray, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
     return mat[rows, cols]
 
@@ -1395,7 +1867,7 @@ class OrbitalOptimizer:
                  stall_patience: int = 3, stall_window: int = STALL_WINDOW,
                  stall_factor: float = STALL_FACTOR,
                  conv_grad: float = 1e-4, ah_tol: float = 1e-3, ah_max_iter: int = 60,
-                 ah_recycle: int = 0):
+                 ah_recycle: int = 0, kramers: bool = False):
         if mode not in ("auto", "quasi-newton", "second-order"):
             raise ValueError("unknown optimizer mode {!r}; expected 'auto', 'quasi-newton' "
                              "or 'second-order'".format(mode))
@@ -1404,6 +1876,17 @@ class OrbitalOptimizer:
         self.memory = int(memory)
         self.labels = None if labels is None else np.atleast_2d(np.asarray(labels, dtype=int))
         self.rows, self.cols = spaces.rotation_pairs(active_active, labels=self.labels)
+        #: Packed time-reversal mirror of the parameter list, or ``None`` when the rotation is
+        #: unconstrained. See :meth:`_project` and :func:`kramers_parameter_map`.
+        self.kmap = None
+        if kramers:
+            self.kmap = kramers_parameter_map(self.rows, self.cols, spaces.n_orb)
+            if self.kmap is None:
+                raise ValueError(
+                    "kramers=True needs a rotation parameter list closed under the Kramers "
+                    "index swap, and this one is not: an orbital space holds half a pair "
+                    "(the spaces must be built on whole pairs, kuiva/spinor/expand.py) or an "
+                    "irrep mask separates the partners of one")
         self.trust = float(trust if trust is not None else max_step)
         self.mode = mode
         self.second_order_start = float(second_order_start)
@@ -1457,6 +1940,14 @@ class OrbitalOptimizer:
     def _dot(a: np.ndarray, b: np.ndarray) -> float:
         """Real inner product on the complex parameter space."""
         return float(np.real(np.vdot(a, b)))
+
+    def _project(self, vec: np.ndarray) -> np.ndarray:
+        """The packed vector, constrained to rotations that keep the orbitals Kramers paired.
+
+        The identity when the constraint is off (``kramers=False``), so every call site below
+        reads the same with and without it and an unconstrained run is bitwise what it was.
+        """
+        return vec if self.kmap is None else kramers_project(vec, self.kmap)
 
     def _two_loop(self, g: np.ndarray, hdiag: np.ndarray) -> np.ndarray:
         """L-BFGS two-loop recursion with the diagonal Hessian as the initial inverse.
@@ -1580,8 +2071,16 @@ class OrbitalOptimizer:
         self._f_active_ao = f_active_ao        # handed to the Hessian; one J/K build saved
         f_active = c_spinor.conj().T @ f_active_ao @ c_spinor
         g_mat = orbital_gradient(ints, gamma, gamma2, f_active)
-        grad = 2.0 * np.conj(_pack(g_mat, self.rows, self.cols))
+        # ⚠ Projected *here*, so that everything built from a gradient — the L-BFGS pairs, the
+        # Krylov subspace, the convergence test — lives in the constrained space rather than
+        # being corrected at the end. For a time-reversal-symmetric Hamiltonian and a
+        # time-even ensemble the exact gradient is already even, so what this removes is the
+        # roundoff the Fock builds put into the odd directions; it is that roundoff, amplified
+        # step over step, that the drift is made of.
+        grad = self._project(2.0 * np.conj(_pack(g_mat, self.rows, self.cols)))
         hdiag = diagonal_hessian(ints, gamma, f_active, self.rows, self.cols)
+        if self.kmap is not None:
+            hdiag = kramers_mirror_mean(hdiag, self.kmap)
         self._grad_cache = {"ints": ints, "c": c_spinor, "gamma": gamma,
                             "grad": grad, "hdiag": hdiag, "f_active_ao": f_active_ao}
         return grad, hdiag
@@ -1633,6 +2132,14 @@ class OrbitalOptimizer:
                                           self.rows, self.cols,
                                           f_active_ao=getattr(self, "_f_active_ao", None))
                 hv = hess.matvec
+            if self.kmap is not None:
+                # The Hessian commutes with time reversal, so the constrained problem is the
+                # restriction of the unconstrained one to the even subspace: projecting the
+                # product keeps the whole Krylov space there (the gradient that seeds it
+                # already is). Without this the solve can pick up the near-null odd
+                # directions the constraint exists to exclude and divide by their curvature.
+                def hv(kappa_vec, _unconstrained=hv):
+                    return self._project(_unconstrained(kappa_vec))
             # Inexact Newton (Eisenstat-Walker): solve loosely while the gradient is large —
             # the step is trust-region capped there anyway, so a tight solve burns
             # Hessian-vector products for a step that gets truncated — and tighten
@@ -1643,6 +2150,11 @@ class OrbitalOptimizer:
             # solve; the Fock-difference hdiag stays what the quasi-Newton machinery uses.
             # A caller-supplied hessian_vector has no exact diagonal to offer.
             hdiag_ah = hess.exact_diagonal() if hess is not None else hdiag
+            if self.kmap is not None:
+                # Symmetrized for the same reason the quasi-Newton diagonal is: the solver's
+                # linear combinations are all real, so the subspace stays in the constrained
+                # space as long as every *elementwise* scaling inside it does too.
+                hdiag_ah = kramers_mirror_mean(hdiag_ah, self.kmap)
             ah = augmented_hessian_step(grad, hv, hdiag_ah, tol=eta,
                                         max_iter=self.ah_max_iter, trust=self.trust,
                                         guess=self._ah_guess, subspace=reuse,
@@ -1669,6 +2181,11 @@ class OrbitalOptimizer:
                 self.reset_memory()
                 direction = -grad / hdiag
 
+        # Last line of defence: the preconditioner and the augmented-Hessian solve are both
+        # only *approximately* time-reversal symmetric in floating point, so the direction is
+        # projected before it is scaled — the trust radius then applies to the step actually
+        # taken, and the pending step recorded for the L-BFGS memory is the one that was.
+        direction = self._project(direction)
         max_rot = float(np.max(np.abs(direction))) if direction.size else 0.0
         if max_rot > self.trust:
             direction = direction * (self.trust / max_rot)
@@ -1885,6 +2402,16 @@ class CASSCFResult:
     n_hessian_matvec: int = 0
     n_second_order_steps: int = 0
     n_rejected: int = 0
+    #: Lowest curvature of the orbital Hessian along the time-reversal-**odd** rotations a
+    #: Kramers constraint forbids, measured at the converged point
+    #: (:func:`measure_time_odd_curvature`); ``None`` where the test did not run — an
+    #: unconstrained or unconverged optimization, or ``kramers_stability=False``. ⚠ ``None``
+    #: is "not measured" and is never to be read as "stable".
+    time_odd_curvature: Optional[float] = None
+    #: True when that measurement found a saddle and the driver released the constraint and
+    #: continued (see :func:`optimize_orbitals`). The energy below is then the broken
+    #: solution's, and it is **lower** than the symmetric one the constrained leg reached.
+    kramers_released: bool = False
 
     @property
     def work_units(self) -> float:
@@ -1908,6 +2435,8 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                       conv_energy: float = 1e-8, max_step: float = DEFAULT_MAX_STEP,
                       memory: int = 10, active_active: bool = False,
                       labels: Optional[np.ndarray] = None, mode: str = "auto",
+                      kramers_rotation: Any = "auto", n_active_elec: Optional[int] = None,
+                      kramers_stability: Any = "auto",
                       second_order_start: float = SECOND_ORDER_START,
                       callback: Optional[Callable[[dict], Optional[bool]]] = None,
                       report: bool = True,
@@ -1963,43 +2492,72 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
     That loop is the validated driver: it may grow arguments and its ``callback(info)`` dict
     may grow keys, but its control flow is not rearranged to accommodate a caller.
 
+    Keeping the orbitals Kramers paired
+    -----------------------------------
+    ``kramers_rotation`` constrains the step so that a Kramers-paired orbital set stays
+    paired — and therefore so that every orbital space stays closed under time reversal,
+    which an unconstrained complex rotation does not (the module docstring has the mechanism
+    and the measurement). ``"auto"`` (the default) decides from the **incoming orbitals**
+    alone: constrained where they are paired to :data:`KRAMERS_PAIRING_TOL` and the rotation
+    list is pair-closed, unconstrained where the constraint would be meaningless. ``True``
+    refuses an unpaired set rather than pretending; ``False`` reproduces the unconstrained
+    trajectory bitwise. The decision and what it rested on are reported on the ``rotation``
+    line.
+
+    Releasing it: is the symmetric solution a minimum?
+    -------------------------------------------------
+    A constraint converges to the lowest *time-reversal-symmetric* solution, which is not the
+    unconstrained optimum wherever that symmetry is spontaneously broken — and at an even
+    active electron count it genuinely can be (N2 CAS(6,8): the broken solution lies 0.64 Eh
+    lower with its density 42% time-odd). So the constraint is not the end of the run.
+    ``kramers_stability`` decides what happens at the converged point:
+
+    * ``"auto"`` (the default) — where a release could be acted on (an ``"auto"``-imposed
+      constraint, an **even** ``n_active_elec``, and macro-iterations left in the budget),
+      measure the lowest curvature of the exact orbital Hessian **restricted to the time-odd
+      rotations the constraint forbade** (:func:`measure_time_odd_curvature`). Non-negative:
+      the symmetric solution is a minimum and the run is finished. Negative beyond
+      :data:`KRAMERS_STABILITY_TOL`: the constraint is **released**, the orbitals are stepped
+      off the saddle along the offending direction, and the optimization continues
+      unconstrained — the orbital analogue of the SCF's ``stability="follow"``.
+    * ``True`` — measure it wherever the rotation was constrained and the run converged, and
+      report it. It **releases only where** ``"auto"`` would: an explicit
+      ``kramers_rotation=True`` asked for a Kramers-restricted optimization and gets one, with
+      the instability named rather than acted on, and an odd count is left alone because a
+      broken solution there has no Kramers degeneracy and the state-averaging gate refuses it
+      downstream — there is nothing to release *to*.
+    * ``False`` — never measure. The cheapest setting, and the one that reproduces a
+      constrained run exactly.
+
+    ⚠ The measurement is meaningful **only at a converged point**, so a run that stopped on
+    ``max_iter`` or on a callback is reported as not measured rather than as stable. ⚠ The
+    released leg spends the **same** ``max_iter`` budget: the count is of total
+    macro-iterations, exactly as it is across a restart, so a release near the end of a budget
+    is reported as a run that did not converge rather than silently given a second one.
+
     ``repair_orbitals(c) -> c`` is applied to the starting orbitals and to **every trial
     rotation before its integrals are built**, so what is evaluated is what would be kept.
 
-    ⚠ **Why a rotation needs repairing at all, and why it is not cosmetic.** The rotation is
-    a general complex unitary and nothing in it constrains the orbital *spaces* to stay
-    closed under time reversal. For a time-reversal-symmetric Hamiltonian and an ensemble
-    the symmetry leaves invariant, the exact gradient is symmetric too and the exact step
-    would preserve closure — but the quasi-Newton and augmented-Hessian steps carry
-    curvature information along directions the energy barely resists, and the roundoff-level
-    asymmetry they inject is **amplified rather than damped**. Measured on a
-    UF3 CAS(3, 14 spinors) SA-10 reference: the relative time-reversal breach of the
-    active-space integrals grows from 7e-21 at the guess to 5e-7 over thirteen solves,
-    roughly a factor of ten every few iterations, and the Kramers splitting of the
-    odd-electron spectrum tracks it exactly (0 -> 1.6e-6 -> 0.13 cm^-1) until the
-    state-averaging gate refuses and the optimization dies.
-
-    ⚠ **The failure is confined to an odd electron count only in how it is DETECTED.** A
-    unitary rotation *within* the active space cannot move a CI eigenvalue, so a split
-    Kramers pair proves the active or inactive **subspace** has drifted, not merely the
-    orbital alignment inside it — and that drift corrupts an even-electron calculation
-    exactly as much while leaving no degeneracy for anything to notice. Kramers' theorem is
-    the tripwire here, not the victim.
-
-    ⚠ **No caller passes this today and the drift is an OPEN defect.** The obvious callable
-    — project each space onto its nearest time-reversal-closed span
-    (:func:`kuiva.interface.api.kramers_span_repair`) — removes the drift and is still wrong:
-    "nearest closed span" stops meaning "almost the same span" once a block has drifted, so
-    it re-selects the active space, measured as an N2 CAS(6,8) converging 0.6 Eh above its
-    own SCF energy. The keyword is kept because a correct remedy needs this seam; what a
-    correct remedy does through it is constrain the rotation, not rewrite the orbitals.
+    ⚠ **Nothing passes it and nothing should: repairing the orbitals after a step is the
+    remedy that does not work**, kept as a seam and as a record rather than as an option.
+    Projecting each space onto its nearest time-reversal-closed span
+    (:func:`kuiva.interface.api.kramers_span_repair`) does remove the drift, and is wrong
+    anyway — "nearest closed span" stops meaning "almost the same span" once a block has
+    drifted, so it re-selects the active space, measured as an N2 CAS(6,8) converging 0.6 Eh
+    *above its own SCF energy*. The drift is fixed where it is caused, in the step.
     """
     c = np.ascontiguousarray(c_spinor, dtype=np.complex128)
     if repair_orbitals is not None:
         c = np.ascontiguousarray(repair_orbitals(c), dtype=np.complex128)
+    kramers, pairing = resolve_kramers_rotation(kramers_rotation, c, spaces,
+                                                active_active=active_active, labels=labels)
+    if kramers_stability not in (True, False) and kramers_stability != "auto":
+        raise ValueError("kramers_stability must be True, False or 'auto'; got {!r}"
+                         .format(kramers_stability))
     opt = OrbitalOptimizer(spaces, max_step=max_step, memory=memory,
                            active_active=active_active, labels=labels, mode=mode,
-                           second_order_start=second_order_start, conv_grad=conv_grad)
+                           second_order_start=second_order_start, conv_grad=conv_grad,
+                           kramers=kramers)
     if optimizer_state is not None:
         opt.load_state_dict(optimizer_state, space_key=space_key)
     if report:
@@ -2014,6 +2572,8 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
             ("optimizer mode", mode, "",
              "second order below |g| = {:.1e}".format(second_order_start)
              if mode == "auto" else ""),
+            ("rotation", "Kramers constrained" if kramers else "general complex", "",
+             kramers_rotation_note(kramers, pairing)),
             ("gradient convergence", conv_grad, "", "", "{:.1e}"),
             ("maximum rotation per step", max_step, "rad", "", "{:.2f}"),
         ])
@@ -2085,14 +2645,70 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
         if converged:
             break
 
+    # Is the constrained solution a minimum, or a saddle in the directions the constraint
+    # forbade? Only a converged point can answer it, and only an even electron count has
+    # anywhere to go if the answer is "saddle" (the docstring above says why).
+    curvature = None
+    releasable = (kramers_rotation == "auto" and n_active_elec is not None
+                  and int(n_active_elec) % 2 == 0 and it < max_iter)
+    if converged and opt.kmap is not None and kramers_stability is not False \
+            and (releasable or kramers_stability is True):
+        curvature = measure_time_odd_curvature(opt, ints, factors, h_ao, c, gamma, gamma2)
+
     if report:
         table.end("converged" if converged else
                   "NOT converged in {} macro-iterations".format(max_iter))
-        out.entries(log, [
-            ("second-order steps taken", opt.n_second_order_steps),
-            ("Hessian-vector products", opt.n_hessian_matvec),
-            ("rejected steps", opt.n_rejected),
-        ])
+        entries = [("second-order steps taken", opt.n_second_order_steps),
+                   ("Hessian-vector products", opt.n_hessian_matvec),
+                   ("rejected steps", opt.n_rejected)]
+        if curvature is not None:
+            entries.append(("lowest time-odd curvature", curvature.value, "Eh/rad^2",
+                            "{}; {} products".format(curvature.verdict, curvature.n_matvec),
+                            out.SCI_FMT))
+        out.entries(log, entries)
+    if curvature is not None and curvature.unstable:
+        if releasable:
+            kept = ""
+        elif kramers_rotation != "auto":
+            kept = " (the constraint is kept: an explicit kramers_rotation was asked for)"
+        elif n_active_elec is None or int(n_active_elec) % 2 == 1:
+            kept = (" (the constraint is kept: at an odd active electron count a broken "
+                    "solution has no Kramers degeneracy and is refused downstream, so there "
+                    "is nothing to release to)")
+        else:
+            kept = " (the constraint is kept: the macro-iteration budget is spent)"
+        log.warning("the Kramers-constrained solution is a SADDLE: the orbital Hessian has "
+                    "curvature %.3e Eh/rad^2 along a time-reversal-odd rotation, so a "
+                    "time-reversal-broken solution lies below it%s", curvature.value, kept)
+    if curvature is not None and curvature.unstable and releasable:
+        # Release and follow. A recursive call rather than a second loop: optimize_orbitals'
+        # loop is the validated driver and is not restructured to accommodate this — what a
+        # release needs is a *fresh unconstrained optimization from the displaced orbitals*,
+        # which is exactly what one call is. The optimizer state is deliberately not carried
+        # over: the parameter space is a different one, so the curvature memory is a memory
+        # of another chart.
+        log.warning("releasing the Kramers constraint and continuing from a %.2f rad step "
+                    "along that direction; the run continues inside the same max_iter "
+                    "budget (%d of %d macro-iterations spent)",
+                    KRAMERS_RELEASE_STEP, it, max_iter)
+        c_released = np.ascontiguousarray(
+            c @ kramers_release_rotation(curvature.direction, opt.rows, opt.cols,
+                                         spaces.n_orb))
+        followed = optimize_orbitals(
+            factors, h_ao, c_released, spaces, ci_solver, e_nuc=e_nuc, max_iter=max_iter,
+            conv_grad=conv_grad, conv_energy=conv_energy, max_step=max_step, memory=memory,
+            active_active=active_active, labels=labels, mode=mode, kramers_rotation=False,
+            n_active_elec=n_active_elec, kramers_stability=False,
+            second_order_start=second_order_start, callback=callback, report=report,
+            start_iteration=it, space_key=space_key, history=None,
+            repair_orbitals=repair_orbitals, extra_columns=extra_columns)
+        return replace(followed,
+                       history=history + followed.history,
+                       n_hessian_matvec=opt.n_hessian_matvec + followed.n_hessian_matvec,
+                       n_second_order_steps=(opt.n_second_order_steps
+                                             + followed.n_second_order_steps),
+                       n_rejected=opt.n_rejected + followed.n_rejected,
+                       time_odd_curvature=curvature.value, kramers_released=True)
     if not converged:
         log.warning("orbital optimization did not converge in %d macro-iterations "
                     "(|g| = %.3e, target %.1e); the orbitals are the last iterate and may "
@@ -2101,10 +2717,16 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                         converged=converged, n_iterations=it, grad_norm=gnorm,
                         history=history, n_hessian_matvec=opt.n_hessian_matvec,
                         n_second_order_steps=opt.n_second_order_steps,
-                        n_rejected=opt.n_rejected)
+                        n_rejected=opt.n_rejected,
+                        time_odd_curvature=None if curvature is None else curvature.value)
 
 
 __all__ = ["OrbitalSpaces", "CASIntegrals", "cas_integrals_memory_gb",
+           "kramers_parameter_map", "kramers_project", "kramers_mirror_mean",
+           "resolve_kramers_rotation", "kramers_rotation_note",
+           "kramers_odd_project", "TimeOddCurvature", "lowest_projected_curvature",
+           "measure_time_odd_curvature", "kramers_release_rotation",
+           "KRAMERS_PAIRING_TOL", "KRAMERS_STABILITY_TOL", "KRAMERS_RELEASE_STEP",
            "hessian_response_memory_gb", "HESSIAN_RESPONSE_COPIES", "hessian_square_memory_gb",
            "OrbitalOptimizer", "OrbitalStep", "CASSCFResult",
            "OrbitalHessian", "augmented_hessian_step", "AHResult",

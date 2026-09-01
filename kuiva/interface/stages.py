@@ -777,6 +777,7 @@ class CASSCF(_Stage):
             allowed = _allowed_options(
                 optimize_orbitals, _mcscf_casscf,
                 exclude=("factors", "h_ao", "c_spinor", "spaces", "ci_solver", "n_elec",
+                         "n_active_elec",
                          "e_nuc", "n_states", "weights", "solver", "active",
                          "solver_options", "callback", "report", "optimizer_state",
                          "start_iteration", "space_key", "history", "extra_columns"))
@@ -817,7 +818,7 @@ class CASSCF(_Stage):
                 driver, exclude=("factors", "h_ao", "c_spinor", "spaces", "ci_solver",
                                  "e_nuc", "callback", "report", "optimizer_state",
                                  "start_iteration", "space_key", "history",
-                                 "extra_columns", "repair_orbitals"))
+                                 "n_active_elec", "extra_columns", "repair_orbitals"))
             _check_options(self.optimizer_options, allowed, "CASSCF (orbital optimizer)")
             if isinstance(graph, str):
                 if graph not in self._GRAPH_CHOICES:
@@ -1128,6 +1129,7 @@ class CASSCF(_Stage):
         with stop_context(self.signals):
             result = driver(ref.factors, h_ao, orbitals, self.space.spaces, solver,
                             e_nuc=ref.data.e_nuc, callback=hook, report=self.report,
+                            n_active_elec=self.space.n_elec,
                             extra_columns=w_disc, **optimizer_options)
 
         # The optimizer's last solve may sit at a rejected trial step; the states this stage

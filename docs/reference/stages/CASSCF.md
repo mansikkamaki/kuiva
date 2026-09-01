@@ -56,6 +56,8 @@ because an active space is a physical statement (elaboration:
 | `max_step` | `0.20` | trust-region step bound [[102]](../../references.md#r102) |
 | `memory` | `10` | L-BFGS history length |
 | `active_active` | `False` | active–active rotations (redundant for a full CI; opt-in) |
+| `kramers_rotation` | `"auto"` | constrain the rotation so Kramers-paired orbitals stay paired, and every orbital space stays time-reversal closed. `"auto"` constrains wherever the incoming orbitals are paired; `True` refuses an unpaired set rather than pretending; `False` is the unconstrained rotation. ⚠ A constraint: the lowest *symmetric* solution, unless the stability test below releases it ([casscf](../../methods/casscf.md#keeping-the-orbitals-kramers-paired)) |
+| `kramers_stability` | `"auto"` | at the converged point, measure the lowest curvature of the orbital Hessian along the time-odd rotations the constraint forbade, and **release** the constraint where it is negative (an even active electron count only). `"auto"` measures where a release could act, `True` measures wherever the rotation was constrained and reports, `False` never measures. Costs 20–30 Hessian-vector products once ([casscf](../../methods/casscf.md#releasing-the-constraint-is-the-symmetric-solution-a-minimum)) |
 | `callback` | `None` | `callback(info)` after every macro-iteration; returning `False` stops the run |
 | event driver only | | `tau=1e-6`, `event_interval=1`, `max_event_interval`, `trust_floor`, `keep_memory_on_adopt` — the event-gating controls of the adaptive (DMRG) route |
 

@@ -91,6 +91,89 @@ truncated CI, a full CI and a DMRG plug in identically, and is deliberately not 
 Convergence therefore requires **both** $`|g|`$ below `conv_grad` and a converged energy,
 because a truncated CI can stall the energy while the orbitals still move.
 
+## Keeping the orbitals Kramers paired
+
+$`\kappa`$ is complex and anti-Hermitian, and nothing in that holds the orbital *spaces*
+closed under time reversal. For a time-reversal-symmetric Hamiltonian and an ensemble its
+symmetry leaves invariant, $`E(\kappa) = E(\Theta\kappa)`$ identically — so the exact
+gradient is time-reversal **even** and the exact step would preserve closure. The steps an
+optimizer actually takes are not exact: the quasi-Newton and augmented-Hessian models carry
+curvature along directions the energy barely resists, and the roundoff-level asymmetry they
+inject there is **amplified rather than damped**. Measured on a UF₃ CAS(3, 14 spinors) SA-10
+reference before this was constrained, the relative time-reversal breach of the active
+integrals grew $`7\times10^{-21} \to 5\times10^{-7}`$ over thirteen solves — about a factor
+of ten every few iterations — the Kramers splitting of the odd-electron spectrum tracked it
+exactly ($`0 \to 0.13`$ cm⁻¹), and the state-average gate then refused inside a *trial*
+evaluation, ending the optimization.
+
+⚠ **An odd electron count is how that is detected, not who it harms.** A rotation *within*
+the active space cannot move a CI eigenvalue, so a split Kramers pair proves the **subspace**
+drifted, not merely the alignment inside it — and an even-electron run drifts identically
+with no enforced degeneracy for anything to notice. Kramers' theorem is the tripwire, not
+the victim.
+
+The fix is a constraint on the **step**. Time reversal acts on a spinor index as
+$`\bar p = p \oplus 1`$ with the sign $`t_p = (-1)^p`$, and the exponential preserves
+
+```math
+\kappa_{pq} = t_p t_q\, \kappa^{*}_{\bar p \bar q}
+```
+
+(the map is multiplicative and the series coefficients are real), so a $`\kappa`$ obeying it
+generates a rotation taking Kramers pairs to Kramers pairs *exactly* — the spans cannot leave
+the closed manifold at all. Imposing it is an orthogonal projection of the real parameter
+space, so what is optimized is the **restriction** of the same problem rather than a modified
+one, and what the projection removes is the roundoff the Fock builds put into the odd
+directions; the exact gradient has none there.
+
+`kramers_rotation="auto"` (the default) decides from the **incoming orbitals**: the
+constraint is stated on the $`(\psi, \hat T \psi)`$ column convention, so it is the right
+constraint exactly when the incoming columns *are* those pairs, and an arbitrary restriction
+of the variational space when they are not. That is not an edge case — an unrestricted
+reference's spinors are never paired, and neither are the active orbitals of a CASSCF
+converged *without* the constraint. `True` refuses an unpaired set rather than pretending;
+`False` reproduces the unconstrained trajectory bitwise. Which of the three happened is on
+the `rotation` line of the output, together with what the decision rested on.
+
+### Releasing the constraint: is the symmetric solution a minimum?
+
+A constraint converges to the lowest *time-reversal-symmetric* solution, and that is not
+always the answer. At an **even** active electron count a time-reversal-broken solution is a
+legitimate variational result — the two-component analogue of a spin-polarized SCF — and it
+can lie far below the symmetric one: measured on an N₂ CAS(6,8) whose active space cannot
+hold the SCF reference determinant, the broken solution is **0.64 Eh below** with its density
+42% time-odd. No *static* quantity separates that from the drift above: both leave the
+symmetric point along a time-odd direction, and both descend monotonically.
+
+What separates them is a measurement at the **converged** point. The exact orbital Hessian is
+restricted to the time-odd rotations the constraint forbade and its lowest eigenvalue taken
+by Davidson — 20 to 30 Hessian-vector products, once, against the hundreds a second-order
+optimization spends:
+
+* **non-negative** — the symmetric solution is a minimum of the unconstrained problem too,
+  and the run is finished;
+* **negative** — it is a saddle, so Kuiva releases the constraint, steps 0.1 rad along the
+  offending direction and continues the optimization unconstrained. That is the orbital
+  analogue of an SCF stability analysis that follows the instability it finds.
+
+The measured curvature and the verdict are printed on the `lowest time-odd curvature` line,
+and a release is a `WARNING` naming both. `kramers_stability=` governs it: `"auto"` (the
+default) measures where a release could be acted on, `True` measures wherever the rotation was
+constrained and reports without releasing what `"auto"` would not, and `False` never measures.
+
+⚠ **The release is even-electron only.** At an odd count every level is at least doubly
+degenerate by Kramers' theorem, a broken solution has no such degeneracy, and the state-average
+gate refuses it downstream — so there is nothing to release *to*, and the verdict is reported
+with the constraint kept. ⚠ Two further limits: the measurement is meaningful only at a
+converged point, so a run that stopped on `max_iter` reports "not measured" rather than
+"stable"; and the released leg spends the **same** `max_iter` budget, so a release near the end
+of one is reported as a run that did not converge.
+
+⚠ A system with a symmetry-breaking instability puts the *unconstrained* optimizer on a ridge,
+where runs of identical arithmetic can fall either way. Running constrained — and letting the
+release follow the instability deliberately, from a stated direction and a stated step — is
+also what makes such a calculation reproducible.
+
 ## The state average
 
 State averaging is **imposed where the RDMs are built** ([ci](ci.md#the-sigma-vector)),

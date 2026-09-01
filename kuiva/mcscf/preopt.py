@@ -817,6 +817,7 @@ def preoptimize(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
     if space_policy == "event":
         opt = optimize_orbitals_events(factors, h_ao, c_spinor, spaces, solver, e_nuc=e_nuc,
                                        max_iter=max_iter, mode=mode, conv_grad=conv_grad,
+                                       n_active_elec=n_active_elec,
                                        tau=tau, event_interval=event_interval, report=report)
     else:
         def callable_solver(ints: CASIntegrals):
@@ -830,7 +831,7 @@ def preoptimize(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
 
         opt = optimize_orbitals(factors, h_ao, c_spinor, spaces, callable_solver, e_nuc=e_nuc,
                                 max_iter=max_iter, mode=mode, conv_grad=conv_grad,
-                                report=report)
+                                n_active_elec=n_active_elec, report=report)
     coeff = opt.coeff
     if natural_spinors:
         coeff = coeff.copy()

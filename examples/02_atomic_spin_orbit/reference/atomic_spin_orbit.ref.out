@@ -2,18 +2,18 @@
                                    K U I V A                                    
                  relativistic multireference quantum chemistry                  
                    example 2: atomic fine structure (B 2p^1)                    
-                                 version 0.27.0                                 
+                                 version 0.36.0                                 
                 compiled kernels: disabled (KUIVA_KERNELS=numpy)                
            threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
 ================================================================================
    output file                                   output/atomic_spin_orbit.out
 
 ================================================================================
- Boron 2p, screening = 'none'                                         t = 0.07 s
+ Boron 2p, screening = 'none'                                         t = 0.09 s
 ================================================================================
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.14 s
+ Scalar-relativistic X2C reference                                    t = 0.21 s
 ================================================================================
    atoms                                                          1   (B)
    charge                                                         0
@@ -33,7 +33,7 @@
      three-index MO block B^P_p,occ                           0.000  GB   (28 spinors x 5 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
    planned peak                                               0.001  GB
-   machine available                                         11.804  GB
+   machine available                                          9.814  GB
    SCF reference                                               ROHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            14
@@ -44,7 +44,7 @@
    nuclear repulsion                                 0.000000000000  Eh
    scalar X2C SCF energy                           -24.504238264341  Eh
    SCF converged                                                yes
-   SCF time                                                    0.03  s wall   (0.13 s cpu)
+   SCF time                                                    0.04  s wall   (0.15 s cpu)
    AO integral time                                            0.00  s wall   (0.01 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
@@ -57,7 +57,7 @@
    two-electron SOC picture change                             none   (one-electron X2C only; splittings 5-30% too large)
 
 ================================================================================
- Orthonormal working basis                                            t = 0.41 s
+ Orthonormal working basis                                            t = 0.55 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                            14
@@ -68,17 +68,17 @@
    condition number of S (retained)                       1.086e+01
 
 ================================================================================
- Spinor expansion                                                     t = 0.41 s
+ Spinor expansion                                                     t = 0.55 s
 ================================================================================
    scalar basis functions                                        14   (working basis)
    spinors                                                       28
    Kramers pairs                                                 14
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    1.33e-15
+   orthonormality error                                    2.81e-15
 
 ================================================================================
- Two-electron integrals                                               t = 0.41 s
+ Two-electron integrals                                               t = 0.55 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -94,7 +94,7 @@
    stored integral array released                             0.000  GB   (dead weight once the factors exist; release_eri=False keeps it for a second factorization)
 
 ================================================================================
- CASSCF                                                               t = 0.42 s
+ CASSCF                                                               t = 0.56 s
 ================================================================================
    active space                                           CAS(1, 6)   (3 lowest Kramers pairs of l=1 character on 1 B)
    inactive / active / virtual spinors                   4 / 6 / 18
@@ -105,13 +105,14 @@
    inactive / active / virtual spinors                   4 / 6 / 18
    orbital rotation parameters                                  204   (complex)
    optimizer mode                                              auto   (second order below |g| = 0.0e+00)
+   rotation                                      Kramers constrained   (orbitals paired to 0e+00; spaces stay time-reversal closed)
    gradient convergence                                     1.0e-04
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      1       -24.503714134531   -1.556e-02   7.782e-02    0.2000  qn           0.00
-      2       -24.504193909501   -4.798e-04   2.408e-02    0.0325  qn           0.00
-      3       -24.504219111545   -2.520e-05   7.277e-03    0.0056  qn           0.00
+      1       -24.503714134132   -1.556e-02   7.782e-02    0.2000  qn           0.01
+      2       -24.504193909504   -4.798e-04   2.408e-02    0.0325  qn           0.00
+      3       -24.504219111544   -2.520e-05   7.277e-03    0.0056  qn           0.01
       4       -24.504219320088   -2.085e-07   6.982e-04    0.0004  qn           0.00
       5       -24.504219320088    0.000e+00   9.292e-05    0.0002  qn           0.00
    ----  ---------------------  -----------  ----------  --------  ------  ---------
@@ -130,18 +131,18 @@
    -------  ---------------------  --------------  ---------
    6 applications of H in 0 iterations
    state-average boundary                                  complete   (all 6 determinants averaged over)
-   state-average spin invariance                          3.276e-16   (spin-rotation invariant ensemble)
+   state-average spin invariance                          2.389e-16   (spin-rotation invariant ensemble)
 
 ================================================================================
- Property matrices                                                    t = 0.45 s
+ Property matrices                                                    t = 0.59 s
 ================================================================================
 
  -- Spin-orbit multiplets and magnetic moments ---------------------------------
    states                                                         6
    gauge origin                                  (0.0000, 0.0000, 0.0000) bohr   (centre of mass)
    free-electron g factor                                2.00231930
-   inactive contribution to L                              6.00e-24  hbar   (exactly zero for a Kramers-paired inactive set)
-   moment matrix hermiticity                               2.78e-16  mu_B
+   inactive contribution to L                              8.79e-23  hbar   (exactly zero for a Kramers-paired inactive set)
+   moment matrix hermiticity                               2.81e-16  mu_B
      block    states       E [cm^-1]       spread        g_1        g_2        g_3
    -------  --------  --------------  -----------  ---------  ---------  ---------
          0         2            0.00    7.797e-10     0.6656     0.6656     0.6665
@@ -161,7 +162,7 @@
    inactive contribution                         (+0.000000, +0.000000, -0.000000)  e*a0   (generally nonzero: r is time EVEN, unlike L and S)
      block          d_x          d_y          d_z          |d|     S to block 0
    -------  -----------  -----------  -----------  -----------  ---------------
-         0     -0.00000     +0.00000     -0.00000      0.00000        4.331e-22
+         0     -0.00000     +0.00000     -0.00000      0.00000        4.330e-22
          1     +0.00000     +0.00000     -0.00000      0.00000        3.012e-22
    -------  -----------  -----------  -----------  -----------  ---------------
    d is the block-averaged permanent moment Tr_b(d_k)/size [e*a0], electronic plus nuclear; S is the line strength sum |d_IJ|^2 to the ground block [(e*a0)^2]. Both are phase invariant; individual matrix elements are not. S is a line strength and NOT an oscillator strength or a rate 
@@ -170,11 +171,11 @@
    property matrices written to                  /home/akseli/Programs/kuiva/examples/02_atomic_spin_orbit/output/boron_none.props   (6 states, 13 matrices)
 
 ================================================================================
- Boron 2p, screening = 'x2camf'                                       t = 0.45 s
+ Boron 2p, screening = 'x2camf'                                       t = 0.59 s
 ================================================================================
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.45 s
+ Scalar-relativistic X2C reference                                    t = 0.59 s
 ================================================================================
    atoms                                                          1   (B)
    charge                                                         0
@@ -196,7 +197,7 @@
      three-index MO block B^P_p,occ                           0.000  GB   (28 spinors x 5 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
    planned peak                                               0.001  GB
-   machine available                                         11.804  GB
+   machine available                                          9.813  GB
    SCF reference                                               ROHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            14
@@ -207,7 +208,7 @@
    nuclear repulsion                                 0.000000000000  Eh
    scalar X2C SCF energy                           -24.504238264341  Eh
    SCF converged                                                yes
-   SCF time                                                    0.03  s wall   (0.12 s cpu)
+   SCF time                                                    0.04  s wall   (0.15 s cpu)
    AO integral time                                            0.00  s wall   (0.01 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
@@ -224,10 +225,10 @@
    reference configurations                                B: s4 p1
    spin-free correction, max |dh_sf|                   7.015972e-04  Eh
    spin-orbit correction, max |dw|                     3.767954e-05  Eh
-   discarded time-reversal-odd part                       4.560e-13  Eh   (4.2e-14 relative)
+   discarded time-reversal-odd part                       3.314e-12  Eh   (3.0e-13 relative)
 
 ================================================================================
- Orthonormal working basis                                            t = 0.81 s
+ Orthonormal working basis                                            t = 1.00 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                            14
@@ -238,17 +239,17 @@
    condition number of S (retained)                       1.086e+01
 
 ================================================================================
- Spinor expansion                                                     t = 0.81 s
+ Spinor expansion                                                     t = 1.00 s
 ================================================================================
    scalar basis functions                                        14   (working basis)
    spinors                                                       28
    Kramers pairs                                                 14
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    3.30e-15
+   orthonormality error                                    3.02e-15
 
 ================================================================================
- Two-electron integrals                                               t = 0.81 s
+ Two-electron integrals                                               t = 1.00 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -264,7 +265,7 @@
    stored integral array released                             0.000  GB   (dead weight once the factors exist; release_eri=False keeps it for a second factorization)
 
 ================================================================================
- CASSCF                                                               t = 0.81 s
+ CASSCF                                                               t = 1.00 s
 ================================================================================
    active space                                           CAS(1, 6)   (3 lowest Kramers pairs of l=1 character on 1 B)
    inactive / active / virtual spinors                   4 / 6 / 18
@@ -275,13 +276,14 @@
    inactive / active / virtual spinors                   4 / 6 / 18
    orbital rotation parameters                                  204   (complex)
    optimizer mode                                              auto   (second order below |g| = 0.0e+00)
+   rotation                                      Kramers constrained   (orbitals paired to 0e+00; spaces stay time-reversal closed)
    gradient convergence                                     1.0e-04
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      1       -24.505173755457   -1.556e-02   7.790e-02    0.2000  qn           0.00
-      2       -24.505653102712   -4.793e-04   2.405e-02    0.0325  qn           0.00
-      3       -24.505678285241   -2.518e-05   7.275e-03    0.0056  qn           0.00
+      1       -24.505173755955   -1.556e-02   7.790e-02    0.2000  qn           0.01
+      2       -24.505653102708   -4.793e-04   2.405e-02    0.0325  qn           0.00
+      3       -24.505678285242   -2.518e-05   7.275e-03    0.0056  qn           0.01
       4       -24.505678494390   -2.091e-07   6.993e-04    0.0004  qn           0.00
       5       -24.505678494390    0.000e+00   9.275e-05    0.0002  qn           0.00
    ----  ---------------------  -----------  ----------  --------  ------  ---------
@@ -300,18 +302,18 @@
    -------  ---------------------  --------------  ---------
    6 applications of H in 0 iterations
    state-average boundary                                  complete   (all 6 determinants averaged over)
-   state-average spin invariance                          5.182e-16   (spin-rotation invariant ensemble)
+   state-average spin invariance                          3.307e-16   (spin-rotation invariant ensemble)
 
 ================================================================================
- Property matrices                                                    t = 0.84 s
+ Property matrices                                                    t = 1.03 s
 ================================================================================
 
  -- Spin-orbit multiplets and magnetic moments ---------------------------------
    states                                                         6
    gauge origin                                  (0.0000, 0.0000, 0.0000) bohr   (centre of mass)
    free-electron g factor                                2.00231930
-   inactive contribution to L                              1.65e-23  hbar   (exactly zero for a Kramers-paired inactive set)
-   moment matrix hermiticity                               4.45e-16  mu_B
+   inactive contribution to L                              3.50e-23  hbar   (exactly zero for a Kramers-paired inactive set)
+   moment matrix hermiticity                               3.10e-16  mu_B
      block    states       E [cm^-1]       spread        g_1        g_2        g_3
    -------  --------  --------------  -----------  ---------  ---------  ---------
          0         2            0.00    0.000e+00     0.6653     0.6653     0.6670
@@ -321,7 +323,7 @@
      block      g_max    axiality        e_x        e_y        e_z  axis           det g
    -------  ---------  ----------  ---------  ---------  ---------  ------------  ------
          0     0.6670           1    -0.5375    +0.0784    +0.8396  in a plane         +
-         1     1.3342           1    +0.8377    -0.0647    +0.5423  in a plane         ?
+         1     1.3342           1    +0.8377    -0.0648    +0.5423  in a plane         ?
    -------  ---------  ----------  ---------  ---------  ---------  ------------  ------
    the easy axis is the principal direction of the largest g; 'in a plane' means the top two g values coincide and the direction printed is an arbitrary choice within that plane. det g is the sign M cannot carry, '?' where it is not defined -- a block that is not a Kramers doublet, or one so axial that det g is numerically zero and its sign would be rounding 
 
@@ -331,8 +333,8 @@
    inactive contribution                         (+0.000000, +0.000000, -0.000000)  e*a0   (generally nonzero: r is time EVEN, unlike L and S)
      block          d_x          d_y          d_z          |d|     S to block 0
    -------  -----------  -----------  -----------  -----------  ---------------
-         0     -0.00000     +0.00000     -0.00000      0.00000        4.486e-22
-         1     +0.00000     +0.00000     -0.00000      0.00000        3.086e-22
+         0     -0.00000     +0.00000     -0.00000      0.00000        4.227e-22
+         1     +0.00000     +0.00000     -0.00000      0.00000        3.091e-22
    -------  -----------  -----------  -----------  -----------  ---------------
    d is the block-averaged permanent moment Tr_b(d_k)/size [e*a0], electronic plus nuclear; S is the line strength sum |d_IJ|^2 to the ground block [(e*a0)^2]. Both are phase invariant; individual matrix elements are not. S is a line strength and NOT an oscillator strength or a rate 
  *** WARNING [props.dump] the property operators L and S carry NO picture-change transformation : they are the bare non-relativistic AO operators used unchanged in the two-component basis. This matches OpenMolcas RASSI, so a cross-code comparison is like-for-like. The approximation has been measured and is small: below 0.3% on every free-ion multiplet g factor from Z=5 to Z=81, 0.02% on a 3d complex's ground doublet, and it splits no degeneracy at all. It is recorded in the header of boron_x2camf.props
@@ -340,7 +342,7 @@
    property matrices written to                  /home/akseli/Programs/kuiva/examples/02_atomic_spin_orbit/output/boron_x2camf.props   (6 states, 13 matrices)
 
 ================================================================================
- Fine structure                                                       t = 0.84 s
+ Fine structure                                                       t = 1.04 s
 ================================================================================
 
  -- boron 2p^1, screening = 'none' ---------------------------------------------
@@ -384,20 +386,20 @@
    experiment: 15.254 cm^-1 (NIST). An anchor, not a target -- see the file header
 
 ================================================================================
- Naming the levels                                                    t = 0.84 s
+ Naming the levels                                                    t = 1.04 s
 ================================================================================
 
  -- Spin expectation values ----------------------------------------------------
    blocks                                                         2
    spin-orbit coupling                                           on
-   inactive contribution to S                              9.99e-16  hbar   (exactly zero for a Kramers-paired inactive set)
+   inactive contribution to S                              6.66e-16  hbar   (exactly zero for a Kramers-paired inactive set)
    S leakage out of the active space                       7.82e-05  hbar   (zero for a spin-separable orbital set; included either way)
    its largest contribution to <S^2>                       3.65e-08   (the part that would be missing if it were assumed away)
    S is not conserved with spin-orbit coupling on: read 2S+1 as a spin-purity measure, not a multiplicity
      block    states       E [cm^-1]       <S^2>         S       2S+1      |dev|
    -------  --------  --------------  ----------  --------  ---------  ---------
-         1         2            0.00      0.7500     0.500      2.000    5.3e-15
-         2         4           18.70      0.7500     0.500      2.000    4.2e-15
+         1         2            0.00      0.7500     0.500      2.000    6.7e-16
+         2         4           18.70      0.7500     0.500      2.000    1.3e-15
    -------  --------  --------------  ----------  --------  ---------  ---------
 
  -- Term assignment (inferred) -------------------------------------------------
@@ -410,11 +412,11 @@
    -------  --------  --------------  ----------  ----------  ------------  ---------
    2 of 2 blocks assigned
    block 1: dimension 2 = 2J+1 -> J = 1/2
-   block 1: <S^2> = 0.750000 -> S = 0.5000, 2S+1 = 2.0000 (off an integer by 5.3e-15)
+   block 1: <S^2> = 0.750000 -> S = 0.5000, 2S+1 = 2.0000 (off an integer by 6.7e-16)
    block 1: g_iso = 0.665893 -> L(L+1) = 2.0012 -> L = 1.0004 (off an integer by 3.9e-04)
    block 1: Lande g(2P_1/2) = 0.666667 vs measured 0.665893: residual 7.74e-04
    block 2: dimension 4 = 2J+1 -> J = 3/2
-   block 2: <S^2> = 0.750000 -> S = 0.5000, 2S+1 = 2.0000 (off an integer by 4.2e-15)
+   block 2: <S^2> = 0.750000 -> S = 0.5000, 2S+1 = 2.0000 (off an integer by 1.3e-15)
    block 2: g_iso = 1.334106 -> L(L+1) = 1.9942 -> L = 0.9981 (off an integer by 1.9e-03)
    block 2: Lande g(2P_3/2) = 1.333333 vs measured 1.334106: residual 7.73e-04
    two-electron screening reduces the splitting by              42.8  %
@@ -426,7 +428,7 @@
    producing a plausible number for a broken reason.
 
 ================================================================================
- Result                                                               t = 0.85 s
+ Result                                                               t = 1.04 s
 ================================================================================
    check                                                           verdict   
    --------------------------------------------------------------  ----------
@@ -448,51 +450,51 @@
    checks                                             all 14 passed
 
 ================================================================================
- Timings                                                              t = 0.85 s
+ Timings                                                              t = 1.04 s
 ================================================================================
    region                           calls     wall [s]       cpu [s]   cpu/wall   % wall
    ------------------------------  ------  -----------  ------------  ---------  -------
-   scalar X2C SCF                       2         0.06          0.25       3.99     14.3
-   AO integrals                         2         0.01          0.02       3.96      1.2
-     angular-momentum integrals         2         0.00          0.00       4.03      0.1
-     electric dipole integrals          2         0.00          0.00       4.09      0.0
-   X2C spin-orbit integrals             2         0.01          0.03       4.00      1.5
-   orthogonalization (canonical)        2         0.00          0.00       4.00      0.1
-   Cholesky decomposition               2         0.01          0.03       4.00      1.7
-   CAS determinant addressing           2         0.00          0.00       3.99      0.0
-   CAS excitation map                   2         0.00          0.00       4.00      0.1
-   CAS integrals                        6         0.00          0.02       4.00      1.0
+   scalar X2C SCF                       2         0.08          0.30       3.98     15.0
+   AO integrals                         2         0.01          0.02       4.00      1.1
+     angular-momentum integrals         2         0.00          0.00       3.99      0.0
+     electric dipole integrals          2         0.00          0.00       4.06      0.0
+   X2C spin-orbit integrals             2         0.01          0.03       4.00      1.7
+   orthogonalization (canonical)        2         0.00          0.00       3.99      0.1
+   Cholesky decomposition               2         0.01          0.03       4.00      1.5
+   CAS determinant addressing           2         0.00          0.00       3.93      0.0
+   CAS excitation map                   2         0.00          0.00       4.03      0.1
+   CAS integrals                        6         0.01          0.02       4.00      1.0
      J/K build                          6         0.00          0.01       4.01      0.4
      3-index transform                  6         0.00          0.01       4.00      0.3
-   full CI: diagonal                    2         0.00          0.00       4.03      0.0
+   full CI: diagonal                    2         0.00          0.00       3.99      0.0
    dense CI diagonalization             2         0.00          0.01       4.00      0.4
-     sigma step 1: gather F            12         0.00          0.00       4.03      0.1
-     sigma one-electron term           12         0.00          0.00       4.14      0.0
-     sigma step 2: GEMM                12         0.00          0.00       4.07      0.0
-     sigma step 3: gather sigma        12         0.00          0.00       4.05      0.1
+     sigma step 1: gather F            12         0.00          0.00       4.02      0.1
+     sigma one-electron term           12         0.00          0.00       3.85      0.0
+     sigma step 2: GEMM                12         0.00          0.00       4.04      0.0
+     sigma step 3: gather sigma        12         0.00          0.00       4.03      0.1
    RDM gather F                        12         0.00          0.00       4.02      0.1
    RDM accumulation F^H F              12         0.00          0.00       4.04      0.1
-   macro-iteration                     10         0.03          0.14       4.00      7.7
-     J/K build                         10         0.01          0.02       4.00      1.3
-     CAS integrals                      8         0.01          0.03       4.01      1.7
-       J/K build                        8         0.00          0.01       4.01      0.6
+   macro-iteration                     10         0.04          0.17       3.99      8.2
+     J/K build                         10         0.01          0.03       4.00      1.4
+     CAS integrals                      8         0.01          0.03       3.99      1.7
+       J/K build                        8         0.00          0.01       3.97      0.7
        3-index transform                8         0.00          0.01       4.00      0.7
      full CI: diagonal                  8         0.00          0.00       3.95      0.1
-     dense CI diagonalization           8         0.01          0.02       4.00      1.4
-       sigma step 1: gather F          48         0.00          0.01       4.00      0.4
-       sigma one-electron term         48         0.00          0.00       4.03      0.1
-       sigma step 2: GEMM              48         0.00          0.00       4.08      0.1
-       sigma step 3: gather sigma      48         0.00          0.01       4.04      0.4
-     RDM gather F                      48         0.00          0.01       4.02      0.4
+     dense CI diagonalization           8         0.01          0.03       4.00      1.3
+       sigma step 1: gather F          48         0.00          0.01       4.03      0.4
+       sigma one-electron term         48         0.00          0.00       3.95      0.1
+       sigma step 2: GEMM              48         0.00          0.00       4.14      0.1
+       sigma step 3: gather sigma      48         0.00          0.01       4.03      0.4
+     RDM gather F                      48         0.00          0.01       4.01      0.4
      RDM accumulation F^H F            48         0.00          0.01       4.04      0.4
-   transition densities                 2         0.00          0.00       4.01      0.1
-   atomic mean-field correction         1         0.32          1.27       4.00     71.4
-     atomic 4c solve                    1         0.30          1.21       4.00     68.3
-       atomic 4c DHF                    1         0.28          1.12       4.00     63.0
+   transition densities                 2         0.00          0.00       4.00      0.1
+   atomic mean-field correction         1         0.36          1.42       4.00     70.4
+     atomic 4c solve                    1         0.34          1.36       4.00     67.4
+       atomic 4c DHF                    1         0.31          1.26       4.00     62.3
      atomic mean-field decoupling       1         0.01          0.04       4.00      2.1
-   one-body state moments               2         0.00          0.00       4.00      0.2
+   one-body state moments               2         0.00          0.00       4.01      0.2
    ------------------------------  ------  -----------  ------------  ---------  -------
-   total (top-level regions)                                   0.44  s wall
-   total CPU                                                   1.78  s cpu
+   total (top-level regions)                                   0.51  s wall
+   total CPU                                                   2.02  s cpu
    cost is cpu [s]; wall [s] also reflects thread count and, on a
    thermally clamped machine, time the CPU was forced to stay idle.

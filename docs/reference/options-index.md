@@ -50,6 +50,8 @@ Stage names link to the reference page carrying the quick table and elaboration;
 | `include_dipole`, `include_l_s` | `PropertyDump` | [PropertyDump](stages/PropertyDump.md#quick-reference) |
 | `inactive_tol` | `PropertyDump` | [PropertyDump](stages/PropertyDump.md#quick-reference) |
 | `init_guess` | `ScalarSCF` | [ScalarSCF](stages/ScalarSCF.md#when-the-scf-will-not-converge) |
+| `kramers_rotation` | `CASSCF` (optimizer) | [casscf](../methods/casscf.md#keeping-the-orbitals-kramers-paired) |
+| `kramers_stability` | `CASSCF` (optimizer) | [casscf](../methods/casscf.md#releasing-the-constraint-is-the-symmetric-solution-a-minimum) |
 | `manifold_options` | `PseudospinExport` | [PseudospinExport](stages/PseudospinExport.md#quick-reference) |
 | `max_bond` | `PseudospinExport` (and `solver_options`) | [CASSCF](stages/CASSCF.md#solverdmrg-the-tree-tensor-network) |
 | `max_iter` | `CASSCF` (optimizer), `CheapCI` | [CASSCF](stages/CASSCF.md#quick-reference) |

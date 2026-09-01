@@ -19,7 +19,8 @@ much as the ensemble:
 
 * **static** detectors at the symmetric point and at the unperturbed probe's converged
   orbitals (dense CI over the tiny active space): boundary gap; time-odd fraction, spin
-  non-invariance ``max_k ||[gamma, S_k]|| / ||gamma||`` and occupation spectrum of the SA
+  non-invariance ``max_k ||[gamma^T, S_k]|| / ||gamma||`` (the density *operator* is the
+  transpose of the stored RDM — the detector is imported, never restated) and occupation spectrum of the SA
   density; ``||gamma_ens - gamma_block||`` against every enclosing block boundary of the
   spectrum head, with that boundary's gap. Detector costs are recorded — "what would a
   cheap invariance check cost" is one of the three questions.
@@ -165,11 +166,16 @@ def spin_operator_mo(reference, coeff: np.ndarray, active: np.ndarray) -> np.nda
 
 
 def spin_noninvariance(gamma: np.ndarray, s_mo: np.ndarray) -> float:
-    """``max_k ||[gamma, S_k]||_F / ||gamma||_F`` — 0 iff the ensemble density is invariant
-    under spin rotations, i.e. iff the average does not lean on the SOC structure."""
-    scale = float(np.linalg.norm(gamma)) or 1.0
-    return max(float(np.linalg.norm(gamma @ s_mo[k] - s_mo[k] @ gamma)) / scale
-               for k in range(3))
+    """The shipped detector, imported rather than restated.
+
+    ⚠ This script used to carry its own copy of the formula, and the copy is how the
+    2026-08-31 defect got into the ladder: the measure has to commute the spin operator with
+    the density *operator* ``gamma^T``, not with ``gamma`` as stored, or it is not invariant
+    under a complex rotation inside the active space. Two implementations of one detector are
+    two detectors; the study now measures what the program reports.
+    """
+    from kuiva.mcscf.casci import ensemble_spin_noninvariance
+    return ensemble_spin_noninvariance(gamma, s_mo)
 
 
 def perturbed(c0: np.ndarray, eps_even: float, eps_odd: float, seed: int,

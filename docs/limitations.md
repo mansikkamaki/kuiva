@@ -78,6 +78,21 @@ with its context. Each entry links to the page that explains the mechanism.
   splittings, but not zero by symmetry. The tensor-network solver's figure is larger
   (~1e-9 Eh) and for a different reason (roots converged separately); both are far below
   physics, and neither bounds the other.
+- **The rotation is Kramers constrained by default, and the constrained answer is then
+  tested rather than assumed**
+  ([casscf](methods/casscf.md#keeping-the-orbitals-kramers-paired)). The constraint holds
+  every orbital space time-reversal closed exactly, which stops a drift that otherwise grows
+  by a factor of ten every few macro-iterations until the state-average gate refuses; at the
+  converged point Kuiva measures the curvature of the orbital Hessian along the time-odd
+  rotations the constraint forbids, and where that is negative it releases the constraint and
+  follows the instability. ⚠ **The release happens at an even active electron count only** —
+  at an odd count a time-reversal-broken solution has no Kramers degeneracy and is refused
+  downstream anyway — so at an odd count a negative curvature is reported and the symmetric
+  solution kept. ⚠ **A verdict needs a converged run**: a run stopped by `max_iter` or by a
+  deadline reports the curvature as not measured, which is a weaker statement than "stable".
+  ⚠ **The event-gated driver** (an adaptive DMRG space) measures and never releases, and says
+  so. An **unrestricted** reference, and orbitals carried from a previous unconstrained run,
+  have no pairing to preserve and are never constrained; the output says which case it was.
 - **The state average is the single most common way to get a plausible wrong answer out of
   this program**, and its diagnostics are advisory: a count landing inside a near-degenerate
   manifold self-reinforces with every check clean, and one measured failure mode (a leaning

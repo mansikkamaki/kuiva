@@ -224,6 +224,94 @@ def nearest_kramers_paired(c: np.ndarray, blocks) -> np.ndarray:
     return out
 
 
+def time_reversal_index_signs(n: int) -> "tuple":
+    """``(swap, t)`` for the interleaved Kramers ordering: ``T a+_k T^-1 = t_k a+_{swap[k]}``.
+
+    ``swap[k] = k ^ 1`` exchanges the partners of a pair and ``t_k = (-1)^k`` is ``+1`` on an
+    unbarred spinor and ``-1`` on a barred one -- the sign that makes ``T^2 = -1``. Together
+    they are how time reversal acts on a *spinor index*, as opposed to on the scalar-basis
+    rows (:func:`time_reverse`), and they are the whole content of the convention for anything
+    matrix-valued: an operator or a rotation generator over Kramers-paired spinors commutes
+    with time reversal exactly when ``A_pq = t_p t_q conj(A[swap[p], swap[q]])``
+    (:func:`time_reversal_even_part`).
+
+    ⚠ Both statements are about a **Kramers-paired** orbital set. On an unrestricted one
+    (:attr:`SpinorBasis.kramers_paired` false) the index ``k ^ 1`` is not the time-reversed
+    partner of ``k`` at all, and every relation built on it is meaningless rather than merely
+    inaccurate -- measure :func:`kramers_pairing_defect` before relying on one.
+    """
+    if int(n) % 2:
+        raise ValueError("a Kramers-paired spinor set has an even number of spinors, "
+                         "got {}".format(n))
+    idx = np.arange(int(n))
+    return idx ^ 1, np.where(idx % 2 == 0, 1.0, -1.0)
+
+
+def time_reversal_even_part(a: np.ndarray) -> np.ndarray:
+    """The time-reversal-**even** part of a matrix over Kramers-paired spinors.
+
+    ``(A + Theta A) / 2`` with ``(Theta A)_pq = t_p t_q conj(A[pbar, qbar])``
+    (:func:`time_reversal_index_signs`). ``Theta`` is an **antilinear** involution -- so the
+    even part is a real-linear projection, not a complex-linear one -- and it preserves both
+    hermiticity and anti-hermiticity, since transposition and the index swap commute.
+
+    Two uses, and they are the same statement about different objects. On an *operator* it is
+    the projection whose residual :func:`kuiva.ci.sigma.time_reversal_violation` measures. On
+    an anti-Hermitian **rotation generator** it is the constraint that makes the rotation keep
+    a Kramers-paired orbital set paired: ``exp`` is a real power series and ``Theta`` is
+    multiplicative, so ``Theta(kappa) = kappa`` implies ``Theta(exp kappa) = exp(kappa)``,
+    which written out is ``Omega conj(U) = U Omega`` -- exactly "the time reverse of the new
+    unbarred orbital is the new barred one". That is what the orbital optimizer imposes
+    (:func:`kuiva.mcscf.orbopt.optimize_orbitals`).
+
+    ⚠ **Exact in floating point.** ``t_p t_q`` is ``+-1`` and ``(x + y) / 2`` is symmetric, so
+    the result satisfies the relation to the last bit rather than to a tolerance; a projection
+    that only nearly projected would leave exactly the drift it exists to remove.
+    """
+    a = np.asarray(a)
+    if a.ndim != 2 or a.shape[0] != a.shape[1]:
+        raise ValueError("expected a square spinor-basis matrix, got shape {}"
+                         .format(a.shape))
+    swap, t = time_reversal_index_signs(a.shape[0])
+    return 0.5 * (a + np.outer(t, t) * np.conj(a[np.ix_(swap, swap)]))
+
+
+def time_reversal_odd_norm(a: np.ndarray) -> float:
+    """``max |A - Theta A| / 2``, relative to ``max |A|``: how time-reversal-odd a matrix is.
+
+    Zero exactly when :func:`time_reversal_even_part` returns the input unchanged. Relative,
+    so it is comparable between a Hamiltonian of order 1e4 Eh and a rotation generator of
+    order 1e-2.
+    """
+    a = np.asarray(a)
+    if a.size == 0:
+        return 0.0
+    odd = float(np.max(np.abs(a - time_reversal_even_part(a))))
+    return odd / (float(np.max(np.abs(a))) or 1.0)
+
+
+def kramers_pairing_defect(c: np.ndarray) -> float:
+    """``max_p |T c_2p - c_2p+1|`` over ``max |c|``: how far the columns are from exact pairs.
+
+    The *column* statement, which is stronger than the *span* one
+    (:func:`time_reversal_closure_defect`) and is the one anything indexed by ``2p`` /
+    ``2p+1`` actually depends on: a set can span time-reversal-closed spaces while no column
+    is any particular column's partner, which is precisely what a converged
+    Kramers-unrestricted CASSCF returns.
+
+    Relative and basis-agnostic: ``c`` may be over the AO basis or the working basis, both
+    being real (``T`` conjugates coefficients only), and the scale divides out.
+    """
+    c = np.ascontiguousarray(c, dtype=np.complex128)
+    if c.shape[1] % 2:
+        raise ValueError("a Kramers-paired spinor set has an even number of columns, "
+                         "got {}".format(c.shape[1]))
+    if c.size == 0:
+        return 0.0
+    defect = float(np.max(np.abs(time_reverse(c[:, 0::2]) - c[:, 1::2])))
+    return defect / (float(np.max(np.abs(c))) or 1.0)
+
+
 def time_reversal_closure_defect(c: np.ndarray, blocks) -> float:
     """How far the worst block's **span** is from closed under time reversal.
 
@@ -904,4 +992,6 @@ __all__ = ["SpinorBasis", "expand_scalar_mos", "expand_unrestricted_mos",
            "is_time_reversal_even", "kramers_block_permutation",
            "spinor_indices", "spatial_index", "barred", "unbarred", "is_barred",
            "fold_to_kramers_pairs", "rotate_kramers_pairs", "nearest_kramers_paired",
-           "time_reversal_closed_span", "time_reversal_closure_defect"]
+           "time_reversal_closed_span", "time_reversal_closure_defect",
+           "time_reversal_index_signs", "time_reversal_even_part",
+           "time_reversal_odd_norm", "kramers_pairing_defect"]

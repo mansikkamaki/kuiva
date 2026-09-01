@@ -3,7 +3,7 @@
     source setup.sh          # once per shell
     python basis_projection.py
 
-Runs in about three minutes on N2 and writes ``output/basis_projection.out``.
+Runs in about four minutes on N2 and writes ``output/basis_projection.out``.
 
 WHAT THIS SHOWS
 ---------------
@@ -20,34 +20,43 @@ The middle step is a basis-set projection: the converged spinors are re-expresse
 larger AO basis, made orthonormal again, and the extra dimensions the larger basis brings are
 completed from its own SCF. It is one keyword.
 
-On the N2 CAS(6,8) below the projected run converges in about 7 macro-iterations. Run to
-convergence rather than to a budget, the direct route needs 36 for the same energy -- so the
-example gives the direct route the SAME budget as the projected one instead, which costs a
-third of the time and shows the same thing: one converges inside it and the other does not.
+On the N2 CAS(8, 12) below the projected run reaches the converged answer in about 7
+macro-iterations where the direct route needs about 14 -- both to the same energy, to better
+than 1e-8 Eh. Half the iterations, in the basis where an iteration is expensive.
 
 ⚠ Iteration counts move by one either way between runs of identical arithmetic: the
 trajectory is a sequence of accept/reject decisions on a quadratic model, and a threaded
 reduction reorders at the last bit. Only the ratio is the point, and what this example asserts
 is what cannot drift -- never the counts themselves.
 
-SIX THINGS WORTH WATCHING
--------------------------
-1. **The active space is not restated, and may not be.** It was chosen once, against the
-   orbitals being carried, and it comes across with them. Re-selecting it here -- by character
-   or by index -- would resolve it against *this* reference's guess orbitals instead, which is
-   a different calculation wearing the same name. Kuiva refuses that rather than doing it.
+EIGHT THINGS WORTH WATCHING
+---------------------------
+1. **The active space holds the SCF reference determinant, and that is not automatic.** It is
+   the N2 valence space -- the p-derived orbitals of both nitrogens, four occupied pairs and
+   two empty ones -- selected by AVAS, which projects the orbitals onto the free-atom N 2p
+   reference and keeps the combinations carrying that character. It is stated as a projection
+   with a threshold, never as an index window, and it selects the **same six pairs in both
+   bases**. The example checks the property that matters and cannot be assumed: every orbital
+   the SCF occupies lies inside inactive + active, so the CAS can represent the reference
+   determinant. A space that cannot is not merely a poorer one -- it is where the symmetric
+   solution stops being a minimum (point 7).
 
-2. **What crosses the basis change is the active space, not the whole orbital set.** That is
+2. **The active space is not restated on the projected run, and may not be.** It was chosen
+   once, against the orbitals being carried, and it comes across with them. Re-selecting it
+   here -- by character, by AVAS or by index -- would resolve it against *this* reference's
+   guess orbitals instead, which is a different calculation wearing the same name. Kuiva
+   refuses that rather than doing it.
+
+3. **What crosses the basis change is the active space, not the whole orbital set.** That is
    `carry="active"`, the default, and it deliberately carries *less* than it could. The
    inactive orbitals of the small-basis calculation are not eigenvectors of anything in the
    large basis: carrying them re-introduces an inactive-virtual gradient -- and the core
    orbital energies are the largest numbers in that block -- which the large basis' own SCF
    had already removed. Measured across three systems and both directions, `carry="all"` costs
    between nothing and twice the macro-iterations, and never fewer. The run below prints both,
-   so the difference is visible rather than asserted -- and on this system at this optimizer
-   mode it happens to be one of the cases where the two tie, which is worth seeing too.
+   so the difference is visible rather than asserted.
 
-3. **The projection is measured, not assumed.** Three numbers say whether it is worth using,
+4. **The projection is measured, not assumed.** Three numbers say whether it is worth using,
    and all three are invariants rather than coefficient comparisons:
 
    * the **retained norm** of each source orbital, which is how much of it exists in the
@@ -64,31 +73,39 @@ SIX THINGS WORTH WATCHING
    the failure shows up only as a run that takes longer, which is exactly what nobody
    investigates.
 
-4. **A guess may change the cost and may not change the answer.** Both routes reach the same
-   CASSCF solution; what the example asserts is that the projected energy is not above the
-   direct one, which is a variational statement rather than a tolerance.
+5. **A guess may change the cost and may not change the answer.** Both routes reach the same
+   CASSCF solution -- asserted here as an energy agreement *and* as the variational statement
+   that the projected route is not above the direct one.
 
-5. **The orbitals handed over are Kramers pairs, and the source's were not.** A converged
-   general-complex CASSCF is entitled to leave its active orbitals as an arbitrary mixture of
-   the pairs -- rotations inside the active space are redundant, so nothing in the
-   optimization pushes back -- and the run below starts from a set whose partner deviation is
-   of order one. The projection rebuilds the pairs on the carried block before it builds
-   anything against it, because every consumer of the convention downstream needs them. It is
-   free: it is a rotation inside a space the optimizer had already left arbitrary.
+6. **The orbitals handed over are Kramers pairs, and the source's need not be.** A converged
+   CASSCF is entitled to leave its active orbitals as an arbitrary mixture of the pairs --
+   rotations inside the active space are redundant, so nothing in the optimization pushes
+   back. The projection rebuilds the pairs on the carried block before it builds anything
+   against it, because every consumer of the convention downstream needs them. It is free: it
+   is a rotation inside a space the optimizer had already left arbitrary.
 
-6. **The reverse direction works and is not the inverse.** The last section carries the
+7. **The time-reversal stability line is a statement about the answer, not the run.** The
+   orbital optimizer holds the spinors Kramers paired while it works, which is a constraint,
+   so at the end it measures the curvature of the orbital Hessian along the rotations that
+   constraint forbids. Non-negative -- as it is here, on a valence space that holds the
+   reference determinant -- means the time-reversal-symmetric solution really is a minimum and
+   the run is finished. Negative would mean it is a saddle, and Kuiva would release the
+   constraint, step off it and carry on; that is what the *old* active space of this example
+   did, before it was replaced.
+
+8. **The reverse direction works and is not the inverse.** The last section carries the
    converged large-basis result *back down* to the small basis. Going down throws away a
    variational space rather than reproducing one, so orbitals lose norm and the diagnostics
    stop being near 1 -- which is the honest report, and the run states it.
 
 THE ANSWER YOU SHOULD SEE
 -------------------------
-N2 at 1.098 A, CAS(6, 8) over the p shells:
+N2 at 1.098 A, CAS(8, 12) over the p-derived valence orbitals:
 
-    x2c-SVPall-2c    E = -108.946432  (the cheap calculation)
-    x2c-TZVPall-2c   E = -109.082667  from either route, to better than 1e-7 Eh
+    x2c-SVPall-2c    E = -109.012788  (the cheap calculation)
+    x2c-TZVPall-2c   E = -109.148098  from either route, to better than 1e-8 Eh
 
-and the projected route reaching the second number in a small fraction of the iterations the
+and the projected route reaching the second number in about half the macro-iterations the
 direct one needs. The absolute energies are a valence CASSCF without dynamic correlation and
 are not spectroscopy; what this example is about is the route, not the number.
 """
@@ -117,15 +134,18 @@ R_NN = 1.098
 #: The small basis the calculation is converged in, and the one it is continued in.
 SMALL_BASIS, LARGE_BASIS = "x2c-SVPall-2c", "x2c-TZVPall-2c"
 
-#: The valence active space: eight spinors of p character pooled over both nitrogens,
-#: holding six electrons. Stated as character on named centres, never as an index window.
-N_ACTIVE, N_ACTIVE_ELEC = 8, 6
+#: The valence active space, as a projection onto the free-atom N 2p orbitals pooled over
+#: both nitrogens: six Kramers pairs, four of them occupied, holding eight electrons --
+#: CAS(8, 12 spinors). ⚠ Stated this way rather than as `character=`, because a *character*
+#: selection takes the lowest orbitals that carry the character, and in these two bases that
+#: is not the same set: the TZVP core pairs carry more than half their Loewdin population on
+#: p functions. AVAS projects instead, and selects the same six pairs in both.
+AVAS = dict(atom=[0, 1], l="p", threshold=0.5)
 
-#: Budgets, explicit, so that termination never depends on convergence. ⚠ The direct
-#: large-basis run is deliberately given the SAME budget as the projected one rather than
-#: enough to converge: the point of the example is the ratio, and running the direct route to
-#: convergence would triple the cost of the example to demonstrate nothing extra.
-MAX_ITER, CONV_GRAD = 12, 1.0e-4
+#: Budgets, explicit, so that termination never depends on convergence. Both routes are run
+#: to convergence -- the comparison is of iteration counts, so both have to reach the same
+#: place first.
+MAX_ITER, CONV_GRAD = 40, 1.0e-4
 
 #: The cheap run gets room to actually converge -- it is the calculation everything else is
 #: built on, and at ~0.5 s per macro-iteration in this basis the budget costs nothing. ⚠ It is
@@ -139,7 +159,7 @@ CHEAP_MAX_ITER = 80
 MODE = "second-order"
 
 #: A projected active space that overlapped the one it came from by less than this would not
-#: be the same calculation any more. Measured here at 0.9996.
+#: be the same calculation any more. Measured here at 0.9999.
 FIDELITY_MIN = 0.99
 
 
@@ -155,6 +175,14 @@ def nitrogen(basis: str) -> kuiva.Molecule:
                           basis=basis)
 
 
+def scalar_scf(basis: str) -> kuiva.ScalarSCF:
+    """⚠ ``atomic_reference=True`` because AVAS projects onto the free-atom orbitals, and
+    those are built at ingestion -- the analysis layer has no integral library and cannot
+    make them later."""
+    return kuiva.ScalarSCF(nitrogen(basis), memory_gb=6.0, screening="none",
+                           atomic_reference=True).run()
+
+
 def kramers_deviation(coeff: np.ndarray) -> float:
     """``max |c_2p+1 - T c_2p|`` -- the pairing convention as an identity on coefficients.
 
@@ -163,6 +191,21 @@ def kramers_deviation(coeff: np.ndarray) -> float:
     spin blocks differently would break it, and nothing else in this example would notice.
     """
     return float(np.abs(coeff[:, 1::2] - time_reverse(coeff[:, ::2])).max())
+
+
+def holds_reference_determinant(scf: kuiva.ScalarSCF, cas) -> bool:
+    """Is every SCF-occupied orbital inside inactive + active?
+
+    The property the whole example rests on, and the one a poorly chosen active space fails
+    silently. It is checked on *spatial* orbital indices lifted to spinors (`p` -> `2p`,
+    `2p+1`), which is legitimate here because AVAS rotates only **within** groups of equal
+    occupation: the occupied span it hands over is the SCF's own.
+    """
+    occupied = np.nonzero(np.asarray(scf.data.mo_occ) > 0.0)[0]
+    spinors = np.concatenate([2 * occupied, 2 * occupied + 1])
+    spaces = cas.active.spaces
+    inside = set(spaces.inactive.tolist()) | set(spaces.active.tolist())
+    return set(spinors.tolist()) <= inside
 
 
 def projection_report(projection) -> None:
@@ -190,8 +233,8 @@ def main() -> int:
     out.section(log, "Problem")
     out.entries(log, [
         ("system", "N2", "", "r(N-N) = {:.3f} A".format(R_NN)),
-        ("active space", "CAS({}, {})".format(N_ACTIVE_ELEC, N_ACTIVE), "",
-         "p character on both nitrogens"),
+        ("active space", "CAS(8, 12)", "",
+         "AVAS on the free-atom N 2p, both centres"),
         ("cheap basis", SMALL_BASIS),
         ("production basis", LARGE_BASIS),
         ("orbital optimizer", MODE, "", "max_iter = {}".format(MAX_ITER)),
@@ -204,24 +247,23 @@ def main() -> int:
     # 1. The cheap calculation. This is the one that decides the orbitals.
     # ----------------------------------------------------------------------------------
     out.section(log, "1. CASSCF in the cheap basis")
-    small = kuiva.Reference(
-        kuiva.ScalarSCF(nitrogen(SMALL_BASIS), memory_gb=6.0, screening="none").run()).run()
-    cheap = kuiva.CASSCF(small, character=([0, 1], "p"), n_active=N_ACTIVE,
-                         n_active_elec=N_ACTIVE_ELEC, mode=MODE, max_iter=CHEAP_MAX_ITER,
+    small_scf = scalar_scf(SMALL_BASIS)
+    small = kuiva.Reference(small_scf).run()
+    cheap = kuiva.CASSCF(small, avas=AVAS, mode=MODE, max_iter=CHEAP_MAX_ITER,
                          conv_grad=CONV_GRAD, report=False).run()
     log.info("%s", cheap.summary())
 
     # ----------------------------------------------------------------------------------
     # 2. The production basis, twice: from its own SCF guess, and from the projection.
     # ----------------------------------------------------------------------------------
-    large = kuiva.Reference(
-        kuiva.ScalarSCF(nitrogen(LARGE_BASIS), memory_gb=6.0, screening="none").run()).run()
+    large_scf = scalar_scf(LARGE_BASIS)
+    large = kuiva.Reference(large_scf).run()
 
     out.section(log, "2. The production basis from its own SCF guess")
-    out.note(log, "given the SAME iteration budget as the projected run below, not enough")
-    out.note(log, "to converge -- the ratio is the point, not the endpoint.")
-    direct = kuiva.CASSCF(large, character=([0, 1], "p"), n_active=N_ACTIVE,
-                          n_active_elec=N_ACTIVE_ELEC, mode=MODE, max_iter=MAX_ITER,
+    out.note(log, "the same active space, selected again in this basis by the same AVAS")
+    out.note(log, "request -- and it is the same six pairs, which is why the comparison is")
+    out.note(log, "a comparison of routes rather than of calculations.")
+    direct = kuiva.CASSCF(large, avas=AVAS, mode=MODE, max_iter=MAX_ITER,
                           conv_grad=CONV_GRAD, report=False).run()
     log.info("%s", direct.summary())
 
@@ -235,8 +277,8 @@ def main() -> int:
     out.subsection(log, "What the projection carried")
     projection_report(projected.projection)
     # ⚠ On the PROJECTION's own output, not on the converged CASSCF orbitals: the optimizer
-    # is Kramers-unrestricted and is entitled to rotate the active pairs into each other
-    # afterwards, which is redundant and changes nothing.
+    # is entitled to rotate the active pairs into each other afterwards, which is redundant
+    # and changes nothing.
     out.entry(log, "Kramers pairing deviation of the projected orbitals",
               kramers_deviation(projected.projection.coeff), fmt="{:.2e}",
               note="pairs rebuilt on the carried block before the complement")
@@ -245,12 +287,26 @@ def main() -> int:
     out.entries(log, [
         ("E(CASSCF), from the SCF guess", direct.energy, "Eh", "", out.E_FMT),
         ("E(CASSCF), from the projection", projected.energy, "Eh", "", out.E_FMT),
+        ("difference", abs(direct.energy - projected.energy), "Eh", "", out.SCI_FMT),
         ("macro-iterations, from the SCF guess", direct.orbital.n_iterations, "",
          "converged" if direct.converged else "budget exhausted"),
         ("macro-iterations, from the projection", projected.orbital.n_iterations, "",
          "converged" if projected.converged else "budget exhausted"),
         ("|grad|, from the SCF guess", direct.orbital.grad_norm, "", "", out.SCI_FMT),
         ("|grad|, from the projection", projected.orbital.grad_norm, "", "", out.SCI_FMT),
+    ])
+
+    out.subsection(log, "Is the converged solution a minimum?")
+    out.note(log, "the curvature of the orbital Hessian along the time-reversal-odd")
+    out.note(log, "rotations the Kramers constraint forbids, measured at the converged")
+    out.note(log, "point. Positive: the symmetric solution is a minimum and the run is done.")
+    out.entries(log, [
+        ("lowest time-odd curvature, direct", direct.orbital.time_odd_curvature,
+         "Eh/rad^2", "", out.SCI_FMT),
+        ("lowest time-odd curvature, projected", projected.orbital.time_odd_curvature,
+         "Eh/rad^2", "", out.SCI_FMT),
+        ("constraint released", projected.orbital.kramers_released, "",
+         "a release would mean the symmetric solution is a saddle"),
     ])
 
     # ----------------------------------------------------------------------------------
@@ -295,16 +351,20 @@ def main() -> int:
     # 5. What the example claims.
     # ----------------------------------------------------------------------------------
     # ⚠ Iteration COUNTS are not asserted as numbers -- they are a measurement and they move
-    # with the machine. What is asserted is the inequality (which has a factor-of-six margin
-    # here), the variational statement, and the invariants of the projection itself.
+    # with the machine. What is asserted is the inequality (7 against 14 here), the
+    # variational statement, and the invariants of the projection itself.
     checks = {
+        "the active space holds the SCF reference determinant":
+            holds_reference_determinant(small_scf, cheap)
+            and holds_reference_determinant(large_scf, direct),
         "the cheap CASSCF converged": bool(cheap.converged),
-        "the projected large-basis CASSCF converged inside the shared budget":
-            bool(projected.converged),
-        "it needed fewer macro-iterations than the direct route":
+        "both large-basis routes converged":
+            bool(direct.converged) and bool(projected.converged),
+        "the projected route needed fewer macro-iterations":
             projected.orbital.n_iterations < direct.orbital.n_iterations,
-        "and reached an energy no higher than the direct route did":
-            projected.energy <= direct.energy + 1e-9,
+        "and reached the same energy, from below":
+            projected.energy <= direct.energy + 1e-9
+            and abs(projected.energy - direct.energy) < 1e-6,
         "the projected active space is the one it came from":
             projected.projection.fidelity > FIDELITY_MIN,
         "the active space was inherited, not re-selected":
@@ -317,6 +377,10 @@ def main() -> int:
             and projected.projection.complement_gap[1] < 1e-8,
         "the projection delivers exact Kramers pairs":
             kramers_deviation(projected.projection.coeff) < 1e-10,
+        "the time-reversal-symmetric solution is a minimum, by both routes":
+            direct.orbital.time_odd_curvature > 0.0
+            and projected.orbital.time_odd_curvature > 0.0
+            and not projected.orbital.kramers_released,
         "the reverse projection converged to the cheap basis' own solution":
             bool(back.converged) and abs(back.energy - cheap.energy) < 1e-7,
         "and it reports the norm it could not carry":
