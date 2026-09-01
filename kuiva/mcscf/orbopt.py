@@ -186,6 +186,7 @@ from ..integrals.transform import (ThreeIndexAO, assemble_4c, coulomb_exchange,
 from ..util import output as out
 from ..util import resources
 from ..util import threads
+from ..util.errors import SolverFailure
 from ..util.logging import get_logger
 from ..util.timing import timer
 
@@ -2402,6 +2403,11 @@ class CASSCFResult:
     n_hessian_matvec: int = 0
     n_second_order_steps: int = 0
     n_rejected: int = 0
+    #: Trial points the CI solver refused (:class:`~kuiva.util.errors.SolverFailure`). Each
+    #: one is a rejected step, not a failure of the run — but a converged result reached past
+    #: several of them was optimized on a restricted set of directions, so the count is
+    #: reported rather than swallowed.
+    n_solver_failures: int = 0
     #: Lowest curvature of the orbital Hessian along the time-reversal-**odd** rotations a
     #: Kramers constraint forbids, measured at the converged point
     #: (:func:`measure_time_odd_curvature`); ``None`` where the test did not run — an
@@ -2454,6 +2460,23 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
 
     Convergence is on the orbital gradient norm *and* the energy change; both must be met,
     because a truncated CI can stall the energy while the orbitals are still moving.
+
+    ⚠ **A solver that refuses a trial point is a rejected step, not the end of the run.**
+    ``ci_solver`` may raise :class:`~kuiva.util.errors.SolverFailure` at a trial rotation —
+    an eigensolver that did not converge, an iteration cap, a state count that cuts a
+    degenerate block of *that point's* spectrum
+    (:class:`~kuiva.util.errors.StateAverageSplit`). The trial is then rejected exactly as a
+    step that raised the energy is: the trust radius shrinks and the next trial point is
+    closer to one that worked, and the refusal is a ``WARNING`` naming the iteration.
+    :attr:`CASSCFResult.n_solver_failures` counts them, because a result reached past several
+    of them was optimized over a restricted set of directions.
+
+    The refusal still **propagates** at the two points where there is nothing to reject: the
+    first solve, at the starting orbitals, and the gradient build at an *accepted* point. And
+    the catch is narrow by design — only ``SolverFailure``, the declared contract for "no
+    usable answer at this point". Anything else raises, because a shape mismatch or a memory
+    refusal turned into a rejected step is a run that shrinks its trust radius to nothing and
+    prints no reason why.
 
     ``callback(info)`` is invoked after every macro-iteration with the current iteration,
     energy, gradient norm, energy change and step type — **plus** the current orbitals, RDMs
@@ -2594,6 +2617,7 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
     history = [energy] if history is None else [float(e) for e in history]
     converged = False
     gnorm = np.inf
+    n_solver_failures = 0
     it = int(start_iteration)
     for it in range(int(start_iteration) + 1, max_iter + 1):
         with timer("macro-iteration") as t_it:
@@ -2609,19 +2633,43 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                     c_try = np.ascontiguousarray(repair_orbitals(c_try),
                                                  dtype=np.complex128)
                 ints_try = CASIntegrals.build(factors, h_ao, c_try, spaces, e_nuc=e_nuc)
-                e_try, g_try, g2_try = ci_solver(ints_try)
-                de = e_try - energy
-                if de <= conv_energy:                      # accept (a tiny rise is noise)
-                    grad_new, _ = opt.gradient(ints_try, g_try, g2_try, factors, c_try)
-                    opt.accept(grad_new)
-                    c, ints, energy, gamma, gamma2 = c_try, ints_try, e_try, g_try, g2_try
-                    history.append(energy)
-                    if abs(de) < conv_energy and gnorm < conv_grad:
-                        converged = True
-                else:
+                try:
+                    e_try, g_try, g2_try = ci_solver(ints_try)
+                except SolverFailure as exc:
+                    # ⚠ A point the solver cannot evaluate is a point the optimizer must not
+                    # move to — it is not a failure of the calculation, and killing the run
+                    # here throws away every macro-iteration already paid for. Rejecting
+                    # shrinks the trust radius, so the next trial point is closer to one that
+                    # did work; if none ever does, the run reports that it did not converge
+                    # with these warnings in the log, which is a far more useful outcome than
+                    # a traceback at macro-iteration three.
+                    #
+                    # ⚠ The catch is deliberately narrow. ``SolverFailure`` is the *declared*
+                    # contract for "no usable answer at this point"
+                    # (:mod:`kuiva.util.errors`); anything else — a shape mismatch, a memory
+                    # refusal, a bug — propagates, because turning those into a rejected step
+                    # would convert a diagnosable error into a run that shrinks its trust
+                    # radius to nothing for a reason nothing prints.
+                    n_solver_failures += 1
                     opt.reject()
-                    log.debug("rejected a step that raised the energy by %.3e Eh; trust "
-                              "radius now %.2e", de, opt.trust)
+                    de = 0.0
+                    log.warning("the CI solver refused the trial point of macro-iteration "
+                                "%d (%s); the step is rejected and the trust radius is now "
+                                "%.2e", it, exc, opt.trust)
+                else:
+                    de = e_try - energy
+                    if de <= conv_energy:                  # accept (a tiny rise is noise)
+                        grad_new, _ = opt.gradient(ints_try, g_try, g2_try, factors, c_try)
+                        opt.accept(grad_new)
+                        c, ints, energy, gamma, gamma2 = (c_try, ints_try, e_try,
+                                                          g_try, g2_try)
+                        history.append(energy)
+                        if abs(de) < conv_energy and gnorm < conv_grad:
+                            converged = True
+                    else:
+                        opt.reject()
+                        log.debug("rejected a step that raised the energy by %.3e Eh; trust "
+                                  "radius now %.2e", de, opt.trust)
         if report:
             table.row(it, energy, de, gnorm, step.max_rotation,
                       "2nd" if step.second_order else "qn", t_it.wall,
@@ -2661,6 +2709,12 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
         entries = [("second-order steps taken", opt.n_second_order_steps),
                    ("Hessian-vector products", opt.n_hessian_matvec),
                    ("rejected steps", opt.n_rejected)]
+        if n_solver_failures:
+            # Only when it happened: a zero row here would put a line about a failure mode
+            # in every output file in the project. A nonzero one is worth a reader's eye,
+            # because those directions were never evaluated.
+            entries.append(("trial points the CI refused", n_solver_failures, "",
+                            "each one rejected the step; the trust radius shrank"))
         if curvature is not None:
             entries.append(("lowest time-odd curvature", curvature.value, "Eh/rad^2",
                             "{}; {} products".format(curvature.verdict, curvature.n_matvec),
@@ -2708,6 +2762,8 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                        n_second_order_steps=(opt.n_second_order_steps
                                              + followed.n_second_order_steps),
                        n_rejected=opt.n_rejected + followed.n_rejected,
+                       n_solver_failures=(n_solver_failures
+                                          + followed.n_solver_failures),
                        time_odd_curvature=curvature.value, kramers_released=True)
     if not converged:
         log.warning("orbital optimization did not converge in %d macro-iterations "
@@ -2718,6 +2774,7 @@ def optimize_orbitals(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndar
                         history=history, n_hessian_matvec=opt.n_hessian_matvec,
                         n_second_order_steps=opt.n_second_order_steps,
                         n_rejected=opt.n_rejected,
+                        n_solver_failures=n_solver_failures,
                         time_odd_curvature=None if curvature is None else curvature.value)
 
 

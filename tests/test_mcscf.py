@@ -28,6 +28,7 @@ from kuiva.mcscf.orbopt import (CASIntegrals, OrbitalHessian, OrbitalOptimizer, 
 from kuiva.mcscf.preopt import cheap_ci, reference_determinants
 from kuiva.rdm.entropy import (fiedler_order, mutual_information, single_orbital_entropy,
                                two_orbital_entropy)
+from kuiva.util.errors import SolverFailure, StateAverageSplit
 
 ALG_TOL = 1e-10
 
@@ -249,6 +250,121 @@ def test_optimizer_lowers_the_energy_and_converges(system):
     # Monotone descent is guaranteed by the accept/reject trust region, not incidental.
     assert np.all(np.diff(res.history) <= 1e-8)
     assert np.max(np.abs(res.coeff.conj().T @ res.coeff - np.eye(spaces.n_orb))) < 1e-10
+
+
+def _exact_ci_solver(spaces, nelec):
+    """The module's exact active-space solver as a plain ``ci_solver(ints)`` callable."""
+    def ci_solver(ints):
+        occ = list(itertools.combinations(range(spaces.n_active), nelec))
+        dets = Determinants.from_occupations(occ, spaces.n_active)
+        mat = hamiltonian_matrix(dets, ints.h_active_effective(),
+                                 ints.active_eri()).toarray()
+        w, v = np.linalg.eigh(mat)
+        g1, g2 = rdm12(dets, v[:, 0])
+        return w[0] + ints.e_core, g1, g2
+    return ci_solver
+
+
+def test_a_refused_trial_point_is_a_rejected_step_not_the_end_of_the_run(system, kuiva_caplog):
+    """⚠ The mechanism, and it is the *point* being unevaluable rather than the run failing.
+
+    A ``SolverFailure`` at a trial rotation used to propagate out of the loop, throwing away
+    every macro-iteration already paid for — which is what made the time-reversal drift fatal
+    rather than merely slow. The trust region already knows what to do with a trial point it
+    must not move to, so the failure is routed into the same ``reject()`` a step that raises
+    the energy takes.
+
+    Tested on the *mechanism* and not on the observable: the solver refuses a fixed set of
+    early trial points and the run must still converge to the same stationary point as the
+    never-refusing one, with the refusals counted and warned about.
+    """
+    factors, h_ao, coeff, spaces, nelec = system
+    exact = _exact_ci_solver(spaces, nelec)
+
+    clean = optimize_orbitals(factors, h_ao, coeff, spaces, exact, max_iter=300,
+                              conv_grad=1e-5, report=False)
+    assert clean.converged and clean.n_solver_failures == 0
+
+    calls = {"n": 0}
+
+    def refusing(ints):
+        calls["n"] += 1
+        if calls["n"] in (2, 3, 5):            # trial points; call 1 is the starting solve
+            raise SolverFailure("refused for the test at call {}".format(calls["n"]))
+        return exact(ints)
+
+    res = optimize_orbitals(factors, h_ao, coeff, spaces, refusing, max_iter=300,
+                            conv_grad=1e-5, report=False)
+    assert res.converged, "gradient norm {:.2e}".format(res.grad_norm)
+    assert res.n_solver_failures == 3
+    assert res.energy == pytest.approx(clean.energy, abs=1e-9)
+    assert np.all(np.diff(res.history) <= 1e-8)        # still a monotone descent
+    assert sum("refused the trial point" in r.message and r.levelname == "WARNING"
+               for r in kuiva_caplog.records) == 3
+
+
+def test_a_refusal_at_the_starting_point_still_propagates(system):
+    """⚠ At the starting orbitals there is nothing to reject, so the refusal is the answer.
+
+    The counterpart the fix above must not swallow: a solver that cannot evaluate the point
+    the optimization *begins* at has not told the driver about a bad direction, it has told it
+    the calculation cannot be run.
+    """
+    factors, h_ao, coeff, spaces, nelec = system
+
+    def refusing(ints):
+        raise SolverFailure("cannot solve here at all")
+
+    with pytest.raises(SolverFailure, match="cannot solve here at all"):
+        optimize_orbitals(factors, h_ao, coeff, spaces, refusing, max_iter=5, report=False)
+
+
+def test_an_ordinary_exception_from_the_solver_is_not_swallowed(system):
+    """⚠ The catch is narrow on purpose, and this is the half that keeps it honest.
+
+    Turning *any* exception into a rejected step would convert a shape mismatch or a memory
+    refusal into a run that shrinks its trust radius to nothing and prints no reason why —
+    the plausible-looking failure this project spends its warnings on. Only the declared
+    ``SolverFailure`` contract is a statement about the point.
+    """
+    factors, h_ao, coeff, spaces, nelec = system
+    exact = _exact_ci_solver(spaces, nelec)
+    calls = {"n": 0}
+
+    def buggy(ints):
+        calls["n"] += 1
+        if calls["n"] == 2:                    # the first trial point
+            raise TypeError("a bug, not a refusal")
+        return exact(ints)
+
+    with pytest.raises(TypeError, match="a bug, not a refusal"):
+        optimize_orbitals(factors, h_ao, coeff, spaces, buggy, max_iter=5, report=False)
+
+
+def test_the_state_average_split_speaks_both_languages():
+    """⚠ One refusal, two readings, and losing either one is a defect.
+
+    ``StateAverageSplit`` is raised by the state-averaging gate when a count cuts a
+    Kramers-degenerate block. Whether it does depends on the spectrum and the spectrum depends
+    on the orbitals, so to a caller it is a ``ValueError`` about the request and to an orbital
+    driver walking through trial points it is a ``SolverFailure`` about the point. It is
+    asserted as a *type* relationship rather than through a run, because that relationship is
+    the whole mechanism.
+    """
+    from kuiva.rdm.rdm import state_average_weights
+
+    assert issubclass(StateAverageSplit, ValueError)
+    assert issubclass(StateAverageSplit, SolverFailure)
+
+    # Three states of an odd-electron system with a doubly degenerate level at the top: the
+    # count cuts that pair, which Kramers' theorem makes a refusal rather than a judgement.
+    energies = [-1.0, -0.5, -0.5 + 1e-12]
+    with pytest.raises(StateAverageSplit, match="split a Kramers-degenerate block"):
+        state_average_weights(energies, n_elec=3)
+    with pytest.raises(ValueError):                       # the caller's reading, unchanged
+        state_average_weights(energies, n_elec=3)
+    with pytest.raises(SolverFailure):                    # the controller's reading, new
+        state_average_weights(energies, n_elec=3)
 
 
 def test_rejection_retry_recomputes_nothing(system):

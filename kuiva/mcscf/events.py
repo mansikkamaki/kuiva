@@ -152,12 +152,15 @@ class EventCASSCFResult(CASSCFResult):
     threshold **and** the last event refused to improve the space (:attr:`event_stable`). A
     run that hits ``max_iter`` with a small gradient but an unstable space is not converged,
     and saying so is the point.
+
+    ``n_solver_failures`` is **not** declared here: it belongs to
+    :class:`~kuiva.mcscf.orbopt.CASSCFResult`, since the plain driver rejects a refused trial
+    point too and one count is better than two spellings of the same number.
     """
 
     n_events: int = 0
     n_adoptions: int = 0
     n_refusals: int = 0
-    n_solver_failures: int = 0
     event_stable: bool = False
     events: List[EventRecord] = field(default_factory=list)
 

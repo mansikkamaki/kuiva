@@ -266,24 +266,97 @@ def test_stage_validates_the_controls_eagerly():
 
 # --- stability -------------------------------------------------------------------------------
 
+#: ⚠ **Above the scatter of a trajectory that is not reproducible, and that relation — not
+#: the number — is what has to be preserved.**
+#:
+#: The SCF on this atom does not follow the same path twice. Four independent runs in one
+#: process diverge at the **first** cycle (spread 4.9e-05 Eh) and take 32-34 cycles; the cause
+#: is narrow, since a *full* Fock build from a fixed density is bitwise stable (12 of 12
+#: identical) and so is the eigensolver (8 of 8), while the **incremental** ``direct_scf``
+#: build the loop actually uses gives 2 distinct results from 8 identical calls. PySCF then
+#: decides convergence twice — once in the loop, and once in a post-loop ``conv_check`` that
+#: runs one extra cycle and can turn a converged run back into a refusal.
+#:
+#: At the default ``conv_tol=1e-10`` that verdict falls inside the scatter and is settled by
+#: which way the last cycle's rounding went: **1 refusal in 60** bare SCFs. At 1e-08, **0 in
+#: 60** of the same, and **0 in 85** more through the two tests below as written. Changing the
+#: tolerance is the whole of the fix.
+#:
+#: ⚠ Two things it is therefore **not**, both measured before choosing it. It is not a budget:
+#: the refusing runs stop at 28 and 35 cycles of the 100 they are given, and one draw in 40 did
+#: not converge at ``max_cycle=1000`` either. And it cannot be bought with a convergence aid —
+#: ``level_shift=0.1``, ``adiis`` and ``ediis`` all converge to the *stable* -1518.8047 Eh
+#: solution instead, i.e. they remove the saddle these tests exist to demonstrate, while
+#: ``damp`` widens the cycle-count scatter without helping.
+#:
+#: The cost is nothing these tests measure: the saddle energy is reproducible to 3.9e-07 Eh,
+#: four orders inside the 1e-3 asserted below, and the 0.3033 Eh gap is identical in every
+#: draw.
+#:
+#: ⚠ **Raising this back to the default is not a tightening, it is a coin flip**, and the
+#: symptom is a suite that refuses one run in two with an entirely plausible energy each time.
+#: If it ever has to move, measure the refusal rate over tens of draws rather than the energy
+#: over one: every draw here converges to a plausible number, and only the *rate* distinguishes
+#: a criterion the arithmetic can meet from one it meets by luck.
+NI_CONV_TOL = 1e-8
+
+
+def ni_atom():
+    """The Ni atom whose ROHF converges cleanly onto a saddle point (see :data:`NI_CONV_TOL`)."""
+    return kuiva.Molecule([("Ni", (0.0, 0.0, 0.0))], basis="x2c-SVPall-2c", spin=2)
+
+
 def test_stability_follow_finds_the_lower_solution():
     """⚠ The mechanism, on the cheapest system that shows it: the Ni atom's ROHF converges,
     reports every diagnostic clean, and sits on a **saddle point** of the SCF energy 0.30 Eh
     above the solution one rotation away. Nothing else in the front end can see that — a
     converged flag, a gradient norm and a plausible energy are all present.
     """
-    ni = kuiva.Molecule([("Ni", (0.0, 0.0, 0.0))], basis="x2c-SVPall-2c", spin=2)
-    saddle = kuiva.ScalarSCF(ni, max_cycle=100, stability="check", **BASE).run()
-    lower = kuiva.ScalarSCF(ni, max_cycle=100, stability="follow", **BASE).run()
+    ni = ni_atom()
+    saddle = kuiva.ScalarSCF(ni, max_cycle=100, conv_tol=NI_CONV_TOL,
+                             stability="check", **BASE).run()
+    lower = kuiva.ScalarSCF(ni, max_cycle=100, conv_tol=NI_CONV_TOL,
+                            stability="follow", **BASE).run()
     assert saddle.converged and lower.converged
     assert lower.energy < saddle.energy - 0.1
 
 
 def test_stability_check_warns_without_re_solving(kuiva_caplog):
-    ni = kuiva.Molecule([("Ni", (0.0, 0.0, 0.0))], basis="x2c-SVPall-2c", spin=2)
-    scf = kuiva.ScalarSCF(ni, max_cycle=100, stability="check", **BASE).run()
+    scf = kuiva.ScalarSCF(ni_atom(), max_cycle=100, conv_tol=NI_CONV_TOL,
+                          stability="check", **BASE).run()
     assert any("internally UNSTABLE" in r.message for r in kuiva_caplog.records)
     assert scf.energy == pytest.approx(-1518.50139, abs=1e-3)
+
+
+def test_the_ni_saddle_is_reached_reproducibly():
+    """⚠ The property the two tests above silently assumed, and the one that was false.
+
+    They were flaky — a refusal in roughly one suite run in two, with an entirely plausible
+    energy every time — because their convergence criterion was tighter than the scatter of a
+    trajectory that is not reproducible (:data:`NI_CONV_TOL` has the measurements). A suite
+    that fails at random is worse than one that fails: it trains whoever runs it to re-run
+    rather than read, which is how a real regression gets waved through.
+
+    So the repetition is the test. What must hold is not a number but an **outcome**: every
+    draw converges, and every draw lands on the same stationary point. If the criterion ever
+    slips back under the scatter this is what fails, and it fails saying which of the two it
+    was.
+
+    ⚠ It asserts nothing about the *trajectory* — not a cycle count, not an energy to more
+    digits than the point is defined to. Those are properties of a path PySCF does not repeat,
+    and pinning one would make this a regression test on PySCF's DIIS instead of a statement
+    about the physics.
+    """
+    energies = []
+    for draw in range(5):
+        scf = kuiva.ScalarSCF(ni_atom(), max_cycle=100, conv_tol=NI_CONV_TOL,
+                              stability=False, **BASE).run()
+        assert scf.converged, "draw {} did not converge".format(draw)
+        energies.append(scf.energy)
+    assert np.ptp(energies) < 1e-4, (
+        "the five draws landed {:.2e} Eh apart, so they are not all the same stationary "
+        "point any more: {}".format(float(np.ptp(energies)), energies))
+    assert float(np.mean(energies)) == pytest.approx(-1518.50139, abs=1e-3)
 
 
 def test_stability_follow_stops_after_the_cap(kuiva_caplog):

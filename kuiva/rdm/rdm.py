@@ -77,6 +77,7 @@ from ..ci import kernels
 from ..ci.sigma import gather_block_size
 from ..ci.strings import CASSpace, _check_array, _check_output
 from ..util import resources as res
+from ..util.errors import StateAverageSplit
 from ..util.logging import get_logger
 from ..util.timing import timer
 
@@ -208,10 +209,17 @@ def state_average_weights(energies: Sequence[float], n_elec: int,
 
     Raises
     ------
-    ValueError
+    :class:`~kuiva.util.errors.StateAverageSplit`
         On a split block with ``on_split="raise"``. ⚠ Proceeding produces converged orbitals
         that depend on an arbitrary rotation the eigensolver chose inside the pair — a result
         that is not reproducible and does not look wrong.
+
+        It is a ``ValueError`` **and** a
+        :class:`~kuiva.util.errors.SolverFailure`, deliberately: whether a count splits a
+        block depends on the spectrum, and the spectrum depends on the orbitals. To a caller
+        the refusal is about the request and reads as the ``ValueError`` it always was; to an
+        orbital optimizer walking through trial points it is a property of the point, which
+        the driver rejects rather than dying on. That class carries the whole statement.
     """
     values = np.asarray(energies, dtype=float)
     n_states = values.size
@@ -252,7 +260,12 @@ def state_average_weights(energies: Sequence[float], n_elec: int,
                 message += (". No truncated block is at the end, so the degeneracy tolerance "
                             "({:.1e} Eh) is probably too tight for this spectrum".format(tol))
             if on_split == "raise":
-                raise ValueError(message)
+                # ⚠ Both a ValueError and a SolverFailure, and the reasons are in
+                # :class:`~kuiva.util.errors.StateAverageSplit`. Whether a count splits a
+                # block depends on the spectrum and the spectrum depends on the orbitals, so
+                # to a caller this is a wrong request and to an orbital optimizer stepping
+                # through trial points it is a property of the point it must not move to.
+                raise StateAverageSplit(message)
             if on_split != "warn":
                 raise ValueError("on_split must be 'raise' or 'warn', got {!r}"
                                  .format(on_split))
