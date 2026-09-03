@@ -15,7 +15,10 @@ What it holds
 * the **grading bands** (:data:`BANDS`, user-confirmed 2026-08-29) and the reduction that
   applies them;
 * the shared plumbing: reference, converged orbitals, active integrals, the exact-CI oracle,
-  one network ladder point, and the phase-invariant comparison between them.
+  one network ladder point, and the phase-invariant comparison between them;
+* the **protocol-B** primitives (:func:`network_solver`, :func:`relax_orbitals`): the same
+  orbital optimization driven by two different CI solvers, which is the only way to ask
+  whether orbital relaxation absorbs a truncation error or amplifies it.
 
 The comparison discipline, which is the whole design
 ----------------------------------------------------
@@ -43,7 +46,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -194,6 +197,14 @@ class Campaign:
     caps: Tuple[int, ...] = ()
     n_det: int = 0
     ladder_states: Optional[int] = None
+    #: Whether an exact CI oracle exists for this system at all. ⚠ **Set ``False`` only
+    #: where the memory pre-flight has REFUSED it**, and record the refusal: past the
+    #: conventional-CI ceiling there is no exact answer to grade against, and the ladder is
+    #: then run in the mode Tier 3 will have to use — reduced at the manifold structure the
+    #: rungs below establish, and graded for internal convergence in D. It is not a way to
+    #: skip an oracle that could have been computed, which would make every number below it
+    #: a claim with nothing behind it.
+    exact_oracle: bool = True
     #: Where the ladder's fixed orbitals come from: ``"casscf"`` (the converged
     #: state-averaged reference) or ``"guess"`` (the scalar reference's own spinors).
     #: ⚠ **Both are legitimate for this measurement and they are not the same claim.**
@@ -276,6 +287,23 @@ def _from_suite(key: str, *, caps: Sequence[int], ladder_states: Optional[int] =
 CAPS_SMALL = (2, 3, 4, 6, 8, 12, 16, 24, 32)
 CAPS_F_SHELL = (2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128)
 
+#: The ordinal window naming uranium's VALENCE 5f shell, measured off the ``uf3``
+#: reference's own character-ordered populations rather than counted off a periodic table.
+#: ⚠ Uranium has a filled **4f** shell below the 5f (and filled 3d/4d/5d below the 6d), so
+#: a valence shell here is not the lowest of its character and a bare ``(U, l)`` selection
+#: takes core orbitals — silently, because an f^3 shell gives the same 4I9/2 pattern and the
+#: same Lande g whichever f shell holds it.
+U_F_SKIP_PAIRS = 7
+
+#: Ordinal windows for the DyCl3 rungs, measured on that reference the same way (the
+#: populations are recorded with the campaign's results). ⚠ Chlorine's filled **2p** is
+#: nine Kramers
+#: pairs across the three ligands and lies below the valence 3p; dysprosium's filled **3d**
+#: and **4d** are ten pairs below the 5d. Neither is visible in an occupation — a filled
+#: core shell and a filled valence shell both read 2.0.
+CL_2P_SKIP_PAIRS = 9
+DY_4D_SKIP_PAIRS = 10
+
 
 def systems() -> Dict[str, Campaign]:
     """Every campaign system, keyed. Built lazily so importing this module is cheap."""
@@ -355,7 +383,9 @@ def systems() -> Dict[str, Campaign]:
             atoms=_pyramidal_mx3("U", "F", 2.06, 108.0), charge=0, spin=3,
             basis={"U": "cc-pVDZ-X2C", "F": "x2c-SVPall-2c"},
             n_active=14, n_active_elec=3,
-            character=("U", "f"), n_states=10, caps=CAPS_F_SHELL, n_det=364,
+            selection_kw=dict(character=[([0], "f", 14, U_F_SKIP_PAIRS)],
+                              n_active=14, n_active_elec=3),
+            n_states=10, caps=CAPS_F_SHELL, n_det=364,
             orbitals="guess", casscf_mode="second-order", max_iter=250,
             scf_prelude=dict(level_shift=2.0, damp=0.7, diis="adiis", max_cycle=200),
             scf_options=dict(second_order=True, stability="follow", max_cycle=150),
@@ -365,8 +395,21 @@ def systems() -> Dict[str, Campaign]:
                       "gas-phase actinide trifluorides",
             physics_note="the actinide leg: U(3+) 5f^3, ground 4I9/2 split by the ligand "
                          "field into 5 Kramers doublets. 364 determinants — the cheapest "
-                         "f-block oracle in the campaign. 5f is the lowest f shell, so no "
-                         "ordinal window is needed",
+                         "f-block oracle in the campaign. ⚠ THE ORDINAL WINDOW IS "
+                         "REQUIRED HERE AND ITS ABSENCE WAS A REAL DEFECT: uranium has a "
+                         "FILLED 4f shell below the 5f, so the bare (U, f) form this entry "
+                         "carried until 2026-09-02 selected the 4f core — fourteen "
+                         "electrons' worth of doubly occupied orbitals, opened with three "
+                         "electrons in them while the singly occupied 5f pairs were frozen "
+                         "as inactive. Measured on this reference: f-character pairs 26-32 "
+                         "are 4f (population 1.000 on U f, occupation 2.0) and pairs 8-14 "
+                         "of the character ordering are the 5f (0.44-0.99, occupation 1.0 "
+                         "on the lowest two). Nothing in the result looked wrong — an f^3 "
+                         "shell gives the same 4I9/2 pattern and the same Lande g whichever "
+                         "f shell holds it, which is exactly the silent failure the ordinal "
+                         "window exists to prevent. Every uf3 record written before that "
+                         "date is on the 4f space and says so in its own active_space "
+                         "field",
             protocol_note="⚠ THE LADDER RUNS AT SCALAR-GUESS ORBITALS, and it is a "
                           "recorded deviation rather than a shortcut: the reference "
                           "SA-10 CASSCF DOES NOT CONVERGE HERE. Four step engines were "
@@ -410,6 +453,131 @@ def systems() -> Dict[str, Campaign]:
                           "checks. SA-10 over the complete 4I9/2 manifold"),
     ):
         out[camp.key] = camp
+    for camp in _beyond_minimal(out):
+        out[camp.key] = camp
+    return out
+
+
+def _beyond_minimal(base: Dict[str, Campaign]) -> List[Campaign]:
+    """The "beyond the minimal active space" leg: same molecules, a larger CAS.
+
+    ⚠ **``mode="second-order"`` on both, and it is the orbital problem that decides it**
+    (never the CI cost): a correlating shell is nearly empty in every state of the average,
+    so the rotations that determine it are the weakly curved ones a quasi-Newton step is
+    worst at. ``max_iter`` is doubled with it, because an escalation the budget does not
+    survive returns an unconverged iterate rather than a slow answer.
+
+    ⚠ **Derived from the minimal entries rather than restated**, so the geometry, the basis,
+    the charge, the spin and the SCF recipe keep exactly one definition and only the active
+    space differs — which is the whole point of the comparison. What each one adds is the
+    *correlating* shell, and naming it is the trap this leg exists to walk into carefully:
+    a second shell of the same ``l`` cannot be selected by character alone, because the
+    lowest pairs of that character are the shell already in the space (and, on an actinide,
+    three filled core shells below it). Both spaces therefore state an **ordinal window**
+    over the character-ordered list, which is reproducible from what it prints.
+    """
+    out: List[Campaign] = []
+    ti = base["tif3"]
+    out.append(replace(
+        ti, key="tif3_dd", label="TiF3 (3d + 4d' double shell)",
+        n_active=20, n_det=20, caps=CAPS_SMALL, ladder_states=ti.roots,
+        casscf_mode="second-order", max_iter=120,
+        selection_kw=dict(character=[([0], "d", 10), ([0], "d", 10, 5)],
+                          n_active=20, n_active_elec=ti.n_active_elec),
+        physics_note="the double-shell extension of the committed d^1 system: the five "
+                     "lowest d pairs plus the next five. 20 determinants, so the exact CI "
+                     "oracle is free at every cap, and the manifold under test is the same "
+                     "10-state one the minimal ladder graded - which is what makes the two "
+                     "ladders comparable at all",
+        protocol_note="committed suite geometry, basis and SCF; ACTIVE SPACE EXTENDED. "
+                      "The correlating shell is named as an ordinal window "
+                      "[(Ti,d,10), (Ti,d,10,skip=5)] because two (Ti,d) fragments without "
+                      "one claim the same pairs and are refused. Measured on this "
+                      "reference: the window takes d-character pairs 6-10, whose "
+                      "populations are 0.70-0.98 on Ti d"))
+    fe = base["fecl2"]
+    out.append(replace(
+        fe, key="fecl2_dd", label="FeCl2 (3d + 4d' double shell)",
+        n_active=20, n_det=38760, caps=CAPS_SMALL, ladder_states=fe.roots,
+        casscf_mode="second-order", max_iter=120,
+        selection_kw=dict(character=[([0], "d", 10), ([0], "d", 10, 5)],
+                          n_active=20, n_active_elec=fe.n_active_elec),
+        physics_note="the flagship beyond-minimal space of this stage: CAS(6, 20 spinors), "
+                     "38 760 determinants over a 25-state manifold — well past the "
+                     "comfort zone of the 10-spinor ladders and still an exact oracle. It "
+                     "is also the only beyond-minimal space in the campaign on an EVEN "
+                     "electron count, so its protocol-B leg is immune to the "
+                     "state-averaging gate by construction — the gate is a theorem about "
+                     "ODD counts — rather than by the measurement an odd-count system "
+                     "needs",
+        protocol_note="committed suite geometry, basis and SCF; ACTIVE SPACE EXTENDED by "
+                      "the same ordinal-window form the titanium double shell uses. "
+                      "⚠ It replaced the planned uranium 5f+6d extension, which is BLOCKED "
+                      "BY MEASUREMENT rather than by cost: on the uf3 reference the 6d and "
+                      "5f fragments are not disjoint — pair 68 is 40 % U d and 48 % U f "
+                      "and clears both thresholds — so the union form refuses, correctly, "
+                      "and no window separates them. Naming that space needs AVAS (a "
+                      "projection onto free-atom reference orbitals), which is a different "
+                      "statement requiring atomic_reference=True at ingestion and is not "
+                      "smuggled into a stage as an afterthought"))
+    dy = base["dycl3"]
+    out.append(replace(
+        dy, key="dycl3_a", label="DyCl3 rung A (4f + the Cl sigma-donor set)",
+        n_active=20, n_active_elec=15, n_det=15504, caps=CAPS_F_SHELL,
+        ladder_states=dy.roots,
+        selection_kw=dict(character=[([0], "f", 14),
+                                     ([1, 2, 3], "p", 6, CL_2P_SKIP_PAIRS)],
+                          n_active=20, n_active_elec=15),
+        physics_note="the covalent rung: the 4f^9 shell plus the chlorine sigma-donor "
+                     "set, CAS(15, 20 spinors), 15 504 determinants — an exact oracle that "
+                     "is still affordable, on the campaign's named target and at its own "
+                     "16-state manifold",
+        protocol_note="⚠ THREE Cl PAIRS, NOT TWO, AND THE DIFFERENCE IS A DEGENERACY. The "
+                      "plan asked for two sigma-donor pairs; measured on this reference the "
+                      "three lowest valence p pairs on the chlorines are one a1' orbital "
+                      "(population 0.842 on Cl p) and an e' PAIR (0.829 each, degenerate), "
+                      "so a selection of two splits that pair — a symmetry-broken active "
+                      "space, and the rule that any truncation takes whole degenerate "
+                      "groups applies to an active-space selection as much as to a Schmidt "
+                      "spectrum. Three pairs is the complete D3h donor set. "
+                      "⚠ THE WINDOW IS REQUIRED: chlorine's filled 2p lies below its "
+                      "valence 3p — measured, pairs 24-32 are 2p (population 1.000 on Cl p, "
+                      "occupation 2.0) and pairs 47-55 are the 3p — so a bare (Cl, p) "
+                      "selection takes nine core orbitals, and the occupations cannot tell "
+                      "them apart because both shells are full. Orbitals and SCF recipe are "
+                      "the minimal system's, unchanged"))
+    out.append(replace(
+        dy, key="dycl3_b", label="DyCl3 rung B (4f + 5d)",
+        n_active=24, n_active_elec=9, n_det=1307504, caps=CAPS_F_SHELL,
+        ladder_states=dy.roots,
+        selection_kw=dict(character=[([0], "f", 14), ([0], "d", 10, DY_4D_SKIP_PAIRS)],
+                          n_active=24, n_active_elec=9),
+        exact_oracle=False, orbitals="guess",
+        physics_note="the double-shell rung: 4f + 5d, CAS(9, 24 spinors). ⚠ 1 307 504 "
+                     "determinants — the exact CI oracle is MARGINAL here by design, and "
+                     "whether it exists at this machine's memory limit is decided by the "
+                     "memory pre-flight for free. Where it refuses, the rung is validated "
+                     "by "
+                     "internal convergence in D against the rungs below it, which is the "
+                     "Tier-3 methodology rehearsed one step from an oracle",
+        protocol_note="⚠ THE WINDOW IS REQUIRED AND MEASURED: dysprosium's filled 3d "
+                      "(pairs 12-16) and 4d (pairs 33-37) lie below the 5d, all at "
+                      "population 1.000 on Dy d and occupation 2.0, so ten pairs are "
+                      "skipped. What the window then takes is NOT a clean 5d shell and the "
+                      "record says so: pairs 61-66 carry 0.38-0.88 of their population on "
+                      "Dy d with the rest on the chlorines, because in a trihalide the 5d "
+                      "is mixed into the ligand field. It is reproducible, which is what a "
+                      "reference selection has to be. The SCF recipe is the minimal "
+                      "system's, unchanged. "
+                      "⚠ THE LADDER RUNS AT SCALAR-GUESS ORBITALS, and here that is forced "
+                      "rather than chosen: a reference CASSCF for this space would be a "
+                      "CONVENTIONAL CI over 1 307 504 determinants, which is the 11.3 GB "
+                      "workspace the pre-flight refuses — the very solve this rung is "
+                      "declared oracle-free to avoid. Running it under the overcommit that "
+                      "lets the reference build would trade a diagnosed refusal for an OOM "
+                      "kill. Every quantity graded here is a difference at the same fixed "
+                      "orbitals, so the truncation measurement stands; what it does not "
+                      "carry is a statement about CASSCF-quality splittings for this rung"))
     return out
 
 
@@ -701,8 +869,9 @@ def topologies(ints, camp: "Campaign", which: Sequence[str]) -> Tuple[Dict[str, 
 def network_ci(ints, camp: Campaign, *, max_bond: int, graph,
                max_sweeps: int = 30, conv_tol: float = 1e-9,
                davidson_tol: float = 1e-8, adaptive: bool = False,
-               rule: Optional[str] = None) -> Tuple[Optional[np.ndarray],
-                                                    Optional[np.ndarray], Dict]:
+               rule: Optional[str] = None,
+               **solver_kwargs) -> Tuple[Optional[np.ndarray],
+                                         Optional[np.ndarray], Dict]:
     """One ladder point: a network CASCI at fixed orbitals. ``(energies, tdm, meta)``.
 
     ⚠ Both failure modes come back as *records*, not exceptions. A ``ValueError`` from the
@@ -727,7 +896,11 @@ def network_ci(ints, camp: Campaign, *, max_bond: int, graph,
     from kuiva.dmrg import DMRGSolver, ReconnectionPolicy
     from kuiva.dmrg.solver import SolverFailure
 
-    kw: Dict[str, object] = {}
+    # ⚠ ``solver_kwargs`` are protocol C's variants (a per-sweep bond ramp, deterministic
+    # subspace expansion). They are iteration strategies INSIDE the cap, never ways to
+    # exceed it — the solver refuses a schedule whose last rung is not the cap — so a
+    # variant point is comparable with the plain one at the same D by construction.
+    kw: Dict[str, object] = dict(solver_kwargs)
     if rule is not None:
         kw["policy"] = ReconnectionPolicy(rule=rule)
     solver = DMRGSolver(camp.n_active_elec, max_bond=int(max_bond), n_roots=camp.roots,
@@ -750,7 +923,16 @@ def network_ci(ints, camp: Campaign, *, max_bond: int, graph,
     # ⚠ The Kramers spread is REPORTED, never gated (see the note above): for an odd-electron
     # system it is the truncation error wearing a different hat, and the degeneracy metric
     # tests it against that relation rather than against zero.
-    pair_spread = float(np.max(energies[1::2] - energies[0::2])) if energies.size > 1 else 0.0
+    #
+    # ⚠ It is a statement about an ODD electron count and about nothing else — Kramers'
+    # theorem is what makes consecutive roots a pair — and an even count reports **None**
+    # rather than a number. The first draft paired consecutive roots unconditionally and
+    # broadcast a 13-element slice against a 12-element one the first time it met an odd
+    # ROOT count (FeCl2, 25 states), which is a different quantity entirely and had nothing
+    # to do with pairing.
+    n_pair = int(energies.size) // 2
+    pair_spread = (float(np.max(energies[1:2 * n_pair:2] - energies[0:2 * n_pair:2]))
+                   if (camp.n_active_elec % 2 == 1 and n_pair) else None)
     tdm = solver.transition_densities()
     meta = {"status": "ok", "n_sweeps": int(r.n_sweeps),
             "kramers_pair_spread_eh": pair_spread,
@@ -840,7 +1022,7 @@ def reduce_at(matrices, blocks: Sequence[Tuple[int, int]]) -> Dict:
                      "energy_cm": round(float(np.mean(blk)), 5),
                      "spread_cm": round(float(blk.max() - blk.min()), 6),
                      "g": ([round(float(x), 6) for x in g] if g else None),
-                     "character": (_axial_character(g) if g else None)})
+                     "character": (axial_character(g) if g else None)})
     return {"levels_cm": [round(float(x), 5) for x in e_cm], "blocks": rows,
             "own_pattern": own_pattern(matrices)}
 
@@ -979,7 +1161,7 @@ def grade(ref: Dict, trial: Dict, *, e_sa_error_cm: Optional[float] = None,
 ISOTROPY_RTOL = 0.10
 
 
-def _axial_character(g: Sequence[float]) -> str:
+def axial_character(g: Sequence[float]) -> str:
     """``easy-axis`` / ``easy-plane`` / ``isotropic`` from the principal g values.
 
     The principal values come back ascending, so the question is whether the odd one out is
@@ -999,5 +1181,134 @@ __all__ = ["BANDS", "BLOCK_TOL_CM", "Bands", "Campaign", "RECORDS", "TIERS", "WO
            "build_reference", "cas_integrals", "converged_orbitals", "exact_ci", "get",
            "grade", "network_ci", "oracle_blocks", "orbital_checkpoint", "own_pattern",
            "mi_tree_graph", "node_partition", "path_graph", "property_matrices",
-           "reduce_at", "rel_cm", "systems", "topologies", "two_site_floor",
-           "worst_of"]
+           "axial_character", "reduce_at", "rel_cm", "relax_orbitals", "network_solver", "systems",
+           "topologies", "two_site_floor", "worst_of"]
+
+
+# --- protocol B: the same orbital optimization, driven by two different CI solvers ----------
+#: What a **stopped** optimization looks like from the outside, as against a slow one: a
+#: collapsed trust radius, a flat energy, and a gradient still an order of magnitude outside
+#: its target, for this many consecutive macro-iterations. All three, because any one of them
+#: alone has a healthy reading — a quasi-Newton phase before the second-order escalation is
+#: flat-energy and far from convergence for several iterations by design, and cutting it
+#: there would truncate a legitimate optimization. Study-generator settings, and they do not
+#: change a result: the orbitals at the stop are the ones the full iteration budget returns.
+STALL_TRUST = 1.0e-4
+STALL_DE = 1.0e-7
+STALL_GRAD_FACTOR = 10.0
+STALL_ITERATIONS = 8
+def network_solver(camp: Campaign, *, max_bond: int, graph, max_sweeps: int = 30,
+                   conv_tol: float = 1e-8, davidson_tol: float = 1e-8):
+    """The DMRG solver as an orbital optimizer's ``ci_solver``, at a stated cap.
+
+    ⚠ **``on_split`` is left at its default ``"raise"`` here, and that is the whole point of
+    the protocol.** The fixed-orbital ladder overrides it because it never builds a
+    state-averaged density that moves anything (module docstring); this protocol builds
+    exactly that density and hands it to the optimizer, so the gate protecting it is the one
+    that belongs in the calculation. A refusal at a truncating cap is therefore a *result* —
+    it says the truncated ensemble is not one an orbital optimization may be built on.
+    """
+    from kuiva.dmrg import DMRGSolver
+
+    return DMRGSolver(camp.n_active_elec, max_bond=int(max_bond), n_roots=camp.roots,
+                      graph=graph, adaptive=False, max_sweeps=int(max_sweeps),
+                      conv_tol=float(conv_tol), davidson_tol=float(davidson_tol))
+
+
+def relax_orbitals(reference, coeff0: np.ndarray, space, ci_solver, *, mode: str = "auto",
+                   max_iter: int = 60, conv_grad: float = 1e-4,
+                   wall_budget: Optional[float] = None, driver: str = "trust-region",
+                   report: bool = True) -> Tuple[Optional[object], Dict]:
+    """One orbital optimization with a stated CI solver. ``(result, record)``.
+
+    The **only** difference between protocol B's two legs is the ``ci_solver`` handed in —
+    same driver, same starting orbitals, same step engine, same convergence criterion — which
+    is what makes the comparison a statement about CI methods rather than about optimizer
+    trajectories.
+
+    ⚠ Three outcomes, and two of them are data rather than failures. A
+    :class:`~kuiva.util.errors.StateAverageSplit` at the *first* solve is recorded as
+    ``"state-average-split"``: the truncated spectrum's degenerate blocks come apart, and an
+    optimizer has nothing to reject because the starting point is already refused. A
+    ``ValueError`` from the group-complete truncation rule is ``"refused"`` — the cap cannot
+    be honoured on this network at all. Both are recorded with the cap that produced them.
+
+    ``wall_budget`` stops the optimization **from the inside**, through the driver's own
+    callback, so a stopped run still returns everything it had reached; an externally killed
+    one leaves nothing.
+
+    ``driver="events"`` swaps the outer control for the event-gated one, which exists for a
+    solver whose internal space moves with the orbitals — a truncating network being exactly
+    that, since a warm-started sweep at a binding cap is only locally optimal inside its
+    manifold and the energy it returns is therefore not a function of the rotation alone.
+    Everything else about the leg is unchanged, so the two drivers are comparable.
+    """
+    from kuiva.mcscf.orbopt import optimize_orbitals
+    from kuiva.util.errors import SolverFailure, StateAverageSplit
+
+    if driver == "events":
+        from kuiva.mcscf.events import optimize_orbitals_events as _drive
+    elif driver == "trust-region":
+        _drive = optimize_orbitals
+    else:
+        raise ValueError("unknown driver {!r}".format(driver))
+
+    t0, c0 = time.time(), time.process_time()
+    stopped = {"budget": False, "stall": 0}
+
+    def callback(info):
+        if wall_budget is not None and (time.time() - t0) > float(wall_budget):
+            stopped["budget"] = True
+            return False
+        # ⚠ **A flat energy at a large gradient is a stopped optimization, and paying out
+        # the iteration budget on it measures nothing.** At a binding cap every trial point
+        # is rejected — the energy the truncated solver returns is not a function of the
+        # rotation alone, so the quadratic model never predicts it — and the run then spends
+        # a full CI solve per iteration to reproduce the same number. Measured on FeCl2 at
+        # D = 4: every step 0.0000 from macro-iteration 8, the gradient frozen at 6.062, and
+        # fifty more iterations of it. The stop is recorded with the iteration count, and
+        # the returned orbitals are the ones the full budget would have returned.
+        if (float(info.get("trust", 1.0)) < STALL_TRUST
+                and abs(float(info["de"])) < STALL_DE
+                and float(info["grad_norm"]) > STALL_GRAD_FACTOR * float(conv_grad)):
+            stopped["stall"] += 1
+            if stopped["stall"] >= STALL_ITERATIONS:
+                return False
+        else:
+            stopped["stall"] = 0
+        return None
+
+    def cost() -> Dict:
+        return {"wall_s": round(time.time() - t0, 1),
+                "cpu_s": round(time.process_time() - c0, 1)}
+
+    try:
+        result = _drive(reference.factors, reference.h_one_electron(),
+                        np.ascontiguousarray(coeff0), space.spaces, ci_solver,
+                        e_nuc=reference.data.e_nuc, mode=mode,
+                        max_iter=int(max_iter), conv_grad=float(conv_grad),
+                        n_active_elec=space.n_elec, callback=callback, report=report)
+    except StateAverageSplit as exc:
+        rec = {"status": "state-average-split", "error": "{}".format(exc)}
+        rec.update(cost())
+        return None, rec
+    except (ValueError, SolverFailure) as exc:
+        rec = {"status": "refused", "error": "{}: {}".format(type(exc).__name__, exc)}
+        rec.update(cost())
+        return None, rec
+    rec = {"status": "ok", "driver": driver, "converged": bool(result.converged),
+           "stopped_on_wall_budget": bool(stopped["budget"]),
+           "stopped_on_stall": bool(not result.converged and not stopped["budget"]
+                                    and stopped["stall"] >= STALL_ITERATIONS),
+           "iterations": int(result.n_iterations),
+           "grad_norm": float(result.grad_norm),
+           "e_avg": float(result.energy),
+           "n_hessian_matvec": int(result.n_hessian_matvec),
+           "n_rejected": int(result.n_rejected),
+           "n_solver_failures": int(result.n_solver_failures),
+           "history": [round(float(e), 10) for e in result.history]}
+    for extra in ("event_stable", "n_adoptions", "n_proposals"):
+        if hasattr(result, extra):
+            rec[extra] = getattr(result, extra)
+    rec.update(cost())
+    return result, rec

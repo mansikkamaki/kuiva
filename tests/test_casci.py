@@ -290,6 +290,28 @@ def test_the_electron_count_trap_produces_a_different_space():
     assert space.spaces.n_inactive == right
 
 
+def test_a_shell_taken_whole_and_given_the_wrong_occupation_warns(kuiva_caplog):
+    """⚠ The **mechanism** behind a live defect, not the observable that exposed it.
+
+    A ``(U, f)`` character selection took uranium's *filled* 4f core rather than the valence
+    5f, because 4f is the lower shell of that character, and opened it with three electrons.
+    Nothing downstream could see it: an f^3 shell has the same ground term, the same
+    multiplet pattern and the same Lande g whichever f shell holds it, so the spectrum, the
+    degeneracies and the g values were all plausible. The one visible signature is here --
+    the selected columns are *entirely* occupied in the reference and the request opens them
+    with some other number of electrons.
+    """
+    active_space([0, 1, 2, 3], n_orb=12, n_elec_total=8, n_active_elec=2)
+    assert any("wrong shell" in r.message for r in kuiva_caplog.records)
+
+
+def test_a_partly_occupied_selection_does_not_warn(kuiva_caplog):
+    """The guard against the noisy version of the check above: an explicit count that
+    merely differs from aufbau is a legitimate override and says nothing about the shell."""
+    active_space([4, 5, 6, 7], n_orb=12, n_elec_total=6, n_active_elec=4)
+    assert not [r for r in kuiva_caplog.records if "wrong shell" in r.message]
+
+
 def test_too_many_active_electrons_is_refused():
     with pytest.raises(ValueError, match="impossible"):
         active_space([4, 5], n_orb=12, n_elec_total=6, n_active_elec=4)

@@ -231,6 +231,14 @@ def active_space(active: Sequence[int], n_orb: int, n_elec_total: int, *,
     which is checked, not assumed — and the result is refused if it is **odd**, because an odd
     inactive count splits a Kramers pair across a space boundary.
 
+    ⚠ An explicit ``n_active_elec`` is checked against the count the selected columns carry
+    **by aufbau**, and a space that is *entirely* occupied (or entirely empty) in the
+    reference while being opened with some other number of electrons warns. That is the one
+    place a selection which landed on a **filled shell** instead of the valence one is
+    visible at all: everything downstream is well defined and plausible, because a shell's
+    term structure and Landé g do not say which shell it is. It warns rather than refuses —
+    an intended non-aufbau configuration is a legitimate request.
+
     ⚠ ``kramers_paired=False`` (an unrestricted reference) additionally warns when the
     active list is a contiguous range, which is the natural thing to write and the wrong thing
     to do there: spinors ``2p``/``2p+1`` are the *p*-th alpha and *p*-th beta orbital and need
@@ -252,6 +260,35 @@ def active_space(active: Sequence[int], n_orb: int, n_elec_total: int, *,
     else:
         n_active_elec = int(n_active_elec)
         n_inactive = int(n_elec_total) - n_active_elec
+        # ⚠ **The one place a selection on the WRONG SHELL is visible at all.** A character
+        # selection that lands on a *filled* shell instead of the valence one produces a
+        # perfectly well-formed calculation and entirely plausible numbers — an f^3 shell
+        # has the same ground term and the same Landé g whichever f shell holds it — so
+        # nothing downstream can see it. What can see it is here: the selected columns sit
+        # at known positions in the aufbau ordering, so the electron count they *would*
+        # carry is arithmetic.
+        #
+        # The test is deliberately the sharp one rather than "differs from aufbau", which
+        # fires on every legitimate override: a space that is **entirely** occupied (or
+        # entirely empty) in the reference, opened with some other number of electrons, is
+        # a shell taken whole and then given the wrong occupation. Measured live: a (U, f)
+        # request took uranium's filled 4f core — fourteen electrons' worth of doubly
+        # occupied orbitals — for a request of 3, while the singly occupied 5f pairs were
+        # frozen inactive, and every observable stayed plausible.
+        #
+        # A warning rather than a refusal: an intended non-aufbau configuration is a
+        # decision the caller is allowed to make. It is never an accident worth hiding.
+        implied = int(n_elec_total) - int(np.count_nonzero(others < n_elec_total))
+        if implied != n_active_elec and implied in (0, int(act.size)):
+            log.warning(
+                "the active space asks for %d electrons, but its %d spinors are %s in this "
+                "reference (%d electrons by aufbau). A shell taken whole and then given a "
+                "different occupation is the signature of a selection on the wrong "
+                "shell: a filled shell of the same character lying below the valence one "
+                "is the usual cause, and an ordinal window (skip_pairs) is how the valence "
+                "one is named. If the configuration is intended, nothing here is wrong ",
+                n_active_elec, int(act.size),
+                "entirely occupied" if implied else "entirely empty", implied)
     if not 0 <= n_active_elec <= act.size:
         raise ValueError(
             "CAS({}, {}) is impossible: {} electrons cannot occupy {} spinors. Check "

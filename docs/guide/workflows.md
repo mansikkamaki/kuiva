@@ -112,6 +112,16 @@ shells of that `l` and skip them** — `("Ga", "p", 6, 6)`: 2p and 3p are six pa
 check a computed splitting against a published one, which is the cheapest check that catches
 this.
 
+One case of it Kuiva *can* see, and warns about: a selection whose orbitals are **entirely
+occupied** in the reference (or entirely empty) while the active electron count you asked for
+is a different number. That is a shell taken whole and then given the wrong occupation —
+`character=("U", "f")` with three electrons takes uranium's *filled* 4f shell, which holds
+fourteen. The warning names both counts. It is a warning rather than a refusal, because an
+intended non-aufbau configuration is a legitimate request; but a partly filled valence shell
+does not produce it, so if you see it and did not mean it, the window is what you are
+missing. Note the converse is not detectable at all: a selection that is *partly* occupied
+and still on the wrong shell passes silently, which is why the counting rule above stands.
+
 ### AVAS: when no single orbital *is* the target shell
 
 A character selection can only pick orbitals that already carry the character. Where the
