@@ -68,6 +68,16 @@ with its context. Each entry links to the page that explains the mechanism.
   streamed routes exist so a large system starts at all, not to be faster. ⚠ The scalar SCF
   is PySCF's and makes its own in-core/direct decision within the memory it is given: the
   direct route removes Kuiva's copy of the integral array, not necessarily every copy.
+- **A tensor-network solve's memory is planned, not discovered**
+  ([dmrg](methods/dmrg.md#what-a-sweep-costs-in-memory)): the largest array a sweep holds is a
+  single intermediate inside an effective-Hamiltonian application, kept to one open operator
+  leg by the contraction order and sized from the contraction's own structure before the first
+  bond is solved. The plan prints at the start of the solve and names the bond that peaks; the
+  three knobs that move it are, in order of effect, the **node partition** (the local dimension
+  enters squared), the **active-space size** (one operator bond dimension) and `max_bond`. ⚠
+  The estimate is of Kuiva's arrays: the operator compile's transient and the arena it leaves
+  put the process about 2× above the plan on a fat-node system, so leave that much headroom
+  in the limit.
 - **One node, shared memory.** There is no MPI and no distributed tensor layer; memory, not
   core count, is the scaling limit.
 

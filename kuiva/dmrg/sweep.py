@@ -77,7 +77,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from ..ci.davidson import davidson
+from ..ci.davidson import davidson, davidson_workspace_gb, subspace_cap
 from ..props.multiplet import HARTREE_TO_CM
 from ..rdm.rdm import DEFAULT_DEGENERACY_TOL, degenerate_blocks, state_average_weights
 from ..util import output as out
@@ -85,8 +85,8 @@ from ..util import resources as res
 from ..util import threads
 from ..util.logging import get_logger
 from ..util.timing import timer
-from .block import (BlockTensor, QuantumNumber, Space, TruncationInfo, block_tensor_gb,
-                    fuse, qr, svd, tensordot)
+from .block import (BlockShape, BlockTensor, QuantumNumber, Space, TruncationInfo,
+                    block_tensor_gb, fuse, qr, svd, tensordot)
 from .graph import NetworkGraph
 from .sparse import SparseW, dot_sparse
 from .ttno import TTNO
@@ -120,9 +120,20 @@ class _Lab(object):
         point between the two, which is why the TTNO could become sparse without any
         caller learning about it. A sparse operand on the **left** is an accumulator, not
         a hot path (only :mod:`kuiva.dmrg.manifold`'s site contraction does it), and is
-        densified once."""
+        densified once.
+
+        ⚠ A third operand kind, and it is what lets a chain be *sized* before it is run:
+        with :class:`~kuiva.dmrg.block.BlockShape` operands the same chain propagates
+        structure alone and allocates nothing, so every contraction here has exactly one
+        description — the one below — and a sizing function cannot drift from the code it
+        sizes. The extra ``isinstance`` costs nothing beside the GEMMs this dispatches to.
+        """
         ia = [self.labels.index(a) for a, _ in pairs]
         ib = [other.labels.index(b) for _, b in pairs]
+        if isinstance(self.t, BlockShape):
+            return _Lab(self.t.dot(other.t, (ia, ib)),
+                        [l for i, l in enumerate(self.labels) if i not in ia]
+                        + [l for i, l in enumerate(other.labels) if i not in ib])
         left = self.t.to_block_tensor() if isinstance(self.t, SparseW) else self.t
         if isinstance(other.t, SparseW):
             t = dot_sparse(left, other.t, (ia, ib))
@@ -262,6 +273,34 @@ def target_charge(ttno: TTNO, n_elec: int, sector=None) -> QuantumNumber:
     return QuantumNumber(*values, moduli=ttno.charge.moduli)
 
 
+def node_layouts(graph: NetworkGraph, bond_spaces: Dict[Tuple[int, int], Space],
+                 phys_space: Sequence[Space], center: int,
+                 charge: QuantumNumber) -> List[Tuple[Tuple[Space, ...],
+                                                      Tuple[int, ...], QuantumNumber]]:
+    """``(spaces, signs, charge)`` of every node tensor for a state centred at ``center``.
+
+    The module docstring's conventions as arithmetic: legs are the bonds in ascending
+    neighbor order with the physical leg last, the away-from-center side of every edge
+    carries ``-1``, and only the center tensor carries the state's charge.
+
+    ⚠ Shared with the memory plan, which sizes the two-site problem at every bond of the
+    tour and therefore has to know what the node tensors look like once the center has
+    moved there. A second statement of the sign rule would be a second convention.
+    """
+    zero = charge.zero_like()
+    parent, _ = graph.parents(center)
+    layouts = []
+    for u in range(graph.n_nodes):
+        spaces, signs = [], []
+        for x in sorted(graph.neighbors(u)):
+            spaces.append(bond_spaces[(min(u, x), max(u, x))])
+            signs.append(1 if (u == center or x != int(parent[u])) else -1)
+        spaces.append(phys_space[u])
+        signs.append(1)
+        layouts.append((tuple(spaces), tuple(signs), charge if u == center else zero))
+    return layouts
+
+
 def random_state(ttno: TTNO, n_elec: int, max_bond: int, n_roots: int = 1,
                  center: Optional[int] = None,
                  rng: Optional[np.random.Generator] = None,
@@ -320,15 +359,7 @@ def random_state(ttno: TTNO, n_elec: int, max_bond: int, n_roots: int = 1,
             sectors = [(qn, max(1, (d * max_bond) // total)) for qn, d in sectors]
         bond_spaces[(u, v)] = Space(sectors)
 
-    layouts = []
-    for u in range(graph.n_nodes):
-        spaces, signs = [], []
-        for x in sorted(graph.neighbors(u)):
-            spaces.append(bond_spaces[(min(u, x), max(u, x))])
-            signs.append(1 if (u == center or x != int(parent[u])) else -1)
-        spaces.append(ttno.phys_space[u])
-        signs.append(1)
-        layouts.append((tuple(spaces), tuple(signs), charge if u == center else zero))
+    layouts = node_layouts(graph, bond_spaces, ttno.phys_space, center, charge)
     # Sized and reserved before the first tensor allocates. ⚠ Found by the
     # ab initio ladder: at max_bond=None the charge-sector-
     # maximal bond dimensions of a many-node tree reach hundreds, and the un-reserved
@@ -515,6 +546,13 @@ class EnvironmentCache(object):
                 return True
         return False
 
+    def _w(self, u: int, v: int) -> "_Lab":
+        """The node's W tensor, as a hook rather than a direct call, so
+        :class:`ShapeEnvironments` can run this exact :meth:`_build` over structure alone
+        (:class:`~kuiva.dmrg.block.BlockShape`) instead of over data. One attribute lookup
+        per environment build, of which a sweep does a handful."""
+        return _w_lab(self.ttno, u, v)
+
     def _build(self, u: int, v: int) -> BlockTensor:
         graph = self.state.graph
         a = self.state.tensors[u]
@@ -527,7 +565,7 @@ class EnvironmentCache(object):
                 continue
             env = _Lab(self.get(x, u), [("bra", x), ("op", x), ("ket", x)])
             t = t.dot(env, [(("b", u, x), ("ket", x))])
-        t = t.dot(_w_lab(self.ttno, u, v),
+        t = t.dot(self._w(u, v),
                   [(("op", x), ("op", x)) for x in nbrs if x != v]
                   + [(("p", u), ("pi",))])
         c = _Lab(a.conj(), [("cb", u, x) for x in nbrs] + [("cp",)])
@@ -553,7 +591,84 @@ def _w_lab(ttno: TTNO, u: int, v: Optional[int]) -> _Lab:
     return _Lab(w, labels)
 
 
+def shape_state(state: TTNState, fill_center: bool = False) -> TTNState:
+    """The state with every tensor replaced by its structure — legs, sectors, no data.
+
+    ⚠ ``fill_center`` puts the first center tensor's structure at the center node, so that
+    *every* directed environment is buildable — which is what sizing the cache a whole sweep
+    fills needs, since the center visits every node in turn. The substitute carries the
+    state's total charge where an isometry carries zero, so one bond's figure can differ a
+    little from what the cache holds after the center has actually crossed it; the sum is
+    the honest statement and the per-bond number is not claimed.
+    """
+    tensors = [None if t is None else BlockShape.of(t) for t in state.tensors]
+    if fill_center:
+        tensors[state.center] = BlockShape.of(state.centers[0])
+    return TTNState(graph=state.graph, center=state.center, tensors=tensors,
+                    centers=[BlockShape.of(c) for c in state.centers],
+                    charge=state.charge)
+
+
+class ShapeEnvironments(EnvironmentCache):
+    """:class:`EnvironmentCache` over structure alone: sizes environments without building.
+
+    ⚠ It inherits :meth:`EnvironmentCache._build` **unchanged** — that contraction has one
+    description, and a second one written to size it is exactly the drift a memory estimate
+    cannot afford. What is overridden is only what touches the world: the ledger (nothing is
+    allocated, so nothing is reserved) and where the W tensors come from.
+
+    Construct it on a :func:`shape_state`; ``get(u, v)`` then returns a
+    :class:`~kuiva.dmrg.block.BlockShape` whose ``nbytes`` is exactly what the real cache
+    would hold at that bond.
+    """
+
+    def _w(self, u: int, v: int) -> _Lab:
+        lab = _w_lab(self.ttno, u, v)
+        return _Lab(BlockShape.of(lab.t), lab.labels)
+
+    def _admit(self, key, u, v, env, note: str = "") -> None:
+        self._cache[key] = env
+
+
+def environment_gb(ttno: TTNO, state: TTNState) -> float:
+    """Size [GB] of the whole environment set a sweep caches — every directed bond.
+
+    Entries are added as the center moves and removed only by :meth:`release_all` at the
+    end of the solve, so a full sweep leaves all ``2 * (n_nodes - 1)`` of them resident:
+    this is what a sweep carries, not a per-bond figure. Structure only — nothing is built,
+    and this runs before the first environment exists.
+    """
+    shapes = ShapeEnvironments(ttno, shape_state(state, fill_center=True))
+    total = 0
+    for a, b in state.graph.edges:
+        total += shapes.get(a, b).nbytes + shapes.get(b, a).nbytes
+    return total / 1024.0 ** 3
+
+
 # --- the local (two-site) problem ---------------------------------------------------------
+
+class _Order(object):
+    """One way of applying ``H_eff``: which side goes first and which environments each
+    side folds into its operator ahead of the solve (the *halves*)."""
+
+    __slots__ = ("first", "pre")
+
+    def __init__(self, first: int, pre: Dict[int, Tuple[int, ...]]):
+        self.first = int(first)
+        self.pre = {int(n): tuple(int(x) for x in xs) for n, xs in pre.items()}
+
+    def key(self) -> tuple:
+        return (self.first, tuple(sorted(self.pre.items())))
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, _Order) and self.key() == other.key()
+
+    def __hash__(self) -> int:
+        return hash(self.key())
+
+    def __repr__(self) -> str:                                   # pragma: no cover - debug
+        return "_Order(first={}, pre={})".format(self.first, self.pre)
+
 
 class _LocalProblem(object):
     """One two-site eigenproblem on bond ``(u, v)`` (center at ``u``).
@@ -561,6 +676,42 @@ class _LocalProblem(object):
     The variational space is **all** symmetry-allowed blocks of the merged spaces — not
     just the blocks the incoming tensors happen to populate — so the template is built
     with :meth:`BlockTensor.zeros` and every vector is packed against it.
+
+    The order of the effective-Hamiltonian contraction
+    --------------------------------------------------
+    ``H_eff`` is the merged tensor contracted with each side's environments and W tensor,
+    and the *order* of those contractions — not the algorithm — decides the largest array a
+    network run ever holds. An intermediate carrying two operator legs at once costs the
+    **product** of two operator bond dimensions; measured on a 20-spinor, four-node network
+    that was 4.3 GB at a bond dimension of 4, against 0.13 GB for everything the run stored,
+    and it grew to 11 GB at D = 16 — which is why network runs were killed by the kernel
+    rather than refused. Two rules keep one leg open at a time on a path:
+
+    * the **first** side contracts its environments *before* its W tensor (each environment
+      opens one operator leg, W closes them all and opens the single leg toward the other
+      node);
+    * the **second** side contracts its W tensor *before* its environments (W closes the
+      leg from the first side and opens one leg per branch, each environment closes one).
+
+    The mirror orderings are dominated (they hold one leg more at the same step), so this is
+    a rule rather than a choice. ⚠ **A node with several branches still opens one leg per
+    branch**, and there the choice is real: folding an environment into its W tensor ahead
+    of the solve (a *half*, built once per two-site problem and reused across every
+    Davidson iteration) closes that leg at the price of a dense ``d^2`` payload — larger
+    than the open-leg intermediate for a fat node at small bond dimension, smaller by about
+    a factor ``D`` otherwise. Which, and for which side, is a **structural search**
+    (:meth:`_choose_order`): every candidate order is walked over
+    :class:`~kuiva.dmrg.block.BlockShape` operands, allocating nothing, and the one with the
+    smallest peak is taken. A side with a single branch never takes a half — the reorder
+    already leaves it one open leg, so a half there trades a sparse product per
+    matrix-vector product for a dense one and buys no memory.
+
+    ⚠ **The halves are built by :meth:`prepare`, not by the constructor**, so the memory
+    check in :func:`_solve_local` still precedes every allocation this object makes; the
+    plan sizes them through the same chain that builds them. ⚠ **A different contraction
+    order is not bitwise**: the same products are summed in a different order, so this
+    agrees with the previous order to rounding and every committed network reference was
+    re-checked against its tolerance when it landed, never assumed.
     """
 
     def __init__(self, ttno: TTNO, state: TTNState, cache: EnvironmentCache,
@@ -569,20 +720,47 @@ class _LocalProblem(object):
         self.u, self.v = u, v
         self.branches_u = [x for x in sorted(graph.neighbors(u)) if x != v]
         self.branches_v = [y for y in sorted(graph.neighbors(v)) if y != u]
-        m0 = tensordot(state.centers[0], state.tensors[v],
-                       axes=([_bond_axis(graph, u, v)], [_bond_axis(graph, v, u)]))
+        # ⚠ Both operands may be structures rather than tensors
+        # (:class:`~kuiva.dmrg.block.BlockShape`), which is how the memory plan sizes every
+        # bond of a sweep before a single one has been solved. Nothing else in the class
+        # branches on it: the chain, the sizing and the template all follow from here.
+        merge = ([_bond_axis(graph, u, v)], [_bond_axis(graph, v, u)])
+        centre = state.centers[0]
+        m0 = centre.dot(state.tensors[v], merge) if isinstance(centre, BlockShape) \
+            else tensordot(centre, state.tensors[v], axes=merge)
+        self.structural = isinstance(m0, BlockShape)
         self.labels = [("b", u, x) for x in self.branches_u] + [("p", u)] \
             + [("b", v, y) for y in self.branches_v] + [("p", v)]
         self.n_left = len(self.branches_u) + 1
-        self.template = BlockTensor.zeros(m0.spaces, m0.signs, m0.charge)
-        self.sizes = [b.size for b in self.template.blocks]
+        if self.structural:
+            self.template = BlockShape.allowed(m0.spaces, m0.signs, m0.charge)
+            self.sizes = [int(x) for x in self.template.block_sizes]
+        else:
+            self.template = BlockTensor.zeros(m0.spaces, m0.signs, m0.charge)
+            self.sizes = [b.size for b in self.template.blocks]
         self.dim = int(sum(self.sizes))
+        #: Exact size of one merged root tensor, kept from the one that was built anyway —
+        #: :meth:`solve_workspace_gb` needs it and rebuilding it to size it would be absurd.
+        self.merged_bytes = int(m0.nbytes)
         self.envs_u = [(x, _Lab(cache.get(x, u), [("bra", x), ("op", x), ("ket", x)]))
                        for x in self.branches_u]
         self.envs_v = [(y, _Lab(cache.get(y, v), [("bra", y), ("op", y), ("ket", y)]))
                        for y in self.branches_v]
         self.w_u = _w_lab(ttno, u, v)
         self.w_v = _w_lab(ttno, v, u)
+        # the per-side operands the chain works with: environments keyed by branch, and each
+        # W with its physical legs named by node so the two sides' never collide
+        self._envs = {x: env for x, env in self.envs_u + self.envs_v}
+        self._w = {u: self._w_side(self.w_u, u), v: self._w_side(self.w_v, v)}
+        self._branches = {u: list(self.branches_u), v: list(self.branches_v)}
+        self.order, self.candidates = self._choose_order()
+        #: The pre-contracted halves, ``node -> _Lab``; ``None`` until :meth:`prepare`.
+        self.halves = None
+
+    @staticmethod
+    def _w_side(w: _Lab, node: int) -> _Lab:
+        return _Lab(w.t, [("po", node) if l == ("po",) else ("pi", node) if l == ("pi",)
+                          else l for l in w.labels])
 
     def pack(self, t: BlockTensor) -> np.ndarray:
         lookup = {tuple(int(i) for i in r): b for r, b in zip(t.sectors, t.blocks)}
@@ -608,27 +786,233 @@ class _LocalProblem(object):
                                     self.template.charge, self.template.sectors,
                                     self.template._keys, blocks)
 
+    # -- the chain -------------------------------------------------------------------------
+
+    @staticmethod
+    def _half(w: _Lab, envs: Dict[int, _Lab], pre: Sequence[int],
+              sizes: Optional[List[int]] = None) -> _Lab:
+        """One side's operator with the environments ``pre`` folded in, or the bare W.
+
+        The environment is the *left* operand at every step so a sparse W stays on the
+        right, where :meth:`_Lab.dot` takes the sparse contraction; the result is a dense
+        block tensor with legs ``[bra, ket]`` per folded branch ahead of W's own.
+        """
+        h = w
+        for x in pre:
+            h = envs[x].dot(h, [(("op", x), ("op", x))])
+            if sizes is not None:
+                sizes.append(h.t.nbytes)
+        return h
+
+    def _chain(self, t: _Lab, envs: Dict[int, _Lab], halves: Dict[int, _Lab],
+               order: _Order, sizes: Optional[List[int]] = None) -> _Lab:
+        """The effective-Hamiltonian contraction, over data or over structure.
+
+        ⚠ **One description of the chain, run twice.** With ``_Lab``s over
+        :class:`~kuiva.dmrg.block.BlockTensor` this is the matrix-vector product Davidson
+        calls; with ``_Lab``s over :class:`~kuiva.dmrg.block.BlockShape` it propagates
+        sector tables and allocates nothing, which is how :meth:`apply_peak_gb` knows the
+        size of an intermediate before the first one is built and how :meth:`_choose_order`
+        compares orders. A sizing function written beside the chain instead of *through*
+        it would drift the first time the order changed — and the order is now chosen.
+
+        ``sizes`` collects every intermediate's byte count in order, when asked.
+        """
+        first = order.first
+        second = self.v if first == self.u else self.u
+        # first side: environments open one operator leg each, the half closes them and
+        # opens the single leg toward the second node
+        n, pre = first, order.pre[first]
+        loose = [x for x in self._branches[n] if x not in pre]
+        for x in loose:
+            t = t.dot(envs[x], [(("b", n, x), ("ket", x))])
+            if sizes is not None:
+                sizes.append(t.t.nbytes)
+        t = t.dot(halves[n], [(("op", x), ("op", x)) for x in loose]
+                  + [(("b", n, x), ("ket", x)) for x in pre]
+                  + [(("p", n), ("pi", n))])
+        if sizes is not None:
+            sizes.append(t.t.nbytes)
+        # second side: the half closes that leg and opens one per loose branch, each
+        # environment closes one
+        n, pre = second, order.pre[second]
+        loose = [x for x in self._branches[n] if x not in pre]
+        t = t.dot(halves[n], [(("op_out",), ("op_out",))]
+                  + [(("b", n, x), ("ket", x)) for x in pre]
+                  + [(("p", n), ("pi", n))])
+        if sizes is not None:
+            sizes.append(t.t.nbytes)
+        for x in loose:
+            t = t.dot(envs[x], [(("b", n, x), ("ket", x)), (("op", x), ("op", x))])
+            if sizes is not None:
+                sizes.append(t.t.nbytes)
+        return t
+
+    # -- choosing the order (structure only) -----------------------------------------------
+
+    def _shape_operands(self):
+        """The chain's operands as structures: the template, environments and W tensors."""
+        start = _Lab(BlockShape.of(self.template), list(self.labels))
+        envs = {x: _Lab(BlockShape.of(e.t), e.labels) for x, e in self._envs.items()}
+        ws = {n: _Lab(BlockShape.of(w.t), w.labels) for n, w in self._w.items()}
+        return start, envs, ws
+
+    def _size_order(self, order: _Order, start: _Lab, envs: Dict[int, _Lab],
+                    ws: Dict[int, _Lab]):
+        """``(peak_bytes, halves_bytes, build_sizes, apply_sizes)`` of one order.
+
+        Peak model: the halves are resident for the whole solve; on top of them the largest
+        step of the application holds its input and its output together; building a half
+        holds the halves already finished, the partial one and the new one. The bare W of
+        a side with nothing folded in is the operator's own tensor and costs nothing new.
+        """
+        halves: Dict[int, _Lab] = {}
+        build: List[int] = []
+        resident = 0
+        build_peak = 0
+        for n in (order.first, self.v if order.first == self.u else self.u):
+            steps: List[int] = []
+            halves[n] = self._half(ws[n], envs, order.pre[n], sizes=steps)
+            prev = 0
+            for out in steps:
+                build_peak = max(build_peak, resident + prev + out)
+                prev = out
+            if order.pre[n]:
+                resident += halves[n].t.nbytes
+            build.extend(steps)
+        sizes: List[int] = []
+        self._chain(start, envs, halves, order, sizes=sizes)
+        apply_peak = max(a + b for a, b in zip([start.t.nbytes] + sizes[:-1], sizes))
+        return max(build_peak, resident + apply_peak), resident, build, sizes
+
+    def _choose_order(self):
+        """The order with the smallest structural peak, and every candidate beside it.
+
+        Candidates: which side goes first, and for each side with **two or more** branches
+        every subset of them to fold into its half (a single-branch side never takes one —
+        the class docstring says why). On a path that is one candidate and no search; on a
+        tree it is ``2 * 2^k`` per branching side, walked over structure in milliseconds.
+        Ties go to fewer halves, then to ``u`` first, so the choice is deterministic.
+        """
+        from itertools import combinations
+
+        start, envs, ws = self._shape_operands()
+
+        def subsets(node):
+            branches = self._branches[node]
+            if len(branches) < 2:
+                return [()]
+            return [c for r in range(len(branches) + 1)
+                    for c in combinations(branches, r)]
+
+        branching = max(len(self.branches_u), len(self.branches_v)) >= 2
+        firsts = (self.u, self.v) if branching else (self.u,)
+        candidates = []
+        for first in firsts:
+            for pre_u in subsets(self.u):
+                for pre_v in subsets(self.v):
+                    order = _Order(first, {self.u: pre_u, self.v: pre_v})
+                    peak, resident, build, sizes = self._size_order(order, start, envs, ws)
+                    candidates.append((order, peak, resident, build, sizes))
+        best = min(candidates, key=lambda c: (c[1], len(c[0].pre[self.u])
+                                              + len(c[0].pre[self.v]),
+                                              c[0].first != self.u))
+        return best[0], candidates
+
+    def _chosen(self):
+        for c in self.candidates:
+            if c[0] == self.order:
+                return c
+        raise RuntimeError("the chosen order is not among the candidates")  # pragma: no cover
+
+    # -- sizes -----------------------------------------------------------------------------
+
+    def intermediate_bytes(self) -> List[int]:
+        """Byte count of every intermediate one :meth:`apply` builds, in order.
+
+        Structure only: no operand data is touched and nothing of the size being reported
+        is allocated. The input is the *template*'s structure — every symmetry-allowed
+        block — which is exactly what :meth:`unpack` produces for any vector.
+        """
+        return list(self._chosen()[4])
+
+    def half_build_bytes(self) -> List[int]:
+        """Byte count of every intermediate :meth:`prepare` builds, in order (empty on a
+        path, where no environment is folded into a W tensor)."""
+        return list(self._chosen()[3])
+
+    def halves_gb(self) -> float:
+        """Resident [GB] of the pre-contracted halves, held for the whole solve."""
+        return self._chosen()[2] / 1024.0 ** 3
+
+    def apply_peak_gb(self) -> float:
+        """Peak [GB] one application of ``H_eff`` holds beyond what the solve keeps resident
+        — the layer's largest allocation.
+
+        The model is the largest step of the chain, an intermediate and the one it is built
+        from being live together: ``max over steps of (input + output)``. It is **measured**
+        rather than argued: against the process's resident set across one application it is
+        right to 0.02% on every bond of a 20-spinor network, at three bond dimensions.
+
+        ⚠ This is a **transient**, built and freed once per Davidson matrix-vector product,
+        which is why no ledger entry ever saw it and why the process oscillated between 4
+        and 11 GB under a declared 0.13 GB. ⚠ And it is a statement about Kuiva's *arrays*,
+        not about the process: an allocator that keeps a freed arena rather than returning
+        it to the operating system is what the budget's ``warn_fraction`` is for, and it
+        cannot be sized from here. The halves are not in it — they are resident across the
+        solve and :meth:`solve_workspace_gb` carries them.
+        """
+        sizes = self.intermediate_bytes()
+        if not sizes:                                    # pragma: no cover - a bond acts
+            return 0.0
+        peak = max(a + b for a, b in zip([self.template.nbytes] + sizes[:-1], sizes))
+        return peak / 1024.0 ** 3
+
+    def solve_workspace_gb(self, n_roots: int, n_solve: int) -> float:
+        """Resident [GB] of one two-site solve, exclusive of :meth:`apply_peak_gb`.
+
+        Exactly the five things :func:`_solve_local` holds across the Davidson call: the
+        ``n_roots`` merged root tensors, their packed copies (the guess), the eigensolver's
+        three ``(subspace cap, dim)`` stacks and its converged vectors, the unpacked
+        roots handed back, and the pre-contracted operator halves (:meth:`halves_gb`).
+
+        ⚠ The stacks are the term the old estimate missed and they are the term that scales
+        with the **root count**: the subspace cap is a multiple of it, so a 10-root solve
+        holds ten times what a one-root solve does where the previous ``(n_roots + 2) *
+        dim`` line grew by barely a factor of four.
+        """
+        vec = 16.0 * self.dim
+        return ((n_roots * (self.merged_bytes + vec + vec) + n_solve * vec)
+                / 1024.0 ** 3) \
+            + davidson_workspace_gb(self.dim, subspace_cap(n_solve, self.dim)) \
+            + self.halves_gb()
+
+    # -- the application -------------------------------------------------------------------
+
+    def prepare(self) -> "_LocalProblem":
+        """Build the halves the chosen order needs (a no-op on a path). Called by
+        :func:`_solve_local` after its memory check, and by :meth:`apply` if nobody did."""
+        if self.halves is None:
+            if self.structural:
+                raise TypeError("a structural local problem sizes its halves; it cannot "
+                                "build them")
+            self.halves = {n: self._half(self._w[n], self._envs, self.order.pre[n])
+                           for n in (self.u, self.v)}
+        return self
+
     def apply(self, vec: np.ndarray) -> np.ndarray:
         u, v = self.u, self.v
-        t = _Lab(self.unpack(vec), list(self.labels))
-        for x, env in self.envs_u:
-            t = t.dot(env, [(("b", u, x), ("ket", x))])
-        t = t.dot(self.w_u, [(("op", x), ("op", x)) for x in self.branches_u]
-                  + [(("p", u), ("pi",))])
-        for y, env in self.envs_v:
-            t = t.dot(env, [(("b", v, y), ("ket", y))])
-        t = t.dot(self.w_v, [(("op_out",), ("op_out",))]
-                  + [(("op", y), ("op", y)) for y in self.branches_v]
-                  + [(("p", v), ("pi",))])
+        if self.halves is None:
+            self.prepare()
+        t = self._chain(_Lab(self.unpack(vec), list(self.labels)), self._envs,
+                        self.halves, self.order)
         labels = []
-        seen_po = 0
         for lab in t.labels:
             if lab[0] == "bra":
                 x = lab[1]
                 labels.append(("b", u, x) if x in self.branches_u else ("b", v, x))
-            elif lab == ("po",):
-                labels.append(("p", u) if seen_po == 0 else ("p", v))
-                seen_po += 1
+            elif lab[0] == "po":
+                labels.append(("p", lab[1]))
             else:
                 labels.append(lab)
         return self.pack(_Lab(t.t, labels).to(self.labels))
@@ -768,6 +1152,7 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
               checkpoint=None,
               bond_schedule: Optional[Sequence[int]] = None,
               expansion: float = 0.0, expansion_sweeps: int = 6,
+              memory_plan: bool = True,
               report: bool = True) -> SweepResult:
     """State-averaged two-site DMRG to energy stationarity (module docstring).
 
@@ -787,6 +1172,14 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
     ``environment_resident_gb`` additionally caps the resident environment set below the
     hard limit — which is what keeps headroom for the two-site solve's own transients on a
     machine where the environments *barely* fit.
+
+    ``memory_plan`` (default on) prints the sweep's memory plan and **refuses before the
+    first bond** if it cannot fit (:func:`kuiva.dmrg.plan.network_memory_plan`). ⚠ It is the
+    only thing that makes the memory limit mean anything here: the layer's largest array is
+    a transient inside one effective-Hamiltonian application, so without this a run that
+    does not fit is not refused but killed by the kernel, with no message. Turn it off only
+    where a driver plans for itself once per chart — :class:`kuiva.dmrg.solver.DMRGSolver`
+    does exactly that, so a CASSCF does not print the same table sixty times.
 
     ``report=False`` moves the sweep table to DEBUG — for a solver called once per
     CASSCF macro-iteration, whose driver already owns the INFO table (INFO is the
@@ -851,6 +1244,19 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
     alpha0 = float(expansion)
     if alpha0 < 0.0:
         raise ValueError("expansion must be non-negative, got {}".format(expansion))
+
+    if memory_plan:
+        # Before the first environment and the first two-site problem, which is the earliest
+        # point every network dimension is known and the last point before the layer's
+        # transients start. ⚠ ``begin=False``: this is a phase of a calculation already
+        # under way (the CASSCF that called it reserved the integrals and the operator),
+        # not the start of one, and stamping a new generation here would report those as
+        # leftovers from somebody else's run.
+        from .plan import network_memory_plan
+        res.preflight(network_memory_plan(ttno, state, n_roots=n_roots,
+                                          extra_roots=max(0, int(boundary_check)),
+                                          max_bond=max_bond),
+                      title="Memory plan: two-site DMRG", begin=False)
 
     pager = None
     if page_environments or environment_resident_gb is not None:
@@ -983,12 +1389,31 @@ def _solve_local(ttno, state, cache, u, v, requested, davidson_tol, extra_roots=
                          "roots being averaged; ask for fewer roots, raise max_bond, or give "
                          "the network a topology whose bonds separate more orbitals"
                          .format(u, v, prob.dim, n_roots))
-    res.require("DMRG two-site problem ({}-{})".format(u, v),
-                (n_roots + 2) * prob.dim * 16.0 / 1024.0 ** 3,
-                note="{} packed vectors of {} elements".format(n_roots + 2, prob.dim),
-                advice=["reduce max_bond: the local dimension scales as D^2 d^2"])
-
     n_solve = min(n_roots + int(extra_roots), prob.dim)
+    # ⚠ The whole of what this solve holds, and the second term is the one that was missing
+    # for the layer's entire history: the effective-Hamiltonian application's intermediate
+    # is a *transient*, built and freed once per Davidson matrix-vector product, and with
+    # two operator legs open it was two orders of magnitude larger than everything declared
+    # around it — a 20-spinor network measured 10.8 GB of it against a 0.13 GB ledger, and
+    # the run died as an OOM kill rather than as a refusal. The chain now keeps one leg open
+    # (the _LocalProblem docstring), but the term stays: it is what refuses a branching
+    # node's order that does not fit. Both terms are exact and neither is padded.
+    workspace = prob.solve_workspace_gb(n_roots, n_solve)
+    transient = prob.apply_peak_gb()
+    res.require("DMRG two-site problem ({}-{})".format(u, v), workspace + transient,
+                note="{} determinants; {:.3f} GB workspace + {:.3f} GB per H_eff "
+                     "application".format(prob.dim, workspace, transient),
+                advice=[
+                    "reduce max_bond: the local dimension scales as D^2 d^2 and the "
+                    "application's intermediate carries one operator bond dimension on "
+                    "top of that",
+                    "reduce n_states: the Davidson stacks scale with the subspace cap, "
+                    "which is a multiple of the root count",
+                    "a finer node partition (more nodes, fewer modes each) shrinks the "
+                    "application's intermediate quadratically in the local dimension"])
+    # ⚠ Only now: the pre-contracted halves are this object's one allocation of its own,
+    # and they are built after the check so that a refusal precedes every byte of them.
+    prob.prepare()
     merged = [tensordot(c, state.tensors[v],
                         axes=([_bond_axis(graph, u, v)], [_bond_axis(graph, v, u)]))
               for c in state.centers]

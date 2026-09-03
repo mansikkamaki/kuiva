@@ -276,3 +276,256 @@ def test_expansion_preserves_kramers_degeneracy():
     result = solve(NetworkGraph.path(n), h, eri, k, n_roots=2, expansion=1e-3)
     assert result.converged
     assert abs(result.energies[1] - result.energies[0]) < 1e-8
+
+
+# --- what a sweep will hold, before it holds it (the memory plan) --------------------------
+
+def _local_problem(op, state, u=None, v=None):
+    """The two-site problem at the state's center, with its environments built."""
+    from kuiva.dmrg.sweep import EnvironmentCache, _LocalProblem
+
+    u = state.center if u is None else u
+    v = sorted(state.graph.neighbors(u))[0] if v is None else v
+    return _LocalProblem(op, state, EnvironmentCache(op, state), u, v)
+
+
+def _record_dots(fn):
+    """Run ``fn`` with every ``_Lab.dot`` output recorded: ``(tensor, labels)`` pairs."""
+    from kuiva.dmrg import sweep as sweep_mod
+
+    real = []
+    original = sweep_mod._Lab.dot
+
+    def recording(self, other, pairs):
+        out = original(self, other, pairs)
+        if isinstance(out.t, BlockTensor):
+            real.append((out.t, list(out.labels)))
+        return out
+
+    sweep_mod._Lab.dot = recording
+    try:
+        fn()
+    finally:
+        sweep_mod._Lab.dot = original
+    return real
+
+
+def _branching_case(seed):
+    """A tree with a degree-3 node and two modes per node, fat enough that folding an
+    environment into its W tensor is the smaller order at a bond next to that node."""
+    contents = [list(range(i, i + 2)) for i in range(0, 12, 2)]
+    graph = NetworkGraph(6, [(0, 1), (1, 2), (1, 3), (3, 4), (4, 5)], contents)
+    h, eri = random_spinor_integrals(12, seed=seed)
+    op = compile_ttno(graph, hamiltonian_product_terms(h, eri))
+    state = random_state(op, 6, 16, n_roots=2, rng=np.random.default_rng(seed))
+    return op, state
+
+
+@pytest.mark.parametrize("case", ["path", "tree"])
+def test_block_shape_reproduces_every_contraction_a_sweep_performs(case):
+    """⚠ The pin that keeps the two descriptions of a contraction from drifting.
+
+    ``BlockShape`` propagates sector tables so a chain can be sized before it is
+    allocated; ``tensordot`` derives the same table fused into its pair-table loop. If
+    they ever disagree the memory plan silently sizes a different calculation, so this
+    asserts them equal — table and byte count — on every contraction of a real
+    effective-Hamiltonian application, not on a constructed example. On the tree the
+    application takes a pre-contracted half, so its build is pinned the same way.
+    """
+    from kuiva.dmrg.block import BlockShape
+
+    if case == "path":
+        h, eri = kramers_spinor_integrals(3, seed=40)
+        op = compile_ttno(NetworkGraph.path(6), hamiltonian_product_terms(h, eri))
+        state = random_state(op, 3, 8, n_roots=2, rng=np.random.default_rng(40))
+        problem = _local_problem(op, state)
+    else:
+        op, state = _branching_case(40)
+        problem = _local_problem(op, state, u=0, v=1)
+        assert any(problem.order.pre.values())        # the case exists to take a half
+
+    built = _record_dots(problem.prepare)
+    predicted = problem.half_build_bytes()
+    assert len(predicted) == len(built)
+    for shape_bytes, (tensor, _) in zip(predicted, built):
+        assert shape_bytes == tensor.nbytes
+
+    vec = np.zeros(problem.dim, dtype=np.complex128)
+    vec[0] = 1.0
+    real = _record_dots(lambda: problem.apply(vec))
+    predicted = problem.intermediate_bytes()
+    assert len(predicted) == len(real)
+    for shape_bytes, (tensor, _) in zip(predicted, real):
+        assert shape_bytes == tensor.nbytes
+    # and the starting structure itself: what the chain is walked from is exactly what
+    # ``unpack`` produces for any vector
+    assert BlockShape.of(problem.template).nbytes == problem.template.nbytes
+
+
+def _open_operator_legs(labels):
+    return sum(1 for lab in labels if lab[0] in ("op", "op_out"))
+
+
+def test_one_operator_leg_is_open_at_a_time_on_a_path():
+    """⚠ The mechanism behind the layer's largest array, pinned as a property of the chain
+    rather than as a byte count: an intermediate carrying two operator legs costs the
+    *product* of two operator bond dimensions (4.3 GB at D = 4 on a 20-spinor network),
+    and the reorder — environments before W on the first side, W before environments on
+    the second — leaves exactly one open at every step of a path. No half is taken on a
+    path: a single-branch side has one leg open already, and a half there would only
+    trade a sparse product for a dense one.
+    """
+    h, eri = kramers_spinor_integrals(4, seed=46)
+    op = compile_ttno(NetworkGraph.path(8), hamiltonian_product_terms(h, eri))
+    state = random_state(op, 3, 8, n_roots=2, rng=np.random.default_rng(46))
+    problem = _local_problem(op, state)
+    assert not any(problem.order.pre.values())
+    assert problem.halves_gb() == 0.0
+    assert len(problem.candidates) == 1                     # a rule, not a search
+    vec = np.zeros(problem.dim, dtype=np.complex128)
+    vec[0] = 1.0
+    steps = _record_dots(lambda: problem.apply(vec))
+    assert len(steps) == len(problem.branches_u) + len(problem.branches_v) + 2
+    for _tensor, labels in steps:
+        assert _open_operator_legs(labels) <= 1, labels
+
+
+def test_a_branching_node_takes_the_smallest_order_and_every_order_agrees():
+    """The tree case is a search: every candidate order is sized over structure, the
+    smallest peak is taken, and the choice changes nothing but rounding — the product
+    under the chosen order equals the product under the naive one (first side ``u``,
+    nothing folded) to the tolerance a different summation order allows.
+    """
+    from kuiva.dmrg.sweep import EnvironmentCache, _LocalProblem
+
+    op, state = _branching_case(47)
+    cache = EnvironmentCache(op, state)
+    problem = _LocalProblem(op, state, cache, 0, 1)
+    peaks = {repr(c[0]): c[1] for c in problem.candidates}
+    assert len(problem.candidates) == 8                     # 2 sides x 2^2 subsets at node 1
+    chosen = peaks[repr(problem.order)]
+    assert chosen == min(peaks.values())
+    naive = [c for c in problem.candidates
+             if c[0].first == 0 and not any(c[0].pre.values())][0]
+    assert naive[1] > 2 * chosen                             # the search bought something
+    assert problem.halves_gb() > 0.0
+    assert problem.solve_workspace_gb(2, 2) > problem.halves_gb()
+    assert problem.apply_peak_gb() >= max(problem.intermediate_bytes()) / 1024.0 ** 3
+
+    other = _LocalProblem(op, state, cache, 0, 1)
+    other.order = naive[0]                                   # before prepare(): no halves yet
+    other.prepare()
+    assert other.halves_gb() == 0.0
+    rng = np.random.default_rng(47)
+    vec = rng.standard_normal(problem.dim) + 1j * rng.standard_normal(problem.dim)
+    a, b = problem.apply(vec), other.apply(vec)
+    assert np.linalg.norm(a - b) <= 1e-13 * np.linalg.norm(b)
+
+
+def test_shape_environments_match_the_real_environment_cache():
+    """The environment sizes the plan quotes are the ones the cache actually holds."""
+    from kuiva.dmrg.sweep import (EnvironmentCache, ShapeEnvironments, environment_gb,
+                                  shape_state)
+
+    n, k = 6, 3
+    h, eri = kramers_spinor_integrals(3, seed=41)
+    op = compile_ttno(NetworkGraph.path(n), hamiltonian_product_terms(h, eri))
+    state = random_state(op, k, 8, n_roots=2, rng=np.random.default_rng(41))
+    real = EnvironmentCache(op, state)
+    shapes = ShapeEnvironments(op, shape_state(state))
+    checked = 0
+    for a, b in state.graph.edges:
+        for u, v in ((a, b), (b, a)):
+            if state.center in state.graph.subtree_nodes(u, v):
+                continue                    # not a well-defined environment at this center
+            assert np.array_equal(real.get(u, v).sectors, shapes.get(u, v).sectors)
+            assert real.get(u, v).nbytes == shapes.get(u, v).nbytes
+            checked += 1
+    assert checked > 0
+    assert environment_gb(op, state) > 0.0
+
+
+def test_two_site_requirement_covers_the_application_transient():
+    """⚠ The regression this whole plan exists for: the ``require`` before a two-site
+    solve must cover the effective-Hamiltonian application's intermediate, which is a
+    *transient* no ledger entry ever saw. Before it did, a 20-spinor network held 10.8 GB
+    against a 0.13 GB declaration and the run was killed by the kernel with no message.
+
+    The pin is that the requirement exceeds the largest intermediate the chain builds —
+    the term that was missing — and not merely the packed vectors it used to count.
+    """
+    n, k = 6, 3
+    h, eri = kramers_spinor_integrals(3, seed=42)
+    op = compile_ttno(NetworkGraph.path(n), hamiltonian_product_terms(h, eri))
+    state = random_state(op, k, 8, n_roots=2, rng=np.random.default_rng(42))
+    problem = _local_problem(op, state)
+    largest = max(problem.intermediate_bytes()) / 1024.0 ** 3
+    assert problem.apply_peak_gb() >= largest
+    # the old estimate, kept here as the thing that must no longer bound the requirement
+    old = (2 + 2) * problem.dim * 16.0 / 1024.0 ** 3
+    assert problem.solve_workspace_gb(2, 2) + problem.apply_peak_gb() > old
+
+
+def test_a_network_solve_is_refused_rather_than_killed(kuiva_caplog):
+    """A limit the sweep cannot fit refuses *before* the first bond, naming the knob."""
+    from kuiva.util import resources as res
+
+    n, k = 6, 3
+    h, eri = kramers_spinor_integrals(3, seed=43)
+    op = compile_ttno(NetworkGraph.path(n), hamiltonian_product_terms(h, eri))
+    state = random_state(op, k, 8, n_roots=2, rng=np.random.default_rng(43))
+    budget = res.MemoryBudget()
+    budget.configure(res.ResourceLimits(memory_gb=1e-9, source="test"))
+    saved, res.BUDGET = res.BUDGET, budget
+    try:
+        with pytest.raises(res.MemoryLimitError) as excinfo:
+            solve_ttn(op, state, max_bond=8, n_elec=k, boundary_check=0, max_sweeps=1)
+    finally:
+        res.BUDGET = saved
+    assert "max_bond" in str(excinfo.value)
+
+
+def test_the_per_bond_requirement_refuses_even_with_the_plan_off():
+    """The backstop, and the thing that makes the guarantee hard: bond dimensions are
+    re-derived by every truncation, so the solve that does not fit need not be the one the
+    plan looked at. With the plan switched off the sweep must still refuse at the bond."""
+    from kuiva.util import resources as res
+
+    # Two modes per node: with one operator leg open at a time the two-site solve of a
+    # one-mode node is smaller than an environment, and this test needs a bond where the
+    # solve is the largest thing (the merged dimension grows as d^2, the environment as D^2).
+    n, k = 8, 4
+    h, eri = kramers_spinor_integrals(4, seed=45)
+    graph = NetworkGraph.path(4, [[0, 1], [2, 3], [4, 5], [6, 7]])
+    op = compile_ttno(graph, hamiltonian_product_terms(h, eri))
+    state = random_state(op, k, 8, n_roots=2, rng=np.random.default_rng(45))
+    # A limit that holds the environments a bond needs and not the two-site solve, so the
+    # refusal has to come from the requirement under test rather than from an earlier one.
+    from kuiva.dmrg.sweep import ShapeEnvironments, shape_state
+    problem = _local_problem(op, state)
+    need = problem.solve_workspace_gb(2, 2) + problem.apply_peak_gb()
+    shapes = ShapeEnvironments(op, shape_state(state, fill_center=True))
+    biggest_env = max(shapes.get(a, b).nbytes for a, b in
+                      list(state.graph.edges) + [(b, a) for a, b in state.graph.edges])
+    limit = 0.9 * need
+    assert limit > biggest_env / 1024.0 ** 3            # an environment still fits
+    budget = res.MemoryBudget()
+    budget.configure(res.ResourceLimits(memory_gb=limit, source="test"))
+    saved, res.BUDGET = res.BUDGET, budget
+    try:
+        with pytest.raises(res.MemoryLimitError) as excinfo:
+            solve_ttn(op, state, max_bond=8, n_elec=k, boundary_check=0, max_sweeps=1,
+                      memory_plan=False)
+    finally:
+        res.BUDGET = saved
+    assert "two-site problem" in str(excinfo.value)
+
+
+def test_the_memory_plan_can_be_switched_off_without_changing_the_answer():
+    """``memory_plan=False`` is the driver's "I planned once per chart" switch and must
+    move no number: the exact per-bond requirement inside the sweep is what refuses."""
+    n, k = 6, 2
+    h, eri = random_spinor_integrals(n, seed=44)
+    a = solve(NetworkGraph.path(n), h, eri, k, n_roots=2)
+    b = solve(NetworkGraph.path(n), h, eri, k, n_roots=2, memory_plan=False)
+    assert np.array_equal(a.energies, b.energies)

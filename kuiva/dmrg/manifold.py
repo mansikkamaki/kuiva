@@ -752,10 +752,14 @@ def solve_manifold(terms, graph: NetworkGraph, n_elec: int, *, bases=None,
     with timer("manifold ensemble loop"):
         for outer in range(1, max_outer + 1):
             state = random_state(ttno, n_elec, cap, n_roots=roots, rng=rng)
+            # The memory plan on the first pass only: the ensemble loop re-solves the
+            # same manifold at the same cap, so every later table would be the first one
+            # again, and INFO is the output file.
             sweep = solve_ttn(ttno, state, max_sweeps=max_sweeps, conv_tol=conv_tol,
                               trunc_tol=trunc_tol, max_bond=max_bond, n_elec=n_elec,
                               boundary_check=boundary_check,
-                              davidson_tol=davidson_tol, on_split=on_split)
+                              davidson_tol=davidson_tol, on_split=on_split,
+                              memory_plan=outer == 1)
             try:
                 model = effective_model(ttno, state, sites, weights=sweep.weights,
                                         rule=rule, dims=dims, weight_tol=weight_tol,

@@ -12,7 +12,7 @@ type: software
 authors:
   - family-names: "Mansikkamäki"
     given-names: "Akseli"
-version: 0.39.1
+version: 0.40.0
 date-released: "2026-08-13"
 license: Apache-2.0
 repository-code: "https://github.com/mansikkamaki/kuiva"

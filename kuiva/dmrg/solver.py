@@ -393,6 +393,10 @@ class DMRGSolver:
             # Refreshed per solve, not set once: an adopted topology or cap moves the
             # key, and the file must say which chart the state it holds belongs to.
             self.checkpoint.space_key = self.space_key()
+        # ⚠ The memory plan is printed on the FIRST solve only — sixty identical tables in
+        # an output file are noise, not output. What runs on every solve is the exact
+        # per-bond requirement inside the sweep, which is what actually refuses; the plan
+        # is the statement a user gets to read before the sweep starts.
         result = solve_ttn(ttno, self._state, max_sweeps=self.max_sweeps,
                            conv_tol=self.conv_tol, trunc_tol=self.trunc_tol,
                            max_bond=self._cap, weights=self.requested_weights,
@@ -402,7 +406,7 @@ class DMRGSolver:
                            bond_schedule=self.bond_schedule if first else None,
                            expansion=self.expansion if first else 0.0,
                            expansion_sweeps=self.expansion_sweeps,
-                           report=False)
+                           memory_plan=first, report=False)
         self._first_solve_done = True
         self.n_solves += 1
         log.debug("DMRG solve %d: E_SA = %.12f Eh (+e_core %.6f) in %d sweeps, max D %d",

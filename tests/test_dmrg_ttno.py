@@ -248,3 +248,71 @@ def test_dense_oracle_refuses_large_spaces():
     op = compile_ttno(NetworkGraph.path(4), hamiltonian_product_terms(h, eri))
     with pytest.raises(ValueError, match="dense"):
         op.to_dense(max_dim=8)
+
+
+def test_transition_table_sizing_is_exact_on_every_node():
+    """Two-sided pin of the compile's own working set against the arrays it builds.
+
+    ⚠ The transition tables are a large allocation the ledger could not see: measured at
+    2.2 GB on a 20-spinor five-mode-per-node compile, second only to the two-site
+    application's intermediate. They are checked *before* they are built, which needs an
+    exact count in advance — so this replays the construction and compares byte for byte,
+    on every node of a multi-mode tree where the ``d x d`` local matrices are big enough
+    for a mistake to show.
+    """
+    import kuiva.dmrg.ttno as ttno_mod
+
+    rows = []
+    original = ttno_mod._node_tensor
+
+    def recording(u, root, children_u, registries, positions, bond_space, bond_labels,
+                  carrying, lab_idx, term_pairs, terms, modes_u, dims_u, phys_u, bases,
+                  mats, zero, attach=None, allocations=None):
+        d = phys_u[0].total_dim
+        id_index = -1 if u == root else registries[u].get(("1",), -1)
+        predicted = ttno_mod._transition_table_gb(u, root, children_u, carrying, lab_idx,
+                                                  term_pairs, modes_u, d, id_index)
+        cache, coefficients, identity_needed = {}, {}, False
+
+        def local_matrix(key):
+            mat = cache.get(key)
+            if mat is None:
+                mat = np.eye(1, dtype=np.complex128)
+                for mode, mid in zip(modes_u, key):
+                    factor = np.eye(bases[mode].dim, dtype=np.complex128) if mid < 0 \
+                        else mats[mid]
+                    mat = np.kron(mat, factor)
+                cache[key] = mat
+            return mat
+
+        for ti, pairs in enumerate(term_pairs):
+            out_idx = 0 if u == root else int(lab_idx[ti, u])
+            if out_idx == id_index and u != root:
+                identity_needed = True
+                continue
+            in_idx = tuple(int(lab_idx[ti, c]) for c in children_u)
+            local = local_matrix(tuple(ttno_mod._term_matid_at(pairs, m) for m in modes_u))
+            out_carries = carrying[u][out_idx] if u != root else True
+            in_carries = any(bool(carrying[c][i]) for c, i in zip(children_u, in_idx))
+            if out_carries and not in_carries and (out_idx, in_idx) not in coefficients:
+                coefficients[(out_idx, in_idx)] = terms[ti].coeff * local
+        if identity_needed:
+            local_matrix(tuple(-1 for _ in modes_u))
+        actual = sum(m.nbytes for m in cache.values()) \
+            + sum(m.nbytes for m in coefficients.values())
+        rows.append((u, predicted, actual))
+        return original(u, root, children_u, registries, positions, bond_space,
+                        bond_labels, carrying, lab_idx, term_pairs, terms, modes_u,
+                        dims_u, phys_u, bases, mats, zero, attach, allocations)
+
+    ttno_mod._node_tensor = recording
+    try:
+        h, eri = random_spinor_integrals(8, seed=51)
+        compile_ttno(NetworkGraph.path(4, contents=[(0, 1), (2, 3), (4, 5), (6, 7)]),
+                     hamiltonian_product_terms(h, eri))
+    finally:
+        ttno_mod._node_tensor = original
+
+    assert len(rows) == 4
+    for u, predicted, actual in rows:
+        assert predicted * 1024.0 ** 3 == actual, "node {} sizing is not exact".format(u)

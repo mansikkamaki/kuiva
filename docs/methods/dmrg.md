@@ -101,6 +101,44 @@ small thread width, and its CPU-second figures are read accordingly
 pages its coldest entries to a configured scratch directory under memory pressure,
 bitwise-inertly, instead of refusing.
 
+### What a sweep costs in memory
+
+⚠ **The largest array is not one that is stored** — it is a single intermediate inside one
+application of the effective Hamiltonian, built and freed once per Davidson matrix-vector
+product, and its size is a *contraction order*. An intermediate carrying two operator legs at
+once costs the product of two operator bond dimensions: on a 20-spinor active space
+partitioned over four five-mode nodes it reached **4.3 GB at a bond dimension of 4** and
+about 11 GB at 16, while everything the run stored came to 0.13 GB, and the run was killed by
+the operating system rather than refused.
+
+Kuiva's chain keeps **one operator leg open at a time**: the first side contracts its
+environments before its operator tensor, the second side its operator tensor before its
+environments. On a chain that is a rule and the same intermediate is 8 MB. A node with several
+branches opens one leg per branch, and there the order — which environments are folded into
+their operator tensor once, ahead of the solve, and reused across every Davidson iteration —
+is chosen by walking every candidate over the contraction's own block structure, with no data
+and nothing allocated, and taking the smallest peak. ⚠ A changed contraction order sums the
+same products in a different order: energies agree with the previous order to about
+$`10^{-13}`$ Eh, not bitwise. The reorder is also cheaper in CPU, by 4× on thin chains and
+8–30× on fat nodes and trees, because the old third step contracted the two-leg
+intermediate itself.
+
+The sizing runs through the *same* chain — spaces, signs and sector tables, walked in
+structure-space — for every bond of the sweep, and the resulting plan is printed before the
+first bond is solved. A solve that cannot fit is **refused with the bond named**, and the knobs
+are stated in the order they matter:
+
+1. the **node partition** — the local dimension is $`2^{\text{modes at the node}}`$ and enters
+   squared, so more nodes with fewer modes each is the largest single lever;
+2. the **active-space size** — the operator bond dimension grows as its square, and the
+   intermediate carries one of them;
+3. `max_bond` — quadratic through the two-site dimension.
+
+⚠ The estimate describes Kuiva's arrays. What remains above it is the operator compile's own
+transient and the arena it leaves behind — a process that has freed a multi-gigabyte array does
+not usually return it to the operating system — so leave a factor of about two of headroom in
+the configured limit.
+
 ## Topology, adaptivity, and the optimizer
 
 The topology is seeded from the cheap CI's entanglement (mutual-information graph, Fiedler

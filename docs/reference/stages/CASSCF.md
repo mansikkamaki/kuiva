@@ -119,6 +119,13 @@ state allocates charge-sector-maximal bonds):
 | `symmetry`, `sector` | `None` | conserved symmetry labels: a labelled sweep cannot leave the sector it targets |
 | `enforce_kramers`, `on_split`, `boundary_check`, `seed` | — | as on the CI route |
 
+⚠ **The network route prints a memory plan** at the start of the first solve of each chart:
+the environments, the two-site workspace and the transient one application of the effective
+Hamiltonian holds, with the bond of the sweep that peaks named. A solve that cannot fit is
+refused there rather than being killed by the operating system, and the refusal names the
+three knobs in the order they matter: the **node partition**, the **active-space size**, then
+`max_bond` ([dmrg](../../methods/dmrg.md#what-a-sweep-costs-in-memory)).
+
 ⚠ **Read `w_disc`.** The iteration table carries the largest discarded weight of each
 macro-iteration's sweeps, and `cas.max_discarded` is the final value: every energy from this
 solver has to be quoted with it, and truncation *growing* as the orbitals move is the signal

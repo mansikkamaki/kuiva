@@ -1178,7 +1178,8 @@ def plan_peak_gb(phases: Sequence[PhaseEstimate], *, budget: MemoryBudget = BUDG
 
 
 def preflight(phases: Sequence[PhaseEstimate], *, budget: MemoryBudget = BUDGET,
-              logger=None, title: str = "Memory pre-flight") -> float:
+              logger=None, title: str = "Memory pre-flight",
+              begin: bool = True) -> float:
     """Print the phase-by-phase memory plan and refuse a calculation that cannot fit.
 
     Returns the planned peak [GB]. The peak model is *resident carried forward plus the
@@ -1192,6 +1193,12 @@ def preflight(phases: Sequence[PhaseEstimate], *, budget: MemoryBudget = BUDGET,
     (:meth:`MemoryBudget.begin_calculation`): it is the earliest point of every calculation
     and nothing has been reserved for this one yet, so anything already committed came from
     an earlier one and is warned about here rather than in a refusal several phases later.
+
+    ⚠ ``begin=False`` for a plan made *inside* a calculation that is already under way — a
+    later stage estimating its own phases once its dimensions are finally known, as the
+    tensor-network sweep does. Everything already reserved then belongs to this calculation
+    and is carried, not stamped as somebody else's leftovers; the peak model, the printing
+    and the refusal are identical.
     """
     logger = logger or log
     lims = budget.limits

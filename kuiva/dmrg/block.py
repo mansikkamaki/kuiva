@@ -1087,6 +1087,165 @@ def _matricized_buffer(blocks: List[np.ndarray], perm: Tuple[int, ...],
     return data, offset
 
 
+def _joined_rows(rows_a: np.ndarray, rows_b: np.ndarray,
+                 axes_a: Sequence[int], axes_b: Sequence[int],
+                 rest_a: Sequence[int], rest_b: Sequence[int],
+                 nsec_a: Sequence[int], nsec_b: Sequence[int]) -> np.ndarray:
+    """The sector table :func:`tensordot` would produce, from the operands' tables alone.
+
+    A relational join on the contracted sector indices: every pair of rows that agree there
+    contributes one output row (uncontracted of ``a`` then of ``b``), and duplicates
+    collapse because several pairs write the same block.
+
+    ⚠ **A second implementation of the rule** :func:`tensordot` applies, and deliberately
+    so: that one is fused into the pair-table loop it has to build anyway (hot path), while
+    this one must run with no operand data in memory at all — which is the whole point of
+    sizing a chain before allocating it. The two are pinned against each other by a test on
+    every contraction a sweep performs, so a drift fails rather than mis-sizing silently.
+    """
+    axes_a, axes_b = list(axes_a), list(axes_b)
+    rest_a, rest_b = list(rest_a), list(rest_b)
+    width = len(rest_a) + len(rest_b)
+    if rows_a.shape[0] == 0 or rows_b.shape[0] == 0:
+        return np.zeros((0, width), dtype=np.int64)
+    key_a = _row_keys(rows_a[:, axes_a], [nsec_a[i] for i in axes_a])
+    key_b = _row_keys(rows_b[:, axes_b], [nsec_b[i] for i in axes_b])
+    order = np.argsort(key_b, kind="stable")
+    sorted_b = key_b[order]
+    lo = np.searchsorted(sorted_b, key_a, side="left")
+    hi = np.searchsorted(sorted_b, key_a, side="right")
+    counts = hi - lo
+    total = int(counts.sum())
+    if total == 0:
+        return np.zeros((0, width), dtype=np.int64)
+    idx_a = np.repeat(np.arange(rows_a.shape[0], dtype=np.int64), counts)
+    # position within each matched run, without a Python loop over the runs
+    offsets = np.arange(total, dtype=np.int64) \
+        - np.repeat(np.cumsum(counts) - counts, counts)
+    idx_b = order[np.repeat(lo, counts) + offsets]
+    out = np.concatenate([rows_a[idx_a][:, rest_a], rows_b[idx_b][:, rest_b]], axis=1)
+    return np.unique(out, axis=0)
+
+
+class BlockShape(object):
+    """A block tensor's structure — spaces, signs, charge, sector table — without its data.
+
+    Why it exists: in this layer the array that decides whether a run fits in memory is not
+    a declared object but a **contraction intermediate**, produced and freed inside one
+    application of the effective Hamiltonian. Its size is fixed by the operands' structure
+    alone, so a whole contraction chain can be walked in structure-space and sized exactly
+    before a byte of it is allocated — which is what a memory limit needs if it is to refuse
+    rather than be discovered by the kernel's OOM killer.
+
+    ⚠ **Exact, not bounding.** :func:`block_tensor_gb` sizes the *allowed* sector set, which
+    a contracted tensor rarely fills: measured on a two-site application of a 20-spinor
+    network, the allowed set was 4.7x the tensor that was actually built. Sizing a
+    reservation that way would refuse calculations that run comfortably, so this class
+    propagates the real sector table instead.
+    """
+
+    __slots__ = ("spaces", "signs", "charge", "sectors")
+
+    def __init__(self, spaces: Sequence[Space], signs: Sequence[int],
+                 charge: QuantumNumber, sectors: np.ndarray) -> None:
+        self.spaces = tuple(spaces)
+        self.signs = tuple(int(s) for s in signs)
+        self.charge = charge
+        self.sectors = np.asarray(sectors, dtype=np.int64).reshape(-1, len(self.spaces))
+
+    @classmethod
+    def of(cls, tensor) -> "BlockShape":
+        """The structure of a live tensor — a :class:`BlockTensor` or a ``SparseW``."""
+        return cls(tensor.spaces, tensor.signs, tensor.charge, tensor.sectors)
+
+    @classmethod
+    def allowed(cls, spaces: Sequence[Space], signs: Sequence[int],
+                charge: Optional[QuantumNumber] = None) -> "BlockShape":
+        """Every symmetry-allowed sector — the structure :meth:`BlockTensor.zeros` builds."""
+        spaces = tuple(spaces)
+        if charge is None:
+            charge = QuantumNumber.zero(spaces[0].width)
+        return cls(spaces, signs, charge, _allowed_rows(spaces, signs, charge))
+
+    @property
+    def ndim(self) -> int:
+        return len(self.spaces)
+
+    @property
+    def nblocks(self) -> int:
+        return int(self.sectors.shape[0])
+
+    @property
+    def size(self) -> int:
+        """Number of complex entries across every block."""
+        if self.nblocks == 0:
+            return 0
+        return int(self.block_sizes.sum())
+
+    @property
+    def block_sizes(self) -> np.ndarray:
+        """Element count of each block, in sector-table order."""
+        dims = np.ones(self.nblocks, dtype=np.int64)
+        for j, space in enumerate(self.spaces):
+            dims = dims * np.asarray(space.dims, dtype=np.int64)[self.sectors[:, j]]
+        return dims
+
+    @property
+    def nbytes(self) -> int:
+        """Exactly what :attr:`BlockTensor.nbytes` reports for a tensor of this structure."""
+        return int(16 * self.size + self.sectors.nbytes)
+
+    @property
+    def gb(self) -> float:
+        return self.nbytes / 1024.0 ** 3
+
+    def dot(self, other: "BlockShape",
+            axes: Tuple[Sequence[int], Sequence[int]]) -> "BlockShape":
+        """The structure :func:`tensordot` would return for these operands and axes."""
+        axes_a = tuple(int(x) for x in axes[0])
+        axes_b = tuple(int(x) for x in axes[1])
+        if len(axes_a) != len(axes_b):
+            raise ValueError("axes lists differ in length")
+        for ia, ib in zip(axes_a, axes_b):
+            if self.spaces[ia] != other.spaces[ib]:
+                raise ValueError("contracted legs {}<->{} carry different spaces"
+                                 .format(ia, ib))
+            if self.signs[ia] != -other.signs[ib]:
+                raise ValueError("contracted legs {}<->{} carry equal signs; flux would "
+                                 "not cancel".format(ia, ib))
+        rest_a = tuple(i for i in range(self.ndim) if i not in axes_a)
+        rest_b = tuple(i for i in range(other.ndim) if i not in axes_b)
+        spaces = tuple(self.spaces[i] for i in rest_a) \
+            + tuple(other.spaces[i] for i in rest_b)
+        if not spaces:
+            raise ValueError("full contraction to a scalar is not represented as a "
+                             "BlockTensor; keep at least one leg (use a dim-1 leg)")
+        signs = tuple(self.signs[i] for i in rest_a) + tuple(other.signs[i] for i in rest_b)
+        rows = _joined_rows(self.sectors, other.sectors, axes_a, axes_b, rest_a, rest_b,
+                            [sp.nsectors for sp in self.spaces],
+                            [sp.nsectors for sp in other.spaces])
+        return BlockShape(spaces, signs, self.charge + other.charge, rows)
+
+    def transpose(self, perm: Sequence[int]) -> "BlockShape":
+        """Legs permuted; the block table is re-sorted, as :meth:`BlockTensor.transpose`
+        does, so the two tables stay comparable row for row."""
+        perm = [int(i) for i in perm]
+        spaces = tuple(self.spaces[i] for i in perm)
+        sectors = self.sectors[:, perm]
+        order = np.argsort(_row_keys(sectors, [sp.nsectors for sp in spaces]))
+        return BlockShape(spaces, tuple(self.signs[i] for i in perm), self.charge,
+                          np.ascontiguousarray(sectors[order]))
+
+    def conj(self) -> "BlockShape":
+        """Signs flipped and charge negated, exactly as :meth:`BlockTensor.conj` does."""
+        return BlockShape(self.spaces, tuple(-s for s in self.signs), -self.charge,
+                          self.sectors)
+
+    def __repr__(self) -> str:                                   # pragma: no cover - debug
+        return "BlockShape({} legs, {} blocks, {:.4f} GB)".format(
+            self.ndim, self.nblocks, self.gb)
+
+
 def block_tensor_gb(spaces: Sequence[Space], signs: Sequence[int],
                     charge: Optional[QuantumNumber] = None) -> float:
     """Exact size [GB] of the fully-allocated block tensor (exact sizing function).
@@ -1124,7 +1283,8 @@ def _degenerate_groups(s: np.ndarray, rtol: float) -> List[np.ndarray]:
     return np.split(np.arange(s.size), cuts)
 
 
-__all__ = ["QuantumNumber", "Space", "BlockTensor", "FuseRecord", "TruncationInfo",
+__all__ = ["QuantumNumber", "Space", "BlockTensor", "BlockShape", "FuseRecord",
+           "TruncationInfo",
            "fuse", "split", "qr", "svd", "tensordot", "block_tensor_gb",
            "block_pair_gemm_numpy",
            "SCHMIDT_DEGENERACY_RTOL", "SCHMIDT_STABILITY_RTOL"]

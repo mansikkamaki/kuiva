@@ -638,6 +638,54 @@ def compile_ttno(graph: NetworkGraph, terms: Sequence[Optional[ProductTerm]],
     return ttno
 
 
+def _transition_table_gb(u, root, children_u, carrying, lab_idx, term_pairs, modes_u,
+                         d, id_index) -> float:
+    """Exact size [GB] of one node's transition tables, before any of them is built.
+
+    Counts what :func:`_node_tensor` will allocate and nothing else: the distinct local
+    matrix patterns it caches (``unit_trans`` stores references into that cache, so it adds
+    nothing) and the distinct coefficient-carrying transitions, each one a fresh ``d x d``
+    complex matrix. Pinned two-sided against the real tables in the test suite.
+    """
+    n_terms = len(term_pairs)
+    if n_terms == 0:                                   # pragma: no cover - a node always acts
+        return 0.0
+    if u == root:
+        out_arr = np.zeros(n_terms, dtype=np.int64)
+        keep = np.ones(n_terms, dtype=bool)
+        carry_out = np.ones(n_terms, dtype=bool)
+    else:
+        out_arr = np.asarray(lab_idx[:, u], dtype=np.int64)
+        keep = out_arr != int(id_index)
+        carry_out = np.asarray(carrying[u], dtype=bool)[out_arr]
+    children_u = list(children_u)
+    in_arr = np.asarray(lab_idx[:, children_u], dtype=np.int64).reshape(n_terms,
+                                                                       len(children_u))
+    carry_in = np.zeros(n_terms, dtype=bool)
+    for j, c in enumerate(children_u):
+        carry_in |= np.asarray(carrying[c], dtype=bool)[in_arr[:, j]]
+    coeff = keep & carry_out & ~carry_in
+    n_coeff = 0
+    if coeff.any():
+        rows = np.column_stack([out_arr[coeff], in_arr[coeff]]) if children_u \
+            else out_arr[coeff].reshape(-1, 1)
+        n_coeff = int(np.unique(rows, axis=0).shape[0])
+    # The local-pattern cache is keyed on per-mode matrix ids, which are not in an array:
+    # one pass over the kept terms, integers only. The identity pattern is added by
+    # ``_node_tensor`` whenever a term skips this node, and counting it unconditionally
+    # would over-state a node that no term skips.
+    patterns = set()
+    identity_needed = False
+    for ti, pairs in enumerate(term_pairs):
+        if not keep[ti]:
+            identity_needed = True
+            continue
+        patterns.add(tuple(_term_matid_at(pairs, m) for m in modes_u))
+    if identity_needed:
+        patterns.add(tuple(-1 for _ in modes_u))
+    return 16.0 * d * d * (len(patterns) + n_coeff) / 1024.0 ** 3
+
+
 def _node_tensor(u, root, children_u, registries, positions, bond_space, bond_labels,
                  carrying, lab_idx, term_pairs, terms, modes_u, dims_u, phys_u, bases,
                  mats, zero, attach=None, allocations=None) -> SparseW:
@@ -664,6 +712,24 @@ def _node_tensor(u, root, children_u, registries, positions, bond_space, bond_la
     identity_needed = False
 
     id_index = -1 if u == root else registries[u].get(("1",), -1)
+    # ⚠ The transition tables are large arrays and they are checked before they are built,
+    # which needs their exact count in advance: one ``d x d`` matrix per distinct local
+    # matrix-id pattern (the cache below, shared by reference with ``unit_trans``, which
+    # therefore costs nothing of its own) plus one more per distinct coefficient-carrying
+    # transition. Measured on a 20-spinor five-mode-per-node compile this is 2.2 GB, and
+    # before this check it was 2.2 GB the ledger could not see — the second-largest
+    # unaccounted allocation in the layer after the two-site application's intermediate.
+    # The pre-pass is integer work over the term table; measured against the compile it
+    # protects, its cost is at the noise floor (-0.5 +- 1% on a 12-mode four-node compile).
+    res.require("TTNO node {} transition tables".format(u),
+                _transition_table_gb(u, root, children_u, carrying, lab_idx, term_pairs,
+                                     modes_u, d, id_index),
+                note="one {0} x {0} matrix per distinct local pattern and per "
+                     "coefficient-carrying transition".format(d),
+                advice=["a finer node partition (fewer modes per node) shrinks these "
+                        "quadratically: the matrices are 2^(modes at the node) square",
+                        "the transition count grows as the square of the active-space "
+                        "size"])
     for ti, pairs in enumerate(term_pairs):
         out_idx = 0 if u == root else int(lab_idx[ti, u])
         if out_idx == id_index and u != root:

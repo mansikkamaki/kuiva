@@ -2,14 +2,14 @@
                                    K U I V A                                    
                  relativistic multireference quantum chemistry                  
                     example 5: SC-NEVPT2 on the oxygen atom                     
-                                 version 0.37.0                                 
+                                 version 0.40.0                                 
                 compiled kernels: disabled (KUIVA_KERNELS=numpy)                
            threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
 ================================================================================
    output file                                    output/nevpt2.out
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.16 s
+ Scalar-relativistic X2C reference                                    t = 0.14 s
 ================================================================================
    atoms                                                          1   (O)
    charge                                                         0
@@ -31,7 +31,7 @@
      three-index MO block B^P_p,occ                           0.001  GB   (28 spinors x 8 occupied)
    memory limit                                               2.000  GB   (set for this calculation)
    planned peak                                               0.001  GB
-   machine available                                         10.213  GB
+   machine available                                         11.860  GB
    SCF reference                                               ROHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            14
@@ -42,7 +42,7 @@
    nuclear repulsion                                 0.000000000000  Eh
    scalar X2C SCF energy                           -74.766714809114  Eh
    SCF converged                                                yes
-   SCF time                                                    0.04  s wall   (0.14 s cpu)
+   SCF time                                                    0.03  s wall   (0.13 s cpu)
    AO integral time                                            0.00  s wall   (0.01 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
@@ -59,10 +59,10 @@
    reference configurations                                O: s4 p4
    spin-free correction, max |dh_sf|                   3.137573e-03  Eh
    spin-orbit correction, max |dw|                     2.376598e-04  Eh
-   discarded time-reversal-odd part                       2.712e-12  Eh   (1.3e-13 relative)
+   discarded time-reversal-odd part                       5.473e-12  Eh   (2.5e-13 relative)
 
 ================================================================================
- Orthonormal working basis                                            t = 0.89 s
+ Orthonormal working basis                                            t = 0.76 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                            14
@@ -73,17 +73,17 @@
    condition number of S (retained)                       1.027e+01
 
 ================================================================================
- Spinor expansion                                                     t = 0.89 s
+ Spinor expansion                                                     t = 0.76 s
 ================================================================================
    scalar basis functions                                        14   (working basis)
    spinors                                                       28
    Kramers pairs                                                 14
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    3.35e-15
+   orthonormality error                                    5.51e-15
 
 ================================================================================
- Two-electron integrals                                               t = 0.89 s
+ Two-electron integrals                                               t = 0.76 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -99,7 +99,7 @@
    stored integral array released                             0.000  GB   (dead weight once the factors exist; release_eri=False keeps it for a second factorization)
 
 ================================================================================
- CASSCF                                                               t = 0.90 s
+ CASSCF                                                               t = 0.77 s
 ================================================================================
    active space                                           CAS(4, 6)   (3 lowest Kramers pairs of l=1 character on 1 O)
    inactive / active / virtual spinors                   4 / 6 / 18
@@ -115,9 +115,9 @@
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      1       -74.731534295838   -1.959e-03   9.042e-02    0.0209  2nd          0.02
-      2       -74.731534419059   -1.232e-07   1.717e-03    0.0001  2nd          0.02
-      3       -74.731534419073   -1.393e-11   1.223e-05    0.0000  2nd          0.02
+      1       -74.731534295833   -1.959e-03   9.042e-02    0.0209  2nd          0.01
+      2       -74.731534419059   -1.232e-07   1.717e-03    0.0001  2nd          0.01
+      3       -74.731534419073   -1.388e-11   1.223e-05    0.0000  2nd          0.01
       4       -74.731534419073    0.000e+00   1.896e-09    0.0000  2nd          0.01
    ----  ---------------------  -----------  ----------  --------  ------  ---------
    converged
@@ -145,10 +145,10 @@
    -------  ---------------------  --------------  ---------
    15 applications of H in 0 iterations
    state-average boundary                                  complete   (all 15 determinants averaged over)
-   state-average spin invariance                          8.871e-17   (spin-rotation invariant ensemble)
+   state-average spin invariance                          8.336e-17   (spin-rotation invariant ensemble)
 
 ================================================================================
- The reference                                                        t = 1.00 s
+ The reference                                                        t = 0.85 s
 ================================================================================
 CASSCF
   active space     : CAS(4, 6)  3 lowest Kramers pairs of l=1 character on 1 O
@@ -172,12 +172,12 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    2.405e-03        -0.001329084382             2    1.762e+00
-   Si    (+1')          +1    3.252e-25         0.000000000000             0            -
+   Si    (+1')          +1    3.182e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.102e-02        -0.001240563168             6    3.755e+00
    Srsi  (-1)           -1    1.169e-01        -0.023027881487            12    3.993e+00
    Srs   (-2)           -2    2.551e-01        -0.042194312090             9    3.964e+00
-   Sij   (+2)           +2   -2.754e-17         0.000000000000             0            -
+   Sij   (+2)           +2    1.679e-17         0.000000000000             0            -
    Sir   (0')           +0    1.271e-01        -0.029740072722             6    2.227e+00
    -------------  --------  -----------  ---------------------  ------------  -----------
    E(CASSCF)                                       -74.772423046740  Eh
@@ -188,12 +188,12 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    2.405e-03        -0.001329084386             2    1.762e+00
-   Si    (+1')          +1    2.559e-25         0.000000000000             0            -
+   Si    (+1')          +1    2.524e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.102e-02        -0.001240563168             6    3.755e+00
    Srsi  (-1)           -1    1.169e-01        -0.023027881487            12    3.993e+00
    Srs   (-2)           -2    2.551e-01        -0.042194312090             9    3.964e+00
-   Sij   (+2)           +2    6.133e-18         0.000000000000             0            -
+   Sij   (+2)           +2    1.827e-17         0.000000000000             0            -
    Sir   (0')           +0    1.271e-01        -0.029740072721             6    2.227e+00
    -------------  --------  -----------  ---------------------  ------------  -----------
    E(CASSCF)                                       -74.772423046735  Eh
@@ -204,12 +204,12 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    2.405e-03        -0.001329084386             2    1.762e+00
-   Si    (+1')          +1    8.845e-25         0.000000000000             0            -
+   Si    (+1')          +1    8.803e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.102e-02        -0.001240563168             6    3.755e+00
    Srsi  (-1)           -1    1.169e-01        -0.023027881487            12    3.993e+00
    Srs   (-2)           -2    2.551e-01        -0.042194312090             9    3.964e+00
-   Sij   (+2)           +2   -4.377e-17         0.000000000000             0            -
+   Sij   (+2)           +2    1.800e-18         0.000000000000             0            -
    Sir   (0')           +0    1.271e-01        -0.029740072721             6    2.227e+00
    -------------  --------  -----------  ---------------------  ------------  -----------
    E(CASSCF)                                       -74.772423046732  Eh
@@ -220,12 +220,12 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    2.405e-03        -0.001329084398             2    1.762e+00
-   Si    (+1')          +1    5.672e-25         0.000000000000             0            -
+   Si    (+1')          +1    5.724e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.102e-02        -0.001240563169             6    3.755e+00
    Srsi  (-1)           -1    1.169e-01        -0.023027881487            12    3.993e+00
    Srs   (-2)           -2    2.551e-01        -0.042194312090             9    3.964e+00
-   Sij   (+2)           +2    5.199e-17         0.000000000000             0            -
+   Sij   (+2)           +2   -3.474e-17         0.000000000000             0            -
    Sir   (0')           +0    1.271e-01        -0.029740072717             6    2.227e+00
    -------------  --------  -----------  ---------------------  ------------  -----------
    E(CASSCF)                                       -74.772423046715  Eh
@@ -236,12 +236,12 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    2.405e-03        -0.001329084398             2    1.762e+00
-   Si    (+1')          +1    4.254e-25         0.000000000000             0            -
+   Si    (+1')          +1    4.356e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.102e-02        -0.001240563169             6    3.755e+00
    Srsi  (-1)           -1    1.169e-01        -0.023027881487            12    3.993e+00
    Srs   (-2)           -2    2.551e-01        -0.042194312090             9    3.964e+00
-   Sij   (+2)           +2   -1.387e-17         0.000000000000             0            -
+   Sij   (+2)           +2    2.207e-18         0.000000000000             0            -
    Sir   (0')           +0    1.271e-01        -0.029740072717             6    2.227e+00
    -------------  --------  -----------  ---------------------  ------------  -----------
    E(CASSCF)                                       -74.772423046715  Eh
@@ -252,7 +252,7 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    2.414e-03        -0.001334354122             2    1.788e+00
-   Si    (+1')          +1    3.195e-25         0.000000000000             0            -
+   Si    (+1')          +1    3.168e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.101e-02        -0.001238844994             6    3.754e+00
    Srsi  (-1)           -1    1.169e-01        -0.023028637864            12    4.002e+00
@@ -268,7 +268,7 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    2.414e-03        -0.001334354123             2    1.788e+00
-   Si    (+1')          +1    6.121e-26         0.000000000000             0            -
+   Si    (+1')          +1    6.004e-26         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.101e-02        -0.001238844994             6    3.754e+00
    Srsi  (-1)           -1    1.169e-01        -0.023028637864            12    4.002e+00
@@ -284,7 +284,7 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    2.414e-03        -0.001334354135             2    1.788e+00
-   Si    (+1')          +1    4.875e-25         0.000000000000             0            -
+   Si    (+1')          +1    4.909e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.101e-02        -0.001238844995             6    3.754e+00
    Srsi  (-1)           -1    1.169e-01        -0.023028637864            12    4.002e+00
@@ -300,7 +300,7 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    2.419e-03        -0.001338269901             2    1.767e+00
-   Si    (+1')          +1    2.149e-25         0.000000000000             0            -
+   Si    (+1')          +1    2.218e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.100e-02        -0.001238019888             6    3.755e+00
    Srsi  (-1)           -1    1.169e-01        -0.023030199990            12    3.995e+00
@@ -316,12 +316,12 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    6.024e-04        -0.000345459390             2    1.743e+00
-   Si    (+1')          +1    3.438e-25         0.000000000000             0            -
+   Si    (+1')          +1    3.365e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.101e-02        -0.001262197048             6    3.674e+00
    Srsi  (-1)           -1    1.169e-01        -0.023245152940            12    3.971e+00
    Srs   (-2)           -2    2.663e-01        -0.044936130367             9    3.963e+00
-   Sij   (+2)           +2   -3.695e-17         0.000000000000             0            -
+   Sij   (+2)           +2   -2.493e-17         0.000000000000             0            -
    Sir   (0')           +0    1.322e-01        -0.031237897547             6    2.151e+00
    -------------  --------  -----------  ---------------------  ------------  -----------
    E(CASSCF)                                       -74.690987386457  Eh
@@ -332,12 +332,12 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    6.024e-04        -0.000345459389             2    1.743e+00
-   Si    (+1')          +1    2.965e-25         0.000000000000             0            -
+   Si    (+1')          +1    2.890e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.101e-02        -0.001262197048             6    3.674e+00
    Srsi  (-1)           -1    1.169e-01        -0.023245152940            12    3.971e+00
    Srs   (-2)           -2    2.663e-01        -0.044936130367             9    3.963e+00
-   Sij   (+2)           +2   -2.426e-17         0.000000000000             0            -
+   Sij   (+2)           +2    2.451e-17         0.000000000000             0            -
    Sir   (0')           +0    1.322e-01        -0.031237897547             6    2.151e+00
    -------------  --------  -----------  ---------------------  ------------  -----------
    E(CASSCF)                                       -74.690987386457  Eh
@@ -348,12 +348,12 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    6.024e-04        -0.000345459407             2    1.743e+00
-   Si    (+1')          +1    5.545e-25         0.000000000000             0            -
+   Si    (+1')          +1    5.586e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.101e-02        -0.001262197049             6    3.674e+00
    Srsi  (-1)           -1    1.169e-01        -0.023245152939            12    3.971e+00
    Srs   (-2)           -2    2.663e-01        -0.044936130367             9    3.963e+00
-   Sij   (+2)           +2    7.571e-17         0.000000000000             0            -
+   Sij   (+2)           +2   -3.635e-17         0.000000000000             0            -
    Sir   (0')           +0    1.322e-01        -0.031237897541             6    2.151e+00
    -------------  --------  -----------  ---------------------  ------------  -----------
    E(CASSCF)                                       -74.690987386441  Eh
@@ -364,12 +364,12 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    6.024e-04        -0.000345459407             2    1.743e+00
-   Si    (+1')          +1    2.867e-25         0.000000000000             0            -
+   Si    (+1')          +1    2.896e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.101e-02        -0.001262197049             6    3.674e+00
    Srsi  (-1)           -1    1.169e-01        -0.023245152939            12    3.971e+00
    Srs   (-2)           -2    2.663e-01        -0.044936130367             9    3.963e+00
-   Sij   (+2)           +2   -3.162e-17         0.000000000000             0            -
+   Sij   (+2)           +2   -1.104e-16         0.000000000000             0            -
    Sir   (0')           +0    1.322e-01        -0.031237897541             6    2.151e+00
    -------------  --------  -----------  ---------------------  ------------  -----------
    E(CASSCF)                                       -74.690987386433  Eh
@@ -380,12 +380,12 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    6.024e-04        -0.000345459413             2    1.743e+00
-   Si    (+1')          +1    4.320e-25         0.000000000000             0            -
+   Si    (+1')          +1    4.371e-25         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.101e-02        -0.001262197049             6    3.674e+00
    Srsi  (-1)           -1    1.169e-01        -0.023245152939            12    3.971e+00
    Srs   (-2)           -2    2.663e-01        -0.044936130367             9    3.963e+00
-   Sij   (+2)           +2   -3.243e-17         0.000000000000             0            -
+   Sij   (+2)           +2   -3.548e-17         0.000000000000             0            -
    Sir   (0')           +0    1.322e-01        -0.031237897539             6    2.151e+00
    -------------  --------  -----------  ---------------------  ------------  -----------
    E(CASSCF)                                       -74.690987386430  Eh
@@ -396,7 +396,7 @@ CASSCF
    class            dN_act         norm                E2 [Eh]        labels     min |dE|
    -------------  --------  -----------  ---------------------  ------------  -----------
    Sr    (-1')          -1    2.409e-03        -0.001431486733             2    1.682e+00
-   Si    (+1')          +1    1.231e-24         0.000000000000             0            -
+   Si    (+1')          +1    1.174e-24         0.000000000000             0            -
    Sijrs (0)            +0    6.021e-02        -0.007240334900           918    4.454e+00
    Sijr  (+1)           +1    1.101e-02        -0.001297830323             6    3.553e+00
    Srsi  (-1)           -1    1.169e-01        -0.023579055765            12    3.909e+00
@@ -414,12 +414,12 @@ CASSCF
    0-4              5        -0.104772248754              0.00    5.496e-06       2.932e-06
    5-7              3        -0.104785663388            147.62    6.126e-06       4.189e-06
    8                1        -0.104795877437            219.27    0.000e+00       0.000e+00
-   9-13             5        -0.108267172199          17106.01    5.995e-06       2.436e-06
+   9-13             5        -0.108267172199          17106.01    5.995e-06       2.439e-06
    14               1        -0.117893321244          41689.04    0.000e+00       0.000e+00
    ----------  ------  ---------------------  ----------------  -----------  --------------
 
 ================================================================================
- The finished NEVPT2 stage                                            t = 1.49 s
+ The finished NEVPT2 stage                                            t = 1.28 s
 ================================================================================
 NEVPT2
   E2, state 0 [Eh]             : -0.104772248749
@@ -444,14 +444,14 @@ NEVPT2
    complete (nothing left out)                                  yes
 
 ================================================================================
- Term energies                                                        t = 1.49 s
+ Term energies                                                        t = 1.28 s
 ================================================================================
    term        states    CASSCF [cm^-1]    +NEVPT2 [cm^-1]    experiment   spread [cm^-1]
    --------  --------  ----------------  -----------------  ------------  ---------------
    3P2              5              0.00               0.00             -        2.932e-06
    3P1              3            150.57             147.62         158.3        4.189e-06
    3P0              1            224.46             219.27         227.0        0.000e+00
-   1D2              5          17873.06           17106.01       15867.9        2.436e-06
+   1D2              5          17873.06           17106.01       15867.9        2.439e-06
    1S0              1          44568.78           41689.04       33792.6        0.000e+00
    --------  --------  ----------------  -----------------  ------------  ---------------
    the spread column is what the correction did to a manifold that must stay degenerate
@@ -464,7 +464,7 @@ NEVPT2
    largest spread inside a manifold                       4.189e-06  cm^-1
 
 ================================================================================
- Options                                                              t = 1.49 s
+ Options                                                              t = 1.29 s
 ================================================================================
    frozen-core threshold                                      -10.0  Eh   (an orbital energy, never a count of orbitals)
    spinors frozen                                                 2
@@ -478,8 +478,24 @@ NEVPT2
    reported complete                                             no   (a restricted class list is a PARTIAL sum and says so)
 
 ================================================================================
- The network route                                                    t = 1.98 s
+ The network route                                                    t = 1.72 s
 ================================================================================
+
+ -- Memory plan: two-site DMRG -------------------------------------------------
+   phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
+   ------------------------  -------------  --------------  ----------  ---------
+   network environments              0.002           0.000       0.002  ok       
+   two-site solves                   0.002           0.000       0.002  ok       
+   network RDMs                      0.002           0.000       0.002  ok       
+   ------------------------  -------------  --------------  ----------  ---------
+     renormalized operator blocks                             0.000  GB   (2 directed bonds, held until the solve ends; max_bond = 64)
+     two-site workspace                                       0.000  GB   (largest bond of the tour (0, 1): merged ensemble, guess, Davidson stacks, roots and operator halves over 15 roots)
+     H_eff application                                        0.000  GB   (one contraction intermediate, built and freed once per matrix-vector product)
+     state-averaged 2-RDM                                     0.000  GB   (6 spinors)
+     per-node environments                                    0.000  GB   (a second environment set, released with the contraction)
+   memory limit                                               2.000  GB   (set for this calculation)
+   planned peak                                               0.002  GB
+   machine available                                         11.854  GB
    state-average boundary                                  complete   (every local space spans the whole average)
  *** WARNING [pt.nevpt2] class Sr is SKIPPED: this contraction provider (NetworkContractionProvider) does not serve annihilation_perturbers. The sum below is a PARTIAL E2 and the result says so
  *** WARNING [pt.nevpt2] class Si is SKIPPED: this contraction provider (NetworkContractionProvider) does not serve creation_perturbers. The sum below is a PARTIAL E2 and the result says so
@@ -487,10 +503,10 @@ NEVPT2
    classes served on the network route           Sijrs, Sijr, Srsi, Srs, Sij, Sir
    classes missing (per-label perturber network not built)            Sr, Si
    reported complete                                             no   (the network E2 is a PARTIAL sum and says so)
-   largest class-by-class gap to the CI route             7.425e-16  Eh   (independently converged orbitals)
+   largest class-by-class gap to the CI route             5.204e-16  Eh   (independently converged orbitals)
 
 ================================================================================
- Result                                                             t = 213.46 s
+ Result                                                             t = 188.10 s
 ================================================================================
    check                                                           verdict   
    --------------------------------------------------------------  ----------
@@ -510,135 +526,135 @@ NEVPT2
    checks                                             all 12 passed
 
 ================================================================================
- Timings                                                            t = 213.46 s
+ Timings                                                            t = 188.10 s
 ================================================================================
    region                                     calls     wall [s]       cpu [s]   cpu/wall   % wall
    ----------------------------------------  ------  -----------  ------------  ---------  -------
-   scalar X2C SCF                                 1         0.04          0.14       3.97      0.0
-   AO integrals                                   1         0.00          0.01       4.00      0.0
+   scalar X2C SCF                                 1         0.03          0.13       3.97      0.0
+   AO integrals                                   1         0.00          0.01       3.87      0.0
      angular-momentum integrals                   1         0.00          0.00       4.00      0.0
-     electric dipole integrals                    1         0.00          0.00       4.02      0.0
-   X2C spin-orbit integrals                       1         0.00          0.02       3.99      0.0
-   atomic mean-field correction                   1         0.39          1.55       4.00      0.2
-     atomic 4c solve                              1         0.37          1.49       4.00      0.2
-       atomic 4c DHF                              1         0.35          1.39       4.00      0.2
+     electric dipole integrals                    1         0.00          0.00       4.07      0.0
+   X2C spin-orbit integrals                       1         0.00          0.01       3.99      0.0
+   atomic mean-field correction                   1         0.35          1.39       4.00      0.2
+     atomic 4c solve                              1         0.33          1.34       4.00      0.2
+       atomic 4c DHF                              1         0.31          1.25       4.00      0.2
      atomic mean-field decoupling                 1         0.01          0.04       4.00      0.0
-   orthogonalization (canonical)                  1         0.00          0.00       3.99      0.0
+   orthogonalization (canonical)                  1         0.00          0.00       4.00      0.0
    Cholesky decomposition                         1         0.00          0.02       4.00      0.0
-   CAS determinant addressing                     4         0.00          0.00       3.94      0.0
+   CAS determinant addressing                     4         0.00          0.00       4.01      0.0
    CAS excitation map                             4         0.00          0.00       4.00      0.0
-   CAS integrals                                  5         0.00          0.02       4.00      0.0
-     J/K build                                    5         0.00          0.01       4.00      0.0
-     3-index transform                            5         0.00          0.01       4.01      0.0
-   full CI: diagonal                              1         0.00          0.00       4.00      0.0
+   CAS integrals                                  5         0.00          0.02       3.99      0.0
+     J/K build                                    5         0.00          0.01       4.01      0.0
+     3-index transform                            5         0.00          0.01       4.00      0.0
+   full CI: diagonal                              1         0.00          0.00       4.14      0.0
    dense CI diagonalization                       3         0.02          0.07       4.00      0.0
-     sigma step 1: gather F                      15         0.00          0.00       4.01      0.0
-     sigma one-electron term                     15         0.00          0.00       4.06      0.0
-     sigma step 2: GEMM                          15         0.00          0.00       3.18      0.0
-     sigma step 3: gather sigma                  15         0.00          0.00       4.06      0.0
-   RDM gather F                                  60         0.00          0.01       4.02      0.0
-   RDM accumulation F^H F                        60         0.00          0.01       4.07      0.0
-   macro-iteration                                8         0.35          1.41       3.99      0.2
-     J/K build                                    8         0.01          0.02       3.93      0.0
-     MO factor square                             8         0.01          0.06       4.00      0.0
-       3-index transform                          8         0.01          0.04       4.00      0.0
-     exact Hessian diagonal                       8         0.02          0.07       3.99      0.0
-     Hessian-vector product                      22         0.03          0.13       3.99      0.0
-     CAS integrals                                6         0.01          0.03       4.00      0.0
-       J/K build                                  6         0.00          0.01       3.99      0.0
+     sigma step 1: gather F                      15         0.00          0.00       4.03      0.0
+     sigma one-electron term                     15         0.00          0.00       4.03      0.0
+     sigma step 2: GEMM                          15         0.00          0.00       2.91      0.0
+     sigma step 3: gather sigma                  15         0.00          0.00       4.05      0.0
+   RDM gather F                                  60         0.00          0.01       4.06      0.0
+   RDM accumulation F^H F                        60         0.00          0.01       4.08      0.0
+   macro-iteration                                8         0.31          1.23       4.00      0.2
+     J/K build                                    8         0.00          0.02       3.93      0.0
+     MO factor square                             8         0.01          0.04       4.00      0.0
+       3-index transform                          8         0.01          0.03       4.00      0.0
+     exact Hessian diagonal                       8         0.01          0.05       4.00      0.0
+     Hessian-vector product                      22         0.02          0.10       4.00      0.0
+     CAS integrals                                6         0.01          0.02       4.00      0.0
+       J/K build                                  6         0.00          0.01       4.00      0.0
        3-index transform                          6         0.00          0.01       4.00      0.0
      full CI: diagonal                            3         0.00          0.00       3.98      0.0
-     dense CI diagonalization                     3         0.01          0.03       4.00      0.0
+     dense CI diagonalization                     3         0.01          0.02       4.00      0.0
        sigma step 1: gather F                    45         0.00          0.01       4.01      0.0
-       sigma one-electron term                   45         0.00          0.00       4.04      0.0
-       sigma step 2: GEMM                        45         0.00          0.00       3.09      0.0
-       sigma step 3: gather sigma                45         0.00          0.01       4.10      0.0
-     RDM gather F                                45         0.00          0.01       4.04      0.0
+       sigma one-electron term                   45         0.00          0.00       4.10      0.0
+       sigma step 2: GEMM                        45         0.00          0.00       2.37      0.0
+       sigma step 3: gather sigma                45         0.00          0.01       4.09      0.0
+     RDM gather F                                45         0.00          0.01       4.08      0.0
      RDM accumulation F^H F                      45         0.00          0.01       4.10      0.0
-   time-reversal stability                        2         0.06          0.26       4.00      0.0
+   time-reversal stability                        2         0.05          0.21       4.00      0.0
      MO factor square                             2         0.00          0.01       4.00      0.0
-       3-index transform                          2         0.00          0.01       4.00      0.0
-     exact Hessian diagonal                       2         0.00          0.02       3.99      0.0
-     Hessian-vector product                      30         0.04          0.16       4.00      0.0
-   NEVPT2 pseudo-canonicalization                 4         0.01          0.06       4.00      0.0
-     CAS integrals                                8         0.01          0.04       4.00      0.0
-       J/K build                                  8         0.00          0.01       4.00      0.0
-       3-index transform                          8         0.00          0.02       4.00      0.0
-     J/K build                                    4         0.00          0.01       4.00      0.0
-   NEVPT2 state RDMs                             45         0.01          0.03       3.99      0.0
-     RDM gather F                                45         0.00          0.01       4.01      0.0
-     RDM accumulation F^H F                      45         0.00          0.01       4.05      0.0
-   NEVPT2 class Sr                               30         0.15          0.58       4.00      0.1
-     CAS determinant addressing                   4         0.00          0.00       3.95      0.0
-     3-index transform                            4         0.00          0.01       4.01      0.0
-     NEVPT2 pair-annihilated vectors             30         0.02          0.06       4.00      0.0
+       3-index transform                          2         0.00          0.01       4.01      0.0
+     exact Hessian diagonal                       2         0.00          0.01       4.00      0.0
+     Hessian-vector product                      30         0.03          0.13       4.00      0.0
+   NEVPT2 pseudo-canonicalization                 4         0.01          0.05       4.00      0.0
+     CAS integrals                                8         0.01          0.03       4.00      0.0
+       J/K build                                  8         0.00          0.01       4.01      0.0
+       3-index transform                          8         0.00          0.01       4.00      0.0
+     J/K build                                    4         0.00          0.01       4.01      0.0
+   NEVPT2 state RDMs                             45         0.01          0.03       3.98      0.0
+     RDM gather F                                45         0.00          0.01       4.10      0.0
+     RDM accumulation F^H F                      45         0.00          0.01       4.09      0.0
+   NEVPT2 class Sr                               30         0.13          0.51       4.00      0.1
+     CAS determinant addressing                   4         0.00          0.00       3.90      0.0
+     3-index transform                            4         0.00          0.01       3.99      0.0
+     NEVPT2 pair-annihilated vectors             30         0.01          0.05       4.00      0.0
      NEVPT2 single-external annihilation perturbers      30         0.02          0.07       3.97      0.0
-     CAS excitation map                           2         0.00          0.00       3.99      0.0
-     NEVPT2 H_act on the N-1 space               30         0.08          0.31       4.00      0.0
-       sigma step 1: gather F                   540         0.02          0.10       4.02      0.0
-       sigma one-electron term                  540         0.00          0.01       4.09      0.0
-       sigma step 2: GEMM                       540         0.01          0.02       2.71      0.0
-       sigma step 3: gather sigma               540         0.03          0.11       4.12      0.0
-   NEVPT2 class Si                               30         0.08          0.30       4.00      0.0
-     CAS determinant addressing                   4         0.00          0.00       4.01      0.0
-     3-index transform                            2         0.00          0.00       4.00      0.0
-     NEVPT2 excitation vectors                   30         0.01          0.06       4.00      0.0
-     NEVPT2 single-external creation perturbers      30         0.02          0.07       4.00      0.0
+     CAS excitation map                           2         0.00          0.00       4.00      0.0
+     NEVPT2 H_act on the N-1 space               30         0.07          0.28       4.00      0.0
+       sigma step 1: gather F                   540         0.02          0.09       4.02      0.0
+       sigma one-electron term                  540         0.00          0.01       4.10      0.0
+       sigma step 2: GEMM                       540         0.01          0.02       2.50      0.0
+       sigma step 3: gather sigma               540         0.02          0.10       4.08      0.0
+   NEVPT2 class Si                               30         0.07          0.26       4.00      0.0
+     CAS determinant addressing                   4         0.00          0.00       4.03      0.0
+     3-index transform                            2         0.00          0.00       3.99      0.0
+     NEVPT2 excitation vectors                   30         0.01          0.05       4.00      0.0
+     NEVPT2 single-external creation perturbers      30         0.02          0.06       4.00      0.0
      CAS excitation map                           2         0.00          0.00       4.01      0.0
      NEVPT2 H_act on the N+1 space               30         0.01          0.05       3.99      0.0
-       sigma step 1: gather F                    90         0.00          0.02       4.02      0.0
-       sigma one-electron term                   90         0.00          0.00       4.00      0.0
-       sigma step 2: GEMM                        90         0.00          0.00       4.08      0.0
-       sigma step 3: gather sigma                90         0.00          0.02       4.03      0.0
+       sigma step 1: gather F                    90         0.00          0.02       4.04      0.0
+       sigma one-electron term                   90         0.00          0.00       3.96      0.0
+       sigma step 2: GEMM                        90         0.00          0.00       4.07      0.0
+       sigma step 3: gather sigma                90         0.00          0.02       4.04      0.0
    NEVPT2 class Sijrs                             4         0.00          0.01       4.00      0.0
-     3-index transform                            4         0.00          0.01       4.01      0.0
-   NEVPT2 class Sijr                             45         0.03          0.11       4.00      0.0
-   NEVPT2 class Srsi                             45         0.03          0.12       4.00      0.0
-   NEVPT2 class Srs                              45        68.62         78.09       1.14     32.3
+     3-index transform                            4         0.00          0.00       4.00      0.0
+   NEVPT2 class Sijr                             45         0.02          0.08       4.00      0.0
+   NEVPT2 class Srsi                             45         0.02          0.09       4.01      0.0
+   NEVPT2 class Srs                              45        60.63         70.10       1.16     32.3
+     CAS excitation map                           2         0.00          0.00       4.01      0.0
+     NEVPT2 H_act on the N-2 space               30         0.13          0.53       4.00      0.1
+       sigma step 1: gather F                  1080         0.04          0.17       4.01      0.0
+       sigma one-electron term                 1080         0.01          0.02       4.02      0.0
+       sigma step 2: GEMM                      1080         0.01          0.04       2.52      0.0
+       sigma step 3: gather sigma              1080         0.05          0.19       4.13      0.0
+   NEVPT2 class Sij                              45        38.99         48.39       1.24     20.8
+     CAS determinant addressing                   2         0.00          0.00       3.98      0.0
+     NEVPT2 pair-created vectors                 30         0.01          0.06       4.00      0.0
      CAS excitation map                           2         0.00          0.00       4.00      0.0
-     NEVPT2 H_act on the N-2 space               30         0.14          0.58       4.00      0.1
-       sigma step 1: gather F                  1080         0.05          0.18       4.01      0.0
-       sigma one-electron term                 1080         0.01          0.02       4.08      0.0
-       sigma step 2: GEMM                      1080         0.02          0.04       2.67      0.0
-       sigma step 3: gather sigma              1080         0.05          0.21       4.13      0.0
-   NEVPT2 class Sij                              45        44.35         53.75       1.21     20.9
-     CAS determinant addressing                   2         0.00          0.00       3.96      0.0
-     NEVPT2 pair-created vectors                 30         0.02          0.07       4.00      0.0
-     CAS excitation map                           2         0.00          0.00       4.04      0.0
-     NEVPT2 H_act on the N+2 space               30         0.11          0.45       4.00      0.1
-       sigma step 1: gather F                  1080         0.04          0.14       4.02      0.0
-       sigma one-electron term                 1080         0.00          0.02       4.00      0.0
-       sigma step 2: GEMM                      1080         0.01          0.03       4.07      0.0
-       sigma step 3: gather sigma              1080         0.04          0.15       4.05      0.0
-   NEVPT2 class Sir                              45        98.32        108.25       1.10     46.2
-     CAS excitation map                           2         0.00          0.00       4.00      0.0
-     NEVPT2 H_act on the N space                 60         0.30          1.20       4.00      0.1
-       sigma step 1: gather F                  2220         0.10          0.39       4.03      0.0
-       sigma one-electron term                 2220         0.01          0.05       4.13      0.0
-       sigma step 2: GEMM                      2220         0.03          0.08       2.63      0.0
-       sigma step 3: gather sigma              2220         0.10          0.43       4.10      0.0
-   DMRG sweeps                                    2         0.16          0.39       2.44      0.1
-     dense CI diagonalization                     8         0.08          0.20       2.41      0.0
-   network RDM environments                       2         0.00          0.01       2.55      0.0
-     DMRG sweeps                                  3         0.23          0.91       3.99      0.1
-       dense CI diagonalization                  12         0.12          0.48       4.00      0.1
-     network RDM environments                     3         0.01          0.03       4.00      0.0
-   NEVPT2 network per-root RDMs                   1         0.06          0.23       4.00      0.0
-     network RDM environments                    15         0.03          0.13       4.00      0.0
-     3-index transform                            1         0.00          0.00       4.01      0.0
-     3-index transform                            1         0.00          0.00       4.01      0.0
-     NEVPT2 network Gram (pair_koopmans_pair)      15        68.41         77.30       1.13     32.2
-       network Koopmans Gram: applied states      15         1.21          4.83       4.00      0.6
-       network Koopmans Gram: sandwiches         15        67.18         72.41       1.08     31.6
-     NEVPT2 network Gram (hole_pair_grams)       15        44.16         53.04       1.20     20.8
-       network Koopmans Gram: applied states      15         1.16          4.65       4.00      0.5
-       network Koopmans Gram: sandwiches         15        42.98         48.32       1.12     20.2
-     3-index transform                            1         0.00          0.00       4.01      0.0
-     NEVPT2 network Gram (exc_grams)             15        97.95        106.83       1.09     46.1
-       network Koopmans Gram: applied states      15         1.36          5.43       4.00      0.6
-       network Koopmans Gram: sandwiches         15        96.57        101.34       1.05     45.4
+     NEVPT2 H_act on the N+2 space               30         0.10          0.41       4.00      0.1
+       sigma step 1: gather F                  1080         0.03          0.13       4.03      0.0
+       sigma one-electron term                 1080         0.00          0.02       4.02      0.0
+       sigma step 2: GEMM                      1080         0.01          0.03       4.09      0.0
+       sigma step 3: gather sigma              1080         0.03          0.14       4.05      0.0
+   NEVPT2 class Sir                              45        86.58         96.49       1.11     46.2
+     CAS excitation map                           2         0.00          0.00       3.98      0.0
+     NEVPT2 H_act on the N space                 60         0.28          1.12       4.00      0.1
+       sigma step 1: gather F                  2220         0.09          0.36       4.07      0.0
+       sigma one-electron term                 2220         0.01          0.04       4.01      0.0
+       sigma step 2: GEMM                      2220         0.03          0.07       2.48      0.0
+       sigma step 3: gather sigma              2220         0.10          0.40       4.08      0.1
+   DMRG sweeps                                    2         0.14          0.36       2.57      0.1
+     dense CI diagonalization                     8         0.07          0.18       2.52      0.0
+   network RDM environments                       2         0.00          0.01       2.52      0.0
+     DMRG sweeps                                  3         0.21          0.84       4.00      0.1
+       dense CI diagonalization                  12         0.11          0.44       4.00      0.1
+     network RDM environments                     3         0.01          0.02       4.00      0.0
+   NEVPT2 network per-root RDMs                   1         0.05          0.20       4.00      0.0
+     network RDM environments                    15         0.03          0.12       4.00      0.0
+     3-index transform                            1         0.00          0.00       4.00      0.0
+     3-index transform                            1         0.00          0.00       3.99      0.0
+     NEVPT2 network Gram (pair_koopmans_pair)      15        60.46         69.40       1.15     32.3
+       network Koopmans Gram: applied states      15         1.02          4.10       4.00      0.5
+       network Koopmans Gram: sandwiches         15        59.42         65.26       1.10     31.7
+     NEVPT2 network Gram (hole_pair_grams)       15        38.84         47.78       1.23     20.7
+       network Koopmans Gram: applied states      15         0.95          3.81       4.00      0.5
+       network Koopmans Gram: sandwiches         15        37.87         43.92       1.16     20.2
+     3-index transform                            1         0.00          0.00       4.03      0.0
+     NEVPT2 network Gram (exc_grams)             15        86.25         95.19       1.10     46.0
+       network Koopmans Gram: applied states      15         1.17          4.68       4.00      0.6
+       network Koopmans Gram: sandwiches         15        85.06         90.47       1.06     45.4
    ----------------------------------------  ------  -----------  ------------  ---------  -------
-   total (top-level regions)                                 212.68  s wall
-   total CPU                                                 245.44  s cpu
+   total (top-level regions)                                 187.44  s wall
+   total CPU                                                 219.68  s cpu
    cost is cpu [s]; wall [s] also reflects thread count and, on a
    thermally clamped machine, time the CPU was forced to stay idle.
