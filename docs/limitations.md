@@ -74,7 +74,9 @@ with its context. Each entry links to the page that explains the mechanism.
   leg by the contraction order and sized from the contraction's own structure before the first
   bond is solved. The plan prints at the start of the solve and names the bond that peaks; the
   three knobs that move it are, in order of effect, the **node partition** (the local dimension
-  enters squared), the **active-space size** (one operator bond dimension) and `max_bond`. ⚠
+  enters squared), the **active-space size** (one operator bond dimension) and `max_bond`. On
+  fat nodes the RDM contraction's per-node operator environments, not the sweep, are the
+  largest term, and they are planned and refused the same way. ⚠
   The estimate is of Kuiva's arrays: the operator compile's transient and the arena it leaves
   put the process about 2× above the plan on a fat-node system, so leave that much headroom
   in the limit.

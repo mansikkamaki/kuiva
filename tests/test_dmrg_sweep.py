@@ -422,6 +422,77 @@ def test_a_branching_node_takes_the_smallest_order_and_every_order_agrees():
     assert np.linalg.norm(a - b) <= 1e-13 * np.linalg.norm(b)
 
 
+def test_the_diagonal_is_sized_and_dropped_past_the_cap(monkeypatch):
+    """The preconditioner's dense W arrays are sized from the slices (pinned against the
+    arrays actually built) and, past the kernels' transient budget, dropped rather than
+    built — Davidson then runs unpreconditioned and still converges. On a degree-4 node
+    that array was 2.77 GB outside every plan, and it killed a run planned at 1.0 GB.
+    """
+    from kuiva.dmrg import sweep as sweep_mod
+    from kuiva.util import resources as res
+
+    op, state = _branching_case(48)
+    problem = _local_problem(op, state, u=0, v=1)
+    sizes = [sweep_mod._w_diag_bytes(w) for w in (problem.w_u, problem.w_v)]
+    built = [sweep_mod._w_diag(w) for w in (problem.w_u, problem.w_v)]
+    for b, wd in zip(sizes, built):
+        assert (wd is None and b == 0) or wd.a.nbytes == b
+    assert problem.diagonal_gb() == sum(sizes) / 1024.0 ** 3
+    exact = problem.diagonal()
+    assert np.any(exact != 0.0)
+    # a budget too small for either side: the diagonal is zero and costs nothing
+    monkeypatch.setattr(res.BUDGET, "transient_gb", lambda **kw: 1e-9)
+    assert problem.diagonal_gb() == 0.0
+    assert not np.any(problem.diagonal())
+    assert problem.transient_peak_gb() == problem.apply_peak_gb()
+    h, eri = random_spinor_integrals(6, seed=48)
+    result = solve(NetworkGraph.path(6), h, eri, 2, n_roots=2, max_bond=32)
+    assert result.converged
+    assert np.max(np.abs(result.energies - exact_energies(6, 2, h, eri, 2))) < E_TOL
+
+
+def test_environment_builds_fold_by_structure_and_are_sized():
+    """⚠ The fourth chain with the same defect: an environment build opened one operator
+    leg per neighbour of the node before its W closed them — 3.8 GB at D = 2 on a
+    degree-4 node while the plan, sizing only the output, said 1.2 GB. The build now
+    folds environments into the W by a structural search; this pins that the fold chosen
+    at the branching node is the smallest candidate and beats the unfolded order, that the
+    chain over structure reports the real byte counts step for step, and that the plan's
+    build transient covers what the real cache builds.
+    """
+    from kuiva.dmrg import sweep as sweep_mod
+    from kuiva.dmrg.block import BlockShape
+    from kuiva.dmrg.sweep import (EnvironmentCache, _Lab, _fold_peak, choose_fold,
+                                  environment_build_peak_gb, renormalize)
+
+    op, state = _branching_case(49)
+    cache = EnvironmentCache(op, state)
+    u, v = 1, 0                                   # node 1 has neighbours 0, 2, 3
+    assert state.center not in state.graph.subtree_nodes(1, 0)
+    nbrs = sorted(state.graph.neighbors(u))
+    a = state.tensors[u]
+    ket = _Lab(a, [("b", u, x) for x in nbrs] + [("p", u)])
+    bra = _Lab(a.conj(), [("cb", u, x) for x in nbrs] + [("cp",)])
+    envs = {x: _Lab(cache.get(x, u), [("bra", x), ("op", x), ("ket", x)])
+            for x in nbrs if x != v}
+    w = sweep_mod._w_lab(op, u, v)
+    pre = choose_fold(ket, envs, w, bra, u)
+    shape = lambda lab: _Lab(BlockShape.of(lab.t), lab.labels)      # noqa: E731
+    sh = (shape(ket), {x: shape(e) for x, e in envs.items()}, shape(w), shape(bra))
+    chosen = _fold_peak(*sh, u, pre)
+    naive = _fold_peak(*sh, u, ())
+    assert chosen <= naive
+    assert chosen == min(_fold_peak(*sh, u, c) for c in [(), (2,), (3,), (2, 3)])
+    # the same chain over structure and over data, step for step
+    sizes = []
+    renormalize(*sh, u, pre, sizes=sizes)
+    real = _record_dots(lambda: renormalize(ket, envs, w, bra, u, pre))
+    assert sizes == [t.nbytes for t, _ in real]
+    # and the plan's transient is at least the peak of the build the real cache performs
+    peak = max(a_ + b_ for a_, b_ in zip([a.nbytes] + sizes[len(pre):-1], sizes[len(pre):]))
+    assert environment_build_peak_gb(op, state) * 1024.0 ** 3 >= min(peak, chosen)
+
+
 def test_shape_environments_match_the_real_environment_cache():
     """The environment sizes the plan quotes are the ones the cache actually holds."""
     from kuiva.dmrg.sweep import (EnvironmentCache, ShapeEnvironments, environment_gb,

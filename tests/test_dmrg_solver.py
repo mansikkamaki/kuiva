@@ -127,6 +127,23 @@ def test_energy_includes_e_core_and_matches_exact_ci():
     assert abs(np.trace(gamma).real - 2.0) < 1e-8
 
 
+def test_rdms_off_skips_the_extraction_and_keeps_the_transition_densities():
+    """A fixed-orbital use gets the same energy with no state-averaged RDMs built — the
+    per-node dE/dW extraction is what the memory plan refuses on fat and branching nodes,
+    and a network CASCI never reads it — while the transition-density route still serves
+    the property matrices."""
+    ints = FragmentInts()
+    full = DMRGSolver(2, max_bond=16, enforce_kramers=False, seed=1)
+    e_full, gamma, _ = full(ints)
+    lean = DMRGSolver(2, max_bond=16, enforce_kramers=False, seed=1, rdms=False)
+    e, g, g2 = lean(ints)
+    assert g is None and g2 is None
+    assert abs(e - e_full) < 1e-10
+    tdm = lean.transition_densities()
+    assert tdm.shape[-2:] == gamma.shape
+    assert np.allclose(tdm[0, 0], gamma, atol=1e-8)
+
+
 # --- the CASSCF hookup ----------------------------------------------------------------------
 
 def test_dmrg_casscf_reproduces_ci_casscf_trajectory(system):

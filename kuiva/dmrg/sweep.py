@@ -559,19 +559,98 @@ class EnvironmentCache(object):
         if a is None:
             raise RuntimeError("environment requested for the center node {}".format(u))
         nbrs = sorted(graph.neighbors(u))
-        t = _Lab(a, [("b", u, x) for x in nbrs] + [("p", u)])
-        for x in nbrs:
-            if x == v:
-                continue
-            env = _Lab(self.get(x, u), [("bra", x), ("op", x), ("ket", x)])
-            t = t.dot(env, [(("b", u, x), ("ket", x))])
-        t = t.dot(self._w(u, v),
-                  [(("op", x), ("op", x)) for x in nbrs if x != v]
-                  + [(("p", u), ("pi",))])
-        c = _Lab(a.conj(), [("cb", u, x) for x in nbrs] + [("cp",)])
-        t = t.dot(c, [(("bra", x), ("cb", u, x)) for x in nbrs if x != v]
-                  + [(("po",), ("cp",))])
+        ket = _Lab(a, [("b", u, x) for x in nbrs] + [("p", u)])
+        bra = _Lab(a.conj(), [("cb", u, x) for x in nbrs] + [("cp",)])
+        envs = {x: _Lab(self.get(x, u), [("bra", x), ("op", x), ("ket", x)])
+                for x in nbrs if x != v}
+        w = self._w(u, v)
+        pre = choose_fold(ket, envs, w, bra, u)
+        t = renormalize(ket, envs, w, bra, u, pre)
         return t.to([("cb", u, v), ("op_out",), ("b", u, v)])
+
+
+def renormalize(ket: _Lab, envs: Dict[int, _Lab], w: _Lab, bra: _Lab, node: int,
+                pre: Sequence[int], root_pair: Sequence[Tuple[tuple, tuple]] = (),
+                sizes: Optional[List[int]] = None) -> _Lab:
+    """One renormalization step: ``ket`` with the environments ``envs`` of every neighbour
+    but the one the message goes to, the node's ``w`` (its leg toward that neighbour
+    labelled ``("op_out",)``), and the ``bra`` — the environment build, the RDM path's
+    down message, and any future message of the same shape. Over data or over structure
+    (:class:`~kuiva.dmrg.block.BlockShape` operands): one description of the chain.
+
+    ⚠ **The order is the memory, here as in the two-site problem.** Contracting every
+    environment into the ket before ``w`` leaves one operator leg open per neighbour on
+    top of the bond legs — on the degree-4 node of a 14-spinor tree that was 3.8 GB at
+    D = 2 and 19 GB at D = 3 while the plan, which sized only the *output*, said 1.2 GB,
+    and the run was killed by the kernel. ``pre`` names the environments folded into
+    ``w`` ahead of the ket (a *half*, dense in the local dimension squared): the loose
+    ones open one leg each, the half closes them and every folded bond pair at once, and
+    the bra closes the rest. Which environments to fold is :func:`choose_fold`'s structural
+    search; with at most one environment nothing is folded (one leg is already the floor).
+    ``sizes`` collects every intermediate's byte count — half build first, then the chain.
+    """
+    loose = [x for x in envs if x not in pre]
+    h = w
+    for x in pre:
+        h = envs[x].dot(h, [(("op", x), ("op", x))])          # env left: a sparse w stays right
+        if sizes is not None:
+            sizes.append(h.t.nbytes)
+    t = ket
+    for x in loose:
+        t = t.dot(envs[x], [(("b", node, x), ("ket", x))])
+        if sizes is not None:
+            sizes.append(t.t.nbytes)
+    t = t.dot(h, [(("op", x), ("op", x)) for x in loose]
+              + [(("b", node, x), ("ket", x)) for x in pre]
+              + [(("p", node), ("pi",))])
+    if sizes is not None:
+        sizes.append(t.t.nbytes)
+    t = t.dot(bra, [(("bra", x), ("cb", node, x)) for x in envs]
+              + [(("po",), ("cp",))] + list(root_pair))
+    if sizes is not None:
+        sizes.append(t.t.nbytes)
+    return t
+
+
+def _fold_peak(ket, envs, w, bra, node, pre, root_pair=()) -> int:
+    """Structural peak [bytes] of :func:`renormalize` with ``pre`` folded: the half stays
+    resident while the chain runs, and each step holds its input and output."""
+    sizes: List[int] = []
+    renormalize(ket, envs, w, bra, node, pre, root_pair, sizes=sizes)
+    n_half = len(pre)
+    half = sizes[n_half - 1] if n_half else 0
+    build_peak = 0
+    prev = 0
+    for out in sizes[:n_half]:
+        build_peak = max(build_peak, prev + out)
+        prev = out
+    chain = sizes[n_half:]
+    inputs = [ket.t.nbytes] + chain[:-1]
+    return max(build_peak, half + max(a + b for a, b in zip(inputs, chain)))
+
+
+def choose_fold(ket: _Lab, envs: Dict[int, _Lab], w: _Lab, bra: _Lab, node: int,
+                root_pair: Sequence[Tuple[tuple, tuple]] = ()) -> Tuple[int, ...]:
+    """Which environments :func:`renormalize` folds into ``w``: the subset with the
+    smallest structural peak, walked over :class:`~kuiva.dmrg.block.BlockShape` operands
+    (nothing allocated), ties to fewer folds. With fewer than two environments the answer
+    is none, without a search — one open leg is the floor and a half only trades a sparse
+    product for a dense one."""
+    from itertools import combinations
+
+    if len(envs) < 2:
+        return ()
+    shape = lambda lab: _Lab(BlockShape.of(lab.t), lab.labels)      # noqa: E731
+    k_shape, w_shape, b_shape = shape(ket), shape(w), shape(bra)
+    e_shape = {x: shape(e) for x, e in envs.items()}
+    keys = sorted(envs)
+    best = None
+    for r in range(len(keys) + 1):
+        for pre in combinations(keys, r):
+            peak = _fold_peak(k_shape, e_shape, w_shape, b_shape, node, pre, root_pair)
+            if best is None or (peak, r) < best[:2]:
+                best = (peak, r, pre)
+    return best[2]
 
 
 def _w_lab(ttno: TTNO, u: int, v: Optional[int]) -> _Lab:
@@ -628,6 +707,32 @@ class ShapeEnvironments(EnvironmentCache):
 
     def _admit(self, key, u, v, env, note: str = "") -> None:
         self._cache[key] = env
+
+
+def environment_build_peak_gb(ttno: TTNO, state: TTNState) -> float:
+    """Largest transient [GB] any environment build of a sweep holds — the chosen fold's
+    structural peak (:func:`_fold_peak`) over every directed bond, from structure alone.
+
+    The cache's entries are its *outputs*; this is the chain that makes them, which on a
+    branching node is the larger of the two by orders of magnitude (module docstring of
+    :func:`renormalize`). Centre-side bonds are sized on the centre-filled shape state as
+    :func:`environment_gb` sizes them.
+    """
+    shapes = ShapeEnvironments(ttno, shape_state(state, fill_center=True))
+    graph = state.graph
+    peak = 0
+    for a_, b_ in graph.edges:
+        for u, v in ((a_, b_), (b_, a_)):
+            nbrs = sorted(graph.neighbors(u))
+            a = shapes.state.tensors[u]
+            ket = _Lab(a, [("b", u, x) for x in nbrs] + [("p", u)])
+            bra = _Lab(a.conj(), [("cb", u, x) for x in nbrs] + [("cp",)])
+            envs = {x: _Lab(shapes.get(x, u), [("bra", x), ("op", x), ("ket", x)])
+                    for x in nbrs if x != v}
+            w = shapes._w(u, v)
+            pre = choose_fold(ket, envs, w, bra, u)
+            peak = max(peak, _fold_peak(ket, envs, w, bra, u, pre))
+    return peak / 1024.0 ** 3
 
 
 def environment_gb(ttno: TTNO, state: TTNState) -> float:
@@ -987,6 +1092,28 @@ class _LocalProblem(object):
             + davidson_workspace_gb(self.dim, subspace_cap(n_solve, self.dim)) \
             + self.halves_gb()
 
+    @staticmethod
+    def _diagonal_cap_bytes() -> int:
+        """The dense array :meth:`diagonal` may build per side: the kernels' transient
+        budget, asked once per problem and never inside a loop."""
+        return int(res.BUDGET.transient_gb() * 1024.0 ** 3)
+
+    def diagonal_gb(self) -> float:
+        """Transient [GB] :meth:`diagonal` holds: both sides' dense W arrays together, or
+        0 where a side exceeds the cap and the preconditioner is dropped (which then costs
+        nothing). Sized from the slices alone, nothing allocated."""
+        cap = self._diagonal_cap_bytes()
+        sizes = [_w_diag_bytes(w) for w in (self.w_u, self.w_v)]
+        if any(b > cap for b in sizes):
+            return 0.0
+        return sum(sizes) / 1024.0 ** 3
+
+    def transient_peak_gb(self) -> float:
+        """The larger of the two transients a solve builds — one application of
+        ``H_eff`` (:meth:`apply_peak_gb`) and the preconditioner's dense arrays
+        (:meth:`diagonal_gb`) — which never coexist."""
+        return max(self.apply_peak_gb(), self.diagonal_gb())
+
     # -- the application -------------------------------------------------------------------
 
     def prepare(self) -> "_LocalProblem":
@@ -1026,10 +1153,15 @@ class _LocalProblem(object):
         never corrupt an answer — it is tested against a dense build regardless.
         """
         halves = []
+        cap = self._diagonal_cap_bytes()
         for node, branches, envs, w in ((self.u, self.branches_u, self.envs_u, self.w_u),
                                         (self.v, self.branches_v, self.envs_v, self.w_v)):
-            wd = _w_diag(w)
+            wd = _w_diag(w, cap_bytes=cap)
             if wd is None:
+                if _w_diag_bytes(w) > cap:
+                    log.debug("bond (%d, %d): the diagonal's dense W array at node %d "
+                              "would be %.2f GB; Davidson runs unpreconditioned here",
+                              self.u, self.v, node, _w_diag_bytes(w) / 1024.0 ** 3)
                 return np.zeros(self.dim, dtype=np.float64)
             envd = {}
             for x, env in envs:
@@ -1092,17 +1224,41 @@ def _env_diag(env: BlockTensor) -> Optional[np.ndarray]:
     return arr
 
 
-def _w_diag(w: _Lab) -> Optional[_DenseLab]:
+def _w_diag_bytes(w: _Lab) -> int:
+    """Bytes of the dense array :func:`_w_diag` builds — the product of every op leg's
+    charge-0 slice times the physical dimension — or 0 where it builds none."""
+    t = w.t
+    n_op = t.ndim - 2
+    slices = [_charge_zero_slice(t.spaces[i]) for i in range(n_op)]
+    if any(s is None for s in slices):
+        return 0
+    size = int(t.spaces[-1].total_dim)
+    for sl in slices:
+        size *= int(sl.stop - sl.start)
+    return 16 * size
+
+
+def _w_diag(w: _Lab, cap_bytes: Optional[int] = None) -> Optional[_DenseLab]:
     """Physical-diagonal of a W tensor with every op axis restricted to charge 0.
 
     Returned as a labelled dense array ``[op labels.., ("phys",)]`` so the caller pairs op
     axes with environments by *name*, exactly as the sparse contraction does. ``None``
-    when some op axis has no charge-0 sector (no diagonal contribution at this node).
+    when some op axis has no charge-0 sector (no diagonal contribution at this node) —
+    and ``None`` when the array would exceed ``cap_bytes``.
+
+    ⚠ The array is **dense over every operator leg of the node at once**, which on a
+    branching node is the product of as many operator bond dimensions as it has
+    neighbours: measured 2.77 GB for 61 000 nonzeros on the degree-4 node of a 14-spinor
+    tree, built twice per two-site problem and outside every plan, and it killed a run
+    whose plan said 1.0 GB. A wrong or absent diagonal only slows Davidson down, so past
+    the cap the preconditioner is dropped rather than the run.
     """
     t = w.t
     n_op = t.ndim - 2
     slices = [_charge_zero_slice(t.spaces[i]) for i in range(n_op)]
     if any(s is None for s in slices):
+        return None
+    if cap_bytes is not None and _w_diag_bytes(w) > cap_bytes:
         return None
     phys = t.spaces[-1]
     zero = t.charge.zero_like()
@@ -1152,7 +1308,7 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
               checkpoint=None,
               bond_schedule: Optional[Sequence[int]] = None,
               expansion: float = 0.0, expansion_sweeps: int = 6,
-              memory_plan: bool = True,
+              memory_plan: bool = True, plan_rdms: bool = True,
               report: bool = True) -> SweepResult:
     """State-averaged two-site DMRG to energy stationarity (module docstring).
 
@@ -1179,7 +1335,10 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
     a transient inside one effective-Hamiltonian application, so without this a run that
     does not fit is not refused but killed by the kernel, with no message. Turn it off only
     where a driver plans for itself once per chart — :class:`kuiva.dmrg.solver.DMRGSolver`
-    does exactly that, so a CASSCF does not print the same table sixty times.
+    does exactly that, so a CASSCF does not print the same table sixty times. ``plan_rdms``
+    keeps the RDM contraction that follows a solve in the plan (default); a caller that
+    will not extract state-averaged RDMs from this state passes ``False``, since on a fat
+    or branching node that phase, not the sweep, is the largest term.
 
     ``report=False`` moves the sweep table to DEBUG — for a solver called once per
     CASSCF macro-iteration, whose driver already owns the INFO table (INFO is the
@@ -1255,7 +1414,7 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
         from .plan import network_memory_plan
         res.preflight(network_memory_plan(ttno, state, n_roots=n_roots,
                                           extra_roots=max(0, int(boundary_check)),
-                                          max_bond=max_bond),
+                                          max_bond=max_bond, rdm=plan_rdms),
                       title="Memory plan: two-site DMRG", begin=False)
 
     pager = None
@@ -1399,10 +1558,11 @@ def _solve_local(ttno, state, cache, u, v, requested, davidson_tol, extra_roots=
     # (the _LocalProblem docstring), but the term stays: it is what refuses a branching
     # node's order that does not fit. Both terms are exact and neither is padded.
     workspace = prob.solve_workspace_gb(n_roots, n_solve)
-    transient = prob.apply_peak_gb()
+    transient = prob.transient_peak_gb()
     res.require("DMRG two-site problem ({}-{})".format(u, v), workspace + transient,
-                note="{} determinants; {:.3f} GB workspace + {:.3f} GB per H_eff "
-                     "application".format(prob.dim, workspace, transient),
+                note="{} determinants; {:.3f} GB workspace + {:.3f} GB transient (an H_eff "
+                     "application, or the preconditioner's dense arrays)".format(
+                         prob.dim, workspace, transient),
                 advice=[
                     "reduce max_bond: the local dimension scales as D^2 d^2 and the "
                     "application's intermediate carries one operator bond dimension on "

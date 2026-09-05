@@ -134,6 +134,19 @@ are stated in the order they matter:
    intermediate carries one of them;
 3. `max_bond` — quadratic through the two-site dimension.
 
+The RDM contraction after the sweep is planned the same way: its per-node operator
+environments are dense in the node's local dimension squared with one operator leg per
+neighbour, so on fat or branching nodes they, not the sweep, are the largest term, and a cap
+whose environments do not fit is refused with the node named. A fixed-orbital network CASCI
+that only needs energies and transition densities skips that extraction with
+`DMRGSolver(rdms=False)`; an orbital optimization cannot, since the RDMs are its input.
+The environment builds and the RDM path's messages run the same one-leg chain, with the
+same structural choice of which environments to fold into the operator on a branching node,
+and their transient is in the plan. The Davidson preconditioner's diagonal is dense over every operator leg of a node at once,
+so on a node with many neighbours it is sized first and dropped where it would exceed the
+kernels' transient budget: the solve then runs unpreconditioned at that bond, slower but
+identical in what it converges to.
+
 ⚠ The estimate describes Kuiva's arrays. What remains above it is the operator compile's own
 transient and the arena it leaves behind — a process that has freed a multi-gigabyte array does
 not usually return it to the operating system — so leave a factor of about two of headroom in

@@ -614,6 +614,24 @@ def build_reference(camp: Campaign):
                                         allow_unconverged_scf=True,
                                         **dict(camp.scf_prelude))
         kw["guess_from"] = warm
+    if not camp.exact_oracle:
+        # ⚠ An oracle-free rung: the front end's pre-flight plans the conventional CI for
+        # ``n_states`` and refuses it (23 GB at 24 spinors), but that CI is exactly the
+        # solve this rung is declared oracle-free to avoid and it never runs — the ladder
+        # runs at guess orbitals. So the refusal is downgraded for the REFERENCE BUILD
+        # ONLY, and the honest limit is restored before any network phase, which is where
+        # the memory plan has to refuse rather than warn.
+        from dataclasses import replace as _replace
+        from kuiva.util import resources as res
+
+        lims = res.BUDGET.limits
+        res.BUDGET.configure(_replace(lims, allow_overcommit=True))
+        try:
+            return api.spinor_reference(molecule, n_active=camp.n_active,
+                                        n_active_elec=camp.n_active_elec,
+                                        n_states=camp.n_states, **kw)
+        finally:
+            res.BUDGET.configure(lims)
     return api.spinor_reference(molecule, n_active=camp.n_active,
                                 n_active_elec=camp.n_active_elec,
                                 n_states=camp.n_states, **kw)
@@ -866,6 +884,38 @@ def topologies(ints, camp: "Campaign", which: Sequence[str]) -> Tuple[Dict[str, 
     return made, meta
 
 
+#: Compiled TTNO templates by topology, shared across every cap of a ladder (and every
+#: variant of a control run) on that topology. ⚠ Two reasons, both measured. Cost: the
+#: compile depends on the graph alone, and paying it per point put ~100 of `tif3_dd`'s
+#: 105 CPU s per point into the compile a production run pays once — the per-point CPU
+#: figure is taken AFTER the template exists, and the compile's own cost is recorded
+#: beside it (``compile_cpu_s``). Memory: on a tree with a degree-4 node the compile's
+#: transition tables are a ~4.5 GB transient that the allocator keeps, so two compiles
+#: back to back — the residue of one point plus the next point's — exceeded the machine
+#: while every plan said 1.3 GB. Cleared with the ledger at the start of every job.
+_TEMPLATE_CACHE: Dict[object, Tuple[object, Dict]] = {}
+
+
+def compiled_template(graph) -> Tuple[object, Dict]:
+    """``(template, compile_cost)`` for ``graph``, compiled once per job and reused."""
+    from kuiva.dmrg.ttno import TTNOTemplate
+
+    hit = _TEMPLATE_CACHE.get(graph)
+    if hit is not None:
+        return hit
+    t0, c0 = time.time(), time.process_time()
+    template = TTNOTemplate(graph)
+    cost = {"compile_wall_s": round(time.time() - t0, 3),
+            "compile_cpu_s": round(time.process_time() - c0, 3)}
+    _TEMPLATE_CACHE[graph] = (template, cost)
+    return template, cost
+
+
+def clear_templates() -> None:
+    """Forget every compiled template — with ``resources.clear()``, at a job boundary."""
+    _TEMPLATE_CACHE.clear()
+
+
 def network_ci(ints, camp: Campaign, *, max_bond: int, graph,
                max_sweeps: int = 30, conv_tol: float = 1e-9,
                davidson_tol: float = 1e-8, adaptive: bool = False,
@@ -895,6 +945,7 @@ def network_ci(ints, camp: Campaign, *, max_bond: int, graph,
     """
     from kuiva.dmrg import DMRGSolver, ReconnectionPolicy
     from kuiva.dmrg.solver import SolverFailure
+    from kuiva.util import resources as res
 
     # ⚠ ``solver_kwargs`` are protocol C's variants (a per-sweep bond ramp, deterministic
     # subspace expansion). They are iteration strategies INSIDE the cap, never ways to
@@ -903,10 +954,21 @@ def network_ci(ints, camp: Campaign, *, max_bond: int, graph,
     kw: Dict[str, object] = dict(solver_kwargs)
     if rule is not None:
         kw["policy"] = ReconnectionPolicy(rule=rule)
+    # ⚠ ``rdms=False``: a ladder point is a fixed-orbital CASCI whose products are the
+    # energies and the transition densities below; the state-averaged (gamma, Gamma) an
+    # optimizer would need are never read here, and their extraction forms every node's
+    # dE/dW — dense in the local dimension squared, one operator leg per neighbour — which
+    # the memory plan refuses on every tree and on the double shells while the sweep fits.
     solver = DMRGSolver(camp.n_active_elec, max_bond=int(max_bond), n_roots=camp.roots,
                         graph=graph, adaptive=bool(adaptive), max_sweeps=max_sweeps,
                         conv_tol=conv_tol, davidson_tol=davidson_tol,
-                        on_split="warn", **kw)
+                        on_split="warn", rdms=False, **kw)
+    # ⚠ The template is compiled once per topology and injected (see _TEMPLATE_CACHE);
+    # the point's clock starts after it exists, so ``cpu_s`` is the solve and nothing
+    # a production run would pay once. An adaptive point may still compile for the
+    # topologies it proposes; that cost stays in its figure, as it should.
+    template, compile_cost = compiled_template(graph)
+    solver._templates[graph] = template
     t0, c0 = time.time(), time.process_time()
     try:
         solver.solve(ints)
@@ -916,6 +978,15 @@ def network_ci(ints, camp: Campaign, *, max_bond: int, graph,
                             "cpu_s": round(time.process_time() - c0, 3)}
     except SolverFailure as exc:
         return None, None, {"status": "unconverged", "error": "{}".format(exc),
+                            "wall_s": round(time.time() - t0, 3),
+                            "cpu_s": round(time.process_time() - c0, 3)}
+    except res.MemoryLimitError as exc:
+        # ⚠ The third outcome, and a result rather than a crash: the memory plan refused
+        # the cap before allocating (which is what the plan exists for — before it, this
+        # was an OOM kill with no record). Which caps fit the machine is campaign data,
+        # and a refusal must not abandon the remaining caps and topologies of the job.
+        return None, None, {"status": "refused-memory",
+                            "error": "{}".format(exc).splitlines()[0],
                             "wall_s": round(time.time() - t0, 3),
                             "cpu_s": round(time.process_time() - c0, 3)}
     r = solver.last
@@ -935,7 +1006,7 @@ def network_ci(ints, camp: Campaign, *, max_bond: int, graph,
                    if (camp.n_active_elec % 2 == 1 and n_pair) else None)
     tdm = solver.transition_densities()
     meta = {"status": "ok", "n_sweeps": int(r.n_sweeps),
-            "kramers_pair_spread_eh": pair_spread,
+            "kramers_pair_spread_eh": pair_spread, **compile_cost,
             "bond_used": int(r.max_bond_dim),
             "saturating": bool(int(r.max_bond_dim) < int(max_bond)),
             "w_disc": float(r.max_discarded),
@@ -1282,6 +1353,8 @@ def relax_orbitals(reference, coeff0: np.ndarray, space, ci_solver, *, mode: str
         return {"wall_s": round(time.time() - t0, 1),
                 "cpu_s": round(time.process_time() - c0, 1)}
 
+    from kuiva.util import resources as res
+
     try:
         result = _drive(reference.factors, reference.h_one_electron(),
                         np.ascontiguousarray(coeff0), space.spaces, ci_solver,
@@ -1294,6 +1367,11 @@ def relax_orbitals(reference, coeff0: np.ndarray, space, ci_solver, *, mode: str
         return None, rec
     except (ValueError, SolverFailure) as exc:
         rec = {"status": "refused", "error": "{}: {}".format(type(exc).__name__, exc)}
+        rec.update(cost())
+        return None, rec
+    except res.MemoryLimitError as exc:
+        # the memory plan refused a solve of this optimization (a diagnosed outcome)
+        rec = {"status": "refused-memory", "error": "{}".format(exc).splitlines()[0]}
         rec.update(cost())
         return None, rec
     rec = {"status": "ok", "driver": driver, "converged": bool(result.converged),

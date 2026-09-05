@@ -2,14 +2,14 @@
                                    K U I V A                                    
                  relativistic multireference quantum chemistry                  
                          example 4: DMRG-CASSCF on TiF3                         
-                                 version 0.40.0                                 
+                                 version 0.41.2                                 
                 compiled kernels: disabled (KUIVA_KERNELS=numpy)                
            threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
 ================================================================================
    output file                                   output/dmrg_casscf.out
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.15 s
+ Scalar-relativistic X2C reference                                    t = 0.16 s
 ================================================================================
    atoms                                                          4   (F Ti)
    charge                                                         0
@@ -31,7 +31,7 @@
      three-index MO block B^P_p,occ                           0.124  GB   (168 spinors x 49 occupied)
    memory limit                                               6.000  GB   (set for this calculation)
    planned peak                                               0.265  GB
-   machine available                                         11.894  GB
+   machine available                                         11.042  GB
    SCF reference                                               ROHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                            84
@@ -40,10 +40,10 @@
    two-electron route                                  conventional
    gauge origin (property operators)             (-0.0000, 0.0000, 0.0000) bohr   (centre of mass)
    nuclear repulsion                               218.299309181845  Eh
-   scalar X2C SCF energy                         -1151.211311885573  Eh
+   scalar X2C SCF energy                         -1151.211311885574  Eh
    SCF converged                                                yes
-   SCF time                                                    0.62  s wall   (2.50 s cpu)
-   AO integral time                                            0.32  s wall   (1.29 s cpu)
+   SCF time                                                    0.62  s wall   (2.46 s cpu)
+   AO integral time                                            0.31  s wall   (1.23 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
    two-component Hamiltonian                                X2C-AMF
@@ -59,10 +59,10 @@
    reference configurations                      F: s4 p5, Ti: s8 p12 d2
    spin-free correction, max |dh_sf|                   7.592974e-02  Eh
    spin-orbit correction, max |dw|                     8.384170e-03  Eh
-   discarded time-reversal-odd part                       7.499e-10  Eh   (8.2e-12 relative)
+   discarded time-reversal-odd part                       7.126e-10  Eh   (7.8e-12 relative)
 
 ================================================================================
- Orthonormal working basis                                           t = 54.81 s
+ Orthonormal working basis                                           t = 57.25 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                            84
@@ -73,7 +73,7 @@
    condition number of S (retained)                       2.039e+05
 
 ================================================================================
- Spinor expansion                                                    t = 54.81 s
+ Spinor expansion                                                    t = 57.25 s
 ================================================================================
    scalar basis functions                                        84   (working basis)
    spinors                                                      168
@@ -83,7 +83,7 @@
    orthonormality error                                    8.36e-11
 
 ================================================================================
- Two-electron integrals                                              t = 54.81 s
+ Two-electron integrals                                              t = 57.25 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -95,11 +95,11 @@
    largest neglected diagonal                             9.828e-09  Eh
    factor storage                                             0.026  GB
    matrix elements                               stored AO integral array
-   decomposition time                                          0.69  s wall
+   decomposition time                                          0.68  s wall
    stored integral array released                             0.047  GB   (dead weight once the factors exist; release_eri=False keeps it for a second factorization)
 
 ================================================================================
- Problem                                                             t = 55.50 s
+ Problem                                                             t = 57.93 s
 ================================================================================
    system                                                      TiF3   (planar D3h, Ti-F = 1.780 A)
    physics                                       Ti(III) d^1 in a ligand field
@@ -109,7 +109,7 @@
    bond-dimension cap                                            16
 
 ================================================================================
- Cheap CI pre-optimization                                           t = 55.51 s
+ Cheap CI pre-optimization                                           t = 57.94 s
 ================================================================================
    active electrons                                               1
    active spinors                                                10
@@ -129,15 +129,15 @@
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step    event                wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ------------------  ---------
       1     -1151.436746574169   -4.556e-03   1.917e+00    0.0020  qn      no change                1.19
-      2     -1151.436785331181   -3.876e-05   6.592e-02    0.0005  qn                               0.91
-      3     -1151.436789514665   -4.183e-06   4.702e-03    0.0005  qn      no change                0.92
+      2     -1151.436785331179   -3.876e-05   6.592e-02    0.0005  qn                               0.91
+      3     -1151.436789514664   -4.183e-06   4.702e-03    0.0005  qn      no change                0.91
       4     -1151.436796665785   -7.151e-06   5.623e-03    0.0020  qn                               0.92
-      5     -1151.436798450478   -1.785e-06   7.677e-03    0.0025  qn                               0.92
-      6     -1151.436802496151   -4.046e-06   7.335e-03    0.0002  qn                               0.91
-      7     -1151.436804232123   -1.736e-06   2.403e-03    0.0007  qn      no change                0.92
-      8     -1151.436805010200   -7.781e-07   1.674e-03    0.0009  qn                               0.91
-      9     -1151.436805098803   -8.860e-08   1.194e-03    0.0003  qn                               0.91
-     10     -1151.436805098803    0.000e+00   4.387e-04    0.0000  qn      stable                   0.01
+      5     -1151.436798450477   -1.785e-06   7.677e-03    0.0025  qn                               0.91
+      6     -1151.436802496151   -4.046e-06   7.335e-03    0.0002  qn                               0.92
+      7     -1151.436804232122   -1.736e-06   2.403e-03    0.0007  qn      no change                0.92
+      8     -1151.436805010201   -7.781e-07   1.674e-03    0.0009  qn                               0.92
+      9     -1151.436805098804   -8.860e-08   1.194e-03    0.0003  qn                               0.91
+     10     -1151.436805098804    0.000e+00   4.387e-04    0.0000  qn      stable                   0.01
    ----  ---------------------  -----------  ----------  --------  ------  ------------------  ---------
    converged
    second-order steps taken                                       0
@@ -170,7 +170,7 @@
    suggested active electrons                                 1.000
 
 ================================================================================
- The finished CheapCI stage                                          t = 65.10 s
+ The finished CheapCI stage                                          t = 67.54 s
 ================================================================================
 CheapCI
   active space             : CAS(1, 10)  5 lowest Kramers pairs of l=2 character on 1 Ti
@@ -196,11 +196,11 @@ CheapCI
    fractionally occupied spinors (a LOWER bound on the active space)          [48, 49]
 
 ================================================================================
- CASSCF with the conventional CI                                     t = 65.10 s
+ CASSCF with the conventional CI                                     t = 67.54 s
 ================================================================================
 
 ================================================================================
- CASSCF                                                              t = 65.11 s
+ CASSCF                                                              t = 67.55 s
 ================================================================================
    active space                                          CAS(1, 10)   (5 lowest Kramers pairs of l=2 character on 1 Ti)
    inactive / active / virtual spinors                48 / 10 / 110
@@ -211,49 +211,51 @@ CheapCI
    inactive / active / virtual spinors                48 / 10 / 110
    orbital rotation parameters                                 6860   (complex)
    optimizer mode                                      quasi-newton
-   rotation                                      Kramers constrained   (orbitals paired to 2e-15; spaces stay time-reversal closed)
+   rotation                                      Kramers constrained   (orbitals paired to 1e-15; spaces stay time-reversal closed)
    gradient convergence                                     1.0e-04
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      1     -1151.436805093492    5.313e-09   4.387e-04    0.0000  qn           1.22
-      2     -1151.436805099377   -5.884e-09   3.021e-03    0.0000  qn           0.92
-      3     -1151.436805099631   -2.537e-10   3.803e-04    0.0000  qn           0.91
-      4     -1151.436805104738   -5.107e-09   3.317e-04    0.0000  qn           0.92
-      5     -1151.436805106662   -1.924e-09   8.619e-04    0.0000  qn           0.91
-      6     -1151.436805108847   -2.185e-09   1.136e-03    0.0000  qn           0.91
-      7     -1151.436805110396   -1.549e-09   7.245e-04    0.0000  qn           0.91
-      8     -1151.436805111911   -1.515e-09   5.986e-04    0.0000  qn           0.91
-      9     -1151.436805112684   -7.738e-10   7.988e-04    0.0000  qn           0.91
-     10     -1151.436805113265   -5.803e-10   6.575e-04    0.0000  qn           0.91
-     11     -1151.436805113543   -2.779e-10   3.113e-04    0.0000  qn           0.91
-     12     -1151.436805113842   -2.990e-10   2.972e-04    0.0000  qn           0.91
-     13     -1151.436805114306   -4.650e-10   3.892e-04    0.0000  qn           0.91
-     14     -1151.436805114619   -3.124e-10   4.350e-04    0.0000  qn           0.92
-     15     -1151.436805115002   -3.834e-10   4.278e-04    0.0000  qn           0.91
-     16     -1151.436805115369   -3.663e-10   2.451e-04    0.0000  qn           0.91
-     17     -1151.436805115741   -3.720e-10   3.332e-04    0.0000  qn           0.92
-     18     -1151.436805116407   -6.667e-10   4.028e-04    0.0000  qn           0.91
-     19     -1151.436805116247    1.605e-10   4.063e-04    0.0000  qn           0.93
-     20     -1151.436805117057   -8.101e-10   8.111e-04    0.0000  qn           0.92
-     21     -1151.436805117182   -1.255e-10   2.216e-04    0.0000  qn           0.91
-     22     -1151.436805117403   -2.206e-10   1.997e-04    0.0000  qn           0.92
-     23     -1151.436805117502   -9.913e-11   1.914e-04    0.0000  qn           0.92
-     24     -1151.436805117688   -1.860e-10   4.986e-04    0.0000  qn           0.92
-     25     -1151.436805117804   -1.162e-10   1.923e-04    0.0000  qn           0.92
-     26     -1151.436805117898   -9.368e-11   1.447e-04    0.0000  qn           0.91
-     27     -1151.436805118022   -1.244e-10   1.732e-04    0.0000  qn           0.92
-     28     -1151.436805118178   -1.558e-10   2.730e-04    0.0000  qn           0.91
-     29     -1151.436805118284   -1.057e-10   1.827e-04    0.0000  qn           0.91
-     30     -1151.436805118389   -1.053e-10   1.329e-04    0.0000  qn           0.91
-     31     -1151.436805118457   -6.821e-11   1.818e-04    0.0000  qn           0.91
-     32     -1151.436805118545   -8.777e-11   2.096e-04    0.0000  qn           0.91
-     33     -1151.436805118646   -1.010e-10   1.380e-04    0.0000  qn           0.91
-     34     -1151.436805118707   -6.116e-11   1.263e-04    0.0000  qn           0.92
-     35     -1151.436805118749   -4.206e-11   1.184e-04    0.0000  qn           0.91
-     36     -1151.436805118883   -1.339e-10   3.019e-04    0.0000  qn           0.91
-     37     -1151.436805118919   -3.547e-11   1.075e-04    0.0000  qn           0.91
-     38     -1151.436805118919    0.000e+00   8.993e-05    0.0000  qn           0.00
+      1     -1151.436805093908    4.897e-09   4.387e-04    0.0000  qn           1.22
+      2     -1151.436805099416   -5.508e-09   2.939e-03    0.0000  qn           0.91
+      3     -1151.436805099697   -2.813e-10   3.919e-04    0.0000  qn           0.92
+      4     -1151.436805105164   -5.467e-09   3.355e-04    0.0000  qn           0.92
+      5     -1151.436805106724   -1.560e-09   8.983e-04    0.0000  qn           0.91
+      6     -1151.436805108719   -1.996e-09   1.505e-03    0.0000  qn           0.91
+      7     -1151.436805110157   -1.438e-09   7.053e-04    0.0000  qn           0.92
+      8     -1151.436805111461   -1.304e-09   5.190e-04    0.0000  qn           0.92
+      9     -1151.436805112644   -1.183e-09   7.216e-04    0.0000  qn           0.91
+     10     -1151.436805113460   -8.151e-10   9.466e-04    0.0000  qn           0.92
+     11     -1151.436805113864   -4.040e-10   5.400e-04    0.0000  qn           0.91
+     12     -1151.436805114158   -2.940e-10   2.407e-04    0.0000  qn           0.92
+     13     -1151.436805114464   -3.065e-10   3.147e-04    0.0000  qn           0.92
+     14     -1151.436805114908   -4.441e-10   4.127e-04    0.0000  qn           0.91
+     15     -1151.436805115339   -4.304e-10   4.267e-04    0.0000  qn           0.93
+     16     -1151.436805115761   -4.222e-10   3.114e-04    0.0000  qn           0.92
+     17     -1151.436805116241   -4.800e-10   3.326e-04    0.0000  qn           0.91
+     18     -1151.436805116387   -1.464e-10   4.090e-04    0.0000  qn           0.92
+     19     -1151.436805116877   -4.898e-10   7.144e-04    0.0000  qn           0.92
+     20     -1151.436805117069   -1.924e-10   2.681e-04    0.0000  qn           0.91
+     21     -1151.436805117299   -2.301e-10   2.229e-04    0.0000  qn           0.92
+     22     -1151.436805117508   -2.085e-10   3.046e-04    0.0000  qn           0.92
+     23     -1151.436805117668   -1.596e-10   3.745e-04    0.0000  qn           0.92
+     24     -1151.436805117760   -9.209e-11   1.684e-04    0.0000  qn           0.92
+     25     -1151.436805117896   -1.364e-10   1.693e-04    0.0000  qn           0.92
+     26     -1151.436805117975   -7.935e-11   2.236e-04    0.0000  qn           0.92
+     27     -1151.436805118053   -7.776e-11   2.050e-04    0.0000  qn           0.91
+     28     -1151.436805118145   -9.209e-11   1.277e-04    0.0000  qn           0.91
+     29     -1151.436805118212   -6.639e-11   1.816e-04    0.0000  qn           0.92
+     30     -1151.436805118329   -1.171e-10   2.168e-04    0.0000  qn           0.91
+     31     -1151.436805118439   -1.105e-10   2.470e-04    0.0000  qn           0.92
+     32     -1151.436805118515   -7.617e-11   1.676e-04    0.0000  qn           0.92
+     33     -1151.436805118656   -1.407e-10   1.401e-04    0.0000  qn           0.92
+     34     -1151.436805118732   -7.549e-11   2.077e-04    0.0000  qn           0.93
+     35     -1151.436805118806   -7.412e-11   1.620e-04    0.0000  qn           0.91
+     36     -1151.436805118849   -4.366e-11   1.108e-04    0.0000  qn           0.93
+     37     -1151.436805118910   -6.094e-11   1.071e-04    0.0000  qn           0.92
+     38     -1151.436805118945   -3.502e-11   1.392e-04    0.0000  qn           0.91
+     39     -1151.436805119000   -5.502e-11   2.349e-04    0.0000  qn           0.92
+     40     -1151.436805119000    0.000e+00   9.903e-05    0.0000  qn           0.00
    ----  ---------------------  -----------  ----------  --------  ------  ---------
    converged
    second-order steps taken                                       0
@@ -261,27 +263,27 @@ CheapCI
    rejected steps                                                 0
      state                 E [Eh]     rel [cm^-1]     weight
    -------  ---------------------  --------------  ---------
-         0     -1151.436805118919            0.00     0.5000
-         1     -1151.436805118919            0.00     0.5000
+         0     -1151.436805119000            0.00     0.5000
+         1     -1151.436805119000            0.00     0.5000
    -------  ---------------------  --------------  ---------
    10 applications of H in 0 iterations
-   state-average boundary gap                              15331.72  cm^-1   (to root 3 of 10, at the converged orbitals)
+   state-average boundary gap                              15331.75  cm^-1   (to root 3 of 10, at the converged orbitals)
    state-average spin invariance                          5.622e-02   (leaning on the spin-orbit structure)
 CASSCF
   active space     : CAS(1, 10)  5 lowest Kramers pairs of l=2 character on 1 Ti
   solver           : ci
-  E(CASSCF) [Eh]   : -1151.436805118919
+  E(CASSCF) [Eh]   : -1151.436805119000
   converged        : True
-  macro-iterations : 38
-  |grad|           : 8.99e-05
+  macro-iterations : 40
+  |grad|           : 9.90e-05
   states           : 2
 
 ================================================================================
- CASSCF with the tensor-network solver                              t = 101.06 s
+ CASSCF with the tensor-network solver                              t = 105.44 s
 ================================================================================
 
 ================================================================================
- CASSCF (DMRG solver)                                               t = 101.07 s
+ CASSCF (DMRG solver)                                               t = 105.46 s
 ================================================================================
    active space                                          CAS(1, 10)   (5 lowest Kramers pairs of l=2 character on 1 Ti)
    inactive / active / virtual spinors                48 / 10 / 110
@@ -291,7 +293,7 @@ CASSCF
    inactive / active / virtual spinors                48 / 10 / 110
    orbital rotation parameters                                 6860   (complex)
    optimizer mode                                      quasi-newton
-   rotation                                      Kramers constrained   (orbitals paired to 2e-15; spaces stay time-reversal closed)
+   rotation                                      Kramers constrained   (orbitals paired to 1e-15; spaces stay time-reversal closed)
    gradient convergence                                     1.0e-04
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]       w_disc
@@ -301,80 +303,86 @@ CASSCF
    phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
    ------------------------  -------------  --------------  ----------  ---------
    network environments              0.085           0.000       0.085  ok       
-   two-site solves                   0.085           0.000       0.085  ok       
-   network RDMs                      0.085           0.000       0.085  ok       
+   two-site solves                   0.085           0.001       0.086  ok       
+   network RDMs                      0.085           0.006       0.091  ok       
    ------------------------  -------------  --------------  ----------  ---------
      renormalized operator blocks                             0.000  GB   (18 directed bonds, held until the solve ends; max_bond = 16)
+     environment build                                        0.000  GB   (largest step of any build's chain, with the environments it folds into the operator ahead of the ket)
      two-site workspace                                       0.000  GB   (largest bond of the tour (8, 4): merged ensemble, guess, Davidson stacks, roots and operator halves over 2 roots)
-     H_eff application                                        0.000  GB   (one contraction intermediate, built and freed once per matrix-vector product)
+     H_eff application                                        0.001  GB   (the larger of one contraction intermediate (built and freed once per matrix-vector product) and the preconditioner's dense W arrays)
      state-averaged 2-RDM                                     0.000  GB   (10 spinors)
      per-node environments                                    0.000  GB   (a second environment set, released with the contraction)
+     operator environments dE/dW                              0.004  GB   (one per node, dense in the node's local dimension squared, all held until the last is built)
+     dE/dW contraction                                        0.002  GB   (largest step of any node's chain, input and output together)
    memory limit                                               6.000  GB   (set for this calculation)
-   planned peak                                               0.085  GB
-   machine available                                         11.614  GB
-      1     -1151.436805093492    5.314e-09   4.387e-04    0.0000  qn           2.50    0.000e+00
-      2     -1151.436805099378   -5.886e-09   3.021e-03    0.0000  qn           2.19    0.000e+00
-      3     -1151.436805099630   -2.517e-10   3.803e-04    0.0000  qn           2.08    0.000e+00
-      4     -1151.436805104737   -5.108e-09   3.317e-04    0.0000  qn           2.19    0.000e+00
-      5     -1151.436805106662   -1.925e-09   8.619e-04    0.0000  qn           2.19    0.000e+00
-      6     -1151.436805108846   -2.184e-09   1.136e-03    0.0000  qn           2.20    0.000e+00
-      7     -1151.436805110395   -1.549e-09   7.245e-04    0.0000  qn           2.19    0.000e+00
-      8     -1151.436805111908   -1.513e-09   5.986e-04    0.0000  qn           2.19    0.000e+00
-      9     -1151.436805112683   -7.744e-10   7.989e-04    0.0000  qn           2.19    0.000e+00
-     10     -1151.436805113263   -5.798e-10   6.574e-04    0.0000  qn           2.20    0.000e+00
-     11     -1151.436805113541   -2.781e-10   3.112e-04    0.0000  qn           2.19    0.000e+00
-     12     -1151.436805113840   -2.995e-10   2.973e-04    0.0000  qn           2.20    0.000e+00
-     13     -1151.436805114304   -4.634e-10   3.893e-04    0.0000  qn           2.18    0.000e+00
-     14     -1151.436805114619   -3.151e-10   4.352e-04    0.0000  qn           2.20    0.000e+00
-     15     -1151.436805115001   -3.827e-10   4.268e-04    0.0000  qn           2.19    0.000e+00
-     16     -1151.436805115368   -3.665e-10   2.451e-04    0.0000  qn           2.19    0.000e+00
-     17     -1151.436805115741   -3.736e-10   3.340e-04    0.0000  qn           2.20    0.000e+00
-     18     -1151.436805116409   -6.680e-10   4.029e-04    0.0000  qn           2.20    0.000e+00
-     19     -1151.436805116269    1.405e-10   4.083e-04    0.0000  qn           2.19    0.000e+00
-     20     -1151.436805117060   -7.913e-10   7.963e-04    0.0000  qn           2.20    0.000e+00
-     21     -1151.436805117185   -1.251e-10   2.213e-04    0.0000  qn           2.19    0.000e+00
-     22     -1151.436805117404   -2.190e-10   1.997e-04    0.0000  qn           2.19    0.000e+00
-     23     -1151.436805117503   -9.845e-11   1.911e-04    0.0000  qn           2.19    0.000e+00
-     24     -1151.436805117690   -1.874e-10   5.013e-04    0.0000  qn           2.19    0.000e+00
-     25     -1151.436805117806   -1.157e-10   1.919e-04    0.0000  qn           2.19    0.000e+00
-     26     -1151.436805117898   -9.231e-11   1.445e-04    0.0000  qn           2.19    0.000e+00
-     27     -1151.436805118026   -1.276e-10   1.730e-04    0.0000  qn           2.19    0.000e+00
-     28     -1151.436805118180   -1.546e-10   2.693e-04    0.0000  qn           2.18    0.000e+00
-     29     -1151.436805118285   -1.046e-10   1.829e-04    0.0000  qn           2.19    0.000e+00
-     30     -1151.436805118390   -1.050e-10   1.325e-04    0.0000  qn           2.19    0.000e+00
-     31     -1151.436805118462   -7.230e-11   1.858e-04    0.0000  qn           2.22    0.000e+00
-     32     -1151.436805118546   -8.390e-11   2.001e-04    0.0000  qn           2.20    0.000e+00
-     33     -1151.436805118654   -1.080e-10   1.370e-04    0.0000  qn           2.20    0.000e+00
-     34     -1151.436805118713   -5.934e-11   1.274e-04    0.0000  qn           2.22    0.000e+00
-     35     -1151.436805118696    1.728e-11   1.155e-04    0.0000  qn           2.19    0.000e+00
-     36     -1151.436805118883   -1.871e-10   3.699e-04    0.0000  qn           2.20    0.000e+00
-     37     -1151.436805118913   -2.956e-11   1.076e-04    0.0000  qn           2.20    0.000e+00
-     38     -1151.436805118913    0.000e+00   9.029e-05    0.0000  qn           0.00    0.000e+00
+   planned peak                                               0.091  GB
+   machine available                                         10.749  GB
+      1     -1151.436805093909    4.897e-09   4.387e-04    0.0000  qn           2.57    0.000e+00
+      2     -1151.436805099416   -5.507e-09   2.939e-03    0.0000  qn           2.26    0.000e+00
+      3     -1151.436805099698   -2.819e-10   3.919e-04    0.0000  qn           2.25    0.000e+00
+      4     -1151.436805105165   -5.468e-09   3.355e-04    0.0000  qn           2.26    0.000e+00
+      5     -1151.436805106724   -1.558e-09   8.983e-04    0.0000  qn           2.27    0.000e+00
+      6     -1151.436805108719   -1.996e-09   1.505e-03    0.0000  qn           2.26    0.000e+00
+      7     -1151.436805110159   -1.440e-09   7.053e-04    0.0000  qn           2.26    0.000e+00
+      8     -1151.436805111463   -1.304e-09   5.190e-04    0.0000  qn           2.25    0.000e+00
+      9     -1151.436805112647   -1.184e-09   7.216e-04    0.0000  qn           2.27    0.000e+00
+     10     -1151.436805113462   -8.147e-10   9.466e-04    0.0000  qn           2.26    0.000e+00
+     11     -1151.436805113867   -4.052e-10   5.400e-04    0.0000  qn           2.27    0.000e+00
+     12     -1151.436805114160   -2.931e-10   2.408e-04    0.0000  qn           2.26    0.000e+00
+     13     -1151.436805114465   -3.054e-10   3.149e-04    0.0000  qn           2.29    0.000e+00
+     14     -1151.436805114909   -4.441e-10   4.129e-04    0.0000  qn           2.28    0.000e+00
+     15     -1151.436805115340   -4.304e-10   4.249e-04    0.0000  qn           2.27    0.000e+00
+     16     -1151.436805115765   -4.254e-10   3.123e-04    0.0000  qn           2.27    0.000e+00
+     17     -1151.436805116244   -4.791e-10   3.334e-04    0.0000  qn           2.27    0.000e+00
+     18     -1151.436805116404   -1.594e-10   4.096e-04    0.0000  qn           2.27    0.000e+00
+     19     -1151.436805116882   -4.788e-10   6.999e-04    0.0000  qn           2.27    0.000e+00
+     20     -1151.436805117075   -1.930e-10   2.665e-04    0.0000  qn           2.26    0.000e+00
+     21     -1151.436805117304   -2.290e-10   2.258e-04    0.0000  qn           2.26    0.000e+00
+     22     -1151.436805117510   -2.058e-10   3.043e-04    0.0000  qn           2.26    0.000e+00
+     23     -1151.436805117672   -1.614e-10   3.855e-04    0.0000  qn           2.26    0.000e+00
+     24     -1151.436805117761   -8.981e-11   1.662e-04    0.0000  qn           2.26    0.000e+00
+     25     -1151.436805117896   -1.342e-10   1.687e-04    0.0000  qn           2.26    0.000e+00
+     26     -1151.436805117975   -7.958e-11   2.269e-04    0.0000  qn           2.26    0.000e+00
+     27     -1151.436805118051   -7.617e-11   2.100e-04    0.0000  qn           2.28    0.000e+00
+     28     -1151.436805118140   -8.913e-11   1.276e-04    0.0000  qn           2.27    0.000e+00
+     29     -1151.436805118207   -6.617e-11   1.813e-04    0.0000  qn           2.26    0.000e+00
+     30     -1151.436805118333   -1.266e-10   2.184e-04    0.0000  qn           2.27    0.000e+00
+     31     -1151.436805118435   -1.016e-10   2.391e-04    0.0000  qn           2.26    0.000e+00
+     32     -1151.436805118517   -8.185e-11   1.920e-04    0.0000  qn           2.27    0.000e+00
+     33     -1151.436805118640   -1.230e-10   1.359e-04    0.0000  qn           2.26    0.000e+00
+     34     -1151.436805118720   -8.072e-11   1.954e-04    0.0000  qn           2.27    0.000e+00
+     35     -1151.436805118757   -3.683e-11   1.541e-04    0.0000  qn           2.27    0.000e+00
+     36     -1151.436805118846   -8.868e-11   2.727e-04    0.0000  qn           2.26    0.000e+00
+     37     -1151.436805118874   -2.797e-11   1.013e-04    0.0000  qn           2.28    0.000e+00
+     38     -1151.436805118935   -6.139e-11   1.083e-04    0.0000  qn           2.26    0.000e+00
+     39     -1151.436805118989   -5.321e-11   1.238e-04    0.0000  qn           2.26    0.000e+00
+     40     -1151.436805119044   -5.502e-11   1.968e-04    0.0000  qn           2.28    0.000e+00
+     41     -1151.436805119044    0.000e+00   8.817e-05    0.0000  qn           0.00    0.000e+00
    ----  ---------------------  -----------  ----------  --------  ------  ---------  -----------
    converged
    second-order steps taken                                       0
    Hessian-vector products                                        0
    rejected steps                                                 0
-   state-average boundary gap                              15343.52  cm^-1   (min over the tour; local, variational from above)
+   state-average boundary gap                              15348.00  cm^-1   (min over the tour; local, variational from above)
    checkpoint file                               /home/akseli/Programs/kuiva/examples/04_dmrg_casscf/output/dmrg_casscf.h5
-   checkpoints written                                           38   (1 thinned, 0 skipped)
-   checkpoint volume                                         0.0963  GB
-   time spent checkpointing                                    0.28  s
+   checkpoints written                                           41   (1 thinned, 0 skipped)
+   checkpoint volume                                         0.1049  GB
+   time spent checkpointing                                    0.31  s
    network state file                            /home/akseli/Programs/kuiva/examples/04_dmrg_casscf/output/dmrg_casscf.network.h5
-   network states written                                        79   (0 skipped; rolling, one file)
-   network state volume                                      0.0040  GB
-   time spent writing network states                           1.27  s
-   state energies [Eh]                           -1151.436805118913, -1151.436805118913
+   network states written                                        86   (0 skipped; rolling, one file)
+   network state volume                                      0.0043  GB
+   time spent writing network states                           1.38  s
+   state energies [Eh]                           -1151.436805119044, -1151.436805119044
    largest bond dimension                                         3
    largest discarded weight                               0.000e+00   (ensemble truncation, final sweep)
-   state-average boundary gap                        15343.52 cm^-1
+   state-average boundary gap                        15348.00 cm^-1
 CASSCF
   active space             : CAS(1, 10)  5 lowest Kramers pairs of l=2 character on 1 Ti
   solver                   : dmrg
-  E(CASSCF) [Eh]           : -1151.436805118913
+  E(CASSCF) [Eh]           : -1151.436805119044
   converged                : True
-  macro-iterations         : 38
-  |grad|                   : 9.03e-05
+  macro-iterations         : 41
+  |grad|                   : 8.82e-05
   states                   : 2
   largest bond dimension   : 3
   largest discarded weight : 0.000e+00
@@ -394,30 +402,30 @@ CASSCF
    saved network marked converged                              True
 
 ================================================================================
- Exact CI against the network                                       t = 189.78 s
+ Exact CI against the network                                       t = 204.80 s
 ================================================================================
    solver                      iter         E(CASSCF) [Eh]      |grad|    conv
    --------------------------  ----  ---------------------  ----------  ------
-   conventional CI               38     -1151.436805118919   8.993e-05     yes
-   tree tensor network           38     -1151.436805118913   9.029e-05     yes
+   conventional CI               40     -1151.436805119000   9.903e-05     yes
+   tree tensor network           41     -1151.436805119044   8.817e-05     yes
    --------------------------  ----  ---------------------  ----------  ------
-   |E(network) - E(CI)|                                   5.684e-12  Eh
+   |E(network) - E(CI)|                                   4.320e-11  Eh
    Kramers splitting of the network doublet               0.000e+00  Eh
-   state-average boundary                        15343.5 cm^-1 to the next root
-   network states [Eh]                           -1151.436805118913, -1151.436805118913
+   state-average boundary                        15348.0 cm^-1 to the next root
+   network states [Eh]                           -1151.436805119044, -1151.436805119044
 
 ================================================================================
- Spin analysis on both routes                                       t = 189.93 s
+ Spin analysis on both routes                                       t = 204.97 s
 ================================================================================
    <S^2> of the ground doublet (CI route)                  0.750389
    <S^2> of the ground doublet (network route)             0.750389
-   out-of-active-space leakage (network route)             3.13e-03  hbar   (orbitals, not method)
+   out-of-active-space leakage (network route)             1.72e-03  hbar   (orbitals, not method)
 
  -- Spin expectation values ----------------------------------------------------
    blocks                                                         1
    spin-orbit coupling                                           on
-   inactive contribution to S                              1.65e-14  hbar   (exactly zero for a Kramers-paired inactive set)
-   S leakage out of the active space                       3.13e-03  hbar   (zero for a spin-separable orbital set; included either way)
+   inactive contribution to S                              8.21e-15  hbar   (exactly zero for a Kramers-paired inactive set)
+   S leakage out of the active space                       1.72e-03  hbar   (zero for a spin-separable orbital set; included either way)
    its largest contribution to <S^2>                       7.36e-04   (the part that would be missing if it were assumed away)
    S is not conserved with spin-orbit coupling on: read 2S+1 as a spin-purity measure, not a multiplicity
      block    states       E [cm^-1]       <S^2>         S       2S+1      |dev|
@@ -435,57 +443,63 @@ CASSCF
    0 of 1 blocks assigned
    block 1: dimension 2 = 2J+1 -> J = 1/2
    block 1: <S^2> = 0.750389 -> S = 0.5002, 2S+1 = 2.0004 (off an integer by 3.9e-04)
-   block 1: g_iso = 1.878538 -> L(L+1) = 0.1822 -> L = 0.1574 (off an integer by 1.6e-01)
+   block 1: g_iso = 1.878533 -> L(L+1) = 0.1822 -> L = 0.1574 (off an integer by 1.6e-01)
    block 1: L is not integral to 0.1, so no term is offered
 
 ================================================================================
- Bond-dimension series at the converged orbitals                    t = 190.30 s
+ Bond-dimension series at the converged orbitals                    t = 205.39 s
 ================================================================================
 
  -- Memory plan: two-site DMRG -------------------------------------------------
    phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
    ------------------------  -------------  --------------  ----------  ---------
    network environments              0.086           0.000       0.086  ok       
-   two-site solves                   0.086           0.000       0.086  ok       
-   network RDMs                      0.086           0.000       0.086  ok       
+   two-site solves                   0.086           0.001       0.087  ok       
+   network RDMs                      0.086           0.006       0.092  ok       
    ------------------------  -------------  --------------  ----------  ---------
      renormalized operator blocks                             0.000  GB   (18 directed bonds, held until the solve ends; max_bond = 4)
+     environment build                                        0.000  GB   (largest step of any build's chain, with the environments it folds into the operator ahead of the ket)
      two-site workspace                                       0.000  GB   (largest bond of the tour (8, 4): merged ensemble, guess, Davidson stacks, roots and operator halves over 2 roots)
-     H_eff application                                        0.000  GB   (one contraction intermediate, built and freed once per matrix-vector product)
+     H_eff application                                        0.001  GB   (the larger of one contraction intermediate (built and freed once per matrix-vector product) and the preconditioner's dense W arrays)
      state-averaged 2-RDM                                     0.000  GB   (10 spinors)
      per-node environments                                    0.000  GB   (a second environment set, released with the contraction)
+     operator environments dE/dW                              0.004  GB   (one per node, dense in the node's local dimension squared, all held until the last is built)
+     dE/dW contraction                                        0.002  GB   (largest step of any node's chain, input and output together)
    memory limit                                               6.000  GB   (set for this calculation)
-   planned peak                                               0.086  GB
-   machine available                                         11.598  GB
+   planned peak                                               0.092  GB
+   machine available                                         10.695  GB
 
  -- Memory plan: two-site DMRG -------------------------------------------------
    phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
    ------------------------  -------------  --------------  ----------  ---------
    network environments              0.086           0.000       0.086  ok       
-   two-site solves                   0.086           0.000       0.086  ok       
-   network RDMs                      0.086           0.000       0.086  ok       
+   two-site solves                   0.086           0.001       0.087  ok       
+   network RDMs                      0.086           0.006       0.092  ok       
    ------------------------  -------------  --------------  ----------  ---------
      renormalized operator blocks                             0.000  GB   (18 directed bonds, held until the solve ends; max_bond = 16)
+     environment build                                        0.000  GB   (largest step of any build's chain, with the environments it folds into the operator ahead of the ket)
      two-site workspace                                       0.000  GB   (largest bond of the tour (8, 4): merged ensemble, guess, Davidson stacks, roots and operator halves over 2 roots)
-     H_eff application                                        0.000  GB   (one contraction intermediate, built and freed once per matrix-vector product)
+     H_eff application                                        0.001  GB   (the larger of one contraction intermediate (built and freed once per matrix-vector product) and the preconditioner's dense W arrays)
      state-averaged 2-RDM                                     0.000  GB   (10 spinors)
      per-node environments                                    0.000  GB   (a second environment set, released with the contraction)
+     operator environments dE/dW                              0.004  GB   (one per node, dense in the node's local dimension squared, all held until the last is built)
+     dE/dW contraction                                        0.002  GB   (largest step of any node's chain, input and output together)
    memory limit                                               6.000  GB   (set for this calculation)
-   planned peak                                               0.086  GB
-   machine available                                         11.613  GB
+   planned peak                                               0.092  GB
+   machine available                                         10.762  GB
 
  -- Bond-dimension series ------------------------------------------------------
       cap D    used       w_disc              E_SA [Eh]
    --------  ------  -----------  ---------------------
-          4       3    0.000e+00        -0.511923749322
-         16       3    0.000e+00        -0.511923749322
+          4       3    0.000e+00        -0.511924060391
+         16       3    0.000e+00        -0.511924060391
    --------  ------  -----------  ---------------------
    energies exclude e_core (the sweep convention)
    the truncation never bit (every w_disc is zero): the largest cap is exact and there is nothing to extrapolate
-   E_SA at the largest cap + e_core              -1151.436805118913  Eh   (must reproduce the CASSCF's own state average)
+   E_SA at the largest cap + e_core              -1151.436805119044  Eh   (must reproduce the CASSCF's own state average)
 
 ================================================================================
- Result                                                             t = 196.20 s
+ Result                                                             t = 212.50 s
 ================================================================================
    check                                                           verdict   
    --------------------------------------------------------------  ----------
@@ -505,77 +519,77 @@ CASSCF
    checks                                             all 12 passed
 
 ================================================================================
- Timings                                                            t = 196.20 s
+ Timings                                                            t = 212.50 s
 ================================================================================
    region                                     calls     wall [s]       cpu [s]   cpu/wall   % wall
    ----------------------------------------  ------  -----------  ------------  ---------  -------
-   scalar X2C SCF                                 1         0.62          2.50       4.00      0.3
-   AO integrals                                   1         0.32          1.29       4.00      0.2
-     angular-momentum integrals                   1         0.00          0.00       3.95      0.0
-     electric dipole integrals                    1         0.00          0.00       4.02      0.0
-   X2C spin-orbit integrals                       1         0.18          0.70       4.00      0.1
-   atomic mean-field correction                   1        53.23        212.93       4.00     27.9
-     atomic 4c solve                              2        52.95        211.80       4.00     27.7
-       atomic 4c DHF                              2        48.41        193.65       4.00     25.4
-     atomic mean-field decoupling                 2         0.27          1.10       4.00      0.1
+   scalar X2C SCF                                 1         0.62          2.46       4.00      0.3
+   AO integrals                                   1         0.31          1.23       4.00      0.1
+     angular-momentum integrals                   1         0.00          0.00       3.98      0.0
+     electric dipole integrals                    1         0.00          0.00       3.99      0.0
+   X2C spin-orbit integrals                       1         0.19          0.75       4.00      0.1
+   atomic mean-field correction                   1        55.68        222.69       4.00     26.9
+     atomic 4c solve                              2        55.40        221.55       4.00     26.8
+       atomic 4c DHF                              2        50.90        203.56       4.00     24.6
+     atomic mean-field decoupling                 2         0.28          1.11       3.99      0.1
    orthogonalization (canonical)                  1         0.00          0.00       3.99      0.0
-   Cholesky decomposition                         1         0.69          2.76       4.00      0.4
-   CAS integrals                                  8         4.66         18.62       4.00      2.4
-     J/K build                                    8         2.86         11.42       4.00      1.5
-     3-index transform                            8         1.72          6.89       4.00      0.9
+   Cholesky decomposition                         1         0.68          2.72       4.00      0.3
+   CAS integrals                                  8         4.68         18.70       4.00      2.3
+     J/K build                                    8         2.87         11.49       4.00      1.4
+     3-index transform                            8         1.73          6.90       4.00      0.8
    determinant connections                        7         0.00          0.01       3.99      0.0
-   CI Hamiltonian assembly                        4         0.00          0.00       3.98      0.0
-   CI diagonalization                             4         0.00          0.00       4.02      0.0
-   candidate generation                           4         0.00          0.00       4.02      0.0
-   CI density matrices                            2         0.00          0.00       4.02      0.0
-   macro-iteration                               86       124.00        374.44       3.02     65.0
-     J/K build                                   86        24.59         98.36       4.00     12.9
-     CAS integrals                               83        49.89        199.55       4.00     26.1
-       J/K build                                 83        31.18        124.71       4.00     16.3
-       3-index transform                         83        17.92         71.69       4.00      9.4
-     CI Hamiltonian assembly                     17         0.00          0.00       3.94      0.0
-     CI diagonalization                          17         0.00          0.01       3.99      0.0
+   CI Hamiltonian assembly                        4         0.00          0.00       3.95      0.0
+   CI diagonalization                             4         0.00          0.00       3.98      0.0
+   candidate generation                           4         0.00          0.00       3.99      0.0
+   CI density matrices                            2         0.00          0.00       3.99      0.0
+   macro-iteration                               91       135.50        402.34       2.97     65.6
+     J/K build                                   91        26.13        104.53       4.00     12.6
+     CAS integrals                               88        53.14        212.57       4.00     25.7
+       J/K build                                 88        33.30        133.21       4.00     16.1
+       3-index transform                         88        18.99         75.95       4.00      9.2
+     CI Hamiltonian assembly                     17         0.00          0.00       3.96      0.0
+     CI diagonalization                          17         0.00          0.01       4.00      0.0
      CI density matrices                         13         0.00          0.01       4.01      0.0
      determinant connections                     12         0.00          0.01       3.99      0.0
-     candidate generation                         8         0.00          0.00       4.01      0.0
-   CAS determinant addressing                     1         0.00          0.00       3.90      0.0
-   CAS excitation map                             1         0.00          0.00       3.99      0.0
-   dense CI diagonalization                      21         0.23          0.24       1.06      0.1
-     sigma step 1: gather F                      30         0.00          0.01       4.01      0.0
-     sigma one-electron term                     30         0.00          0.00       4.24      0.0
-     sigma step 2: GEMM                          30         0.00          0.00       3.71      0.0
-     sigma step 3: gather sigma                  30         0.00          0.01       4.03      0.0
-   full CI: diagonal                              1         0.00          0.00       3.80      0.0
-   RDM gather F                                   2         0.00          0.00       3.96      0.0
-   RDM accumulation F^H F                         2         0.00          0.00       4.08      0.0
-     full CI: diagonal                           37         0.00          0.01       3.86      0.0
-     dense CI diagonalization                    37         0.05          0.22       4.00      0.0
-       sigma step 1: gather F                   370         0.02          0.06       4.03      0.0
-       sigma one-electron term                  370         0.00          0.01       4.06      0.0
-       sigma step 2: GEMM                       370         0.01          0.03       3.96      0.0
-       sigma step 3: gather sigma               370         0.02          0.06       3.99      0.0
-     RDM gather F                                74         0.00          0.01       4.01      0.0
-     RDM accumulation F^H F                      74         0.01          0.02       4.04      0.0
-   DMRG sweeps                                    2         3.02          3.53       1.17      1.6
-     dense CI diagonalization                    90         1.11          1.26       1.14      0.6
-   network RDM environments                       6         0.11          0.34       3.02      0.1
-     DMRG sweeps                                 37        45.81         66.08       1.44     24.0
-       dense CI diagonalization                1332        17.25         22.79       1.32      9.0
-     network RDM environments                    37         0.68          0.68       1.00      0.4
-   one-body state moments                         1         0.00          0.00       3.97      0.0
+     candidate generation                         8         0.00          0.00       4.02      0.0
+   CAS determinant addressing                     1         0.00          0.00       3.78      0.0
+   CAS excitation map                             1         0.00          0.00       4.03      0.0
+   dense CI diagonalization                      21         0.22          0.23       1.06      0.1
+     sigma step 1: gather F                      30         0.00          0.01       4.04      0.0
+     sigma one-electron term                     30         0.00          0.00       4.14      0.0
+     sigma step 2: GEMM                          30         0.00          0.00       4.16      0.0
+     sigma step 3: gather sigma                  30         0.00          0.01       3.97      0.0
+   full CI: diagonal                              1         0.00          0.00       3.89      0.0
+   RDM gather F                                   2         0.00          0.00       3.98      0.0
+   RDM accumulation F^H F                         2         0.00          0.00       4.02      0.0
+     full CI: diagonal                           39         0.00          0.01       3.87      0.0
+     dense CI diagonalization                    39         0.06          0.23       4.00      0.0
+       sigma step 1: gather F                   390         0.02          0.07       4.03      0.0
+       sigma one-electron term                  390         0.00          0.01       4.05      0.0
+       sigma step 2: GEMM                       390         0.01          0.03       3.95      0.0
+       sigma step 3: gather sigma               390         0.02          0.07       4.00      0.0
+     RDM gather F                                78         0.00          0.01       4.02      0.0
+     RDM accumulation F^H F                      78         0.01          0.02       4.04      0.0
+   DMRG sweeps                                    2         3.73          4.24       1.14      1.8
+     dense CI diagonalization                   108         1.32          1.47       1.11      0.6
+   network RDM environments                       6         0.09          0.26       3.01      0.0
+     DMRG sweeps                                 40        51.27         73.08       1.43     24.8
+       dense CI diagonalization                1440        18.57         24.46       1.32      9.0
+     network RDM environments                    40         0.57          0.57       1.00      0.3
+   one-body state moments                         1         0.00          0.00       3.95      0.0
    network transition densities: applied states       1         0.02          0.08       4.00      0.0
-   network transition densities: overlaps         1         0.26          0.80       3.03      0.1
-   bond-dimension series                          1         3.51          4.05       1.15      1.8
-     DMRG sweeps                                  2         2.83          2.83       1.00      1.5
-       dense CI diagonalization                  90         1.08          1.08       1.00      0.6
+   network transition densities: overlaps         1         0.26          0.79       3.05      0.1
+   bond-dimension series                          1         4.69          5.23       1.11      2.3
+     DMRG sweeps                                  2         3.53          3.53       1.00      1.7
+       dense CI diagonalization                 108         1.29          1.29       1.00      0.6
    ----------------------------------------  ------  -----------  ------------  ---------  -------
-   total (top-level regions)                                 190.85  s wall
-   total CPU                                                 622.30  s cpu
+   total (top-level regions)                                 206.66  s wall
+   total CPU                                                 661.75  s cpu
    cost is cpu [s]; wall [s] also reflects thread count and, on a
    thermally clamped machine, time the CPU was forced to stay idle.
 
  -- Memory ---------------------------------------------------------------------
    limit                                                      6.000  GB   (set for this calculation)
    pre-flight estimate                                        0.265  GB
-   declared peak (Kuiva arrays)                               0.110  GB
-   peak resident set (VmHWM)                                  0.725  GB
+   declared peak (Kuiva arrays)                               0.116  GB
+   peak resident set (VmHWM)                                  0.730  GB

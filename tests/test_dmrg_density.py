@@ -197,6 +197,75 @@ def test_every_node_environment_closes_the_energy():
         assert abs(total - e_sa) < 1e-9, "node {}".format(u)
 
 
+def test_node_environment_chain_is_sized_by_its_own_structure():
+    """⚠ The pin for the RDM contraction's memory: ``_node_environment`` walked over
+    ``BlockShape`` operands reports, step for step, the byte counts of the tensors the
+    same chain builds over data — on a tree with a degree-3 node and a state-averaged
+    center, so the ensemble leg and the branching case are both covered. The chain used
+    to open every neighbour's operator leg before closing a single bond leg, and that
+    intermediate — times the root count at the center — killed a 20-spinor ladder at
+    D = 8 under a 0.7 GB plan; the sizing is what lets the plan refuse it instead.
+    """
+    from kuiva.dmrg import density as dens
+    from kuiva.dmrg import sweep as sweep_mod
+    from kuiva.dmrg.block import BlockShape
+    from kuiva.dmrg.sweep import EnvironmentCache, _stack_roots
+
+    n, k = 6, 2
+    h, eri = random_spinor_integrals(n, seed=21)
+    graph = NetworkGraph(6, [(0, 1), (1, 2), (1, 3), (3, 4), (3, 5)])
+    tpl, op, state, result = solved(n, k, h, eri, graph=graph, n_roots=2)
+    w = np.array([0.5, 0.5])
+    stacked = _stack_roots(state.centers, w)
+    cache = EnvironmentCache(op, state)
+    # the centre-side messages, exactly as node_environments builds them
+    parent, preorder = graph.parents(state.center)
+    center_side = {int(x): int(parent[x]) for x in preorder[1:]}
+    down = {}
+    for x in [int(i) for i in preorder[1:]]:
+        v = center_side[x]
+        down[(v, x)] = dens._down_message(op, state, cache, down, center_side, stacked,
+                                          v, x)
+    checked = 0
+    for u in range(graph.n_nodes):
+        if u == state.center:
+            continue
+        nbrs = sorted(graph.neighbors(u))
+        env_of = {x: (down[(x, u)] if x == center_side[u] else cache.get(x, u))
+                  for x in nbrs}
+        real = []
+        original = sweep_mod._Lab.dot
+
+        def recording(self, other, pairs):
+            out = original(self, other, pairs)
+            real.append(out.t.nbytes)
+            return out
+
+        sweep_mod._Lab.dot = recording
+        try:
+            g, _ = dens._node_environment(u, state.tensors[u], nbrs, env_of, False, op)
+        finally:
+            sweep_mod._Lab.dot = original
+        shape, steps = dens._node_environment(
+            u, BlockShape.of(state.tensors[u]), nbrs,
+            {x: BlockShape.of(e) for x, e in env_of.items()}, False, op, sizes=[])
+        assert steps == real
+        assert shape.nbytes == g.nbytes
+        checked += 1
+    assert checked > 0
+    # the ensemble center, through the stacked shape
+    u = state.center
+    nbrs = sorted(graph.neighbors(u))
+    env_of = {x: cache.get(x, u) for x in nbrs}
+    g, _ = dens._node_environment(u, stacked, nbrs, env_of, True, op)
+    shape, steps = dens._node_environment(
+        u, dens._stacked_shape(BlockShape.of(state.centers[0]), 2), nbrs,
+        {x: BlockShape.of(e) for x, e in env_of.items()}, True, op, sizes=[])
+    assert shape.nbytes == g.nbytes
+    resident, transient = dens.node_environments_gb(op, state, 2)
+    assert resident > 0.0 and transient > 0.0
+
+
 def test_state_average_weights_are_imposed_where_rdms_are_built():
     # State-averaging behaviour: on a Kramers-degenerate spectrum, deliberately unequal requested
     # weights are equalized inside the degenerate pair — the RDMs cannot depend on the

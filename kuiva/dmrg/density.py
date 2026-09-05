@@ -79,8 +79,9 @@ from ..rdm.rdm import DEFAULT_DEGENERACY_TOL, state_average_weights
 from ..util import resources as res
 from ..util.logging import get_logger
 from ..util.timing import timer
-from .block import BlockTensor, QuantumNumber, tensordot
-from .sweep import EnvironmentCache, TTNState, _Lab, _stack_roots, _w_lab
+from .block import BlockShape, BlockTensor, QuantumNumber, Space, tensordot
+from .sweep import (EnvironmentCache, TTNState, _Lab, _stack_roots, _w_lab, choose_fold,
+                    renormalize)
 from .ttno import (FERMION_MODE, ProductTerm, TTNO, TTNOTemplate, _I2, _Z,
                    _charge_shift, fermion_term)
 
@@ -104,26 +105,20 @@ def _down_message(ttno: TTNO, state: TTNState, cache: EnvironmentCache,
     graph = state.graph
     nbrs = sorted(graph.neighbors(v))
     at_center = v == state.center
-    ket = stacked if at_center else state.tensors[v]
-    labels = [("b", v, x) for x in nbrs] + [("p", v)]
-    if at_center:
-        labels.append(("r",))
-    t = _Lab(ket, labels)
-    for x in nbrs:
-        if x == u:
-            continue
-        env = down[(x, v)] if (not at_center and x == center_side[v]) \
-            else cache.get(x, v)
-        t = t.dot(_Lab(env, [("bra", x), ("op", x), ("ket", x)]),
-                  [(("b", v, x), ("ket", x))])
-    t = t.dot(_w_lab(ttno, v, u),
-              [(("op", x), ("op", x)) for x in nbrs if x != u] + [(("p", v), ("pi",))])
-    bra_labels = [("cb", v, x) for x in nbrs] + [("cp",)]
-    pairs = [(("bra", x), ("cb", v, x)) for x in nbrs if x != u] + [(("po",), ("cp",))]
-    if at_center:
-        bra_labels.append(("cr",))
-        pairs.append((("r",), ("cr",)))
-    t = t.dot(_Lab(ket.conj(), bra_labels), pairs)
+    ket_t = stacked if at_center else state.tensors[v]
+    labels = [("b", v, x) for x in nbrs] + [("p", v)] + ([("r",)] if at_center else [])
+    bra_labels = [("cb", v, x) for x in nbrs] + [("cp",)] + ([("cr",)] if at_center else [])
+    ket = _Lab(ket_t, labels)
+    bra = _Lab(ket_t.conj(), bra_labels)
+    envs = {x: _Lab(down[(x, v)] if (not at_center and x == center_side[v])
+                    else cache.get(x, v), [("bra", x), ("op", x), ("ket", x)])
+            for x in nbrs if x != u}
+    w = _w_lab(ttno, v, u)
+    root_pair = [(("r",), ("cr",))] if at_center else []
+    # the sweep's renormalization chain and its fold search: one open operator leg where
+    # the shape allows it, the fold decided over structure (see renormalize)
+    pre = choose_fold(ket, envs, w, bra, v, root_pair)
+    t = renormalize(ket, envs, w, bra, v, pre, root_pair)
     return t.to([("cb", v, u), ("op_out",), ("b", v, u)])
 
 
@@ -160,41 +155,124 @@ def node_environments(ttno: TTNO, state: TTNState,
                                      v, x)
 
     envs: List[BlockTensor] = []
+    held = 0
     with timer("network RDM environments"):
         for u in range(graph.n_nodes):
             nbrs = sorted(graph.neighbors(u))
             at_center = u == state.center
             ket = stacked if at_center else state.tensors[u]
-            labels = [("b", u, x) for x in nbrs] + [("p", u)]
-            if at_center:
-                labels.append(("r",))
-            t = _Lab(ket, labels)
-            for x in nbrs:
-                env = down[(x, u)] if (not at_center and x == center_side[u]) \
-                    else cache.get(x, u)
-                t = t.dot(_Lab(env, [("bra", x), ("op", x), ("ket", x)]),
-                          [(("b", u, x), ("ket", x))])
-            bra_labels = [("cb", u, x) for x in nbrs] + [("cp",)]
-            pairs = [(("bra", x), ("cb", u, x)) for x in nbrs]
-            if at_center:
-                bra_labels.append(("cr",))
-                pairs.append((("r",), ("cr",)))
-            t = t.dot(_Lab(ket.conj(), bra_labels), pairs)
-
-            order = []
-            if u != ttno.root:
-                order.append(("op", int(ttno.parent[u])))
-            order += [("op", c) for c in ttno.children[u]]
-            order += [("cp",), ("p", u)]
-            g = t.to(order)
-            if u == ttno.root:
-                g = _prepend_root_channel(g, ttno)
+            env_of = {x: (down[(x, u)] if (not at_center and x == center_side[u])
+                          else cache.get(x, u)) for x in nbrs}
+            # ⚠ Sized through the same chain before it is built, per node: the transient
+            # of this contraction is what killed a 20-spinor run at D = 8 with a 0.7 GB
+            # plan, and the finished G tensors stay resident until every node is done.
+            shape, steps = _node_environment(
+                u, BlockShape.of(ket), nbrs,
+                {x: BlockShape.of(e) for x, e in env_of.items()}, at_center, ttno,
+                sizes=[])
+            transient = max(a + b for a, b in zip([ket.nbytes] + steps[:-1], steps)) \
+                if steps else 0
+            res.require("network RDM environment (node {})".format(u),
+                        (held + shape.nbytes + transient) / 1024.0 ** 3,
+                        note="dE/dW_u over {} operator leg(s); {:.3f} GB held by the "
+                             "nodes before it".format(len(nbrs), held / 1024.0 ** 3),
+                        advice=["a finer node partition: the environment is dense in "
+                                "the node's local dimension squared",
+                                "reduce max_bond: the contraction's intermediate carries "
+                                "two bond legs and one operator leg"])
+            g, _ = _node_environment(u, ket, nbrs, env_of, at_center, ttno)
+            held += g.nbytes
             envs.append(g)
     cache.release_all()
     return envs
 
 
-def _prepend_root_channel(g: BlockTensor, ttno: TTNO) -> BlockTensor:
+def _node_environment(u: int, ket, nbrs: Sequence[int], env_of: Dict[int, object],
+                      at_center: bool, ttno: TTNO, sizes: Optional[List[int]] = None):
+    """``G_u`` from the node's ket, its neighbours' environments and its own bra — over
+    data (:class:`~kuiva.dmrg.block.BlockTensor`) or over structure
+    (:class:`~kuiva.dmrg.block.BlockShape`), one description of the chain for both.
+
+    ⚠ **The order is the memory.** Contracting every neighbour's environment before the
+    bra leaves every operator leg open at once on top of the bond legs — ``D^2 d w^2``
+    for an interior node of a chain, times the root count at the center, which is what
+    the sweep's own reorder had just removed and what killed a 20-spinor ladder at D = 8
+    with a 0.7 GB plan. Here the **bra is contracted right after the first environment**,
+    closing that bra leg and the ensemble legs, and every further environment closes a
+    bra/ket bond pair as it opens its operator leg: the intermediates are ``D^2 d w r``,
+    ``D^2 d^2 w`` and the output itself, ``w^2 d^2`` — which is dense in the node's local
+    dimension squared by definition (``dE/dW_u`` has every leg of ``W_u`` open) and is
+    the term the plan now carries. ``sizes`` collects the intermediates' byte counts.
+    """
+    labels = [("b", u, x) for x in nbrs] + [("p", u)] + ([("r",)] if at_center else [])
+    t = _Lab(ket, labels)
+    bra_labels = [("cb", u, x) for x in nbrs] + [("cp",)] + ([("cr",)] if at_center else [])
+    bra = _Lab(ket.conj(), bra_labels)
+    root_pair = [(("r",), ("cr",))] if at_center else []
+    if not nbrs:                                   # a one-node network: ket against bra
+        t = t.dot(bra, root_pair)
+        if sizes is not None:
+            sizes.append(t.t.nbytes)
+    for i, x in enumerate(nbrs):
+        env = _Lab(env_of[x], [("bra", x), ("op", x), ("ket", x)])
+        if i == 0:
+            t = t.dot(env, [(("b", u, x), ("ket", x))])
+            if sizes is not None:
+                sizes.append(t.t.nbytes)
+            t = t.dot(bra, [(("bra", x), ("cb", u, x))] + root_pair)
+        else:
+            t = t.dot(env, [(("b", u, x), ("ket", x)), (("cb", u, x), ("bra", x))])
+        if sizes is not None:
+            sizes.append(t.t.nbytes)
+    order = []
+    if u != ttno.root:
+        order.append(("op", int(ttno.parent[u])))
+    order += [("op", c) for c in ttno.children[u]]
+    order += [("cp",), ("p", u)]
+    g = t.to(order)
+    if u == ttno.root:
+        g = _prepend_root_channel(g, ttno)
+    return g, (sizes if sizes is not None else [])
+
+
+def _stacked_shape(center: BlockShape, n_roots: int) -> BlockShape:
+    """The structure :func:`~kuiva.dmrg.sweep._stack_roots` gives ``n_roots`` centers."""
+    aux = Space([(center.charge.zero_like(), int(n_roots))])
+    rows = np.hstack([center.sectors, np.zeros((center.nblocks, 1), dtype=np.int64)])
+    return BlockShape(center.spaces + (aux,), center.signs + (1,), center.charge, rows)
+
+
+def node_environments_gb(ttno: TTNO, state: TTNState, n_roots: int) -> Tuple[float, float]:
+    """``(resident_gb, transient_gb)`` of :func:`node_environments`, from structure alone.
+
+    The resident part is every node's ``G_u`` together (they are all held until the last
+    is built); the transient is the largest step of any node's chain, an intermediate and
+    its input live together. Environments come from :class:`~kuiva.dmrg.sweep.ShapeEnvironments`
+    on the centre-filled shape state, which stands in for the down messages the real
+    contraction uses on the centre side — same spaces, the same sector sets up to the
+    centre charge, and a forecast rather than the exact per-node ``require`` above.
+    """
+    from .sweep import ShapeEnvironments, shape_state
+
+    shapes = shape_state(state, fill_center=True)
+    cache = ShapeEnvironments(ttno, shapes)
+    graph = state.graph
+    resident = 0
+    transient = 0
+    for u in range(graph.n_nodes):
+        nbrs = sorted(graph.neighbors(u))
+        at_center = u == state.center
+        ket = _stacked_shape(shapes.tensors[u], n_roots) if at_center else shapes.tensors[u]
+        env_of = {x: cache.get(x, u) for x in nbrs}
+        g, steps = _node_environment(u, ket, nbrs, env_of, at_center, ttno, sizes=[])
+        resident += g.nbytes
+        if steps:
+            transient = max(transient, max(
+                a + b for a, b in zip([ket.nbytes] + steps[:-1], steps)))
+    return resident / 1024.0 ** 3, transient / 1024.0 ** 3
+
+
+def _prepend_root_channel(g, ttno: TTNO):
     """Add the root W tensor's dim-1 completed-channel leg back onto ``G_root``.
 
     In the full contraction that leg is closed by a unit vector, so ``dE/dW_root`` is the
@@ -205,6 +283,8 @@ def _prepend_root_channel(g: BlockTensor, ttno: TTNO) -> BlockTensor:
     signs = (1,) + g.signs
     charge = g.charge + space.qns[0]
     rows = np.hstack([np.zeros((g.nblocks, 1), dtype=np.int64), g.sectors])
+    if isinstance(g, BlockShape):
+        return BlockShape(spaces, signs, charge, rows)
     blocks = [np.ascontiguousarray(b.reshape((1,) + b.shape)) for b in g.blocks]
     return BlockTensor(spaces, signs, charge, rows, blocks)
 
@@ -498,6 +578,13 @@ def _sandwich_pair(graph, center: int, parent: np.ndarray,
                    order_leafward: Sequence[int], cache: EnvironmentCache,
                    ttno: TTNO, bra, ket, root: int) -> complex:
     """``<bra_root| H |ket_root>`` for two applied states sharing the state's bonds.
+
+    ⚠ The dirty-path messages below contract the environments into the ket before the
+    W, one operator leg per child open at once — the order the sweep's
+    :func:`~kuiva.dmrg.sweep.renormalize` no longer uses. It is fine on a chain and costs
+    the product of the children's operator bond dimensions on a branching node; the
+    perturbation has not run on a tree, and when it does this is the chain to move onto
+    ``renormalize``.
 
     The three-layer (bra, TTNO, ket) tree contraction with the clean-subtree shortcut:
     a subtree neither side modified contributes exactly the standard environment of the

@@ -121,6 +121,11 @@ class DMRGSolver:
         CASSCF than the entropy-gated one on the same system. Entropy remains the right
         default for uncapped structure *discovery*, which is a different job.
     propose_sweeps : adaptive-sweep budget per proposal (a proposal costs a full solve).
+    rdms : extract the state-averaged ``(gamma, Gamma)`` in :meth:`solve` (default). ``False``
+        returns ``(energy, None, None)`` for a fixed-orbital use that only needs energies and
+        transition densities: the extraction's per-node ``dE/dW`` tensors are dense in the
+        local dimension squared with one operator leg per neighbour, and on a fat or
+        branching node they, not the sweep, are what the memory plan refuses.
     boundary_check : extra local roots for the state-average boundary diagnostic at convergence of
         each solve. Default 0 inside an optimization loop — the diagnostic costs one full
         extra sweep per solve; run the final converged orbitals through a solve with it
@@ -166,7 +171,8 @@ class DMRGSolver:
                  max_sweeps: int = 30, conv_tol: float = 1e-9,
                  davidson_tol: float = 1e-8, trunc_tol: float = 0.0,
                  boundary_check: int = 0, on_split: str = "raise",
-                 enforce_kramers: bool = True, symmetry: Optional[object] = None,
+                 enforce_kramers: bool = True, rdms: bool = True,
+                 symmetry: Optional[object] = None,
                  sector=None, seed: int = 0,
                  checkpoint=None, restart=None,
                  bond_steps: Optional[Sequence[int]] = None,
@@ -221,6 +227,14 @@ class DMRGSolver:
         self.boundary_check = int(boundary_check)
         self.on_split = on_split
         self.enforce_kramers = bool(enforce_kramers)
+        #: Whether :meth:`solve` extracts the state-averaged ``(gamma, Gamma)`` — the
+        #: ``ci_solver`` contract an orbital optimizer needs. A fixed-orbital use (a network
+        #: CASCI whose products are energies and the transition densities of
+        #: :meth:`transition_densities`) passes ``False`` and gets ``(energy, None, None)``:
+        #: the extraction forms every node's ``dE/dW``, dense in the node's local dimension
+        #: squared and with one operator leg per neighbour, which on a fat or branching
+        #: node is refused by the memory plan where the sweep itself fits comfortably.
+        self.rdms = bool(rdms)
         #: Irrep labels of the active spinors (:class:`kuiva.symm.OrbitalLabels`), widening
         #: the network's conserved quantum number from ``(N,)`` to ``(N, irrep)``. ⚠ With
         #: labels on, ``N`` alone is no longer a sector, so ``sector`` names the irrep the
@@ -362,11 +376,13 @@ class DMRGSolver:
 
     def _evaluate(self, template: TTNOTemplate, ttno: TTNO, state: TTNState,
                   result: SweepResult, e_core: float):
+        energy = float(np.dot(result.weights, result.energies)) + e_core
+        if not self.rdms:
+            return energy, None, None
         gamma, gamma2 = network_rdms(
             template, state, energies=[float(e) for e in result.energies],
             n_elec=self.n_elec, weights=self.requested_weights,
             enforce_kramers=self.enforce_kramers, on_split=self.on_split, ttno=ttno)
-        energy = float(np.dot(result.weights, result.energies)) + e_core
         return energy, gamma, gamma2
 
     # -- the AdaptiveCISolver contract ---------------------------------------------------
@@ -406,7 +422,7 @@ class DMRGSolver:
                            bond_schedule=self.bond_schedule if first else None,
                            expansion=self.expansion if first else 0.0,
                            expansion_sweeps=self.expansion_sweeps,
-                           memory_plan=first, report=False)
+                           memory_plan=first, plan_rdms=self.rdms, report=False)
         self._first_solve_done = True
         self.n_solves += 1
         log.debug("DMRG solve %d: E_SA = %.12f Eh (+e_core %.6f) in %d sweeps, max D %d",

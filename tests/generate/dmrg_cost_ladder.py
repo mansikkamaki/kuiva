@@ -335,6 +335,7 @@ def stage_ladder(key: str, topologies: Sequence[str], record: Record, heartbeat,
 
     system = camp.get(key)
     res.clear()
+    camp.clear_templates()
     t_job = time.time()
     reference = camp.build_reference(system)
     if system.orbitals == "guess":
@@ -394,6 +395,9 @@ def stage_ladder(key: str, topologies: Sequence[str], record: Record, heartbeat,
         e_sa_ci = float(np.mean(e_ci))
 
     graphs, topo_meta = camp.topologies(ints, system, topologies)
+    # compile every topology's operator once, up front, and record what it cost: the
+    # points below reuse it and their CPU figures are the solve alone
+    compile_cost = {name: camp.compiled_template(g)[1] for name, g in graphs.items()}
     job = {"key": key, "stage_kind": "ladder", "label": system.label,
            "roots": system.roots, "n_active": system.n_active,
            "n_active_elec": system.n_active_elec, "n_det": ci_cost["ndet"],
@@ -405,7 +409,8 @@ def stage_ladder(key: str, topologies: Sequence[str], record: Record, heartbeat,
                       "blocks": [[int(a), int(b)] for a, b in blocks]},
            "partition": topo_meta,
            "topologies": {name: {"edges": [list(map(int, e)) for e in g.edges],
-                                 "contents": [list(map(int, c)) for c in g.contents]}
+                                 "contents": [list(map(int, c)) for c in g.contents],
+                                 **compile_cost[name]}
                           for name, g in graphs.items()}}
     if not record.has_job(key):
         record.add_job(job)
@@ -448,8 +453,10 @@ def stage_ladder(key: str, topologies: Sequence[str], record: Record, heartbeat,
             # every higher rung solves the SAME variational problem at more cost. The
             # already-validated saturating regime is exactly what this campaign is not
             # about.
+            # ⚠ an oracle-free point has no grade (it is filled in afterwards against the
+            # ladder's own largest cap), so the saturation test reads it defensively
             if point["status"] == "ok" and point["saturating"] \
-                    and point["grade"]["overall"] == "quantitative":
+                    and point.get("grade", {}).get("overall") == "quantitative":
                 record.add_point({"key": key, "topology": name, "cap": None,
                                   "status": "ladder-complete",
                                   "reason": "saturated at D = {} (bond used {}), and the "
@@ -536,7 +543,14 @@ def _print_point(key: str, topology: str, cap: int, point: Dict) -> None:
             key, topology, cap, point["status"].upper(),
             point.get("error", "")[:96]), flush=True)
         return
-    g = point["grade"]
+    g = point.get("grade")
+    if g is None:                              # oracle-free: graded afterwards, internally
+        print("  [{}/{}] D={:4d}  used {:3d}  {:2d} sweeps  w_disc {:.2e}  E_SA {:.8f} Eh  "
+              "{:14s}  {:.1f} CPU s".format(
+                  key, topology, cap, point["bond_used"], point["n_sweeps"],
+                  point["w_disc"], point["e_sa_eh"], "oracle-free", point["cpu_s"]),
+              flush=True)
+        return
     print("  [{}/{}] D={:4d}  used {:3d}  {:2d} sweeps  w_disc {:.2e}  "
           "dE_SA {:+.3e} Eh  dE_max {:8.3f} cm^-1  dg {:.2e}  {:14s}  {:.1f} CPU s".format(
               key, topology, cap, point["bond_used"], point["n_sweeps"], point["w_disc"],
@@ -610,6 +624,7 @@ def stage_relax(key: str, topologies: Sequence[str], record: Record, heartbeat, 
 
     system = camp.get(key)
     res.clear()
+    camp.clear_templates()
     t_job = time.time()
     reference = camp.build_reference(system)
     coeff_ci, space, orb = camp.converged_orbitals(
@@ -771,6 +786,7 @@ def stage_controls(key: str, topologies: Sequence[str], record: Record, heartbea
 
     system = camp.get(key)
     res.clear()
+    camp.clear_templates()
     t_job = time.time()
     reference = camp.build_reference(system)
     coeff, space, orb = camp.converged_orbitals(
@@ -784,6 +800,7 @@ def stage_controls(key: str, topologies: Sequence[str], record: Record, heartbea
     ref_reduction = camp.reduce_at(m_ci, blocks)
     e_sa_ci = float(np.mean(e_ci))
     graphs, topo_meta = camp.topologies(ints, system, topologies)
+    compile_cost = {name: camp.compiled_template(g)[1] for name, g in graphs.items()}
 
     job = {"key": key, "stage_kind": "controls", "label": system.label,
            "roots": system.roots, "n_active": system.n_active,
@@ -1043,11 +1060,14 @@ def summarize(stages: Sequence[str]) -> Dict:
                 "oracle_cpu_s": oracle.get(key, {}).get("oracle", {})
                                       .get("cost", {}).get("cpu_s"),
                 "partition": oracle.get(key, {}).get("partition", {}).get("node_sizes"),
-                "caps_run": [], "refused": [], "unconverged": [],
+                "caps_run": [], "refused": [], "refused_memory": [], "unconverged": [],
                 "floors": {}, "curve": []})
             cap = int(point["cap"])
             if point.get("status") == "refused":
                 row["refused"].append(cap)
+                continue
+            if point.get("status") == "refused-memory":
+                row["refused_memory"].append(cap)
                 continue
             if point.get("status") == "unconverged":
                 row["unconverged"].append(cap)
@@ -1170,7 +1190,9 @@ def print_summary(rows: Dict) -> None:
             str(q["cap"]) if q else "-", str(qq["cap"]) if qq else "-",
             "{:.1f}".format(q["cpu_s"]) if q else "-",
             "{:.1f}".format(qq["cpu_s"]) if qq else "-",
-            ",".join(str(c) for c in sorted(r["refused"])) or "-"))
+            (",".join(str(c) for c in sorted(r["refused"])) or "-")
+            + ("  mem:" + ",".join(str(c) for c in sorted(r["refused_memory"]))
+               if r.get("refused_memory") else "")))
 
 
 # --- driver ---------------------------------------------------------------------------------

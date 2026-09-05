@@ -24,13 +24,16 @@ structure alone (:class:`kuiva.dmrg.block.BlockShape`) and therefore exactly, wi
 allocated and no contraction performed:
 
 * the **environment cache**, which grows to every directed bond over one sweep and is
-  released only when the solve ends;
+  released only when the solve ends, and the transient of the chain that builds an entry —
+  on a branching node the larger of the two by orders of magnitude;
 * the **two-site solves**, whose resident part is the merged ensemble, the packed guess, the
   Davidson stacks, the roots and the pre-contracted operator halves a branching node may
   take, and whose transient part is the effective-Hamiltonian application above — the term
   that was missing;
-* the **RDM contraction**, which is a second environment set plus the ``n^4`` two-particle
-  array, and which runs after the sweep on the same state.
+* the **RDM contraction**, which is a second environment set, the per-node operator
+  environments ``dE/dW_u`` (dense in the node's local dimension squared, all held at
+  once) with the transient of the chain that builds them, and the ``n^4`` two-particle
+  array; it runs after the sweep on the same state.
 
 ⚠ **The bond that peaks is found, not assumed.** The tour visits every bond, the local
 dimensions differ by a factor of many between a leaf bond and an interior one, and the
@@ -50,7 +53,8 @@ from typing import List, Optional, Sequence, Tuple
 
 from ..util import resources as res
 from .block import BlockShape
-from .sweep import ShapeEnvironments, TTNState, environment_gb
+from .sweep import (ShapeEnvironments, TTNState, environment_build_peak_gb,
+                    environment_gb)
 from .ttno import TTNO
 
 
@@ -96,7 +100,7 @@ def two_site_peak(ttno: TTNO, state: TTNState, *, n_roots: int,
         problem = _LocalProblem(ttno, shapes, ShapeEnvironments(ttno, shapes), u, v)
         n_solve = min(int(n_roots) + int(extra_roots), problem.dim)
         workspace = problem.solve_workspace_gb(int(n_roots), n_solve)
-        apply_gb = problem.apply_peak_gb()
+        apply_gb = problem.transient_peak_gb()
         if workspace + apply_gb > best[0] + best[1]:
             best = (workspace, apply_gb, (u, v))
     return best
@@ -115,6 +119,7 @@ def network_memory_plan(ttno: TTNO, state: TTNState, *, n_roots: int,
     """
     n = sum(len(c) for c in state.graph.contents)
     envs = environment_gb(ttno, state)
+    build = environment_build_peak_gb(ttno, state)
     workspace, apply_gb, bond = two_site_peak(ttno, state, n_roots=n_roots,
                                               extra_roots=extra_roots)
     cap_note = "" if max_bond is None else "; max_bond = {}".format(max_bond)
@@ -124,8 +129,14 @@ def network_memory_plan(ttno: TTNO, state: TTNState, *, n_roots: int,
                 "renormalized operator blocks", envs,
                 note="{} directed bonds, held until the solve ends{}".format(
                     2 * len(state.graph.edges), cap_note)),
+            res.PlannedAllocation(
+                "environment build", build, resident=False,
+                note="largest step of any build's chain, with the environments it folds "
+                     "into the operator ahead of the ket"),
         ], advice=["reduce max_bond: an environment scales as D^2 times the operator "
                    "bond dimension",
+                   "a node partition with fewer neighbours per node: a build opens one "
+                   "operator leg per neighbour it does not fold",
                    "environment_paging=True pages the coldest entries to scratch"]),
         res.PhaseEstimate(name="two-site solves", allocations=[
             res.PlannedAllocation(
@@ -136,8 +147,9 @@ def network_memory_plan(ttno: TTNO, state: TTNState, *, n_roots: int,
                          "" if n_roots == 1 else "s")),
             res.PlannedAllocation(
                 "H_eff application", apply_gb, resident=False,
-                note="one contraction intermediate, built and freed once per "
-                     "matrix-vector product"),
+                note="the larger of one contraction intermediate (built and freed once "
+                     "per matrix-vector product) and the preconditioner's dense W "
+                     "arrays"),
         ], advice=[
             "reduce max_bond: the two-site dimension scales as D^2 d^2 and the "
             "application's intermediate carries one operator bond dimension on top of "
@@ -148,13 +160,28 @@ def network_memory_plan(ttno: TTNO, state: TTNState, *, n_roots: int,
             "application's intermediate quadratically in the local dimension"]),
     ]
     if rdm:
+        from .density import node_environments_gb
+
+        g_resident, g_transient = node_environments_gb(ttno, state, n_roots)
         phases.append(res.PhaseEstimate(name="network RDMs", allocations=[
             res.PlannedAllocation("state-averaged 2-RDM", res.rdm_gb(n, 2),
                                   note="{} spinors".format(n)),
             res.PlannedAllocation("per-node environments", envs, resident=False,
                                   note="a second environment set, released with the "
                                        "contraction"),
-        ], advice=["the 2-RDM is n^4 in the active space and no setting moves it"]))
+            res.PlannedAllocation("operator environments dE/dW", g_resident,
+                                  resident=False,
+                                  note="one per node, dense in the node's local "
+                                       "dimension squared, all held until the last is "
+                                       "built"),
+            res.PlannedAllocation("dE/dW contraction", g_transient, resident=False,
+                                  note="largest step of any node's chain, input and "
+                                       "output together"),
+        ], advice=["the 2-RDM is n^4 in the active space and no setting moves it",
+                   "a finer node partition (more nodes, fewer modes each) shrinks the "
+                   "operator environments by the local dimension squared",
+                   "reduce max_bond: the contraction's intermediate carries two bond "
+                   "legs"]))
     return phases
 
 

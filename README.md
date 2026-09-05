@@ -101,13 +101,13 @@ pytest                     # the default suite: fast tests only, ~8 minutes
 
 ## Versioning
 
-**Version 0.40.0.** `MAJOR.MINOR.PATCH`; while the leading digit is 0 the interface is not
+**Version 0.41.2.** `MAJOR.MINOR.PATCH`; while the leading digit is 0 the interface is not
 yet stable and a breaking change moves `MINOR`. Every commit carries a version bump, so a
 version identifies exactly one state of the code — the run banner prints it and every
 stored product records it:
 
 ```python
-import kuiva; kuiva.__version__          # '0.40.0'
+import kuiva; kuiva.__version__          # '0.41.2'
 ```
 
 Independent of it, checkpoints carry a `schema_version` and the plain-text products a
