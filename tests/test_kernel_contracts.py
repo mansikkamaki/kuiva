@@ -54,10 +54,10 @@ from kuiva.ci.strings import CASSpace, binomial_table, cas_dimension
 REQUIRED_KERNELS = ("cas_rank", "cas_unrank", "excitation_map",
                     "sigma_gather_f", "sigma_gather_out", "rdm_accumulate",
                     "transition_density", "block_pair_gemm", "connections_scan",
-                    "sparse_pair_dot")
+                    "sparse_pair_dot", "block_pack")
 
 #: Kernels that take an explicit thread budget (B7 applied to threads): the count comes in as an argument, it is never a global or an environment read.
-THREADED_KERNELS = ("connections_scan", "block_pair_gemm", "sparse_pair_dot")
+THREADED_KERNELS = ("connections_scan", "block_pair_gemm", "sparse_pair_dot", "block_pack")
 
 #: Only these may appear as a parameter annotation (B1). Compared as *strings*: the kernel
 #: modules use ``from __future__ import annotations``, so annotations arrive unevaluated —
@@ -265,6 +265,13 @@ def _valid_arguments(name):
                  np.array([[4, 3, 2], [4, 3, 2]], dtype=np.int64),
                  np.zeros(6, dtype=np.complex128), np.array([0, 6], dtype=np.int64),
                  1], 0, 8)
+    if name == "block_pack":
+        # one 2x3 block transposed to 3x2, plus a 2x2 block left as it is
+        return ([np.arange(10, dtype=np.complex128), np.array([0, 6], dtype=np.int64),
+                 np.array([[2, 3], [2, 2]], dtype=np.int64),
+                 np.array([1, 0], dtype=np.int64),
+                 np.zeros(10, dtype=np.complex128), np.array([4, 0], dtype=np.int64),
+                 1], 0, 4)
     if name == "connections_scan":
         cap = 256                               # ample for the C(6,3) space's 190 pairs
         return ([space.masks.copy(), 0, ndet,

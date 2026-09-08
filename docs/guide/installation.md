@@ -52,7 +52,8 @@ choosing a width silently would make every run's cost figures a property of the 
 ## The optional compiled backend
 
 A handful of measured-hot kernels — the determinant connection scan, the tensor-network
-block GEMM and its sparse-operator sibling — have C++ implementations behind the same
+block GEMM, its sparse-operator sibling and the block matricization that feeds them — have
+C++ implementations behind the same
 registry the NumPy ones live in, bound through pybind11 [[4]](../references.md#r4). If you
 have the Intel oneAPI toolchain:
 

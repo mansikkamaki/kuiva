@@ -41,6 +41,10 @@ Usage::
     python tests/generate/dmrg_cost_ladder.py --stage s0.1                # smoke, < 10 min
     python tests/generate/dmrg_cost_ladder.py --stage s0.2 --budget 10800
     python tests/generate/dmrg_cost_ladder.py --stage s1.2 --budget 10800
+    python tests/generate/dmrg_cost_ladder.py --stage s2.1                # spin models, ~1 h
+    python tests/generate/dmrg_cost_ladder.py --stage s2.2 --budget 10800 # 30-spinor TTNO
+    python tests/generate/dmrg_cost_ladder.py --stage s2.3a --budget 10800 # dimer bridge
+    python tests/generate/dmrg_cost_ladder.py --stage s2.3b --budget 10800 # trimer bridge
 
 Records: ``temp/dmrg_cost_ladder/<stage>.json``; log: ``temp/dmrg_cost_ladder/<stage>.log``.
 """
@@ -132,6 +136,29 @@ STAGES: Dict[str, Dict] = {
                   relax_budget={"tif3_dd": 900.0},
                   relax_max_iter={"tif3_dd": 60},
                   budget=1.0 * 3600),
+    # --- Phase 2: the road to Tier 3 (tests/generate/dmrg_phase2.py) ----------------------
+    # ⚠ The spin-model stage has no integrals and no memory question; its jobs are the
+    # Tier-3 systems themselves (tier3_systems.SYSTEMS), and every point is graded
+    # against dense ED, a sparse sector solve, or a theorem. The feasibility stage has one
+    # system and its "topologies" are node partitions, one child process each.
+    "s2.1": dict(kind="spin-models", label="Tier-3 spin models through the network solver",
+                 jobs=tuple((k, ("chain", "tree")) for k in
+                            ("mn3_linear", "dy2_n2rad", "fe3_oxo", "fe4_star",
+                             "mn4ca_oec", "fe4s4", "cr8_ring", "cr7ni_ring")),
+                 budget=2.0 * 3600),
+    "s2.2": dict(kind="feasibility", label="the 30-spinor ab initio TTNO: compile, plan, "
+                                           "bounded sweeps per node partition",
+                 jobs=(("ti3f9_far", ("m2", "m3", "m5", "m10")),),
+                 budget=3.0 * 3600),
+    # ⚠ The bridge stage's "topologies" are ROOT LANES (dmrg_phase2.BRIDGE_LANES): the
+    # site-blocked chain is the one topology, by the S2.1 finding, and what varies is how
+    # much of the local-multiplet product manifold the ensemble is asked to hold.
+    "s2.3a": dict(kind="bridge", label="the coupled two-site bridge with the Tier-3 "
+                                       "protocol on",
+                  jobs=(("ti2cl6", ("r4", "r16", "r100")),), budget=3.0 * 3600),
+    "s2.3b": dict(kind="bridge", label="the 30-spinor three-site bridge with the Tier-3 "
+                                       "protocol on",
+                  jobs=(("ti3f9_far", ("r8",)),), budget=3.0 * 3600),
 }
 
 
@@ -928,9 +955,13 @@ def extrapolate(stage: str, key: str, topology: str,
     data = json.loads(path.read_text())
     jobs = {j["key"]: j for j in data.get("jobs", [])
             if j.get("stage_kind") in ("ladder", "controls")}
-    if key not in jobs:
+    # a bridge job's oracle is per root LANE (its "topology"), never per system
+    jobs.update({"{}/{}".format(j["key"], j["topology"]): j
+                 for j in data.get("jobs", []) if j.get("stage_kind") == "bridge"})
+    job = jobs.get("{}/{}".format(key, topology), jobs.get(key))
+    if job is None:
         return None
-    ref = jobs[key]["oracle"]["reduction"]
+    ref = job["oracle"]["reduction"]
     points = [p for p in data.get("points", [])
               if p.get("key") == key and p.get("topology") == topology
               and p.get("status") == "ok" and p.get("cap") is not None
@@ -975,7 +1006,7 @@ def extrapolate(stage: str, key: str, topology: str,
             "w_disc": [float(x) for x in w],
             "e_sa_error_cm_extrapolated": e_cm,
             "cpu_s_total": cpu,
-            "oracle_cpu_s": jobs[key]["oracle"]["cost"]["cpu_s"],
+            "oracle_cpu_s": job["oracle"]["cost"]["cpu_s"],
             "grade": grade,
             "per_point_grade": [p["grade"]["overall"] for p in points]}
 
@@ -1002,11 +1033,15 @@ def regrade(stages: Sequence[str]) -> Dict:
         # against the fixed-orbital oracle: the two references are at different orbitals.
         refs.update({j["key"]: j["ci_leg"]["reduction"] for j in data.get("jobs", [])
                      if j.get("stage_kind") == "relax"})
+        # a bridge lane has its own oracle (its root count is the manifold under test)
+        refs.update({"{}/{}".format(j["key"], j["topology"]): j["oracle"]["reduction"]
+                     for j in data.get("jobs", []) if j.get("stage_kind") == "bridge"})
         n = 0
         for point in data.get("points", []):
             if point.get("status") != "ok" or "reduction" not in point:
                 continue
-            ref = refs.get(point["key"])
+            ref = refs.get("{}/{}".format(point["key"], point.get("topology")),
+                           refs.get(point["key"]))
             if ref is None:
                 continue
             before = point.get("grade", {}).get("overall")
@@ -1219,7 +1254,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.stage == "extrapolate":
         rows = []
-        for stage in sorted(k for k in STAGES if k.startswith("s1")):
+        for stage in sorted(k for k in STAGES if k.startswith("s1") or k.startswith("s2.3")):
             path = camp.RECORDS / "{}.json".format(stage)
             if not path.is_file():
                 continue
@@ -1265,6 +1300,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.stage == "summary":
+        import dmrg_phase2
+        for stage, summarize_fn, print_fn in (
+                ("s2.1", dmrg_phase2.summarize_spin_models,
+                 dmrg_phase2.print_spin_summary),
+                ("s2.2", dmrg_phase2.summarize_feasibility,
+                 dmrg_phase2.print_feasibility_summary),
+                ("s2.3a", dmrg_phase2.summarize_bridge, dmrg_phase2.print_bridge_summary),
+                ("s2.3b", dmrg_phase2.summarize_bridge, dmrg_phase2.print_bridge_summary)):
+            path = camp.RECORDS / "{}.json".format(stage)
+            if path.is_file():
+                rows = summarize_fn(path)
+                print("\n== {} ({}) ==".format(stage, STAGES[stage]["label"]))
+                print_fn(rows)
+                with open(camp.RECORDS / "{}_summary.json".format(stage), "w") as fh:
+                    json.dump({"schema": SCHEMA, "rows": rows}, fh, indent=1,
+                              sort_keys=True, default=_jsonable)
         stages = sorted(k for k in STAGES if k.startswith("s1"))
         rows = summarize(stages)
         relax = summarize_relax(stages)
@@ -1318,6 +1369,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                      else plan["control_caps"][key]),
                                variants=plan["control_variants"],
                                max_sweeps=args.max_sweeps)
+            elif plan["kind"] == "spin-models":
+                import dmrg_phase2
+                dmrg_phase2.stage_spin_models(record, heartbeat, deadline=deadline,
+                                              keys=[key], caps=caps,
+                                              max_sweeps=(dmrg_phase2.SPIN_MAX_SWEEPS
+                                                          if args.max_sweeps == 30
+                                                          else args.max_sweeps))
+            elif plan["kind"] == "feasibility":
+                import dmrg_phase2
+                dmrg_phase2.stage_feasibility(
+                    record, heartbeat, deadline=deadline,
+                    partitions=(None if args.caps is None else caps),
+                    caps=None, n_roots=dmrg_phase2.FEASIBILITY_ROOTS,
+                    max_sweeps=(dmrg_phase2.FEASIBILITY_SWEEPS if args.max_sweeps == 30
+                                else args.max_sweeps))
+            elif plan["kind"] == "bridge":
+                import dmrg_phase2
+                dmrg_phase2.stage_bridge(
+                    record, heartbeat, deadline=deadline, keys=[key], caps=caps,
+                    max_sweeps=(dmrg_phase2.BRIDGE_MAX_SWEEPS if args.max_sweeps == 30
+                                else args.max_sweeps))
             elif plan["kind"] == "relax":
                 stage_relax(key, topologies, record, heartbeat, deadline=deadline,
                             caps=(caps if caps is not None

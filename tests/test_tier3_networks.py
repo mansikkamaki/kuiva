@@ -16,11 +16,18 @@ What is asserted instead is everything that is true *by theorem or by counting*:
 5. **Intractability** - that each system really is beyond the conventional-CI ceiling,
    which is the justification for this tier existing at all. If one of these ever became
    cheap enough for a Tier-1/2 reference, it belongs in that tier instead.
-6. **Method placeholders** - what Kuiva's MPS/TTNS code must reproduce, skipped until
-   ``kuiva.dmrg`` exists, so they light up on their own.
+6. **The network solver on the effective spin models** - the same two-site sweep the ab
+   initio path runs, driven through the operator compiler's generic operator-sum seam with
+   one mode per paramagnetic centre, against dense ED, the Lieb-Mattis spin, and the
+   exchange graph itself. The variational energy of the *committed* state is what is
+   graded (a two-site problem on a three- or four-site network spans the whole system, so
+   the sweep's local eigenvalue is exact at any cap), and the total spin is read from
+   ``<S^2>`` rather than assumed from the sector.
 
 Nothing here needs an active space, an integral, or a basis set: these are statements about
 the *structure* of the problem, which is exactly what a tensor network has to get right.
+The campaign record behind the thresholds in part 6 is ``tests/generate/dmrg_phase2.py``'s
+stage S2.1; nothing here reads it, everything is recomputed live.
 """
 from __future__ import annotations
 
@@ -366,55 +373,187 @@ def test_system_is_beyond_conventional_ci(records, key):
         f"{key}: {rec['cas_determinants']:.2e} determinants is not obviously intractable"
 
 
-# --- 6. what Kuiva must eventually reproduce -------------------------------------------------
-@pytest.mark.parametrize("key", BIPARTITE_KEYS)
-def test_kuiva_dmrg_ground_spin(key):
-    """Kuiva's DMRG must land on the Lieb-Mattis ground-state spin.
+# --- 6. what Kuiva's network reproduces -----------------------------------------------------
+#
+# Every test below solves the effective Heisenberg model of a Tier-3 graph with the network
+# solver, one mode per centre, in the lowest-|M| sector (tier3_systems.target_sector), and
+# checks the committed state against a quantity that does not come from the network. The
+# spin-model input is tier3_systems.heisenberg_product_terms; the solve and the grading
+# live in tests/generate/dmrg_phase2.py so the suite and the campaign share one
+# implementation.
+#
+# Caps are the measured exact ranks of the committed ensemble (campaign stage S2.1): the
+# star tree is exact at D = 6 (every bond a leaf cut of a spin-5/2 site), the three-site
+# chains at D = 6 / 16, the eight-site rings converge to ~3e-4 of J at D = 64.
 
-    When enabled: run the DMRG solver on the effective spin model for this topology and check
-    the converged total spin against the theorem. This is a rigorous target that needs no
-    reference calculation, which is what makes it usable at all for systems this size.
+def _phase2():
+    import dmrg_phase2
+    return dmrg_phase2
+
+
+@pytest.fixture(scope="module")
+def spin_cases():
+    """Built lazily and cached: the dense/sparse oracles are the expensive part."""
+    cache: Dict[str, object] = {}
+
+    def get(key: str):
+        if key not in cache:
+            cache[key] = _phase2().spin_case(key)
+        return cache[key]
+    return get
+
+
+#: Ground-spin systems: the two three/four-site chains in the fast suite, the 65 536-state
+#: rings opt-in (a few CPU seconds each at D = 64, plus a sparse Lanczos oracle).
+GROUND_SPIN_CASES = [
+    pytest.param("mn3_linear", "chain", 6, 1e-8, id="mn3_linear"),
+    pytest.param("fe4_star", "tree", 6, 1e-8, id="fe4_star"),
+    pytest.param("cr8_ring", "chain", 64, 2e-3, id="cr8_ring", marks=pytest.mark.slow),
+    pytest.param("cr7ni_ring", "chain", 64, 2e-3, id="cr7ni_ring", marks=pytest.mark.slow),
+]
+
+
+@pytest.mark.parametrize("key,lane,cap,energy_tol", GROUND_SPIN_CASES)
+def test_kuiva_dmrg_ground_spin(spin_cases, key, lane, cap, energy_tol):
+    """Kuiva's DMRG lands on the Lieb-Mattis ground-state spin, and on its energy.
+
+    The sector solve holds one member of every total-spin multiplet, so the network's
+    ground state is the model's; its total spin is read from ``<S^2>`` of the committed
+    state and compared with the theorem — and, where one exists, with experiment. The
+    energy is compared with the same model's exact sector spectrum (dense on the small
+    systems, Lanczos on the rings, both program-independent). ⚠ The matched ring pair is
+    what catches wrong local quantum numbers: same graph, S = 0 against S = 1/2.
     """
-    pytest.importorskip("kuiva.dmrg.sweep", reason="kuiva.dmrg not implemented yet ")
-    pytest.skip("enable once dmrg/sweep.py can converge an effective spin model")
+    p2 = _phase2()
+    case = spin_cases(key)
+    system = case.system
+    graph = p2.lane_graphs(system)[lane]
+    point = p2.network_point(case, graph, cap)
+    assert point["status"] == "ok", point.get("error")
+    lm = t3.lieb_mattis_twice_spin(system)
+    assert point["twice_s_spectrum"] == [lm], (
+        f"{key}: committed ground state has 2S={point['twice_s_spectrum']}, "
+        f"Lieb-Mattis gives 2S={lm}")
+    if system.experimental_twice_spin is not None:
+        assert point["twice_s_spectrum"] == [system.experimental_twice_spin]
+    s2_exact = 0.25 * lm * (lm + 2)
+    assert abs(point["s2_spectrum"][0] - s2_exact) < 1e-3
+    assert abs(point["e_state"][0] - case.oracle["ground_energy"]) < energy_tol
+    # the same model, the same numbers: a wrong sector or a wrong local basis would
+    # pass no oracle
+    assert case.oracle["ground_twice_total_spins"] == [lm]
 
 
-def test_kuiva_ttns_beats_mps_on_the_star():
-    """``fe4_star`` is the system where a tree network should demonstrably win.
+def test_kuiva_ttns_beats_mps_on_the_star(spin_cases):
+    """``fe4_star``: the tree is exact at D = 6, the chain is not, and needs D = 11.
 
-    A star cannot be ordered so that all three branches are nearest-neighbour, so an MPS must
-    carry a long-range bond while a TTNS matches the topology exactly. When enabled, this
-    should compare bond dimension at fixed accuracy - the concrete payoff of the NetworkGraph
-    abstraction being genuinely abstract.
+    Every bond of the star tree is a leaf cut, whose Schmidt rank is at most the leaf's
+    six states; a chain must cut the network two-against-two somewhere, and that cut of
+    the S = 5 ground state has rank 11 (measured, well below the 36 the counting allows).
+    So at D = 6 the tree carries the state exactly while the chain discards 4 % of it and
+    sits 0.37 J above the ground energy — the concrete payoff of a topology that matches
+    the exchange graph, and the reason ``NetworkGraph`` is a tree rather than a chain.
     """
-    pytest.importorskip("kuiva.dmrg.graph", reason="kuiva.dmrg not implemented yet ")
-    pytest.skip("enable once NetworkGraph supports both MPS and TTNS topologies")
+    p2 = _phase2()
+    case = spin_cases("fe4_star")
+    lanes = p2.lane_graphs(case.system)
+    tree = p2.network_point(case, lanes["tree"], 6)
+    chain = p2.network_point(case, lanes["chain"], 6)
+    e0 = case.oracle["ground_energy"]
+    assert tree["status"] == "ok" and chain["status"] == "ok"
+    assert tree["w_disc"] == 0.0
+    assert abs(tree["e_state"][0] - e0) < 1e-8
+    assert tree["twice_s_spectrum"] == [10]
+    assert chain["w_disc"] > 1e-3
+    assert chain["e_state"][0] - e0 > 0.1
+    # the chain becomes exact only once its middle bond can hold the two-against-two cut
+    exact_chain = p2.network_point(case, lanes["chain"], 16)
+    assert exact_chain["w_disc"] < 1e-12 and abs(exact_chain["e_state"][0] - e0) < 1e-8
+    assert exact_chain["bond_used"] > 6
 
 
-def test_kuiva_orbital_ordering_recovers_the_exchange_graph():
-    """Entanglement-driven ordering should rediscover the connectivity.
+def test_kuiva_orbital_ordering_recovers_the_exchange_graph(spin_cases):
+    """Entanglement-driven ordering rediscovers the connectivity — where it can.
 
-    For ``mn3_linear`` the mutual-information/Fiedler ordering should return the natural chain
-    order, and for ``fe4_star`` it should place the central Fe between the peripheral ones.
-    The exchange graph is the ground truth the ordering heuristic is trying to find, so this
-    tests the heuristic against a known answer rather than against itself.
+    On ``mn3_linear`` the Fiedler order of the site mutual information is the chain and
+    the topology guess returns it. On ``fe4_star`` the centre is the most entangled
+    partner of every leaf, and the inter-site tree — the centres declared as sites, which
+    is what the localization supplies on the ab initio route — is the star. ⚠ The
+    default guess, which clusters modes into sites and *chains* them, returns a chain
+    here by construction; the heuristic is tested for what it is defined to do.
     """
-    pytest.skip("orbital ordering is entanglement-driven and lives in rdm/entropy.py "
-                "(Fiedler) plus dmrg/guess.py's clustering; a Tier-3-scale ordering check "
-                "needs a network solve on a system beyond the conventional-CI ceiling, which is not a "
-                "fast-suite test")
+    p2 = _phase2()
+    import numpy as np
+
+    case = spin_cases("mn3_linear")
+    point = p2.network_point(case, p2.lane_graphs(case.system)["chain"], 6,
+                             keep_vectors=True)
+    rep = p2.ordering_report(case, point["_vectors"])
+    assert rep["fiedler_walks_the_graph"]
+    assert rep["fiedler_order"] in ([0, 1, 2], [2, 1, 0])
+    assert rep["mi_tree_is_the_graph"]
+
+    case = spin_cases("fe4_star")
+    point = p2.network_point(case, p2.lane_graphs(case.system)["tree"], 6,
+                             keep_vectors=True)
+    rep = p2.ordering_report(case, point["_vectors"])
+    info = np.asarray(rep["mutual_information"])
+    assert all(info[0, k] > info[j, k] for k in (1, 2, 3) for j in (1, 2, 3) if j != k), \
+        "the centre must be every leaf's most entangled partner"
+    assert rep["mi_site_tree_is_the_graph"], rep["mi_site_tree_edges"]
 
 
-def test_kuiva_multisite_handles_inhomogeneous_local_dimensions():
-    """``dy2_n2rad``: local dimensions (16, 2, 16), and SOC too large for a spin-only picture.
+def test_mutual_information_cannot_see_a_low_dimensional_bridge(spin_cases):
+    """``dy2_n2rad``'s structural model: the radical's entropy caps its mutual information.
 
-    A network that assumes a uniform local dimension, or that a site is a spin multiplet
-    rather than a J multiplet, silently does the wrong thing here rather than failing loudly -
-    which is why this system is in the suite (local multiplets).
+    ``I(a, b) <= min(S_a, S_b) <= ln d_min``, so a two-state bridge shares at most ln 2
+    nats with either neighbour whatever the coupling, while the two sixteen-state sites
+    share several times that through it. The Fiedler order then puts the bridge at an
+    end and the guess connects the two ions directly — the exchange graph is *not*
+    recovered, and the assertion is the mechanism: the bound is saturated. For an
+    ion-radical-ion system the topology has to come from the exchange graph (the
+    localization's site partition), never from the entanglement of a converged state.
     """
-    # the machinery is `kuiva.dmrg.manifold`;
-    # its inhomogeneous-local-dimension behaviour is covered Tier-0 by the fragment
-    # oracles of tests/test_dmrg_manifold.py. This system is f-block and beyond the
-    # fast suite by design (the cheapest system that shows the structure).
-    pytest.importorskip("kuiva.dmrg.manifold")
-    pytest.skip("needs an f-dimer network solve; Tier-0 coverage is test_dmrg_manifold.py")
+    p2 = _phase2()
+    import math
+    import numpy as np
+
+    case = spin_cases("dy2_n2rad")
+    point = p2.network_point(case, p2.lane_graphs(case.system)["chain"], 16,
+                             keep_vectors=True)
+    assert point["w_disc"] == 0.0
+    rep = p2.ordering_report(case, point["_vectors"])
+    info = np.asarray(rep["mutual_information"])
+    bridge = 1                                             # the radical site
+    assert rep["site_entropies"][bridge] <= math.log(2.0) + 1e-9
+    assert info[0, bridge] <= math.log(2.0) + 1e-9
+    assert info[2, bridge] <= math.log(2.0) + 1e-9
+    assert info[0, 2] > 3.0 * info[0, bridge]
+    assert not rep["mi_tree_is_the_graph"] and not rep["mi_site_tree_is_the_graph"]
+    assert rep["fiedler_order"][0] != bridge and rep["fiedler_order"][-1] != bridge \
+        or rep["fiedler_order"][1] != bridge
+
+
+def test_kuiva_multisite_handles_inhomogeneous_local_dimensions(spin_cases):
+    """``dy2_n2rad``: local dimensions (16, 2, 16), exact at D = 16, S = 29/2.
+
+    The *structural* stand-in for the SOC-dominated dimer (an isotropic model on a
+    J = 15/2 multiplet says nothing about the molecule and everything about whether the
+    network carries three different local dimensions correctly): against the dense ED of
+    the same model, the committed state is exact once the cap reaches the 16-state
+    ions' Schmidt rank, its total spin is the Lieb-Mattis value of the stand-in, and the
+    bond next to the two-state bridge is not what limits anything.
+    """
+    p2 = _phase2()
+    case = spin_cases("dy2_n2rad")
+    assert case.dims == (16, 2, 16)
+    ed = t3.heisenberg_ground_state(case.system, structural=True)
+    assert ed is not None and t3.heisenberg_ground_state(case.system) is None
+    point = p2.network_point(case, p2.lane_graphs(case.system)["chain"], 16)
+    assert point["status"] == "ok" and point["w_disc"] == 0.0
+    assert abs(point["e_state"][0] - ed["ground_energy"]) < 1e-8
+    assert abs(point["e_state"][0] - case.oracle["ground_energy"]) < 1e-8
+    assert point["twice_s_spectrum"] == [ed["twice_total_spin"]] == [29]
+    # a cap below the ions' rank is a genuine approximation, graded as such
+    coarse = p2.network_point(case, p2.lane_graphs(case.system)["chain"], 4)
+    assert coarse["w_disc"] > 1e-3 and coarse["e_state"][0] > ed["ground_energy"] + 0.1

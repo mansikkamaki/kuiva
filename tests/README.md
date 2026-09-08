@@ -142,6 +142,19 @@ number when its hypotheses fail, and is cross-checked against dense ED of the ef
 model. A test asserts every Tier-3 system stays beyond the conventional-CI ceiling — if one
 ever becomes cheap enough to compute, it belongs in Tier 1/2 with a real reference.
 
+The network solver itself runs on these graphs: `tests/generate/tier3_systems.py` builds
+each system's effective Heisenberg model as the operator compiler's generic operator-sum
+input (one mode per centre, the local basis the `2S + 1` multiplet, the conserved label
+the total-`M` sector), and `tests/generate/dmrg_phase2.py` solves it with the same two-site
+sweep the ab initio path uses. The tests grade the **committed** state — its variational
+energy against dense ED (or a sparse Lanczos sector solve on the rings) and its total spin
+read from `<S^2>` against Lieb–Mattis and experiment — never the sweep's local eigenvalue,
+which on a three- or four-site network is exact at any cap. `fe4_star` runs on both
+topologies (the tree is exact at D = 6, the chain needs D = 11), the (16, 2, 16)
+ion–radical–ion model is exact at D = 16, and the ordering test asserts the mechanism that
+limits entanglement-driven ordering: a two-state bridge shares at most `ln 2` nats with
+either neighbour. The rings are in the slow suite.
+
 ## Cross-code comparison
 
 Kuiva, OpenMolcas and DIRAC will **not** agree to many digits, and the suite is built so this

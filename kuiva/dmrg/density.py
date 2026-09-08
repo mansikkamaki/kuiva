@@ -503,27 +503,41 @@ def _overlap_pairs(graph, center: int, parent: np.ndarray,
         msgs[u] = t.to([("cb", u, p), ("b", u, p)])
 
     nbrs = sorted(graph.neighbors(center))
-    n_roots = len(ket_c)
+    # ⚠ Every root's center tensor has the same block structure (one shared basis, one
+    # local operator applied to all of them), so the roots ride on a trailing leg: the
+    # messages are contracted ONCE for the whole ensemble and the closure is one GEMM per
+    # block. Measured motive: the per-root form — a block lookup and a ``vdot`` per root
+    # pair per block — was half the CPU of a 25-root ladder point after the sweep itself
+    # had been made cheap (165 000 lookups for one FeCl2 transition-density set).
+    ket_all = _stacked_centers(ket_c)
+    bra_all = _stacked_centers(bra_c)
+    n_roots = int(ket_all.spaces[-1].total_dim)
+    t = _Lab(ket_all, [("b", center, x) for x in nbrs] + [("p", center), ("r",)])
+    labels = []
+    for x in nbrs:
+        if msgs.get(x) is not None:
+            t = t.dot(_Lab(msgs[x], [("bra", x), ("ket", x)]),
+                      [(("b", center, x), ("ket", x))])
+            labels.append(("bra", x))
+        else:
+            labels.append(("b", center, x))
+    kt = t.to(labels + [("p", center), ("r",)])
     m = np.zeros((n_roots, n_roots), dtype=np.complex128)
-    for j in range(n_roots):
-        t = _Lab(ket_c[j], [("b", center, x) for x in nbrs] + [("p", center)])
-        labels = []
-        for x in nbrs:
-            if msgs.get(x) is not None:
-                t = t.dot(_Lab(msgs[x], [("bra", x), ("ket", x)]),
-                          [(("b", center, x), ("ket", x))])
-                labels.append(("bra", x))
-            else:
-                labels.append(("b", center, x))
-        kt = t.to(labels + [("p", center)])
-        for i in range(n_roots):
-            val = 0.0 + 0.0j
-            for row, blk in zip(kt.sectors, kt.blocks):
-                b = bra_c[i].find(row)
-                if b is not None:
-                    val += np.vdot(b, blk)                 # vdot conjugates the bra
-            m[i, j] = val
+    for row, blk in zip(kt.sectors, kt.blocks):
+        b = bra_all.find(row)
+        if b is not None:
+            # M[i, j] += sum_k conj(bra_i[k]) ket_j[k]
+            m += b.reshape(-1, n_roots).T.conj() @ blk.reshape(-1, n_roots)
     return m
+
+
+def _stacked_centers(centers) -> BlockTensor:
+    """The roots of an applied state on one trailing leg, unit weights — or the tensor
+    itself when the caller stacked it already (:func:`transition_rdm1s` does, once per
+    applied state instead of twice per mode pair)."""
+    if isinstance(centers, BlockTensor):
+        return centers
+    return _stack_roots(list(centers), np.ones(len(centers)))
 
 
 def transition_rdm1s(ttno: TTNO, state: TTNState) -> np.ndarray:
@@ -552,7 +566,10 @@ def transition_rdm1s(ttno: TTNO, state: TTNState) -> np.ndarray:
     parent, preorder = graph.parents(state.center)
     order_leafward = [int(x) for x in reversed(preorder)]
     with timer("network transition densities: applied states"):
-        applied = [_apply_term(ttno, state, annihilation_term((m,))) for m in range(n)]
+        applied = []
+        for m in range(n):
+            tensors, centers, modified = _apply_term(ttno, state, annihilation_term((m,)))
+            applied.append((tensors, _stacked_centers(centers), modified))
     gamma = np.empty((n_roots, n_roots, n, n), dtype=np.complex128)
     with timer("network transition densities: overlaps"):
         for p in range(n):

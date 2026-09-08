@@ -319,6 +319,48 @@ def test_sparse_pair_dot_native_is_bitwise_at_every_thread_count(n_threads):
         assert np.array_equal(ref, got), (n_out, n_csr, npair, dmax, n_threads)
 
 
+# --- parity: block_pack (bitwise, pure data movement) --------------------------------------
+
+@pytest.mark.parametrize("n_threads", [1, 2, 4])
+def test_block_pack_native_is_bitwise_at_every_thread_count(n_threads):
+    """Every leg count and permutation the network layer uses, on random block shapes —
+    including size-1 legs, a single-element block and the two-dimensional transpose the
+    matricization reduces to — against the NumPy reference, bitwise."""
+    _native_or_skip()
+    from itertools import permutations
+
+    rng = np.random.default_rng(77)
+    for nd in (1, 2, 3, 4, 5):
+        perms = list(permutations(range(nd)))
+        for trial in range(4):
+            nblocks = int(rng.integers(1, 7))
+            shapes = rng.integers(1, 9, size=(nblocks, nd)).astype(np.int64)
+            shapes[0, :] = 1 if trial == 0 else shapes[0, :]
+            if nd >= 2 and trial == 1:
+                shapes[:, -1] = 40                          # a long contiguous run
+            sizes = np.prod(shapes, axis=1)
+            src_offset = np.concatenate([[0], np.cumsum(sizes)[:-1]]).astype(np.int64)
+            src = rng.standard_normal(int(sizes.sum())) \
+                + 1j * rng.standard_normal(int(sizes.sum()))
+            perm = np.array(perms[int(rng.integers(len(perms)))], dtype=np.int64)
+            # destination blocks in a scrambled order, so per-block starts are exercised
+            order = rng.permutation(nblocks)
+            dst_offset = np.empty(nblocks, dtype=np.int64)
+            dst_offset[order] = np.concatenate([[0], np.cumsum(sizes[order])[:-1]])
+            ref = np.zeros(src.size, dtype=np.complex128)
+            got = np.zeros(src.size, dtype=np.complex128)
+            kernels.resolve("block_pack", "numpy")(src, src_offset, shapes, perm, ref,
+                                                   dst_offset, 1)
+            kernels.resolve("block_pack", "native")(src, src_offset, shapes, perm, got,
+                                                    dst_offset, n_threads)
+            assert np.array_equal(ref, got), (nd, trial, perm, shapes)
+            # and the reference is what numpy says a transposed block is
+            j = int(rng.integers(nblocks))
+            block = src[src_offset[j]:src_offset[j] + sizes[j]].reshape(shapes[j])
+            expect = np.ascontiguousarray(block.transpose(perm)).reshape(-1)
+            assert np.array_equal(ref[dst_offset[j]:dst_offset[j] + sizes[j]], expect)
+
+
 def test_dot_sparse_backends_agree_bitwise_on_a_block_tensor():
     """The wrapper level: one dot_sparse call, numpy vs native, production-shaped."""
     _native_or_skip()

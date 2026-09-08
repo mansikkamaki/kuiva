@@ -360,7 +360,8 @@ def _embed(op, site: int, dims: Sequence[int]):
 
 
 def heisenberg_ground_state(system: Tier3System, j_coupling: float = 1.0,
-                            tol: float = 1e-9) -> Optional[Dict[str, object]]:
+                            tol: float = 1e-9, *,
+                            structural: bool = False) -> Optional[Dict[str, object]]:
     """Exact ground state of ``H = J sum_<ij> S_i . S_j`` for the exchange graph.
 
     This exists to check the Lieb-Mattis prediction against actual quantum mechanics rather
@@ -370,9 +371,18 @@ def heisenberg_ground_state(system: Tier3System, j_coupling: float = 1.0,
 
     Returns None when the model does not apply (SOC-dominated sites) or the space is too
     large for dense ED. ``J > 0`` is antiferromagnetic in this convention.
+
+    ``structural=True`` solves the isotropic model on a SOC-dominated system anyway, as a
+    **structural stand-in**: every site is taken as a spin of its stated local dimension
+    (a J = 15/2 multiplet becomes a 16-dimensional "spin"). The result says nothing about
+    the molecule's physics — the isotropic model is invalid there, which is why the default
+    refuses — and everything about the network machinery on inhomogeneous local
+    dimensions, which is what the placeholder test for ``dy2_n2rad`` needs. The stored
+    reference (``tests/reference/tier3_invariants.json``) is written with the default.
     """
     import numpy as np
-    if not system.isotropic_exchange or any(s.kind == "ion_soc" for s in system.sites):
+    if not structural and (not system.isotropic_exchange
+                           or any(s.kind == "ion_soc" for s in system.sites)):
         return None
     dims = list(system.local_dims)
     dim = system.hilbert_dim
@@ -416,6 +426,247 @@ def heisenberg_ground_state(system: Tier3System, j_coupling: float = 1.0,
         "first_gap": float(evals[len(ground)] - e0) if len(ground) < dim else 0.0,
         "hilbert_dim": dim,
     }
+
+
+# --- the effective spin model as tensor-network input ----------------------------------------
+#
+# The network layer's operator compiler takes a sum of operator-product terms over labelled
+# modes, and Tier-3 model Hamiltonians enter through exactly that seam (``kuiva.dmrg.ttno``'s
+# module docstring calls it the test seam and documents it as such): one mode per
+# paramagnetic centre, its local basis the ``2S + 1`` multiplet states, the Hamiltonian the
+# same ``J sum_<ij> S_i . S_j`` the dense ED above diagonalizes. What the network is then
+# validated against is that ED (or, beyond its cap, the theorem and a sparse sector solve),
+# on a graph whose structure is known in advance — which is the only way a structure claim
+# can be tested, since the network's own entanglement output cannot be its own witness.
+#
+# Conventions, fixed here and matched by every helper below:
+#   * mode ``i`` is site ``i`` of the system, in site order (the Jordan-Wigner order is
+#     irrelevant — spins carry no strings — but the kron order of the dense oracle is the
+#     ascending site order, first site slowest, exactly what ``state_to_dense`` produces);
+#   * local state ``k`` of a spin-S site is ``|S, m = S - k>``, the same ordering as
+#     :func:`_spin_matrices`;
+#   * the conserved label ("N", the particle number every network quantum number carries
+#     first) is ``sum_i k_i = sum_i S_i - M``, so a total-``M`` sector is one ``N`` sector.
+#     The lowest |M| sector (0 or 1/2) contains one member of every total-spin multiplet,
+#     which is what makes its ground state the ground state of the whole model — its
+#     total spin is then read off <S^2> rather than assumed.
+#
+# All imports of ``kuiva`` are inside the functions: this module is imported by the fast
+# suite for its exact combinatorics and must stay cheap.
+
+def _spin_matrices_complex(twice_s: int):
+    import numpy as np
+    sz, sp, sm = _spin_matrices(twice_s)
+    return (np.ascontiguousarray(sz, dtype=np.complex128),
+            np.ascontiguousarray(sp, dtype=np.complex128),
+            np.ascontiguousarray(sm, dtype=np.complex128))
+
+
+def spin_site_basis(twice_s: int):
+    """The network's local basis of one spin-S site: dim ``2S + 1``, label ``k`` on
+    ``|S, S - k>`` (module note above)."""
+    from kuiva.dmrg import ModeBasis, QuantumNumber
+    return ModeBasis(twice_s + 1, tuple(QuantumNumber(k) for k in range(twice_s + 1)))
+
+
+def spin_model_bases(system: Tier3System) -> Dict[int, object]:
+    """``{mode: ModeBasis}`` for the system's sites, in site order."""
+    return {i: spin_site_basis(s.twice_spin) for i, s in enumerate(system.sites)}
+
+
+def heisenberg_product_terms(system: Tier3System, j_coupling: float = 1.0) -> list:
+    """``J sum_<ij> S_i . S_j`` as ``ProductTerm`` objects over the sites, one mode per site.
+
+    ``S_i . S_j = Sz Sz + (S+ S- + S- S+) / 2``, written in the ladder form so every term
+    conserves the ``N`` label (a ``Sx Sx`` factor would not). Every edge of the exchange
+    graph contributes whatever tree the network is laid out on: an edge that is not a
+    network bond is a long-range term, which the compiler handles exactly. ⚠ The model is
+    the same one :func:`heisenberg_ground_state` diagonalizes — including on a
+    SOC-dominated system, where both are the *structural* stand-in that function's
+    ``structural=`` flag names.
+    """
+    from kuiva.dmrg import ProductTerm
+    ops = [_spin_matrices_complex(s.twice_spin) for s in system.sites]
+    terms = []
+    for a, b in system.edges:
+        a, b = (int(a), int(b)) if a < b else (int(b), int(a))
+        sz_a, sp_a, sm_a = ops[a]
+        sz_b, sp_b, sm_b = ops[b]
+        terms.append(ProductTerm(complex(0.5 * j_coupling), (a, b), (sp_a, sm_b)))
+        terms.append(ProductTerm(complex(0.5 * j_coupling), (a, b), (sm_a, sp_b)))
+        terms.append(ProductTerm(complex(j_coupling), (a, b), (sz_a, sz_b)))
+    return terms
+
+
+def target_sector(system: Tier3System) -> Tuple[int, int]:
+    """``(N, twice_M)`` of the lowest-|M| sector: ``M = 0`` for an even number of unpaired
+    electrons, ``M = +-1/2`` for an odd one, and ``N = sum_i S_i - M`` in the label
+    convention of the module note. That sector holds one member of every total-spin
+    multiplet, so its ground state is the model's.
+
+    ⚠ The sign of ``M`` is chosen to make ``N`` **even** where it can be. The network's
+    state-averaging gate reads ``N`` as an electron count and applies Kramers' theorem to
+    an odd one; a spin model carries no such theorem, so on an odd ``N`` the gate's
+    refusal has to be downgraded to a warning (``on_split="warn"``) and the warning is
+    spurious. ``M = +1/2`` and ``M = -1/2`` are equivalent by symmetry, so choosing the
+    sign costs nothing. For an integer total spin ``M = 0`` fixes ``N``, and where that
+    is odd (``mn4ca_oec``, ``fe4s4``) the warning is simply expected.
+    """
+    twice_total = system.total_unpaired_electrons
+    if twice_total % 2 == 0:
+        return twice_total // 2, 0
+    n_plus = (twice_total - 1) // 2                 # M = +1/2
+    return (n_plus, 1) if n_plus % 2 == 0 else (n_plus + 1, -1)
+
+
+def sector_labels(system: Tier3System):
+    """``N = sum_i k_i`` of every product-basis state, in the dense kron order."""
+    import numpy as np
+    labels = np.zeros(1, dtype=np.int64)
+    for s in system.sites:
+        k = np.arange(s.local_dim, dtype=np.int64)
+        labels = (labels[:, None] + k[None, :]).reshape(-1)
+    return labels
+
+
+def _sparse_site_operators(system: Tier3System):
+    """``(Sz_i, S+_i, S-_i)`` embedded in the product space as sparse matrices."""
+    import scipy.sparse as sps
+    dims = list(system.local_dims)
+    out = []
+    for i, s in enumerate(system.sites):
+        sz, sp, sm = _spin_matrices(s.twice_spin)
+        embedded = []
+        for op in (sz, sp, sm):
+            mat = sps.identity(1, format="csr")
+            for k, d in enumerate(dims):
+                mat = sps.kron(mat, sps.csr_matrix(op) if k == i else sps.identity(d),
+                               format="csr")
+            embedded.append(mat)
+        out.append(tuple(embedded))
+    return out
+
+
+def sparse_heisenberg(system: Tier3System, j_coupling: float = 1.0):
+    """``H`` of :func:`heisenberg_ground_state` as a sparse matrix — the same operator,
+    reachable past the dense cap (the eight-site rings are 65 536-dimensional and sparse
+    with a few dozen entries per row)."""
+    import scipy.sparse as sps
+    ops = _sparse_site_operators(system)
+    dim = system.hilbert_dim
+    ham = sps.csr_matrix((dim, dim))
+    for a, b in system.edges:
+        sz_a, sp_a, sm_a = ops[a]
+        sz_b, sp_b, sm_b = ops[b]
+        ham = ham + j_coupling * (sz_a @ sz_b + 0.5 * (sp_a @ sm_b + sm_a @ sp_b))
+    return ham.tocsr()
+
+
+def sparse_total_spin_squared(system: Tier3System):
+    """``S_tot^2`` as a sparse matrix over the product space."""
+    import scipy.sparse as sps
+    ops = _sparse_site_operators(system)
+    dim = system.hilbert_dim
+    s2 = sps.identity(dim, format="csr") * float(
+        sum(s.spin * (s.spin + 1.0) for s in system.sites))
+    for a in range(system.n_sites):
+        for b in range(a + 1, system.n_sites):
+            sz_a, sp_a, sm_a = ops[a]
+            sz_b, sp_b, sm_b = ops[b]
+            s2 = s2 + 2.0 * (sz_a @ sz_b + 0.5 * (sp_a @ sm_b + sm_a @ sp_b))
+    return s2.tocsr()
+
+
+def total_spin_of(vector, system: Tier3System, s2=None) -> Tuple[float, int]:
+    """``(<S^2>, 2S)`` of a normalized product-space vector, ``2S`` from
+    ``S(S+1) = <S^2>`` rounded — the caller checks that the rounding is sharp."""
+    import numpy as np
+    s2 = sparse_total_spin_squared(system) if s2 is None else s2
+    v = np.asarray(vector)
+    val = float(np.real(np.vdot(v, s2 @ v)) / np.real(np.vdot(v, v)))
+    s = 0.5 * (-1.0 + math.sqrt(1.0 + 4.0 * val))
+    return val, int(round(2.0 * s))
+
+
+def spin_spectrum_of(vectors, system: Tier3System, s2=None) -> Tuple[List[float], List[int]]:
+    """The ``S^2`` spectrum on the span of ``vectors``: ``(eigenvalues, [2S, ...])``.
+
+    ⚠ A degenerate level need not be a single total spin. The frustrated ``mn4ca_oec``
+    model's ground pair is one S = 1 and one S = 2 state at the same energy (an accidental
+    degeneracy of the uniform-J model), and the mean ``<S^2>`` over it is a number that
+    belongs to no spin at all. Since ``[H, S^2] = 0``, the span of a level (or of an
+    ensemble that has converged onto it) is ``S^2``-invariant, and diagonalizing ``S^2``
+    there gives the level's spins as a multiset — which is what a network's ensemble is
+    graded against.
+    """
+    import numpy as np
+    s2 = sparse_total_spin_squared(system) if s2 is None else s2
+    v = np.asarray([np.asarray(x, dtype=np.complex128) for x in vectors]).T   # (dim, k)
+    q, _ = np.linalg.qr(v)
+    mat = q.conj().T @ (s2 @ q)
+    vals = np.linalg.eigvalsh(0.5 * (mat + mat.conj().T))
+    twice = [int(round(2.0 * 0.5 * (-1.0 + math.sqrt(max(0.0, 1.0 + 4.0 * float(w))))))
+             for w in vals]
+    return [float(w) for w in vals], twice
+
+
+def sector_spectrum(system: Tier3System, n_sector: int, *, n_states: int = 6,
+                    j_coupling: float = 1.0, tol: float = 1e-9,
+                    dense_max: int = 3000) -> Dict[str, object]:
+    """The lowest ``n_states`` of ``H`` inside one ``N`` sector, with their total spins.
+
+    The oracle the network's sector solve is compared against, root for root: dense
+    ``eigh`` on the sector block where it is small, Lanczos (``scipy.sparse.linalg.eigsh``)
+    above ``dense_max`` — the rings' ``M = 0`` blocks are ~10^4-dimensional, far past the
+    dense cap of the whole space and trivial for a sparse solve. Degenerate levels are
+    counted at ``tol`` and each level's total spin is read from ``<S^2>`` averaged over
+    the level (a rotation inside a degenerate level cannot change it).
+    """
+    import numpy as np
+    labels = sector_labels(system)
+    idx = np.nonzero(labels == int(n_sector))[0]
+    if idx.size == 0:
+        raise ValueError("no product state carries N = {}".format(n_sector))
+    ham = sparse_heisenberg(system, j_coupling)
+    s2 = sparse_total_spin_squared(system)
+    block = ham[idx][:, idx]
+    k = min(int(n_states), idx.size)
+    if idx.size <= dense_max:
+        vals, vecs = np.linalg.eigh(block.toarray())
+        vals, vecs = vals[:k], vecs[:, :k]
+        method = "dense eigh on the sector block"
+    else:
+        from scipy.sparse.linalg import eigsh
+        # ``k + 4`` so a degenerate level at the edge of the window is not cut in half
+        kk = min(k + 4, idx.size - 1)
+        vals, vecs = eigsh(block, k=kk, which="SA", tol=1e-11)
+        order = np.argsort(vals)
+        vals, vecs = vals[order][:k], vecs[:, order][:, :k]
+        method = "Lanczos (eigsh) on the sector block"
+    full = np.zeros((system.hilbert_dim, vals.size))
+    full[idx] = vecs
+    levels = []
+    start = 0
+    while start < vals.size:
+        stop = start + 1
+        while stop < vals.size and vals[stop] - vals[start] <= tol * max(1.0, abs(vals[0])):
+            stop += 1
+        s2_vals, twice = spin_spectrum_of(full[:, start:stop].T, system, s2)
+        levels.append({"energy": float(vals[start]), "degeneracy": int(stop - start),
+                       "s2_spectrum": s2_vals, "twice_total_spins": sorted(twice),
+                       "s2_rounding": float(max(abs(2.0 * 0.5 * (-1.0 + math.sqrt(
+                           1.0 + 4.0 * w)) - t) for w, t in zip(s2_vals, twice)))})
+        start = stop
+    # ⚠ The window may end inside a level; the last level's degeneracy is then a lower
+    # bound and is marked as such rather than reported as a count.
+    if len(levels) > 1 or vals.size < idx.size:
+        levels[-1]["complete"] = bool(vals.size < idx.size and len(levels) > 1)
+    return {"n_sector": int(n_sector), "sector_dim": int(idx.size), "method": method,
+            "energies": [float(x) for x in vals], "levels": levels,
+            "ground_energy": float(vals[0]),
+            "ground_degeneracy": int(levels[0]["degeneracy"]),
+            "ground_twice_total_spins": list(levels[0]["twice_total_spins"]),
+            "ground_twice_total_spin": int(min(levels[0]["twice_total_spins"]))}
 
 
 # --- the suite -------------------------------------------------------------------------------
@@ -626,4 +877,7 @@ __all__ = [
     "cycle_rank", "degree_sequence", "get", "graph_diameter", "heisenberg_ground_state",
     "is_frustrated", "is_tree", "ED_MAX_DIM",
     "lieb_mattis_twice_spin",
+    "spin_site_basis", "spin_model_bases", "heisenberg_product_terms", "target_sector",
+    "sector_labels", "sparse_heisenberg", "sparse_total_spin_squared", "total_spin_of",
+    "spin_spectrum_of", "sector_spectrum",
 ]

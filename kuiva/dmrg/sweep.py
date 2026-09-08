@@ -52,8 +52,14 @@ default is ``trunc_tol = 0`` — exact within the cap, noise removed by the stab
 whether a nonzero threshold should be the default is an open measurement question.
 
 Everything here is orchestration. The arithmetic lives in
-:func:`kuiva.dmrg.block.tensordot` calls; the named port candidate is a batched block-GEMM
-driver below that interface, decided by a CPU-seconds profile and nothing else.
+:func:`kuiva.dmrg.block.tensordot` / :func:`kuiva.dmrg.sparse.dot_sparse` calls, which
+reach the three registered kernels (the block-pair GEMM, the sparse-W application and the
+block pack) through plans memoized per operand structure. ⚠ **The two-site Hamiltonian is
+applied to every new Davidson direction of an iteration in ONE batched chain**
+(``_LocalProblem.apply_block``, the eigensolver's ``apply_block`` hook): on a state average
+that is roughly one direction per root, and the unbatched form paid the whole orchestration
+and a full set of small GEMMs per root. The batch width is bounded by the resource budget's
+transient allowance, from the single-vector intermediate the memory plan sizes.
 
 References
 ----------
@@ -96,6 +102,15 @@ log = get_logger(__name__)
 #: The boundary-gap warning threshold [cm^-1], restated here (module docstring).
 BOUNDARY_GAP_WARN_CM = 50.0
 
+#: Default width of the batched effective-Hamiltonian application: how many of an
+#: iteration's new Davidson directions go through one contraction chain. ⚠ A measured
+#: number, not a memory one: the orchestration a batch amortizes is paid off by two to four
+#: vectors, and past that the batch only enlarges every intermediate — on a 16-root D = 64
+#: problem batching all sixteen was *slower* than one at a time, the operand slabs having
+#: outgrown the cache. The transient budget bounds it further; ``solve_ttn(batch=)``
+#: overrides it.
+DEFAULT_BATCH_WIDTH = 4
+
 
 # --- labelled-tensor helpers --------------------------------------------------------------
 
@@ -135,13 +150,14 @@ class _Lab(object):
                         [l for i, l in enumerate(self.labels) if i not in ia]
                         + [l for i, l in enumerate(other.labels) if i not in ib])
         left = self.t.to_block_tensor() if isinstance(self.t, SparseW) else self.t
+        mine = [l for i, l in enumerate(self.labels) if i not in ia]
+        theirs = [l for i, l in enumerate(other.labels) if i not in ib]
         if isinstance(other.t, SparseW):
-            t = dot_sparse(left, other.t, (ia, ib))
-        else:
-            t = tensordot(left, other.t, (ia, ib))
-        labels = [l for i, l in enumerate(self.labels) if i not in ia] \
-            + [l for i, l in enumerate(other.labels) if i not in ib]
-        return _Lab(t, labels)
+            # ⚠ the sparse contraction puts the OPERATOR's legs first (its docstring:
+            # the kernel's layout); every consumer reads legs by name, so only these
+            # labels know
+            return _Lab(dot_sparse(left, other.t, (ia, ib)), theirs + mine)
+        return _Lab(tensordot(left, other.t, (ia, ib)), mine + theirs)
 
     def to(self, order: Sequence[tuple]) -> BlockTensor:
         t = self.t.to_block_tensor() if isinstance(self.t, SparseW) else self.t
@@ -817,6 +833,19 @@ class _LocalProblem(object):
     order is not bitwise**: the same products are summed in a different order, so this
     agrees with the previous order to rounding and every committed network reference was
     re-checked against its tolerance when it landed, never assumed.
+
+    The batched application
+    -----------------------
+    :meth:`apply_block` runs the same chain over ``n`` vectors at once — a trailing
+    vector leg of width ``n`` on the unpacked tensor, carried through every intermediate
+    — and the eigensolver hands it every iteration's new directions together. Measured
+    motive: a 25-root FeCl2 bond tour made 1575 applications for 59 Davidson iterations,
+    each paying the chain's orchestration and its small-block GEMMs alone; batched, the
+    bookkeeping is paid 59 times and every GEMM has 25 times the rows. ``batch_cap``
+    bounds ``n`` from the transient budget (:meth:`set_batch_budget`): every intermediate
+    is the single-vector one times ``n``, so the cap is what keeps the batched chain
+    inside the allowance the resource budget hands a blocked kernel. :meth:`apply` stays
+    the single-vector chain the memory plan sizes, byte for byte.
     """
 
     def __init__(self, ttno: TTNO, state: TTNState, cache: EnvironmentCache,
@@ -861,6 +890,13 @@ class _LocalProblem(object):
         self.order, self.candidates = self._choose_order()
         #: The pre-contracted halves, ``node -> _Lab``; ``None`` until :meth:`prepare`.
         self.halves = None
+        #: Largest number of vectors :meth:`apply_block` contracts in one chain — set by
+        #: :func:`_solve_local` from the transient budget (:meth:`set_batch_budget`);
+        #: 1 until then, which is the unbatched application.
+        self.batch_cap = 1
+        # the batched template: the vector leg last, charge 0, one sector — built lazily
+        # per batch width, so a width that never occurs costs nothing
+        self._batched: Dict[int, tuple] = {}
 
     @staticmethod
     def _w_side(w: _Lab, node: int) -> _Lab:
@@ -890,6 +926,63 @@ class _LocalProblem(object):
         return BlockTensor._trusted(self.template.spaces, self.template.signs,
                                     self.template.charge, self.template.sectors,
                                     self.template._keys, blocks)
+
+    # -- the batched (several vectors at once) form of pack/unpack --------------------------
+
+    def _batch_template(self, n: int) -> tuple:
+        """``(spaces, signs, sectors, keys, shapes, starts)`` of the merged template with a
+        trailing vector leg of width ``n`` — charge 0, one sector, sign +1, so every flux
+        sum is unchanged and the block table is the template's with a zero column
+        appended (which keeps the sorted-key invariant: the trailing key digit is
+        constant)."""
+        cached = self._batched.get(n)
+        if cached is not None:
+            return cached
+        tmpl = self.template
+        aux = Space([(tmpl.charge.zero_like(), int(n))])
+        spaces = tuple(tmpl.spaces) + (aux,)
+        signs = tuple(tmpl.signs) + (1,)
+        sectors = np.ascontiguousarray(np.hstack(
+            [tmpl.sectors, np.zeros((tmpl.nblocks, 1), dtype=np.int64)]))
+        from .block import _row_keys
+        keys = _row_keys(sectors, [sp.nsectors for sp in spaces])
+        shapes = [tuple(b.shape) + (int(n),) for b in tmpl.blocks]
+        starts = np.concatenate([[0], np.cumsum(self.sizes)]).astype(np.int64).tolist()
+        cached = (spaces, signs, sectors, keys, shapes, starts)
+        self._batched[n] = cached
+        return cached
+
+    def unpack_block(self, vecs: np.ndarray) -> BlockTensor:
+        """``(n, dim)`` packed vectors as one block tensor with the vector leg **last**.
+
+        With the vector leg last, the transposed ``(dim, n)`` array *is* the flat buffer
+        of the block tensor — every block a contiguous view into it — so the unpack is
+        one copy and the tensor packs through the ``block_pack`` kernel from there on.
+        """
+        n = int(vecs.shape[0])
+        spaces, signs, sectors, keys, shapes, starts = self._batch_template(n)
+        flat = np.ascontiguousarray(vecs.T).reshape(-1)
+        blocks = [flat[starts[k] * n:starts[k + 1] * n].reshape(shape)
+                  for k, shape in enumerate(shapes)]
+        offset = np.asarray(starts[:-1], dtype=np.int64) * n
+        return BlockTensor._trusted(spaces, signs, self.template.charge, sectors, keys,
+                                    blocks, flat=flat, flat_offset=offset)
+
+    def pack_block(self, t: BlockTensor, n: int) -> np.ndarray:
+        """The inverse of :meth:`unpack_block` for a tensor in the batched template's leg
+        order (vector leg last): ``(n, dim)``."""
+        spaces, signs, sectors, keys, shapes, starts = self._batch_template(n)
+        buf = np.zeros((self.dim, n), dtype=np.complex128)
+        if t.nblocks == 0:
+            return np.ascontiguousarray(buf.T)
+        lookup = {tuple(r): b for r, b in zip(t.sectors.tolist(), t.blocks)}
+        for k, row in enumerate(sectors.tolist()):
+            b = lookup.pop(tuple(row), None)
+            if b is not None:
+                buf[starts[k]:starts[k + 1]] = b.reshape(-1, n)
+        if lookup:
+            raise ValueError("tensor carries blocks outside the merged template")
+        return np.ascontiguousarray(buf.T)
 
     # -- the chain -------------------------------------------------------------------------
 
@@ -1127,7 +1220,52 @@ class _LocalProblem(object):
                            for n in (self.u, self.v)}
         return self
 
+    def set_batch_budget(self, transient_gb: float,
+                         width: int = DEFAULT_BATCH_WIDTH) -> int:
+        """Fix :attr:`batch_cap`: the requested ``width`` (:data:`DEFAULT_BATCH_WIDTH`,
+        the measured one), bounded by the number of vectors whose batched application
+        stays under the transient budget [GB] given the single-vector peak
+        (:meth:`apply_peak_gb`) — every intermediate of the chain scales linearly with the
+        vector leg, its sector table aside. Never below one. Returns the cap.
+
+        ⚠ Asked once per two-site problem, outside every loop (the same B7 discipline every
+        blocked kernel follows): the budget is a number to block against, not a check.
+        """
+        peak = self.apply_peak_gb()
+        by_memory = int(float(transient_gb) // peak) if peak > 0.0 else 10 ** 6
+        self.batch_cap = max(1, min(int(width), by_memory))
+        return self.batch_cap
+
+    def _apply_batch(self, vecs: np.ndarray) -> np.ndarray:
+        """``H_eff`` applied to ``(n, dim)`` vectors through **one** run of the chain: the
+        vector leg rides along as a leg of every intermediate, so the pair
+        tables, the operand packs and the Python orchestration are paid once for all
+        ``n``, and every block GEMM has ``n`` times the rows.
+
+        ⚠ Every intermediate is the single-vector one (:meth:`intermediate_bytes`) with
+        ``n`` times the payload and one more column in its sector table; the kernels see
+        GEMMs with ``n`` times the rows, which changes the BLAS's own inner order and
+        nothing else — parity with the unbatched form is to rounding, as between any two
+        contraction orders in this layer. A single vector never comes here: :meth:`apply`
+        is the unbatched chain, pair for pair and byte for byte what the plan sizes.
+        """
+        u, v = self.u, self.v
+        n = int(vecs.shape[0])
+        t = self._chain(_Lab(self.unpack_block(vecs), list(self.labels) + [("r",)]),
+                        self._envs, self.halves, self.order)
+        labels = []
+        for lab in t.labels:
+            if lab[0] == "bra":
+                x = lab[1]
+                labels.append(("b", u, x) if x in self.branches_u else ("b", v, x))
+            elif lab[0] == "po":
+                labels.append(("p", lab[1]))
+            else:
+                labels.append(lab)
+        return self.pack_block(_Lab(t.t, labels).to(list(self.labels) + [("r",)]), n)
+
     def apply(self, vec: np.ndarray) -> np.ndarray:
+        """``H_eff`` applied to one packed vector — the chain the memory plan sizes."""
         u, v = self.u, self.v
         if self.halves is None:
             self.prepare()
@@ -1143,6 +1281,27 @@ class _LocalProblem(object):
             else:
                 labels.append(lab)
         return self.pack(_Lab(t.t, labels).to(self.labels))
+
+    def apply_block(self, vecs: np.ndarray) -> np.ndarray:
+        """``H_eff`` applied to ``(n, dim)`` packed vectors, in chunks of at most
+        :attr:`batch_cap` — the eigensolver's block form of :meth:`apply`."""
+        if self.halves is None:
+            self.prepare()
+        vecs = np.asarray(vecs, dtype=np.complex128)
+        if vecs.ndim == 1:
+            vecs = vecs.reshape(1, -1)
+        n = int(vecs.shape[0])
+        cap = max(1, int(self.batch_cap))
+        if n == 1:
+            return self.apply(vecs[0]).reshape(1, -1)
+        if n <= cap:
+            return self._apply_batch(vecs)
+        out = np.empty_like(vecs)
+        for start in range(0, n, cap):
+            chunk = vecs[start:start + cap]
+            out[start:start + cap] = self._apply_batch(chunk) if chunk.shape[0] > 1 \
+                else self.apply(chunk[0]).reshape(1, -1)
+        return out
 
     def diagonal(self) -> np.ndarray:
         """``<I|H_eff|I>`` over the packed space, exactly (Davidson preconditioner).
@@ -1296,6 +1455,11 @@ class SweepResult(object):
     max_bond_dim: int
     boundary_gap_cm: Optional[float]     # None: not checked, or the average is complete
     history: List[float]                 # SA energy after each sweep
+    #: Environment pages written to and read back from scratch during the solve — zero
+    #: whenever every environment fitted, which is the common case. Recorded so a run can
+    #: SAY whether it paged (a paged solve is bitwise the unpaged one, but it is not free).
+    n_paged_out: int = 0
+    n_paged_in: int = 0
 
 
 def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
@@ -1309,7 +1473,7 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
               bond_schedule: Optional[Sequence[int]] = None,
               expansion: float = 0.0, expansion_sweeps: int = 6,
               memory_plan: bool = True, plan_rdms: bool = True,
-              report: bool = True) -> SweepResult:
+              report: bool = True, batch: int = DEFAULT_BATCH_WIDTH) -> SweepResult:
     """State-averaged two-site DMRG to energy stationarity (module docstring).
 
     ``state`` is updated in place and returned inside the result. ``conv_tol`` is on the
@@ -1343,6 +1507,12 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
     ``report=False`` moves the sweep table to DEBUG — for a solver called once per
     CASSCF macro-iteration, whose driver already owns the INFO table (INFO is the
     output file, and sixty inner tables in it are noise, not output).
+
+    ``batch`` is the width of the batched effective-Hamiltonian application
+    (:data:`DEFAULT_BATCH_WIDTH`, and the note on it says why it is not "all the roots"):
+    how many of an iteration's new Davidson directions share one contraction chain. It is
+    an iteration strategy, never a change of the answer beyond rounding; ``1`` is the
+    unbatched application.
 
     ``checkpoint`` is a callable ``checkpoint(state, sweep=, energies=, converged=)``
     invoked at the end of **each completed sweep** — rolling network-state checkpointing
@@ -1403,6 +1573,9 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
     alpha0 = float(expansion)
     if alpha0 < 0.0:
         raise ValueError("expansion must be non-negative, got {}".format(expansion))
+    batch = int(batch)
+    if batch < 1:
+        raise ValueError("batch must be a positive width, got {}".format(batch))
 
     if memory_plan:
         # Before the first environment and the first two-site problem, which is the earliest
@@ -1454,7 +1627,7 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
             for u, v in graph.sweep_schedule(state.center):
                 energies, w_used, info, _ = _update_bond(
                     ttno, state, cache, u, v, requested, n_elec, trunc_tol, cap,
-                    davidson_tol, on_split, expansion=alpha)
+                    davidson_tol, on_split, expansion=alpha, batch=batch)
                 max_disc = max(max_disc, info.discarded_weight)
                 max_dim = max(max_dim, info.bond_dim)
             e_sa = float(np.dot(w_used, energies))
@@ -1490,12 +1663,16 @@ def solve_ttn(ttno: TTNO, state: TTNState, *, max_sweeps: int = 25,
     if converged and boundary_check > 0:
         with threads.kernel_region():                     # same policy as the sweep above
             gap_cm = _boundary_sweep(ttno, state, cache, requested, n_elec, trunc_tol,
-                                     max_bond, davidson_tol, on_split, boundary_check)
+                                     max_bond, davidson_tol, on_split, boundary_check,
+                                     batch=batch)
+    n_out = 0 if pager is None else int(pager.n_stored)
+    n_in = 0 if pager is None else int(pager.n_loaded)
     cache.release_all()
     return SweepResult(energies=np.asarray(energies), weights=np.asarray(w_final),
                        state=state, converged=converged, n_sweeps=len(history),
                        max_discarded=max_disc, max_bond_dim=max_dim,
-                       boundary_gap_cm=gap_cm, history=history)
+                       boundary_gap_cm=gap_cm, history=history,
+                       n_paged_out=n_out, n_paged_in=n_in)
 
 
 def _sweep_weights(energies: np.ndarray, requested: np.ndarray,
@@ -1512,7 +1689,8 @@ def _sweep_weights(energies: np.ndarray, requested: np.ndarray,
 
 
 def _update_bond(ttno, state, cache, u, v, requested, n_elec, trunc_tol, max_bond,
-                 davidson_tol, on_split, extra_roots=0, expansion=0.0):
+                 davidson_tol, on_split, extra_roots=0, expansion=0.0,
+                 batch=DEFAULT_BATCH_WIDTH):
     """One two-site update; with ``extra_roots`` it also returns the state-average boundary gap.
 
     ⚠ Extra roots are solved and *discarded* — they never enter the average or the
@@ -1520,13 +1698,15 @@ def _update_bond(ttno, state, cache, u, v, requested, n_elec, trunc_tol, max_bon
     """
     prob, energies, w_used, roots, gap = _solve_local(ttno, state, cache, u, v,
                                                       requested, davidson_tol,
-                                                      extra_roots=extra_roots)
+                                                      extra_roots=extra_roots,
+                                                      batch=batch)
     info = _commit_split(state, cache, prob, roots, w_used, trunc_tol, max_bond,
                          expansion=expansion)
     return energies, w_used, info, gap
 
 
-def _solve_local(ttno, state, cache, u, v, requested, davidson_tol, extra_roots=0):
+def _solve_local(ttno, state, cache, u, v, requested, davidson_tol, extra_roots=0,
+                 batch=DEFAULT_BATCH_WIDTH):
     """Solve the two-site eigenproblem on bond ``(u, v)`` without committing anything.
 
     Returns ``(prob, energies, w_used, roots, gap)`` — the local problem, the lowest
@@ -1574,6 +1754,11 @@ def _solve_local(ttno, state, cache, u, v, requested, davidson_tol, extra_roots=
     # ⚠ Only now: the pre-contracted halves are this object's one allocation of its own,
     # and they are built after the check so that a refusal precedes every byte of them.
     prob.prepare()
+    # The batched application's width is fixed here, once, from the transient budget
+    # that remains after the requirement above — the number of vectors whose batched
+    # chain stays under it. Every blocked kernel in this program takes its blocking from
+    # the same call, outside its loop; a width of one is the unbatched application.
+    prob.set_batch_budget(res.BUDGET.transient_gb(), width=batch)
     merged = [tensordot(c, state.tensors[v],
                         axes=([_bond_axis(graph, u, v)], [_bond_axis(graph, v, u)]))
               for c in state.centers]
@@ -1581,9 +1766,14 @@ def _solve_local(ttno, state, cache, u, v, requested, davidson_tol, extra_roots=
     # ⚠ davidson's dense fallback applies H `ndet` times, which is the right trade for a
     # cheap CI sigma and exactly wrong here, where one H_eff application is the expensive
     # object — measured 40x on a D = 16 sweep. Only genuinely tiny problems go dense.
+    # ⚠ ``apply_block``: every new expansion direction of an iteration — and, on a
+    # state average, that is roughly one per root — goes through one batched chain
+    # instead of one chain each (measured: 1575 applications for 59 iterations on a
+    # 25-root FeCl2 bond tour, i.e. the Python orchestration paid 27 times per iteration).
     result = davidson(prob.apply, prob.diagonal(), n_solve, guess=guess,
                       conv_tol=davidson_tol, dense_max_det=4 * n_solve + 2,
-                      label="DMRG bond ({}, {})".format(u, v))
+                      label="DMRG bond ({}, {})".format(u, v),
+                      apply_block=prob.apply_block)
     gap = None if n_solve == n_roots \
         else float(result.energies[n_roots] - result.energies[n_roots - 1])
     w_used = _sweep_weights(result.energies[:n_roots], requested)
@@ -1768,7 +1958,7 @@ def _stack_roots(roots: List[BlockTensor], weights: np.ndarray) -> BlockTensor:
 
 
 def _boundary_sweep(ttno, state, cache, requested, n_elec, trunc_tol, max_bond,
-                    davidson_tol, on_split, boundary_check):
+                    davidson_tol, on_split, boundary_check, batch=DEFAULT_BATCH_WIDTH):
     """One extra sweep solving ``boundary_check`` extra local roots at every bond: the
     State-average boundary diagnostic, sweep flavour.
 
@@ -1786,7 +1976,7 @@ def _boundary_sweep(ttno, state, cache, requested, n_elec, trunc_tol, max_bond,
     for u, v in state.graph.sweep_schedule(state.center):
         _, _, _, gap = _update_bond(ttno, state, cache, u, v, requested, n_elec,
                                     trunc_tol, max_bond, davidson_tol, on_split,
-                                    extra_roots=boundary_check)
+                                    extra_roots=boundary_check, batch=batch)
         if gap is not None:
             gaps.append(gap)
     if not gaps:
@@ -1804,4 +1994,4 @@ def _boundary_sweep(ttno, state, cache, requested, n_elec, trunc_tol, max_bond,
 
 
 __all__ = ["TTNState", "EnvironmentCache", "SweepResult", "random_state", "solve_ttn",
-           "state_gb", "state_to_dense", "BOUNDARY_GAP_WARN_CM"]
+           "state_gb", "state_to_dense", "BOUNDARY_GAP_WARN_CM", "DEFAULT_BATCH_WIDTH"]

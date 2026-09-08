@@ -24,10 +24,11 @@ Conventions (fixed here, relied on everywhere downstream)
   mixed-radix keys and ``searchsorted`` — never by a dict keyed on quantum numbers. Block
   payloads are ``complex128``, C-contiguous (complex is first-class; a real path is
   never assumed).
-* **Everything in this module is orchestration and stays Python**: it is the
-  data model and the *correct* reference implementation of the factorizations. The hot
-  kernels — the block-sparse two-site contraction driver, the environment update — arrive
-  with the sweep and register in ``ci/kernels.py``; nothing here is a port candidate.
+* **The data model and the factorizations are orchestration and stay Python**: the
+  *correct* reference implementation. Two registered kernels live here because every
+  network contraction reduces to them — :func:`block_pair_gemm_numpy` (the matched
+  block-pair GEMM) and :func:`block_pack_numpy` (the block matricization/transposition)
+  — and the contraction *plans* that drive them are memoized in :data:`PLAN_CACHE`.
 
 ⚠ Truncation keeps degenerate groups whole — the load-bearing rule
 ------------------------------------------------------------------
@@ -240,7 +241,7 @@ class Space(object):
     the same label is a bookkeeping error upstream, and merging would hide it.
     """
 
-    __slots__ = ("qns", "dims", "offsets")
+    __slots__ = ("qns", "dims", "offsets", "_hash")
 
     def __init__(self, sectors: Sequence[Tuple[QuantumNumber, int]]):
         pairs = []
@@ -264,6 +265,9 @@ class Space(object):
         self.qns: Tuple[QuantumNumber, ...] = qns
         self.dims = np.array([d for _, d in pairs], dtype=np.int64)
         self.offsets = np.concatenate([[0], np.cumsum(self.dims)]).astype(np.int64)
+        # The hash is part of every contraction-plan key (see ``_PlanCache``) and is asked
+        # for on every hot-path contraction, so it is computed once: a Space is immutable.
+        self._hash = hash((qns, tuple(int(d) for d in self.dims)))
 
     @property
     def nsectors(self) -> int:
@@ -291,7 +295,7 @@ class Space(object):
         return not self.__eq__(other)
 
     def __hash__(self):
-        return hash((self.qns, tuple(int(d) for d in self.dims)))
+        return self._hash
 
     def __repr__(self) -> str:
         inner = ", ".join("{}:{}".format(q, d) for q, d in zip(self.qns, self.dims))
@@ -347,7 +351,8 @@ class BlockTensor(object):
     (:meth:`zeros`, :meth:`random`, :meth:`from_dense`) rather than assembling by hand.
     """
 
-    __slots__ = ("spaces", "signs", "charge", "sectors", "blocks", "_keys")
+    __slots__ = ("spaces", "signs", "charge", "sectors", "blocks", "_keys", "_flat",
+                 "_flat_offset")
 
     def __init__(self, spaces: Sequence[Space], signs: Sequence[int], charge: QuantumNumber,
                  sectors: np.ndarray, blocks: List[np.ndarray]):
@@ -395,14 +400,23 @@ class BlockTensor(object):
         self.sectors = sectors
         self.blocks = blocks
         self._keys = keys
+        self._flat = None
+        self._flat_offset = None
 
     # --- construction ---------------------------------------------------------------------
 
     @classmethod
     def _trusted(cls, spaces: Tuple[Space, ...], signs: Tuple[int, ...],
                  charge: QuantumNumber, sectors: np.ndarray, keys: np.ndarray,
-                 blocks: List[np.ndarray]) -> "BlockTensor":
+                 blocks: List[np.ndarray], flat: Optional[np.ndarray] = None,
+                 flat_offset: Optional[np.ndarray] = None) -> "BlockTensor":
         """Constructor without validation, for tensors correct **by construction**.
+
+        ``flat``/``flat_offset`` record that every block is a view into one flat
+        ``complex128`` buffer at the given starts (block ``i`` at ``flat_offset[i]``),
+        which is what lets the next contraction pack this tensor through the
+        ``block_pack`` kernel instead of one NumPy copy per block. Optional: a tensor
+        built any other way packs block by block, correctly and more slowly.
 
         ⚠ Internal use only (:func:`tensordot`, :meth:`transpose`, :meth:`conj`, and the
         sweep's pack/unpack): every invariant the public constructor checks — sorted-unique
@@ -419,6 +433,8 @@ class BlockTensor(object):
         t.sectors = sectors
         t.blocks = blocks
         t._keys = keys
+        t._flat = flat
+        t._flat_offset = flat_offset
         return t
 
     @classmethod
@@ -498,10 +514,14 @@ class BlockTensor(object):
 
     def find(self, row: Sequence[int]) -> Optional[np.ndarray]:
         """The block at sector-index ``row``, or ``None`` if absent."""
-        key = _row_keys(np.asarray([row], dtype=np.int64),
-                        [sp.nsectors for sp in self.spaces])[0]
-        pos = int(np.searchsorted(self._keys, key))
-        if pos < len(self._keys) and self._keys[pos] == key:
+        # the mixed-radix key in plain Python integers: this is called per block from
+        # the density contractions, and the array form cost 14 us a call
+        key = 0
+        for sp, i in zip(self.spaces, row):
+            key = key * sp.nsectors + int(i)
+        keys = self._keys
+        pos = int(np.searchsorted(keys, key))
+        if pos < keys.size and keys[pos] == key:
             return self.blocks[pos]
         return None
 
@@ -524,7 +544,13 @@ class BlockTensor(object):
         return dense
 
     def transpose(self, perm: Sequence[int]) -> "BlockTensor":
-        """Permute legs; the block table is re-sorted to keep the sorted-key invariant."""
+        """Permute legs; the block table is re-sorted to keep the sorted-key invariant.
+
+        The transposed blocks are written into **one** flat buffer, in the new table
+        order, through the ``block_pack`` kernel when this tensor is flat itself (every
+        contraction output is) — so the result packs through the kernel again, and a
+        chain of contractions never falls back to the per-block NumPy copy.
+        """
         perm = tuple(int(p) for p in perm)
         if sorted(perm) != list(range(self.ndim)):
             raise ValueError("not a permutation of {} legs: {}".format(self.ndim, perm))
@@ -533,14 +559,42 @@ class BlockTensor(object):
         sectors = self.sectors[:, perm]
         keys = _row_keys(sectors, [sp.nsectors for sp in spaces])
         order = np.argsort(keys)
+        nblocks = self.nblocks
+        shapes = _shapes_table(self.spaces, self.sectors)
+        sizes = shapes.prod(axis=1) if nblocks else np.zeros(0, dtype=np.int64)
+        # source block i lands at its rank in the new order
+        starts_sorted = np.concatenate([[0], np.cumsum(sizes[order])]).astype(np.int64)
+        dst_offset = np.empty(nblocks, dtype=np.int64)
+        dst_offset[order] = starts_sorted[:-1]
+        flat = np.empty(int(starts_sorted[-1]), dtype=np.complex128)
+        if nblocks:
+            if self._flat is not None:
+                kernels.resolve("block_pack")(self._flat, self._flat_offset, shapes,
+                                              np.asarray(perm, dtype=np.int64), flat,
+                                              dst_offset, threads.thread_count())
+            else:
+                starts = dst_offset.tolist()
+                sz = sizes.tolist()
+                for i, block in enumerate(self.blocks):
+                    flat[starts[i]:starts[i] + sz[i]] = block.transpose(perm).reshape(-1)
+        new_shapes = shapes[:, list(perm)] if nblocks else shapes
+        pos = starts_sorted.tolist()
+        blocks = [flat[pos[k]:pos[k + 1]].reshape(tuple(new_shapes[i].tolist()))
+                  for k, i in enumerate(order.tolist())]
         return BlockTensor._trusted(
             spaces, signs, self.charge, np.ascontiguousarray(sectors[order]),
-            keys[order],
-            [np.ascontiguousarray(self.blocks[i].transpose(perm)) for i in order])
+            keys[order], blocks, flat=flat, flat_offset=starts_sorted[:-1])
 
     def conj(self) -> "BlockTensor":
         """Complex conjugate. Legs flip direction and the charge negates, so that
         contracting a tensor with its conjugate over matching legs conserves flux."""
+        if self._flat is not None:
+            flat = np.conj(self._flat)
+            pos = self._flat_offset.tolist()
+            blocks = [flat[o:o + b.size].reshape(b.shape) for o, b in zip(pos, self.blocks)]
+            return BlockTensor._trusted(self.spaces, tuple(-s for s in self.signs),
+                                        -self.charge, self.sectors, self._keys, blocks,
+                                        flat=flat, flat_offset=self._flat_offset)
         return BlockTensor._trusted(self.spaces, tuple(-s for s in self.signs),
                                     -self.charge, self.sectors, self._keys,
                                     [np.conj(b) for b in self.blocks])
@@ -971,107 +1025,258 @@ def tensordot(a: BlockTensor, b: BlockTensor,
 
     ⚠ Orchestration, but *hot-path* orchestration: this is the arithmetic core of every
     environment build and every effective-Hamiltonian application in the sweep. It
-    matricizes each block once into a flat buffer, builds the pair table, and hands the
-    arithmetic to :func:`block_pair_gemm_numpy` through the ``ci/kernels.py`` registry — so
-    a compiled backend registers itself and this function does not change. ⚠ Measured
-    motive for matricizing once (n = 12, D = 32 sweep profile): ``np.tensordot`` per pair
-    re-derives axes and re-matricizes both operands through the generic dispatch machinery
-    — 70 of 85 CPU s, ~105 us per call on blocks whose arithmetic is worth ~5.
+    matricizes each block once into a flat buffer, looks the pair table up in
+    :data:`PLAN_CACHE` (building it on the first call for this pair of structures —
+    :class:`_TensordotPlan`), and hands the arithmetic to :func:`block_pair_gemm_numpy`
+    through the ``ci/kernels.py`` registry — so a compiled backend registers itself and
+    this function does not change. ⚠ Measured motive for matricizing once (n = 12, D = 32
+    sweep profile): ``np.tensordot`` per pair re-derives axes and re-matricizes both
+    operands through the generic dispatch machinery — 70 of 85 CPU s, ~105 us per call on
+    blocks whose arithmetic is worth ~5. ⚠ Measured motive for the plan cache: rebuilding
+    the same tables on every application of ``H_eff`` was a quarter of a sweep's CPU
+    (:class:`_PlanCache`).
     """
     axes_a = tuple(int(x) for x in axes[0])
     axes_b = tuple(int(x) for x in axes[1])
     if len(axes_a) != len(axes_b):
         raise ValueError("axes lists differ in length")
-    for ia, ib in zip(axes_a, axes_b):
-        if a.spaces[ia] != b.spaces[ib]:
-            raise ValueError("contracted legs {}<->{} carry different spaces".format(ia, ib))
-        if a.signs[ia] != -b.signs[ib]:
-            raise ValueError("contracted legs {}<->{} carry equal signs; flux would not "
-                             "cancel".format(ia, ib))
-    rest_a = tuple(i for i in range(a.ndim) if i not in axes_a)
-    rest_b = tuple(i for i in range(b.ndim) if i not in axes_b)
-    spaces = tuple(a.spaces[i] for i in rest_a) + tuple(b.spaces[i] for i in rest_b)
-    signs = tuple(a.signs[i] for i in rest_a) + tuple(b.signs[i] for i in rest_b)
-    charge = a.charge + b.charge
-    if not spaces:
-        raise ValueError("full contraction to a scalar is not represented as a BlockTensor;"
-                         " keep at least one leg (use a dim-1 leg for scalars)")
-
-    perm_a = rest_a + axes_a
-    perm_b = axes_b + rest_b
-    b_index: Dict[tuple, List[int]] = {}
-    b_dims = np.empty((b.nblocks, 2), dtype=np.int64)
-    for jb, row in enumerate(b.sectors):
-        block = b.blocks[jb]
-        cols = 1
-        for i in rest_b:
-            cols *= block.shape[i]
-        b_dims[jb] = (block.size // max(cols, 1), cols)
-        b_index.setdefault(tuple(int(row[i]) for i in axes_b), []).append(jb)
-
-    a_dims = np.empty((a.nblocks, 2), dtype=np.int64)
-    for ja in range(a.nblocks):
-        block = a.blocks[ja]
-        rows_dim = 1
-        for i in rest_a:
-            rows_dim *= block.shape[i]
-        a_dims[ja] = (rows_dim, block.size // max(rows_dim, 1))
-
-    pair_rows: List[tuple] = []
-    pair_dims: List[tuple] = []
-    out_index: Dict[tuple, int] = {}
-    for ja, row_a in enumerate(a.sectors):
-        partners = b_index.get(tuple(int(row_a[i]) for i in axes_a))
-        if not partners:
-            continue
-        head = tuple(int(row_a[i]) for i in rest_a)
-        for jb in partners:
-            new_row = head + tuple(int(b.sectors[jb][i]) for i in rest_b)
-            io = out_index.get(new_row)
-            beta = 1
-            if io is None:
-                io = out_index[new_row] = len(out_index)
-                beta = 0                          # first pair on this block: overwrite
-            pair_rows.append((ja, jb, io, beta))
-            pair_dims.append((int(a_dims[ja, 0]), int(a_dims[ja, 1]), int(b_dims[jb, 1])))
-
-    rows = np.array(sorted(out_index), dtype=np.int64).reshape(len(out_index), len(spaces))
-    if not pair_rows:
-        return BlockTensor._trusted(spaces, signs, charge, rows,
-                                    _row_keys(rows, [sp.nsectors for sp in spaces]), [])
-    # renumber output blocks into the sorted row order, so the buffer is laid out as the
-    # block table is and the payloads below are plain views into it
-    order = {tuple(int(i) for i in r): k for k, r in enumerate(rows)}
-    remap = np.empty(len(out_index), dtype=np.int64)
-    for row_key, io in out_index.items():
-        remap[io] = order[row_key]
-    pairs = np.asarray(pair_rows, dtype=np.int64)
-    pairs[:, 2] = remap[pairs[:, 2]]
-    dims = np.asarray(pair_dims, dtype=np.int64)
-
-    a_data, a_offset = _matricized_buffer(a.blocks, perm_a, a_dims)
-    b_data, b_offset = _matricized_buffer(b.blocks, perm_b, b_dims)
-    out_sizes = np.zeros(rows.shape[0], dtype=np.int64)
-    out_sizes[pairs[:, 2]] = dims[:, 0] * dims[:, 2]
-    out_offset = np.concatenate([[0], np.cumsum(out_sizes)]).astype(np.int64)
+    key = ("dense", _structure_key(a), _structure_key(b), axes_a, axes_b)
+    plan = PLAN_CACHE.get(key)
+    if plan is None:
+        plan = _TensordotPlan(a, b, axes_a, axes_b)
+        PLAN_CACHE.put(key, plan)
+    if plan.pairs.shape[0] == 0:
+        return BlockTensor._trusted(plan.spaces, plan.signs, plan.charge, plan.rows,
+                                    plan.keys, [])
+    a_data = _pack_blocks(a, plan.perm_a, plan.a_offset, plan.a_shapes)
+    b_data = _pack_blocks(b, plan.perm_b, plan.b_offset, plan.b_shapes)
+    out_offset = plan.out_offset
     # not zeroed: every output block's first pair carries beta = 0 and overwrites it
     out_data = np.empty(int(out_offset[-1]), dtype=np.complex128)
-    kernels.resolve("block_pair_gemm")(a_data, a_offset, b_data, b_offset, pairs, dims,
-                                       out_data, out_offset, threads.thread_count())
-
-    blocks = []
-    for k, r in enumerate(rows):
-        shape = tuple(int(sp.dims[i]) for sp, i in zip(spaces, r))
-        blocks.append(out_data[int(out_offset[k]):int(out_offset[k + 1])].reshape(shape))
+    kernels.resolve("block_pair_gemm")(a_data, plan.a_offset, b_data, plan.b_offset,
+                                       plan.pairs, plan.dims, out_data, out_offset,
+                                       threads.thread_count())
+    starts = out_offset.tolist()
+    blocks = [out_data[starts[k]:starts[k + 1]].reshape(shape)
+              for k, shape in enumerate(plan.out_shapes)]
     # correct by construction: operand rows were valid and flux adds — the trusted path
     # exists because re-validating here was half the cost of a DMRG sweep (see _trusted)
-    return BlockTensor._trusted(spaces, signs, charge, rows,
-                                _row_keys(rows, [sp.nsectors for sp in spaces]), blocks)
+    return BlockTensor._trusted(plan.spaces, plan.signs, plan.charge, plan.rows,
+                                plan.keys, blocks, flat=out_data,
+                                flat_offset=out_offset[:-1])
 
 
-def _matricized_buffer(blocks: List[np.ndarray], perm: Tuple[int, ...],
-                       dims: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Pack every block, transposed to ``perm`` and matricized, into one flat buffer.
+def _structure_key(t) -> tuple:
+    """The part of a tensor a contraction plan depends on: legs, charge and block table.
+
+    Spaces hash once (:class:`Space` caches it) and compare by identity first, which is
+    the common case — the bond and physical spaces of a two-site problem are shared
+    objects. The sector table enters as bytes, so two tensors with the same legs and the
+    same blocks in the same order share one plan whatever their payloads hold.
+    """
+    return (t.spaces, t.signs, t.charge, t.sectors.shape, t.sectors.tobytes())
+
+
+class _PlanCache(object):
+    """A bounded, least-recently-used memo of contraction plans (the pair tables).
+
+    ⚠ **Why this exists — measured.** After the two kernel ports the sweep spent ~60% of
+    its CPU *building* the pair tables in Python — the same tables, on every one of the
+    hundreds of effective-Hamiltonian applications a two-site solve makes, because every
+    intermediate of the chain has the same structure whatever vector is being applied
+    (n = 12 fat path, D = 32, 2 roots: ``dot_sparse`` orchestration 42% and
+    ``tensordot`` orchestration 25% of the sweep, the two kernels together 20%). A plan
+    is a pure function of the operands' structure (:func:`_structure_key`) and the axes,
+    so it is built once and looked up afterwards.
+
+    ⚠ **Bitwise-inert by construction**: a plan holds index tables only, built by exactly
+    the enumeration the uncached code ran, so the pair order — and with it every
+    reduction order the kernels' B10 notes fix — is unchanged. Nothing numerical is
+    cached.
+
+    Bounded two ways, entries and bytes, and evicted least-recently-used: the hot set is
+    one two-site problem's chain (a handful of plans), a sweep re-derives per bond, and a
+    plan's tables are kilobytes to a few megabytes. Process-level state touched from the
+    serial orchestration layer only (the same assumption ``kuiva/util/timing.py`` records).
+    """
+
+    def __init__(self, max_entries: int = 256, max_bytes: int = 256 * 1024 ** 2) -> None:
+        self.max_entries = int(max_entries)
+        self.max_bytes = int(max_bytes)
+        self._plans: "Dict[tuple, object]" = {}
+        self._bytes = 0
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key: tuple):
+        plan = self._plans.get(key)
+        if plan is None:
+            self.misses += 1
+            return None
+        # move to the recent end (dict order is insertion order)
+        del self._plans[key]
+        self._plans[key] = plan
+        self.hits += 1
+        return plan
+
+    def put(self, key: tuple, plan) -> None:
+        nbytes = int(plan.nbytes)
+        if nbytes > self.max_bytes:
+            return                                     # never cached, never wrong
+        while self._plans and (len(self._plans) >= self.max_entries
+                               or self._bytes + nbytes > self.max_bytes):
+            old_key = next(iter(self._plans))
+            self._bytes -= int(self._plans.pop(old_key).nbytes)
+        self._plans[key] = plan
+        self._bytes += nbytes
+
+    def clear(self) -> None:
+        self._plans.clear()
+        self._bytes = 0
+
+    @property
+    def nbytes(self) -> int:
+        return self._bytes
+
+    def __len__(self) -> int:
+        return len(self._plans)
+
+
+#: The process-wide contraction-plan memo shared by :func:`tensordot` and
+#: :func:`kuiva.dmrg.sparse.dot_sparse`.
+PLAN_CACHE = _PlanCache()
+
+
+def _block_dims(t, rest: Tuple[int, ...], axes: Tuple[int, ...]) -> np.ndarray:
+    """``(nblocks, 2)`` — the product of the block extents over ``rest`` and over
+    ``axes`` — from the structure alone (spaces and sector table, no payload)."""
+    n = t.sectors.shape[0]
+    out = np.ones((n, 2), dtype=np.int64)
+    for i in rest:
+        out[:, 0] *= np.asarray(t.spaces[i].dims, dtype=np.int64)[t.sectors[:, i]]
+    for i in axes:
+        out[:, 1] *= np.asarray(t.spaces[i].dims, dtype=np.int64)[t.sectors[:, i]]
+    return out
+
+
+class _TensordotPlan(object):
+    """Everything :func:`tensordot` needs beyond the operand payloads, for one
+    ``(structure of a, structure of b, axes)``: the matricization of each operand, the
+    matched pair table with its ``beta`` column, and the output's layout and block table.
+
+    ⚠ The pair enumeration below is the one the uncached ``tensordot`` ran, verbatim —
+    ``a``'s blocks in table order, each against its partners in ``b``'s table order —
+    because that order is the accumulation order the kernel's B10 note fixes.
+    """
+
+    __slots__ = ("spaces", "signs", "charge", "perm_a", "perm_b", "a_offset", "b_offset",
+                 "a_shapes", "b_shapes", "pairs", "dims", "out_offset", "rows", "keys",
+                 "out_shapes", "nbytes")
+
+    def __init__(self, a, b, axes_a: Tuple[int, ...], axes_b: Tuple[int, ...]) -> None:
+        for ia, ib in zip(axes_a, axes_b):
+            if a.spaces[ia] != b.spaces[ib]:
+                raise ValueError("contracted legs {}<->{} carry different spaces"
+                                 .format(ia, ib))
+            if a.signs[ia] != -b.signs[ib]:
+                raise ValueError("contracted legs {}<->{} carry equal signs; flux would "
+                                 "not cancel".format(ia, ib))
+        rest_a = tuple(i for i in range(a.ndim) if i not in axes_a)
+        rest_b = tuple(i for i in range(b.ndim) if i not in axes_b)
+        spaces = tuple(a.spaces[i] for i in rest_a) + tuple(b.spaces[i] for i in rest_b)
+        signs = tuple(a.signs[i] for i in rest_a) + tuple(b.signs[i] for i in rest_b)
+        if not spaces:
+            raise ValueError("full contraction to a scalar is not represented as a "
+                             "BlockTensor; keep at least one leg (use a dim-1 leg for "
+                             "scalars)")
+        self.spaces, self.signs, self.charge = spaces, signs, a.charge + b.charge
+        self.perm_a = np.asarray(rest_a + axes_a, dtype=np.int64)
+        self.perm_b = np.asarray(axes_b + rest_b, dtype=np.int64)
+        self.a_shapes = _shapes_table(a.spaces, a.sectors)
+        self.b_shapes = _shapes_table(b.spaces, b.sectors)
+        a_dims = _block_dims(a, rest_a, axes_a)       # (m, k) per block of a
+        b_dims = _block_dims(b, axes_b, rest_b)       # (k, n) per block of b
+
+        b_index: Dict[tuple, List[int]] = {}
+        b_rows = b.sectors.tolist()
+        for jb, row in enumerate(b_rows):
+            b_index.setdefault(tuple(row[i] for i in axes_b), []).append(jb)
+        a_rows = a.sectors.tolist()
+        a_rest = a_dims[:, 0].tolist()
+        a_k = a_dims[:, 1].tolist()
+        b_cols = b_dims[:, 1].tolist()
+        pair_rows: List[tuple] = []
+        pair_dims: List[tuple] = []
+        out_index: Dict[tuple, int] = {}
+        for ja, row_a in enumerate(a_rows):
+            partners = b_index.get(tuple(row_a[i] for i in axes_a))
+            if not partners:
+                continue
+            head = tuple(row_a[i] for i in rest_a)
+            for jb in partners:
+                row_b = b_rows[jb]
+                new_row = head + tuple(row_b[i] for i in rest_b)
+                io = out_index.get(new_row)
+                beta = 1
+                if io is None:
+                    io = out_index[new_row] = len(out_index)
+                    beta = 0                      # first pair on this block: overwrite
+                pair_rows.append((ja, jb, io, beta))
+                pair_dims.append((a_rest[ja], a_k[ja], b_cols[jb]))
+
+        rows = np.array(sorted(out_index), dtype=np.int64).reshape(len(out_index),
+                                                                   len(spaces))
+        rows.flags.writeable = False              # shared by every output of this plan
+        self.rows = rows
+        self.keys = _row_keys(rows, [sp.nsectors for sp in spaces])
+        self.keys.flags.writeable = False
+        self.a_offset = _buffer_offsets(a_dims)
+        self.b_offset = _buffer_offsets(b_dims)
+        if pair_rows:
+            # renumber output blocks into the sorted row order, so the buffer is laid out
+            # as the block table is and the payloads are plain views into it
+            order = {tuple(int(i) for i in r): k for k, r in enumerate(rows)}
+            remap = np.empty(len(out_index), dtype=np.int64)
+            for row_key, io in out_index.items():
+                remap[io] = order[row_key]
+            pairs = np.asarray(pair_rows, dtype=np.int64)
+            pairs[:, 2] = remap[pairs[:, 2]]
+            dims = np.asarray(pair_dims, dtype=np.int64)
+            out_sizes = np.zeros(rows.shape[0], dtype=np.int64)
+            out_sizes[pairs[:, 2]] = dims[:, 0] * dims[:, 2]
+        else:
+            pairs = np.zeros((0, 4), dtype=np.int64)
+            dims = np.zeros((0, 3), dtype=np.int64)
+            out_sizes = np.zeros(rows.shape[0], dtype=np.int64)
+        self.pairs, self.dims = pairs, dims
+        self.out_offset = np.concatenate([[0], np.cumsum(out_sizes)]).astype(np.int64)
+        self.out_shapes = [tuple(int(sp.dims[i]) for sp, i in zip(spaces, r))
+                           for r in rows.tolist()]
+        self.nbytes = int(pairs.nbytes + dims.nbytes + rows.nbytes + self.keys.nbytes
+                          + self.a_offset.nbytes + self.b_offset.nbytes
+                          + self.a_shapes.nbytes + self.b_shapes.nbytes
+                          + self.out_offset.nbytes + 64 * len(self.out_shapes))
+
+
+def _buffer_offsets(dims: np.ndarray) -> np.ndarray:
+    """Start of each matricized block in a flat buffer, plus the total, from ``(n, 2)``
+    matrix dimensions."""
+    sizes = dims[:, 0] * dims[:, 1]
+    return np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+
+
+def _shapes_table(spaces: Sequence[Space], sectors: np.ndarray) -> np.ndarray:
+    """``(nblocks, ndim)`` int64 block shapes from the structure alone."""
+    out = np.empty(sectors.shape, dtype=np.int64)
+    for i, sp in enumerate(spaces):
+        out[:, i] = np.asarray(sp.dims, dtype=np.int64)[sectors[:, i]]
+    return out
+
+
+def _pack_loop(blocks: List[np.ndarray], perm: Tuple[int, ...], offset: np.ndarray,
+               data: np.ndarray) -> np.ndarray:
+    """Pack every block, transposed to ``perm`` and matricized, into ``data`` laid out by
+    ``offset`` — the NumPy fallback for a tensor whose blocks are not one flat buffer.
 
     ⚠ ``reshape(-1)`` of a transposed block materializes a contiguous temporary and the
     assignment then copies it again — two passes. Assigning a *permuted view* of the
@@ -1079,12 +1284,101 @@ def _matricized_buffer(blocks: List[np.ndarray], perm: Tuple[int, ...],
     sweep): NumPy's strided copy loses more than the extra memcpy costs. Recorded because
     the flop/pass count says the opposite.
     """
-    sizes = dims[:, 0] * dims[:, 1]
-    offset = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
-    data = np.empty(int(offset[-1]), dtype=np.complex128)
+    starts = offset.tolist()
     for j, block in enumerate(blocks):
-        data[int(offset[j]):int(offset[j + 1])] = block.transpose(perm).reshape(-1)
-    return data, offset
+        data[starts[j]:starts[j + 1]] = block.transpose(perm).reshape(-1)
+    return data
+
+
+def _pack_blocks(t: BlockTensor, perm: np.ndarray, offset: np.ndarray,
+                 shapes: np.ndarray) -> np.ndarray:
+    """The matricized operand: every block of ``t`` transposed to ``perm`` into one flat
+    buffer laid out by ``offset`` (a plan's precomputed starts, ``nblocks + 1``).
+
+    Through the ``block_pack`` kernel when the tensor is flat (a contraction output, a
+    transposed tensor, the sweep's unpacked vectors), block by block otherwise.
+    """
+    if t._flat is not None and shapes.shape[0]:
+        if t._flat.size == int(offset[-1]) and np.array_equal(t._flat_offset, offset[:-1]) \
+                and np.array_equal(perm, np.arange(perm.size, dtype=np.int64)):
+            return t._flat                      # already laid out as the operand: no copy
+        data = np.empty(int(offset[-1]), dtype=np.complex128)
+        kernels.resolve("block_pack")(t._flat, t._flat_offset, shapes, perm, data,
+                                      offset[:-1], threads.thread_count())
+        return data
+    data = np.empty(int(offset[-1]), dtype=np.complex128)
+    return _pack_loop(t.blocks, tuple(perm.tolist()), offset, data)
+
+
+def _matricized_buffer(blocks: List[np.ndarray], perm: Tuple[int, ...],
+                       dims: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """The per-block pack with the offsets derived from ``dims`` — the form the tests use."""
+    offset = _buffer_offsets(dims)
+    data = np.empty(int(offset[-1]), dtype=np.complex128)
+    return _pack_loop(blocks, tuple(int(p) for p in perm), offset, data), offset
+
+
+@kernels.kernel("block_pack")
+def block_pack_numpy(src: np.ndarray, src_offset: np.ndarray, shapes: np.ndarray,
+                     perm: np.ndarray, dst: np.ndarray, dst_offset: np.ndarray,
+                     n_threads: int) -> np.ndarray:
+    """``dst[j] = transpose(src[j], perm)``, flattened C-order, for every block.
+
+    The third tensor-network kernel: the operand matricization every
+    :func:`tensordot`/``dot_sparse`` call performs and the block transposition every leg
+    permutation performs, which together were a third of a production sweep's CPU as
+    one strided NumPy copy per block (measured, UF3 at D = 48: 33 of 99 s).
+
+    * ``src``/``dst`` are flat ``complex128`` buffers; block ``j`` reads at
+      ``src_offset[j]`` with the C-order shape ``shapes[j]`` (``(nblocks, ndim)`` int64,
+      rectangular — B3) and writes at ``dst_offset[j]``, contiguous, its legs permuted by
+      ``perm`` (``(ndim,)`` int64). Starts are per block and need not be monotone, so a
+      subset of blocks can be packed into a fresh buffer in any order (B1/B3);
+    * ``dst`` is caller-provided and may not alias ``src`` (B6); every block's extent is
+      checked against both buffers **before** the loop (B8);
+    * ``n_threads`` is the explicit thread budget over the blocks (B7 applied to
+      threads). This NumPy implementation is serial and ignores it.
+
+    ⚠ **Reduction order (B10): none** — pure data movement, no arithmetic, so any
+    backend is bitwise this one at any thread count.
+    """
+    if src.dtype != np.complex128 or dst.dtype != np.complex128:
+        raise TypeError("operand and output buffers must be complex128, got {} and {}"
+                        .format(src.dtype, dst.dtype))
+    if (src_offset.dtype != np.int64 or shapes.dtype != np.int64
+            or perm.dtype != np.int64 or dst_offset.dtype != np.int64):
+        raise TypeError("index tables must be int64")
+    if not (src.flags.c_contiguous and dst.flags.c_contiguous and shapes.flags.c_contiguous
+            and src_offset.flags.c_contiguous and dst_offset.flags.c_contiguous
+            and perm.flags.c_contiguous):
+        raise ValueError("operand and output buffers must be C-contiguous")
+    if np.shares_memory(dst, src):
+        raise ValueError("the output buffer may not alias an operand")
+    if shapes.ndim != 2:
+        raise ValueError("shapes must have shape (nblocks, ndim)")
+    nblocks, ndim = shapes.shape
+    if perm.ndim != 1 or perm.size != ndim \
+            or not np.array_equal(np.sort(perm), np.arange(ndim, dtype=np.int64)):
+        raise ValueError("perm must be a permutation of the legs")
+    if src_offset.ndim != 1 or dst_offset.ndim != 1 or src_offset.size != nblocks \
+            or dst_offset.size != nblocks:
+        raise ValueError("src_offset and dst_offset must have shape (nblocks,)")
+    if n_threads < 1:
+        raise ValueError("the thread count must be a positive integer")
+    sizes = shapes.prod(axis=1) if nblocks else np.zeros(0, dtype=np.int64)
+    if nblocks and (np.any(shapes < 1) or np.any(src_offset < 0) or np.any(dst_offset < 0)
+                    or np.any(src_offset + sizes > src.size)
+                    or np.any(dst_offset + sizes > dst.size)):
+        raise ValueError("a block lies outside its buffer")
+    perm_t = tuple(perm.tolist())
+    shape_rows = shapes.tolist()
+    so = src_offset.tolist()
+    do = dst_offset.tolist()
+    sz = sizes.tolist()
+    for j in range(nblocks):
+        block = src[so[j]:so[j] + sz[j]].reshape(shape_rows[j])
+        dst[do[j]:do[j] + sz[j]] = block.transpose(perm_t).reshape(-1)
+    return dst
 
 
 def _joined_rows(rows_a: np.ndarray, rows_b: np.ndarray,
@@ -1286,5 +1580,5 @@ def _degenerate_groups(s: np.ndarray, rtol: float) -> List[np.ndarray]:
 __all__ = ["QuantumNumber", "Space", "BlockTensor", "BlockShape", "FuseRecord",
            "TruncationInfo",
            "fuse", "split", "qr", "svd", "tensordot", "block_tensor_gb",
-           "block_pair_gemm_numpy",
+           "block_pair_gemm_numpy", "block_pack_numpy",
            "SCHMIDT_DEGENERACY_RTOL", "SCHMIDT_STABILITY_RTOL"]

@@ -356,7 +356,8 @@ def _initial_subspace(diagonal: np.ndarray, n_roots: int, n_guess: int,
     return size
 
 
-def _dense_solve(apply_h: Callable[[np.ndarray], np.ndarray], ndet: int, n_roots: int
+def _dense_solve(apply_h: Callable[[np.ndarray], np.ndarray], ndet: int, n_roots: int,
+                 apply_block: Optional[Callable[[np.ndarray], np.ndarray]] = None
                  ) -> DavidsonResult:
     """Build ``H`` by applying it to every unit vector and diagonalize it exactly.
 
@@ -364,18 +365,26 @@ def _dense_solve(apply_h: Callable[[np.ndarray], np.ndarray], ndet: int, n_roots
     dimension of the space, where an iterative solver has nothing to iterate on. Exact, needs
     no tuning, and cannot fail to converge — which is what makes it the right answer for the
     small Kramers-degenerate cases the iterative path finds hardest.
+
+    With ``apply_block`` (see :func:`davidson`) the unit vectors go through it as one
+    ``(ndet, ndet)`` batch — the identity, which is small wherever this path is taken —
+    and its rows are the columns of ``H``.
     """
     res.require("dense CI Hamiltonian", 2.0 * res.array_gb((ndet, ndet), np.complex128),
                 note="{} determinants; the matrix plus LAPACK's copy".format(ndet),
                 advice=["this path is taken only below {} determinants or when the requested "
                         "root count approaches the space size".format(DENSE_SOLVE_MAX_DET)])
-    matrix = np.empty((ndet, ndet), dtype=np.complex128)
-    unit = np.zeros(ndet, dtype=np.complex128)
     with timer("dense CI diagonalization"):
-        for column in range(ndet):
-            unit[:] = 0.0
-            unit[column] = 1.0
-            matrix[:, column] = apply_h(unit)
+        if apply_block is not None:
+            matrix = np.ascontiguousarray(
+                apply_block(np.eye(ndet, dtype=np.complex128)).T)
+        else:
+            matrix = np.empty((ndet, ndet), dtype=np.complex128)
+            unit = np.zeros(ndet, dtype=np.complex128)
+            for column in range(ndet):
+                unit[:] = 0.0
+                unit[column] = 1.0
+                matrix[:, column] = apply_h(unit)
         matrix = 0.5 * (matrix + matrix.conj().T)
         values, vectors = np.linalg.eigh(matrix)
     keep = min(n_roots, ndet)
@@ -390,7 +399,9 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
              conv_tol: float = DEFAULT_CONV_TOL, max_iter: int = DEFAULT_MAX_ITER,
              max_subspace: Optional[int] = None, n_guess: Optional[int] = None,
              dense_max_det: int = DENSE_SOLVE_MAX_DET, label: str = "CI",
-             level: int = logging.DEBUG) -> DavidsonResult:
+             level: int = logging.DEBUG,
+             apply_block: Optional[Callable[[np.ndarray], np.ndarray]] = None
+             ) -> DavidsonResult:
     """Lowest ``n_roots`` eigenpairs of a complex-Hermitian matrix, matrix-free.
 
     Parameters
@@ -399,6 +410,18 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
         ``c -> H c`` for a single ``(ndet,)`` complex vector. Applied once per new expansion
         direction per iteration; a collapse costs none, because the images of the Ritz vectors
         are recovered from the stored ones.
+    apply_block : callable, optional
+        ``C -> H C`` for ``(m, ndet)`` vectors at once, rows independent. When given, the
+        solver hands every iteration's new directions — and the starting set — to it in
+        **one** call instead of ``m`` calls of ``apply_h``. It exists for an operator whose
+        application has a large per-call cost that is independent of the vector: the
+        tensor-network two-site Hamiltonian, whose contraction chain is orchestrated in
+        Python once per call and whose block GEMMs gain rows with every extra vector. The
+        iteration itself is unchanged — the directions are built and orthonormalized
+        exactly as without it, then applied together — so a caller that passes
+        ``apply_block(C) = stack(apply_h(c) for c in C)`` gets a bitwise-identical
+        trajectory; what a batched operator does inside its own arithmetic is its own
+        parity statement.
     diagonal : ``(ndet,)`` real
         ``<I|H|I>``, for the preconditioner and the initial guess. From
         :func:`kuiva.ci.strings.diagonal_energies`.
@@ -435,7 +458,16 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
         raise ValueError("cannot ask for {} roots of a {}-determinant space"
                          .format(n_roots, ndet))
     if ndet <= dense_max_det or n_roots >= ndet - 1:
-        return _dense_solve(apply_h, ndet, n_roots)
+        return _dense_solve(apply_h, ndet, n_roots, apply_block=apply_block)
+
+    def apply_rows(vectors: np.ndarray) -> np.ndarray:
+        """Images of the rows of ``vectors``: one batched call, or one call per row."""
+        if apply_block is not None:
+            return apply_block(vectors)
+        out = np.empty_like(vectors)
+        for i in range(vectors.shape[0]):       # row by row: apply_h may reuse a buffer
+            out[i] = apply_h(vectors[i])
+        return out
 
     cap = subspace_cap(n_roots, ndet, max_subspace)
     n_guess = min(cap, 2 * n_roots if n_guess is None else int(n_guess))
@@ -459,9 +491,8 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
     size = _initial_subspace(diagonal, n_roots, n_guess, guess, space, space_conj)
     n_apply = 0
     with timer("Davidson: initial sigma vectors"):
-        for i in range(size):
-            images[i] = apply_h(space[i])
-            n_apply += 1
+        images[:size] = apply_rows(space[:size])
+        n_apply += size
 
     table = out.Table(log, [out.col_iter(), out.col_count("space", 7),
                             out.col_energy("E(lowest) [Eh]"), out.col_delta(),
@@ -510,7 +541,10 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
                 log.debug("Davidson collapsed to %d vectors at iteration %d",
                           n_keep, iteration)
 
-            added = 0
+            # The new directions are built and orthonormalized one after another (each
+            # against the ones before it, exactly as before), and applied together
+            # afterwards: the batch is the application, never the orthonormalization.
+            first_new = size
             for root in unconverged:
                 if size >= cap:
                     break
@@ -524,10 +558,11 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
                     continue
                 space[size] = direction
                 space_conj[size] = np.conj(direction)
-                images[size] = apply_h(direction)
-                n_apply += 1
                 size += 1
-                added += 1
+            added = size - first_new
+            if added:
+                images[first_new:size] = apply_rows(space[first_new:size])
+                n_apply += added
             if added == 0:
                 table.end("no independent direction left to expand")
                 raise SolverFailure(

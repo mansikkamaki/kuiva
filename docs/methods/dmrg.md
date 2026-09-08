@@ -44,7 +44,17 @@ instead of the $`O(n^4)`$ term count, with each coefficient attached exactly onc
 compiler's input is a generic operator-sum, which is a deliberate test seam: the structure
 machinery can be driven by model spin Hamiltonians with *known* exchange graphs, no
 integrals involved — and structure claims are validated against theorems and those models,
-never against the network's own entanglement output.
+never against the network's own entanglement output. The suite drives every polynuclear
+validation graph (a chain, an ion–radical–ion chain with local dimensions 16/2/16, a
+frustrated triangle, a star, a cubane face with a pendant, a complete graph and two
+eight-site rings) through that seam as an effective Heisenberg model, one mode per centre,
+and checks the *committed* state's energy and $`\langle S^2\rangle`$ against dense or
+sparse exact diagonalization and the Lieb–Mattis ground spin. Two things that measurement
+settled: the star's tree network is exact at a bond dimension of six where a chain needs
+eleven, and an entanglement-driven ordering cannot see a low-dimensional bridge — a radical
+between two large-J ions shares at most $`\ln 2`$ nats with either — so a multi-site
+topology is taken from the exchange graph through the localization's site partition, not
+from the mutual information of a converged state.
 
 ## The sweep
 
@@ -100,6 +110,20 @@ small thread width, and its CPU-second figures are read accordingly
 ([configuration](../guide/configuration.md#threads-one-number)). The environment cache
 pages its coldest entries to a configured scratch directory under memory pressure,
 bitwise-inertly, instead of refusing.
+
+**The effective Hamiltonian is applied to an iteration's new Davidson directions in
+batches.** On a state average that is roughly one direction per root, and applying them one
+at a time paid the contraction chain's bookkeeping — and a full set of small block GEMMs —
+once per root: a 25-root FeCl2 bond tour made 1575 single-vector applications for 59
+Davidson iterations. Batched, the vectors ride on one extra leg of every intermediate and
+the bookkeeping is paid per batch. The width is a **measured default of four**
+(`solve_ttn(batch=)`): two to four vectors pay the bookkeeping off, and a batch of every
+root of a large problem grows every intermediate out of the cache and runs slower than none.
+It is further bounded by the resource budget's transient allowance from the single-vector
+intermediate the memory plan sizes, so batching never enlarges what the plan promised
+beyond that allowance. The pair tables every contraction needs are built once per operand
+structure and memoized (they hold indices only, so the memo is bitwise-inert), and the
+operand matricizations run through a compiled kernel where one is built.
 
 ### What a sweep costs in memory
 

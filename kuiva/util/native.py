@@ -59,8 +59,9 @@ BUILD_COMMAND = "cd cpp && ./configure && make"
 
 #: The interface version this gate understands. Must equal ``kuiva._native.API_VERSION``;
 #: a mismatch means the .so predates a kernel-signature change and may not register.
-#: History: 1 = Stage 1 (probe, connections_scan, block_pair_gemm); 2 = + sparse_pair_dot.
-API_VERSION = 2
+#: History: 1 = Stage 1 (probe, connections_scan, block_pair_gemm); 2 = + sparse_pair_dot;
+#: 3 = + block_pack, and sparse_pair_dot's output blocks laid out operator-legs-first.
+API_VERSION = 3
 
 VALID_MODES = ("auto", "numpy", "native")
 
@@ -263,18 +264,38 @@ def _sparse_pair_dot(am_data: np.ndarray, am_offset: np.ndarray, csr_values: np.
     pairs walked in table order) and reproduces the scratch and the naive complex product
     with FP contraction off, so parity is **bitwise**, serial and threaded — asserted
     against the running SciPy build by ``tests/test_native_backend.py``. No BLAS runs
-    inside, so there is no MKL-width term (unlike ``block_pair_gemm``).
+    inside, so there is no MKL-width term (unlike ``block_pair_gemm``). The scratch
+    is a per-row one for **multi-entry** rows only: an empty row adds an exact +0.0, and
+    a single-entry row's scratch would hold ``0 + t``, to elements that never hold -0.0
+    (the output starts zero-filled and only ever accumulates), so neither needs it and
+    skipping both changes no bit — which removed the output-sized zeroing and read-back
+    that was most of the kernel's traffic.
     """
     return _STATE["module"].sparse_pair_dot(am_data, am_offset, csr_values, csr_indices,
                                             csr_indptr, csr_meta, pairs, dims, out_data,
                                             out_offset, n_threads)
 
 
+def _block_pack(src: np.ndarray, src_offset: np.ndarray, shapes: np.ndarray,
+                perm: np.ndarray, dst: np.ndarray, dst_offset: np.ndarray,
+                n_threads: int) -> np.ndarray:
+    """Compiled block transposition/matricization; contract as the NumPy kernel of this
+    name.
+
+    Reduction order (B10): none — pure data movement, no arithmetic of any kind, so the
+    result is **bitwise** the reference's at every thread count (blocks are independent
+    and each thread writes only its own).
+    """
+    return _STATE["module"].block_pack(src, src_offset, shapes, perm, dst, dst_offset,
+                                       n_threads)
+
+
 def _register(module) -> None:
     for name, impl in (("native_probe", _native_probe),
                        ("connections_scan", _connections_scan),
                        ("block_pair_gemm", _block_pair_gemm),
-                       ("sparse_pair_dot", _sparse_pair_dot)):
+                       ("sparse_pair_dot", _sparse_pair_dot),
+                       ("block_pack", _block_pack)):
         if not hasattr(module, name):                          # pragma: no cover - defensive
             raise ImportError("kuiva._native (build {}) does not export {!r}; rebuild "
                               "with `{}`".format(module.BUILD_ID, name, BUILD_COMMAND))

@@ -62,8 +62,9 @@ using cplx = std::complex<double>;
 // KUIVA_KERNELS=native) or ignores (under auto) a module whose API_VERSION does not match
 // its own — a stale .so must never register kernels with a drifted signature.
 // History: 1 = Stage 1 (probe, connections_scan, block_pair_gemm); 2 = + sparse_pair_dot
-// (the post-port re-profile, measured).
-static constexpr int API_VERSION = 2;
+// (the post-port re-profile, measured); 3 = + block_pack (the operand-pack port).
+static constexpr int API_VERSION = 3;
+
 
 // ---------------------------------------------------------------------------------------
 // Boundary checks (B4/B5/B6). Message keywords ("must be", "C-contiguous", "alias") are
@@ -459,7 +460,7 @@ static py::array block_pair_gemm(py::array a_data, py::array a_offset, py::array
 }
 
 // ---------------------------------------------------------------------------------------
-// sparse_pair_dot — out[io] += (csr[ic] @ A[ia])^T over a matched pair table.
+// sparse_pair_dot — out[io] += csr[ic] @ A[ia] over a matched pair table.
 //
 // The sparse-W application: the second tensor-network hot kernel, measured at 48% of a
 // post-Stage-1c sweep's CPU, serial, share flat in the bond dimension
@@ -471,8 +472,10 @@ static py::array block_pair_gemm(py::array a_data, py::array a_offset, py::array
 // Bitwise parity, both paths: the NumPy kernel's engine is SciPy's csr_matvecs — per CSR
 // row, entries in ascending stored order, each one component-wise multiply-accumulate into
 // a zeroed per-pair scratch, then one add per element into the output. This kernel
-// reproduces that arithmetic EXACTLY: the same per-pair scratch (never accumulating
-// entries straight into the output, which would reorder the sum), the same naive complex
+// reproduces that arithmetic EXACTLY: a per-row scratch for every multi-entry row (never
+// accumulating several entries straight into the output, which would reorder the sum;
+// empty and single-entry rows are handled without it, which is bitwise-neutral — see
+// sparse_pair_apply), the same naive complex
 // product (r1*r2 - i1*i2, r1*i2 + i1*r2) on doubles — scipy's complex_wrapper formula, not
 // std::complex operator* whose __muldc3 NaN fixup is a different function — and FP
 // contraction OFF for the arithmetic loops, so no FMA regroups what scipy's build did not.
@@ -484,13 +487,36 @@ static py::array block_pair_gemm(py::array a_data, py::array a_offset, py::array
 
 namespace {
 
-// One pair: zero the scratch, run the CSR rows in entry order, then add the transposed
-// scratch into the output block. Kept out-of-line from the OpenMP region so the serial and
-// threaded paths are the same code by construction.
-inline void sparse_pair_apply(const cplx* am, const int64_t* indptr, const int64_t* cols,
-                              const cplx* vals, cplx* outp, cplx* piece, int64_t in_size,
-                              int64_t rest, int64_t out_sz) {
-    (void)in_size;                                  // implied by the column indices
+// One pair straight into its (out_sz, rest) output block: the nonempty CSR rows in entry
+// order — a single-entry row's product added directly, a multi-entry row's sum built in a
+// per-row scratch (zeroed) and added once — which is the arithmetic of the NumPy engine
+// (csr_matvecs into a zeroed piece, then out += piece), element for element and in the
+// same order. Every axpy is contiguous in this layout (the operator's legs first — see
+// the wrapper's docstring for why the layout is the kernel's), so the k loops vectorize.
+// Kept out-of-line from the OpenMP region so the serial and threaded paths are the same
+// code by construction.
+//
+// ⚠ Two things are skipped and both are bitwise-neutral by a short argument rather than by
+// luck. An empty CSR row contributes an exact +0.0 to every element of its row, and a
+// single-entry row's scratch would hold 0 + t, which is t exactly except for the sign of a
+// zero; the output starts zero-filled and only ever accumulates, so no element ever holds
+// -0.0 and adding either zero to it changes no bit. The first port zeroed and read back an
+// output-sized scratch per pair to apply a handful of nonzero rows — on the production W
+// blocks, a few entries in a block of hundreds of rows — and that traffic, not the
+// arithmetic, was the kernel's cost.
+//
+// ⚠ Not chunked over `rest`, and that is a measurement rather than an omission: blocking
+// the batched dimension so an operand block's slab stays cache-resident across the
+// transitions that re-read it was tried at fixed widths of 8 to 256 elements and at
+// adaptive widths (slab budgets of 256 KB to 4 MB) against two captured production calls
+// — a 25-root D = 32 one (23 MB operand, 15 million multiply-adds) and a 16-root D = 64
+// one (55 MB, 9 entries per row) — and was never faster: 22-25 ms against 23-40 ms, and
+// 91 ms against 95-99 ms. The kernel runs at ~5 GFLOP/s on both, vectorized (VL 4 per
+// the Intel report), bound by the stream of one contiguous axpy per transition.
+inline void sparse_pair_apply(const cplx* __restrict__ am, const int64_t* indptr,
+                              const int64_t* cols, const cplx* vals,
+                              cplx* __restrict__ outp, cplx* __restrict__ prow_c,
+                              int64_t in_size, int64_t rest, int64_t out_sz) {
     {
         // VALUE-SAFE FP for this block, and both halves were MEASURED, not assumed
         // (2026-08-10, exact-rational probe + pure-Python reconstruction against the
@@ -502,18 +528,35 @@ inline void sparse_pair_apply(const cplx* am, const int64_t* indptr, const int64
         // diverged while a pure-Python replay of the stated order matched SciPy exactly.
         // float_control(precise) pins both. If the SciPy pin ever moves to a build that
         // fuses, this is the block to revisit (the reduction ORDER is fixed either way;
-        // only operand-level rounding is at stake).
+        // only operand-level rounding is at stake). `restrict` is what lets the k loops
+        // vectorize (elementwise — no reduction is reordered by it).
         #pragma float_control(precise, on)
         #pragma clang fp contract(off)
-        std::memset(piece, 0, sizeof(cplx) * static_cast<size_t>(out_sz * rest));
-        double* pd = reinterpret_cast<double*>(piece);
-        const double* ad = reinterpret_cast<const double*>(am);
+        double* __restrict__ prow = reinterpret_cast<double*>(prow_c);
+        const double* __restrict__ ad = reinterpret_cast<const double*>(am);
+        double* __restrict__ od = reinterpret_cast<double*>(outp);
         for (int64_t r = 0; r < out_sz; ++r) {
-            double* prow = pd + 2 * r * rest;
-            for (int64_t e = indptr[r]; e < indptr[r + 1]; ++e) {
+            const int64_t e0 = indptr[r], e1 = indptr[r + 1];
+            if (e1 <= e0) continue;
+            double* __restrict__ orow = od + 2 * r * rest;
+            if (e1 == e0 + 1) {
+                const cplx v = vals[e0];
+                const double vr = v.real(), vi = v.imag();
+                const double* __restrict__ arow = ad + 2 * cols[e0] * rest;
+                #pragma omp simd
+                for (int64_t k = 0; k < rest; ++k) {
+                    const double ar = arow[2 * k], ai = arow[2 * k + 1];
+                    orow[2 * k] += vr * ar - vi * ai;
+                    orow[2 * k + 1] += vr * ai + vi * ar;
+                }
+                continue;
+            }
+            std::memset(prow, 0, sizeof(double) * static_cast<size_t>(2 * rest));
+            for (int64_t e = e0; e < e1; ++e) {
                 const cplx v = vals[e];
                 const double vr = v.real(), vi = v.imag();
-                const double* arow = ad + 2 * cols[e] * rest;
+                const double* __restrict__ arow = ad + 2 * cols[e] * rest;
+                #pragma omp simd
                 for (int64_t k = 0; k < rest; ++k) {
                     const double ar = arow[2 * k], ai = arow[2 * k + 1];
                     const double tr = vr * ar - vi * ai;
@@ -522,14 +565,8 @@ inline void sparse_pair_apply(const cplx* am, const int64_t* indptr, const int64
                     prow[2 * k + 1] += ti;
                 }
             }
-        }
-        double* od = reinterpret_cast<double*>(outp);
-        for (int64_t r = 0; r < out_sz; ++r) {
-            const double* prow = pd + 2 * r * rest;
-            for (int64_t k = 0; k < rest; ++k) {
-                od[2 * (k * out_sz + r)] += prow[2 * k];
-                od[2 * (k * out_sz + r) + 1] += prow[2 * k + 1];
-            }
+            #pragma omp simd
+            for (int64_t k = 0; k < 2 * rest; ++k) orow[k] += prow[k];
         }
     }
 }
@@ -575,21 +612,19 @@ static py::array sparse_pair_dot(py::array am_data, py::array am_offset,
     const cplx* ad = static_cast<const cplx*>(am_data.data());
     cplx* od = static_cast<cplx*>(out_data.mutable_data());
 
-    int64_t max_piece = 0;                          // scratch size, found outside the loop
-    for (int64_t p = 0; p < npair; ++p) {
-        const int64_t sz = dm[3 * p + 1] * dm[3 * p + 2];
-        if (sz > max_piece) max_piece = sz;
-    }
+    int64_t max_rest = 0;                           // row scratch, found outside the loop
+    for (int64_t p = 0; p < npair; ++p)
+        if (dm[3 * p + 1] > max_rest) max_rest = dm[3 * p + 1];
 
     {
         py::gil_scoped_release release;
         if (n_threads == 1 || npair == 0) {
-            std::vector<cplx> piece(static_cast<size_t>(max_piece));
+            std::vector<cplx> prow(static_cast<size_t>(max_rest));
             for (int64_t p = 0; p < npair; ++p) {
                 const int64_t ic = pr[3 * p + 1];
                 sparse_pair_apply(ad + ao[pr[3 * p]], ipd + mt[3 * ic],
                                   ixd + mt[3 * ic + 1], vd + mt[3 * ic + 1],
-                                  od + oo[pr[3 * p + 2]], piece.data(), dm[3 * p],
+                                  od + oo[pr[3 * p + 2]], prow.data(), dm[3 * p],
                                   dm[3 * p + 1], dm[3 * p + 2]);
             }
         } else {
@@ -598,20 +633,218 @@ static py::array sparse_pair_dot(py::array am_data, py::array am_offset,
             {
                 const int T = omp_get_num_threads();
                 const int t = omp_get_thread_num();
-                std::vector<cplx> piece(static_cast<size_t>(max_piece));
+                std::vector<cplx> prow(static_cast<size_t>(max_rest));
                 for (int64_t p = 0; p < npair; ++p) {
                     const int64_t io = pr[3 * p + 2];
                     if (static_cast<int>(io % T) != t) continue;
                     const int64_t ic = pr[3 * p + 1];
                     sparse_pair_apply(ad + ao[pr[3 * p]], ipd + mt[3 * ic],
                                       ixd + mt[3 * ic + 1], vd + mt[3 * ic + 1],
-                                      od + oo[io], piece.data(), dm[3 * p],
+                                      od + oo[io], prow.data(), dm[3 * p],
                                       dm[3 * p + 1], dm[3 * p + 2]);
                 }
             }
         }
     }
     return out_data;
+}
+
+// ---------------------------------------------------------------------------------------
+// block_pack — dst[j] = transpose(src[j], perm) flattened in C order, for every block of a
+// block tensor: the operand matricization of every network contraction and the block
+// transposition of every leg permutation, which together were a third of a production
+// sweep's CPU in NumPy (one strided copy per block, per application of H_eff).
+//
+// Pure data movement — no arithmetic, no reduction — so the result is bitwise identical to
+// the NumPy reference by construction, at any thread count (blocks are independent and
+// each thread writes only its own). Per block the permuted read strides are collapsed
+// over adjacent dimensions, a contiguous run is a memcpy, a stride-1 leading source
+// dimension under a strided one (the two-dimensional transpose every matricization
+// reduces to) is copied in 16x16 tiles so both sides stay cache-resident, and anything
+// else is an odometer walk with contiguous writes.
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr int PACK_MAX_DIMS = 16;
+
+// One block after dimension collapsing: dst dims d[0..n), permuted source read strides
+// rs[0..n) (elements), dst written contiguously in C order. Exactly one collapsed
+// dimension reads the source with stride 1 (the one holding the source's last axis); when
+// it is also the last dst dimension every row is a memcpy, otherwise the copy is a tiled
+// two-dimensional transpose over that dimension and the last dst dimension — 16x16 tiles
+// of complex, so reads and writes both stay cache-resident — with an odometer over the
+// remaining dimensions. The first draft gathered element by element down the last dst
+// dimension and ran at 1.5-3 GB/s on the five- and six-leg permutations a sweep makes.
+inline void pack_copy(const cplx* src, cplx* dst, int n, const int64_t* d,
+                      const int64_t* rs) {
+    int64_t ds[PACK_MAX_DIMS];                     // C-order destination strides
+    int64_t acc = 1;
+    for (int i = n - 1; i >= 0; --i) { ds[i] = acc; acc *= d[i]; }
+    int j = n - 1;
+    for (int i = 0; i < n; ++i) if (rs[i] == 1) { j = i; break; }
+    const int last = n - 1;
+    int64_t idx[PACK_MAX_DIMS];
+    for (int i = 0; i < n; ++i) idx[i] = 0;
+    if (j == last) {
+        // contiguous runs of d[last] elements. ⚠ The runs are short on the permutations a
+        // sweep makes (a physical leg of extent 2-4 stays last), so an odometer step per
+        // run costs more than the run: the innermost THREE destination dimensions are
+        // explicit nested loops and only the rest go through the odometer.
+        const int64_t len = d[last];
+        const int64_t d2 = (n >= 2) ? d[n - 2] : 1, r2 = (n >= 2) ? rs[n - 2] : 0;
+        const int64_t d3 = (n >= 3) ? d[n - 3] : 1, r3 = (n >= 3) ? rs[n - 3] : 0;
+        const int64_t s2 = len, s3 = len * d2;
+        const int outer = (n >= 3) ? n - 3 : 0;
+        for (;;) {
+            int64_t so = 0, doff = 0;
+            for (int i = 0; i < outer; ++i) { so += idx[i] * rs[i]; doff += idx[i] * ds[i]; }
+            const cplx* sb = src + so;
+            cplx* db = dst + doff;
+            for (int64_t c = 0; c < d3; ++c) {
+                for (int64_t b = 0; b < d2; ++b) {
+                    const cplx* srow = sb + c * r3 + b * r2;
+                    cplx* drow = db + c * s3 + b * s2;
+                    if (len >= 8) {
+                        std::memcpy(drow, srow, sizeof(cplx) * static_cast<size_t>(len));
+                    } else {
+                        for (int64_t k = 0; k < len; ++k) drow[k] = srow[k];
+                    }
+                }
+            }
+            int i = outer - 1;
+            for (; i >= 0; --i) { if (++idx[i] < d[i]) break; idx[i] = 0; }
+            if (i < 0) break;
+        }
+        return;
+    }
+    // tiled transpose over (j, last): dst[.., i_j, .., i_l] = src[base + i_j + i_l * rs[last]]
+    const int64_t dj = d[j], dl = d[last], sl = rs[last], dsj = ds[j];
+    constexpr int64_t T = 16;
+    for (;;) {
+        int64_t so = 0, doff = 0;
+        for (int i = 0; i < last; ++i) {
+            if (i == j) continue;
+            so += idx[i] * rs[i];
+            doff += idx[i] * ds[i];
+        }
+        const cplx* sb = src + so;
+        cplx* db = dst + doff;
+        for (int64_t a0 = 0; a0 < dj; a0 += T) {
+            const int64_t a1 = (a0 + T < dj) ? a0 + T : dj;
+            for (int64_t b0 = 0; b0 < dl; b0 += T) {
+                const int64_t b1 = (b0 + T < dl) ? b0 + T : dl;
+                for (int64_t a = a0; a < a1; ++a) {
+                    cplx* drow = db + a * dsj;
+                    const cplx* scol = sb + a;
+                    for (int64_t b = b0; b < b1; ++b) drow[b] = scol[b * sl];
+                }
+            }
+        }
+        int i = last - 1;
+        for (; i >= 0; --i) {
+            if (i == j) continue;
+            if (++idx[i] < d[i]) break;
+            idx[i] = 0;
+        }
+        if (i < 0) break;
+    }
+}
+
+inline void pack_one(const cplx* src, cplx* dst, int nd, const int64_t* shape,
+                     const int64_t* perm) {
+    int64_t st[PACK_MAX_DIMS];                     // C-order source strides
+    int64_t acc = 1;
+    for (int i = nd - 1; i >= 0; --i) { st[i] = acc; acc *= shape[i]; }
+    int64_t d[PACK_MAX_DIMS], rs[PACK_MAX_DIMS];
+    int n = 0;
+    for (int i = 0; i < nd; ++i) {
+        const int64_t di = shape[perm[i]], si = st[perm[i]];
+        if (di == 1) continue;
+        if (n > 0 && rs[n - 1] == si * di) {       // adjacent in source too: merge
+            d[n - 1] *= di;
+            rs[n - 1] = si;
+        } else {
+            d[n] = di;
+            rs[n] = si;
+            ++n;
+        }
+    }
+    if (n == 0) {                                   // a single element
+        *dst = *src;
+        return;
+    }
+    pack_copy(src, dst, n, d, rs);
+}
+
+}  // namespace
+
+static py::array block_pack(py::array src, py::array src_offset, py::array shapes,
+                            py::array perm, py::array dst, py::array dst_offset,
+                            int64_t n_threads) {
+    auto c16 = py::dtype("complex128");
+    auto i8 = py::dtype("int64");
+    check_dtype(src, c16, "operand buffers", "complex128");
+    check_dtype(dst, c16, "the output buffer", "complex128");
+    for (const py::array* a : {&src_offset, &shapes, &perm, &dst_offset})
+        check_dtype(*a, i8, "index tables", "int64");
+    for (const py::array* a : {&src, &dst, &src_offset, &shapes, &perm, &dst_offset})
+        check_carray(*a, "operand and output buffers");
+    check_no_alias(dst, src, "an operand");
+    if (shapes.ndim() != 2)
+        throw py::value_error("shapes must have shape (nblocks, ndim)");
+    const int64_t nblocks = static_cast<int64_t>(shapes.shape(0));
+    const int nd = static_cast<int>(shapes.shape(1));
+    if (nd < 1 || nd > PACK_MAX_DIMS)
+        throw py::value_error("a block must have between 1 and 16 legs");
+    if (perm.ndim() != 1 || static_cast<int>(perm.shape(0)) != nd)
+        throw py::value_error("perm must have shape (ndim,)");
+    if (src_offset.ndim() != 1 || dst_offset.ndim() != 1
+            || static_cast<int64_t>(src_offset.shape(0)) != nblocks
+            || static_cast<int64_t>(dst_offset.shape(0)) != nblocks)
+        throw py::value_error("src_offset and dst_offset must have shape (nblocks,)");
+    if (n_threads < 1)
+        throw py::value_error("the thread count must be a positive integer");
+    const int64_t* pm = static_cast<const int64_t*>(perm.data());
+    {
+        bool seen[PACK_MAX_DIMS] = {false};
+        for (int i = 0; i < nd; ++i) {
+            if (pm[i] < 0 || pm[i] >= nd || seen[pm[i]])
+                throw py::value_error("perm must be a permutation of the legs");
+            seen[pm[i]] = true;
+        }
+    }
+    const int64_t* sh = static_cast<const int64_t*>(shapes.data());
+    const int64_t* so = static_cast<const int64_t*>(src_offset.data());
+    const int64_t* dof = static_cast<const int64_t*>(dst_offset.data());
+    const int64_t src_size = static_cast<int64_t>(src.shape(0));
+    const int64_t dst_size = static_cast<int64_t>(dst.shape(0));
+    // every block's extent fits both buffers — checked here, before any work loop, so
+    // nothing raises inside one
+    for (int64_t j = 0; j < nblocks; ++j) {
+        int64_t size = 1;
+        for (int i = 0; i < nd; ++i) {
+            if (sh[j * nd + i] < 1) throw py::value_error("block shapes must be positive");
+            size *= sh[j * nd + i];
+        }
+        if (so[j] < 0 || so[j] + size > src_size || dof[j] < 0 || dof[j] + size > dst_size)
+            throw py::value_error("a block lies outside its buffer");
+    }
+    const cplx* sd = static_cast<const cplx*>(src.data());
+    cplx* dd = static_cast<cplx*>(dst.mutable_data());
+    {
+        py::gil_scoped_release release;
+        const int nt = static_cast<int>(n_threads);
+        if (nt == 1 || nblocks < 2) {
+            for (int64_t j = 0; j < nblocks; ++j)
+                pack_one(sd + so[j], dd + dof[j], nd, sh + j * nd, pm);
+        } else {
+            #pragma omp parallel for schedule(dynamic) num_threads(nt)
+            for (int64_t j = 0; j < nblocks; ++j)
+                pack_one(sd + so[j], dd + dof[j], nd, sh + j * nd, pm);
+        }
+    }
+    return dst;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -641,4 +874,8 @@ PYBIND11_MODULE(_native, m) {
           py::arg("csr_meta").noconvert(), py::arg("pairs").noconvert(),
           py::arg("dims").noconvert(), py::arg("out_data").noconvert(),
           py::arg("out_offset").noconvert(), py::arg("n_threads"));
+    m.def("block_pack", &block_pack, py::arg("src").noconvert(),
+          py::arg("src_offset").noconvert(), py::arg("shapes").noconvert(),
+          py::arg("perm").noconvert(), py::arg("dst").noconvert(),
+          py::arg("dst_offset").noconvert(), py::arg("n_threads"));
 }

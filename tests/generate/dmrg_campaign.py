@@ -262,7 +262,8 @@ class Campaign:
 
 def _from_suite(key: str, *, caps: Sequence[int], ladder_states: Optional[int] = None,
                 pseudo_doublet_tol_cm: Optional[float] = None,
-                            casscf_mode: str = "auto", protocol_note: str = "") -> Campaign:
+                casscf_mode: str = "auto", protocol_note: str = "",
+                orbitals: str = "casscf") -> Campaign:
     """A campaign system built from a committed suite entry — one source of truth.
 
     ⚠ Geometry, basis, charge, spin, the active-space statement (its ordinal window
@@ -278,6 +279,7 @@ def _from_suite(key: str, *, caps: Sequence[int], ladder_states: Optional[int] =
         selection_kw=sysdef.character_selection(s),
         n_states=s.soc_states, ladder_states=ladder_states, caps=tuple(caps),
         casscf_mode=casscf_mode, pseudo_doublet_tol_cm=pseudo_doublet_tol_cm,
+        orbitals=orbitals,
         geom_note=s.geom_note, physics_note=s.physics_note, protocol_note=protocol_note)
 
 
@@ -339,6 +341,48 @@ def systems() -> Dict[str, Campaign]:
                           "state-averaging question inside a truncation measurement. The "
                           "ladder solves the same 16-root task as dycl3, which is what "
                           "makes the free-ion control a control"),
+        # --- Phase 2: the multi-site bridge --------------------------------------------
+        _from_suite(
+            "ti3f9_far", caps=(8, 16), ladder_states=2, orbitals="guess",
+            protocol_note="THE 30-SPINOR, THREE-SITE SHAPE with real integrals: three d^1 "
+                          "TiF3 monomers 25 A apart, CAS(3, 30 spinors), 4060 "
+                          "determinants, so the exact CI is cheap while the network is "
+                          "the smallest Tier-3 shape there is. Runs at scalar-guess "
+                          "orbitals, localized per centre through the one site-partition "
+                          "implementation so a node is one centre's orbitals (an "
+                          "active-active rotation; the CI is invariant to it and that is "
+                          "asserted). The suite's 1000-state manifold count is the "
+                          "reference protocol; the feasibility stage solves two roots, "
+                          "because what it measures is the operator and the sweep, not "
+                          "a converged manifold"),
+        replace(_from_suite(
+            "ti2cl6", caps=CAPS_SMALL, orbitals="casscf", casscf_mode="auto",
+            protocol_note="THE COUPLED TWO-SITE BRIDGE: an edge-sharing d^1-d^1 dimer at "
+                          "3.5 A, CAS(2, 20 spinors), 190 determinants, whose 100 SOC "
+                          "states are the full 10 x 10 local-multiplet product. Orbitals: "
+                          "a 4-root SA-CASSCF (the ground local doublets' product; the "
+                          "16-state count is NOT a boundary at the starting orbitals — "
+                          "states 16 and 17 are degenerate there, measured) "
+                          "from the AVAS start under a wall deadline, checkpointed — the "
+                          "committed 100-root one took 4.8 h, and at the scalar guess the "
+                          "dimer is a Ti-Ti sigma-bonded singlet with its triplet 6 569 "
+                          "cm^-1 up (measured), not a product manifold. Localized per "
+                          "centre through the one site-partition implementation (an "
+                          "active-active rotation; the CI is invariant to it and that is "
+                          "asserted); every quantity the bridge grades is a same-integral "
+                          "network-vs-CI difference. The "
+                          "committed manifold record's CI spectrum is compared against "
+                          "this run's as a statement about the orbitals, never as the "
+                          "oracle. ⚠ The space is stated by AVAS on the two titaniums, "
+                          "not by character: the closed-shell scalar guess pairs the two "
+                          "d electrons in a Ti-Ti sigma bond, and the ten lowest "
+                          "d-character pairs then hold that sigma pair and one more "
+                          "delocalized pair WITHOUT its partner, which no site partition "
+                          "can separate (measured: two pairs at 0.45/0.45, refused). The "
+                          "projection onto the free-atom 3d span takes the whole local d "
+                          "manifold of both centres whatever combination the guess put "
+                          "it in"),
+                scf_options={"atomic_reference": True}, n_states=4, max_iter=60),
         # --- new: the named target and its actinide sibling ----------------------------
         Campaign(
             key="dycl3", label="DyCl3",

@@ -151,6 +151,10 @@ class DMRGSolver:
         :func:`~kuiva.mcscf.events.optimize_orbitals_events`; the class API selects it
         automatically. A rung refused for gaining less than the driver's ``tau`` is a
         measurement that the current cap suffices, not a failure.
+    environment_resident_gb : float, optional
+        :func:`~kuiva.dmrg.sweep.solve_ttn`'s cap on the resident environment set,
+        applied to every solve. ``None`` (default) pages only where a reservation would
+        otherwise refuse.
     bond_schedule, expansion, expansion_sweeps
         The per-**sweep** controls of :func:`~kuiva.dmrg.sweep.solve_ttn`, applied to
         the FIRST (cold) solve only: a warm-started solve re-derives its fixed point in
@@ -177,9 +181,15 @@ class DMRGSolver:
                  checkpoint=None, restart=None,
                  bond_steps: Optional[Sequence[int]] = None,
                  bond_schedule: Optional[Sequence[int]] = None,
-                 expansion: float = 0.0, expansion_sweeps: int = 6) -> None:
+                 expansion: float = 0.0, expansion_sweeps: int = 6,
+                 environment_resident_gb: Optional[float] = None) -> None:
         self.n_elec = int(n_elec)
         self.max_bond = int(max_bond)
+        #: Cap on the resident environment set of every solve, passed through to
+        #: :func:`~kuiva.dmrg.sweep.solve_ttn` unchanged (``None``: page only where a
+        #: reservation would otherwise refuse). A knob for headroom, never for the answer.
+        self.environment_resident_gb = (None if environment_resident_gb is None
+                                        else float(environment_resident_gb))
         #: The per-macro-iteration cap ladder (module docstring). ``self._cap`` is the
         #: incumbent chart's cap — it starts at the first rung and moves only through
         #: :meth:`adopt`, because a mid-run cap change is a chart change and must be an
@@ -419,6 +429,7 @@ class DMRGSolver:
                            n_elec=self.n_elec, boundary_check=self.boundary_check,
                            davidson_tol=self.davidson_tol, on_split=self.on_split,
                            checkpoint=self.checkpoint,
+                           environment_resident_gb=self.environment_resident_gb,
                            bond_schedule=self.bond_schedule if first else None,
                            expansion=self.expansion if first else 0.0,
                            expansion_sweeps=self.expansion_sweeps,

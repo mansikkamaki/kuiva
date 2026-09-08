@@ -61,6 +61,7 @@ References
 """
 from __future__ import annotations
 
+import weakref
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -73,8 +74,8 @@ from scipy.sparse._sparsetools import csr_matvecs as _csr_matvecs
 
 from ..ci import kernels
 from ..util import threads
-from .block import (BlockTensor, QuantumNumber, Space, _flux, _matricized_buffer,
-                    _row_keys)
+from .block import (PLAN_CACHE, BlockTensor, QuantumNumber, Space, _block_dims, _flux,
+                    _matricized_buffer, _row_keys, _shapes_table, _structure_key)
 
 
 def _block_shape(spaces: Sequence[Space], row: Sequence[int]) -> Tuple[int, ...]:
@@ -107,7 +108,7 @@ class SparseW(object):
     """
 
     __slots__ = ("spaces", "signs", "charge", "sectors", "indptr", "flat", "values",
-                 "_keys", "_csr_cache", "_closed")
+                 "_keys", "_csr_cache", "_closed", "__weakref__")
 
     def __init__(self, spaces, signs, charge, sectors, indptr, flat, values, keys=None):
         self._closed: Optional["SparseW"] = None
@@ -368,11 +369,17 @@ def dot_sparse(a: BlockTensor, w: SparseW,
                axes: Tuple[Sequence[int], Sequence[int]]) -> BlockTensor:
     """Contract dense ``a`` with sparse ``w`` — the sparse :func:`kuiva.dmrg.block.tensordot`.
 
-    Same contract as the dense routine: paired legs must carry equal spaces and opposite
-    signs, output legs are ``a``'s uncontracted followed by ``w``'s uncontracted in order,
-    and the output charge is the sum. The result is an ordinary dense
-    :class:`~kuiva.dmrg.block.BlockTensor` — only the *operator* is sparse, because only
-    the operator is.
+    Same contract as the dense routine — paired legs must carry equal spaces and opposite
+    signs, the output charge is the sum — with **one deliberate difference: the output
+    legs are ``w``'s uncontracted followed by ``a``'s uncontracted**, the reverse of
+    :func:`~kuiva.dmrg.block.tensordot`'s order. That is a memory-layout decision made
+    for the kernel and measured: with ``a``'s legs first every accumulation into an
+    output block is a read-modify-write with a stride of the operator's row count, which
+    no compiler vectorizes (a production operator ran at scalar speed, ~5 cycles per
+    complex multiply-add); with the operator's legs first each CSR entry is a contiguous
+    axpy. The sweep's labelled-tensor helper is the one caller and reads legs by name.
+    The result is an ordinary dense :class:`~kuiva.dmrg.block.BlockTensor` — only the
+    *operator* is sparse, because only the operator is.
 
     ⚠ Hot-path orchestration, restructured exactly as :func:`kuiva.dmrg.block.tensordot`
     was for its kernel (the post-port re-profile): this wrapper validates, walks the cached
@@ -392,79 +399,24 @@ def dot_sparse(a: BlockTensor, w: SparseW,
     axes_w = tuple(int(x) for x in axes[1])
     if len(axes_a) != len(axes_w):
         raise ValueError("axes lists differ in length")
-    for ia, iw in zip(axes_a, axes_w):
-        if a.spaces[ia] != w.spaces[iw]:
-            raise ValueError("contracted legs {}<->{} carry different spaces".format(ia, iw))
-        if a.signs[ia] != -w.signs[iw]:
-            raise ValueError("contracted legs {}<->{} carry equal signs; flux would not "
-                             "cancel".format(ia, iw))
+    # ⚠ The operator enters the key by identity (the plan indexes the operator's own CSR
+    # numbering, which is a property of its nonzero pattern and not only of its block
+    # table) and the plan pins that identity by holding a reference to it; the dense
+    # operand enters by structure, since a fresh vector tensor arrives on every call.
+    key = ("sparse", _structure_key(a), id(w), axes_a, axes_w)
+    plan = PLAN_CACHE.get(key)
+    if plan is None or plan.w() is not w:
+        plan = _SparsePlan(a, w, axes_a, axes_w)
+        PLAN_CACHE.put(key, plan)
+    if plan.pairs.shape[0] == 0:
+        return BlockTensor._trusted(plan.spaces, plan.signs, plan.charge, plan.rows,
+                                    plan.keys, [])
     pattern = w._pattern(axes_w)
-    rest_w = pattern["rest"]
-    rest_a = tuple(i for i in range(a.ndim) if i not in axes_a)
-    spaces = tuple(a.spaces[i] for i in rest_a) + tuple(w.spaces[i] for i in rest_w)
-    signs = tuple(a.signs[i] for i in rest_a) + tuple(w.signs[i] for i in rest_w)
-    if not spaces:
-        raise ValueError("full contraction to a scalar is not represented as a BlockTensor;"
-                         " keep at least one leg (use a dim-1 leg for scalars)")
-    charge = a.charge + w.charge
-    groups = pattern["groups"]
-
-    perm_a = axes_a + rest_a                     # contracted first: (in_size, rest_dim)
-    matched: List[int] = []
-    am_dims: List[tuple] = []
-    pair_rows: List[tuple] = []
-    pair_dims: List[tuple] = []
-    out_index: Dict[tuple, int] = {}
-    out_shapes: List[tuple] = []
-    for ja, row_a in enumerate(a.sectors):
-        key = tuple(int(row_a[i]) for i in axes_a)
-        partners = groups.get(key)
-        if not partners:
-            continue
-        block = a.blocks[ja]
-        rest_dim = 1
-        for i in rest_a:
-            rest_dim *= block.shape[i]
-        in_size = block.size // max(rest_dim, 1)
-        iam = len(matched)
-        matched.append(ja)
-        am_dims.append((in_size, rest_dim))
-        head = tuple(int(row_a[i]) for i in rest_a)
-        rest_dims = tuple(block.shape[i] for i in rest_a)
-        for tail, out_dims, csr_id, n_rows, _n_cols in partners:
-            new_row = head + tail
-            io = out_index.get(new_row)
-            if io is None:
-                io = out_index[new_row] = len(out_index)
-                out_shapes.append(rest_dims + out_dims)
-            pair_rows.append((iam, csr_id, io))
-            pair_dims.append((in_size, rest_dim, n_rows))
-
-    rows = np.array(sorted(out_index), dtype=np.int64).reshape(len(out_index), len(spaces))
-    if not pair_rows:
-        return BlockTensor._trusted(spaces, signs, charge, rows,
-                                    _row_keys(rows, [s.nsectors for s in spaces]), [])
-    # renumber output blocks into the sorted row order, so the buffer is laid out as the
-    # block table is and the views below are plain slices of it (as block.tensordot does)
-    order = {tuple(int(i) for i in r): k for k, r in enumerate(rows)}
-    remap = np.empty(len(out_index), dtype=np.int64)
-    for row_key, io in out_index.items():
-        remap[io] = order[row_key]
-    pairs = np.asarray(pair_rows, dtype=np.int64)
-    dims = np.asarray(pair_dims, dtype=np.int64)
-    pairs[:, 2] = remap[pairs[:, 2]]
-    shapes_sorted: List[tuple] = [()] * len(out_shapes)
-    for io, shape in enumerate(out_shapes):
-        shapes_sorted[int(remap[io])] = shape
-    out_sizes = np.zeros(rows.shape[0], dtype=np.int64)
-    out_sizes[pairs[:, 2]] = dims[:, 1] * dims[:, 2]
-    out_offset = np.concatenate([[0], np.cumsum(out_sizes)]).astype(np.int64)
+    am_offset = plan.am_offset
+    out_offset = plan.out_offset
     # zero-filled, not empty: the kernel only ever accumulates, and a CSR row with no
     # entries must leave exact zeros in the elements it never touches
     out_data = np.zeros(int(out_offset[-1]), dtype=np.complex128)
-    am_dims_arr = np.asarray(am_dims, dtype=np.int64)
-    am_offset = np.concatenate([[0], np.cumsum(am_dims_arr[:, 0]
-                                               * am_dims_arr[:, 1])]).astype(np.int64)
     # ⚠ The operand pack reuses one module-level scratch and copies in ONE strided pass,
     # and both halves are measured, not stylistic (measured): a fresh
     # tens-of-MB buffer per call is served by mmap and pays its page faults every call
@@ -472,19 +424,154 @@ def dot_sparse(a: BlockTensor, w: SparseW,
     # passes where `np.copyto` through a permuted destination view is one (2.8 -> 2.2 s).
     # The opposite measured finding for the GEMM operands stands — these are different shapes,
     # measured separately; _matricized_buffer is deliberately not changed.
-    am_data = _pack_scratch(int(am_offset[-1]))
-    for i, j in enumerate(matched):
-        block = a.blocks[j]
-        view = am_data[int(am_offset[i]):int(am_offset[i + 1])]
-        source = block.transpose(perm_a)
-        np.copyto(view.reshape(source.shape), source)
+    if plan.zero_copy and a._flat is not None and a._flat.size == int(am_offset[-1]):
+        # every block matched, contracted legs already leading, one flat buffer: the
+        # operand IS its own pack
+        am_data = a._flat
+    elif a._flat is not None:
+        # the matched blocks straight out of the flat buffer, one kernel call
+        am_data = _pack_scratch(int(am_offset[-1]))
+        kernels.resolve("block_pack")(a._flat, a._flat_offset[plan.matched_arr],
+                                      plan.a_shapes, plan.perm_a, am_data,
+                                      am_offset[:-1], threads.thread_count())
+    else:
+        am_data = _pack_scratch(int(am_offset[-1]))
+        perm_a = tuple(plan.perm_a.tolist())
+        starts = am_offset.tolist()
+        blocks_a = a.blocks
+        for i, j in enumerate(plan.matched):
+            source = blocks_a[j].transpose(perm_a)
+            np.copyto(am_data[starts[i]:starts[i + 1]].reshape(source.shape), source)
     kernels.resolve("sparse_pair_dot")(
         am_data, am_offset, pattern["values"], pattern["indices"], pattern["indptr"],
-        pattern["meta"], pairs, dims, out_data, out_offset, threads.thread_count())
-    blocks = [out_data[int(out_offset[k]):int(out_offset[k + 1])].reshape(shapes_sorted[k])
-              for k in range(rows.shape[0])]
-    return BlockTensor._trusted(spaces, signs, charge, rows,
-                                _row_keys(rows, [s.nsectors for s in spaces]), blocks)
+        pattern["meta"], plan.pairs, plan.dims, out_data, out_offset,
+        threads.thread_count())
+    starts = out_offset.tolist()
+    blocks = [out_data[starts[k]:starts[k + 1]].reshape(shape)
+              for k, shape in enumerate(plan.out_shapes)]
+    return BlockTensor._trusted(plan.spaces, plan.signs, plan.charge, plan.rows,
+                                plan.keys, blocks, flat=out_data,
+                                flat_offset=out_offset[:-1])
+
+
+class _SparsePlan(object):
+    """Everything :func:`dot_sparse` needs beyond the payloads, for one
+    ``(structure of a, operator, axes)`` — the sparse counterpart of
+    :class:`kuiva.dmrg.block._TensordotPlan`, cached in the same
+    :data:`~kuiva.dmrg.block.PLAN_CACHE` and for the same measured reason.
+
+    ⚠ The pair enumeration is the one the uncached ``dot_sparse`` ran, verbatim: ``a``'s
+    blocks in table order, each against the pattern's partner list in its stored order,
+    so the accumulation order the kernel's B10 note fixes is unchanged.
+
+    ⚠ The operator is held **weakly** and its CSR pattern is not held at all (it is
+    re-fetched from the operator's own cache per call): a plan keyed on an operator's
+    identity must not keep that operator alive, or a CASSCF that fills a fresh operator
+    every macro-iteration would retain every previous one through this cache.
+    """
+
+    __slots__ = ("w", "spaces", "signs", "charge", "perm_a", "matched", "matched_arr",
+                 "a_shapes", "am_offset", "pairs", "dims", "out_offset", "rows", "keys",
+                 "out_shapes", "zero_copy", "nbytes")
+
+    def __init__(self, a, w: SparseW, axes_a: Tuple[int, ...],
+                 axes_w: Tuple[int, ...]) -> None:
+        for ia, iw in zip(axes_a, axes_w):
+            if a.spaces[ia] != w.spaces[iw]:
+                raise ValueError("contracted legs {}<->{} carry different spaces"
+                                 .format(ia, iw))
+            if a.signs[ia] != -w.signs[iw]:
+                raise ValueError("contracted legs {}<->{} carry equal signs; flux would "
+                                 "not cancel".format(ia, iw))
+        pattern = w._pattern(axes_w)
+        rest_w = pattern["rest"]
+        rest_a = tuple(i for i in range(a.ndim) if i not in axes_a)
+        # the operator's legs first (docstring of dot_sparse: the kernel's layout)
+        spaces = tuple(w.spaces[i] for i in rest_w) + tuple(a.spaces[i] for i in rest_a)
+        signs = tuple(w.signs[i] for i in rest_w) + tuple(a.signs[i] for i in rest_a)
+        if not spaces:
+            raise ValueError("full contraction to a scalar is not represented as a "
+                             "BlockTensor; keep at least one leg (use a dim-1 leg for "
+                             "scalars)")
+        self.w = weakref.ref(w)
+        self.spaces, self.signs, self.charge = spaces, signs, a.charge + w.charge
+        self.perm_a = np.asarray(axes_a + rest_a, dtype=np.int64)   # contracted first
+        groups = pattern["groups"]
+        a_dims = _block_dims(a, rest_a, axes_a)   # (rest_dim, in_size) per block
+        a_rest = a_dims[:, 0].tolist()
+        a_in = a_dims[:, 1].tolist()
+        a_rows = a.sectors.tolist()
+        matched: List[int] = []
+        am_dims: List[tuple] = []
+        pair_rows: List[tuple] = []
+        pair_dims: List[tuple] = []
+        out_index: Dict[tuple, int] = {}
+        out_shapes: List[tuple] = []
+        for ja, row_a in enumerate(a_rows):
+            partners = groups.get(tuple(row_a[i] for i in axes_a))
+            if not partners:
+                continue
+            rest_dim, in_size = a_rest[ja], a_in[ja]
+            iam = len(matched)
+            matched.append(ja)
+            am_dims.append((in_size, rest_dim))
+            head = tuple(row_a[i] for i in rest_a)
+            rest_dims = tuple(int(a.spaces[i].dims[row_a[i]]) for i in rest_a)
+            for tail, out_dims, csr_id, n_rows, _n_cols in partners:
+                new_row = tail + head
+                io = out_index.get(new_row)
+                if io is None:
+                    io = out_index[new_row] = len(out_index)
+                    out_shapes.append(out_dims + rest_dims)
+                pair_rows.append((iam, csr_id, io))
+                pair_dims.append((in_size, rest_dim, n_rows))
+
+        rows = np.array(sorted(out_index), dtype=np.int64).reshape(len(out_index),
+                                                                   len(spaces))
+        rows.flags.writeable = False
+        self.rows = rows
+        self.keys = _row_keys(rows, [s.nsectors for s in spaces])
+        self.keys.flags.writeable = False
+        self.matched = matched
+        self.matched_arr = np.asarray(matched, dtype=np.int64)
+        self.a_shapes = _shapes_table(a.spaces, a.sectors)[self.matched_arr]
+        if pair_rows:
+            # renumber output blocks into the sorted row order, so the buffer is laid out
+            # as the block table is and the views are plain slices of it
+            order = {tuple(int(i) for i in r): k for k, r in enumerate(rows)}
+            remap = np.empty(len(out_index), dtype=np.int64)
+            for row_key, io in out_index.items():
+                remap[io] = order[row_key]
+            pairs = np.asarray(pair_rows, dtype=np.int64)
+            dims = np.asarray(pair_dims, dtype=np.int64)
+            pairs[:, 2] = remap[pairs[:, 2]]
+            shapes_sorted: List[tuple] = [()] * len(out_shapes)
+            for io, shape in enumerate(out_shapes):
+                shapes_sorted[int(remap[io])] = shape
+            out_sizes = np.zeros(rows.shape[0], dtype=np.int64)
+            out_sizes[pairs[:, 2]] = dims[:, 1] * dims[:, 2]
+            am_dims_arr = np.asarray(am_dims, dtype=np.int64)
+        else:
+            pairs = np.zeros((0, 3), dtype=np.int64)
+            dims = np.zeros((0, 3), dtype=np.int64)
+            shapes_sorted = []
+            out_sizes = np.zeros(rows.shape[0], dtype=np.int64)
+            am_dims_arr = np.zeros((0, 2), dtype=np.int64)
+        self.pairs, self.dims = pairs, dims
+        self.out_shapes = shapes_sorted
+        self.out_offset = np.concatenate([[0], np.cumsum(out_sizes)]).astype(np.int64)
+        self.am_offset = np.concatenate(
+            [[0], np.cumsum(am_dims_arr[:, 0] * am_dims_arr[:, 1])]).astype(np.int64)
+        #: Whether a flat operand needs no pack at all: every block matched, in order,
+        #: and the contracted legs already leading (an identity permutation).
+        self.zero_copy = bool(len(matched) == a.sectors.shape[0]
+                              and np.array_equal(self.matched_arr,
+                                                 np.arange(len(matched), dtype=np.int64))
+                              and np.array_equal(self.perm_a,
+                                                 np.arange(a.ndim, dtype=np.int64)))
+        self.nbytes = int(pairs.nbytes + dims.nbytes + rows.nbytes + self.keys.nbytes
+                          + self.am_offset.nbytes + self.out_offset.nbytes
+                          + 8 * len(matched) + 64 * len(shapes_sorted))
 
 
 @kernels.kernel("sparse_pair_dot")
@@ -494,7 +581,7 @@ def sparse_pair_dot_numpy(am_data: np.ndarray, am_offset: np.ndarray,
                           pairs: np.ndarray, dims: np.ndarray,
                           out_data: np.ndarray, out_offset: np.ndarray,
                           n_threads: int) -> np.ndarray:
-    """Accumulate ``out[io] += (csr[ic] @ A[ia])^T`` over a table of matched block pairs.
+    """Accumulate ``out[io] += csr[ic] @ A[ia]`` over a table of matched block pairs.
 
     The sparse-W application — the second tensor-network hot kernel (the first is
     :func:`kuiva.dmrg.block.block_pair_gemm_numpy`, whose buffer
@@ -508,14 +595,16 @@ def sparse_pair_dot_numpy(am_data: np.ndarray, am_offset: np.ndarray,
       ``(n_csr, 3)`` int64 rows ``(indptr start, entry start, n_rows)`` (B2/B3: flat,
       rectangular, no hash anywhere);
     * ``pairs`` is ``(npair, 3)`` int64 ``(a block, csr block, out block)`` and ``dims``
-      is ``(npair, 3)`` int64 ``(in_size, rest_dim, out_size)``;
+      is ``(npair, 3)`` int64 ``(in_size, rest_dim, out_size)``. The table is in
+      operand-block order — consecutive pairs share their ``a`` block — which is what
+      the compiled backend's cache blocking relies on;
     * ``out_data`` is caller-provided, **zero-filled**, and may not alias an operand
       (B6): the kernel only accumulates, so elements no CSR entry touches stay exactly
-      zero. Each output block is stored ``(rest_dim, out_size)`` row-major — the layout
-      the block table needs — so the kernel owns the per-pair transposed accumulation
-      the pre-kernel implementation paid as a separate copy-then-add (measured;
-      the compiled backend fuses it, this implementation keeps the measured
-      two-pass form);
+      zero. Each output block is stored ``(out_size, rest_dim)`` row-major — the
+      operator's legs first, which is what :func:`dot_sparse` declares as its output
+      order — so ``csr @ A`` lands in it with no transposition at all (the previous
+      ``(rest_dim, out_size)`` layout cost a strided read-modify-write per element and
+      kept the compiled backend at scalar speed);
     * ``n_threads`` is the explicit thread budget over the pair table (B7 applied to
       threads). This NumPy implementation is serial and ignores it; the compiled backend
       parallelizes across the table with it.
@@ -524,13 +613,14 @@ def sparse_pair_dot_numpy(am_data: np.ndarray, am_offset: np.ndarray,
     element the sum runs: pairs targeting its block in **table order**; within a pair, the
     CSR row's entries in **ascending stored order**, accumulated into a zeroed per-pair
     scratch row which is then added to the output element (one add per pair). A threaded
-    backend that splits the table arbitrarily or accumulates entries straight into the
-    output would reorder both sums; the registered native backend preserves them by
-    owner-computes over output blocks and by reproducing the per-pair scratch, and is
-    **bitwise** against this implementation at every thread count. The engine here is
-    SciPy's ``csr_matvecs`` (its C loop is exactly the entry-order axpy stated above), so
-    the bitwise claim is asserted against the running SciPy build by
-    ``tests/test_native_backend.py`` rather than assumed.
+    backend that splits the table arbitrarily or accumulates several entries straight
+    into the output would reorder both sums; the registered native backend preserves
+    them by owner-computes over output blocks and by reproducing the per-row scratch
+    wherever a row has more than one entry, and is **bitwise** against this
+    implementation at every thread count. The engine here is SciPy's ``csr_matvecs``
+    (its C loop is exactly the entry-order axpy stated above), so the bitwise claim is
+    asserted against the running SciPy build by ``tests/test_native_backend.py`` rather
+    than assumed.
     """
     if am_data.dtype != np.complex128 or csr_values.dtype != np.complex128:
         raise TypeError("operand buffers must be complex128, got {} and {}"
@@ -584,16 +674,13 @@ def sparse_pair_dot_numpy(am_data: np.ndarray, am_offset: np.ndarray,
         nnz = int(indptr[out_size])
         s = a_start[ia_all[p]]
         u = o_start[io_all[p]]
-        am = am_data[s:s + in_size * rest_dim].reshape(in_size, rest_dim)
+        am = am_data[s:s + in_size * rest_dim]
         piece = scratch[:out_size * rest_dim]
         piece[:] = 0.0
         matvecs(out_size, in_size, rest_dim, indptr, csr_indices[nz0:nz0 + nnz],
-                csr_values[nz0:nz0 + nnz], am.reshape(-1), piece)
-        out = out_data[u:u + rest_dim * out_size].reshape(rest_dim, out_size)
-        # ⚠ ascontiguousarray-then-add, not `out += piece.T`: a counterintuitive, measured
-        # strided-copy result holds here too — two fast passes beat one strided pass
-        # (measured on the reference workload; same values either way).
-        out += np.ascontiguousarray(piece.reshape(out_size, rest_dim).T)
+                csr_values[nz0:nz0 + nnz], am, piece)
+        # the piece IS the output block's layout: (out_size, rest_dim) row-major
+        out_data[u:u + out_size * rest_dim] += piece
     return out_data
 
 

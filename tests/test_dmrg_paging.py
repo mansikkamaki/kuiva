@@ -129,6 +129,10 @@ def test_a_fully_paged_solve_is_bitwise_the_unpaged_one(scratch_limits):
     np.testing.assert_array_equal(np.asarray(paged.energies), np.asarray(plain.energies))
     ref = exact_energies(n, k, h, eri, 1)
     assert abs(paged.energies[0] - ref[0]) < 1e-8
+    # the result SAYS whether it paged: a solve whose environments fit reports zero, the
+    # forced one reports the traffic (what lets a campaign record state it, not guess it)
+    assert plain.n_paged_out == 0 and plain.n_paged_in == 0
+    assert paged.n_paged_out > 0 and paged.n_paged_in > 0
 
 
 # --- the escape hatch cannot replace the refusal ------------------------------------------

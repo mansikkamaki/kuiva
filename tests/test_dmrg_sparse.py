@@ -56,7 +56,9 @@ def test_dot_sparse_matches_tensordot():
     dense_w, sparse_w = sparsified(rng, (a, b, c), (-1, 1, 1), QN(0))
     other = BlockTensor.random((Space([(QN(0), 2), (QN(1), 2)]), b, c), (1, -1, -1),
                                QN(1), rng=rng)
-    ref = tensordot(other, dense_w, ([1, 2], [1, 2]))
+    # the sparse contraction puts the OPERATOR's uncontracted legs first (its docstring:
+    # a kernel-layout decision), the dense one the operand's — compare through a transpose
+    ref = tensordot(other, dense_w, ([1, 2], [1, 2])).transpose([1, 0])
     got = dot_sparse(other, sparse_w, ([1, 2], [1, 2]))
     assert got.spaces == ref.spaces and got.signs == ref.signs
     assert got.charge == ref.charge
