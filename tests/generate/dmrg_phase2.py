@@ -1015,6 +1015,24 @@ def stage_feasibility(record, heartbeat, *, deadline: float,
                                         (FEASIBILITY_SYSTEM, "m{}".format(p), int(p))
                                         not in already and p >= m]))
         out_path = out_dir / "m{}.json".format(m)
+        # ⚠ A child record that already ended is a completed measurement and is adopted,
+        # never re-run: a partition measured on its own (after the parent was killed for
+        # the machine's memory with the front end still resident beside the child) is
+        # the same measurement this loop would make, minus the parent's 2.7 GB.
+        if out_path.is_file():
+            try:
+                child = json.loads(out_path.read_text())
+            except ValueError:
+                child = {}
+            if child.get("status") not in (None, "running"):
+                point = {"key": FEASIBILITY_SYSTEM, "topology": "m{}".format(m),
+                         "cap": int(m), "status": child["status"], "child_exit": None,
+                         "wall_s": child.get("elapsed_s"), "record": str(out_path),
+                         "child": child, "adopted": True}
+                record.add_point(point)
+                print("  [m={}] adopted the existing child record ({})".format(
+                    m, child["status"]), flush=True)
+                continue
         cmd = [sys.executable, str(Path(__file__).resolve()), "--feasibility-child",
                str(ints_path), str(m), str(out_path), "--caps",
                ",".join(str(c) for c in ladder), "--roots", str(n_roots),
@@ -1125,7 +1143,14 @@ BRIDGE_SPLIT_SWEEPS = 2
 #: 1e-7 Eh is 0.02 cm^-1 — sixteen times under the quantitative band's 0.35 cm^-1 floor.
 #: The achieved dE is recorded per point either way.
 BRIDGE_CONV_TOL = 1.0e-7
-BRIDGE_DAVIDSON_TOL = 1.0e-8
+#: ⚠ Also looser than the solver's 1e-8, by measurement: on the dimer's four-root lane the
+#: local Davidson on one interior bond stalls at max|r| = 2.4e-7 for 300 iterations at
+#: every cap from 12 up (135-dimensional two-site problem, a triplet degenerate to 0.4
+#: cm^-1 among the four roots), where D = 8 converged in seven sweeps — and the floor is
+#: the same with the unbatched application, so it is the eigensolver on the degenerate
+#: block, not the operator. A residual of 1e-6 bounds the local energy error at 1e-12 Eh,
+#: four orders under the finest grading band; the stall is recorded in the notes.
+BRIDGE_DAVIDSON_TOL = 1.0e-6
 #: The control cap per lane (the extra legs — uninterrupted, paged, adaptive — run there):
 #: the first cap of the ladder at or above this that the lane reaches.
 BRIDGE_CONTROL_CAP = 8
@@ -1205,7 +1230,7 @@ BRIDGE_AVAS_THRESHOLD = 0.5
 
 
 def bridge_orbitals(system, reference, space, start: np.ndarray, *,
-                    deadline: float) -> Tuple[np.ndarray, object, Dict]:
+                    deadline: float, freeze: bool = False) -> Tuple[np.ndarray, object, Dict]:
     """The reference SA-CASSCF started from the stated (AVAS) orbitals, checkpointed.
 
     ⚠ At the scalar guess the dimer is not a weakly coupled d^1-d^1 pair at all: the
@@ -1228,12 +1253,21 @@ def bridge_orbitals(system, reference, space, start: np.ndarray, *,
     if deadline > 0.0:
         kw["deadline"] = float(deadline)
     t0, c0 = time.time(), time.process_time()
+    if ckpt.is_file() and freeze:
+        # ⚠ A resumed record keeps the orbitals its earlier points were measured at: the
+        # restart is capped at the checkpoint's own iteration count, so the optimizer
+        # returns the stored set unchanged rather than moving it for another budget.
+        import h5py
+        with h5py.File(str(ckpt), "r") as handle:
+            kw["max_iter"] = int(handle.attrs["iteration"])
+        kw.pop("deadline", None)
     if ckpt.is_file():
         outcome = api.casscf(reference, restart=str(ckpt), **kw)
     else:
         outcome = api.casscf(reference, active=space, coeff=np.ascontiguousarray(start),
                              **kw)
     rec = {"source": "SA-CASSCF ({} roots) from the AVAS orbitals".format(system.n_states),
+           "frozen_on_resume": bool(ckpt.is_file() and freeze),
            "converged": bool(outcome.converged),
            "iterations": int(outcome.orbital.n_iterations),
            "grad_norm": float(outcome.orbital.grad_norm),
@@ -1247,7 +1281,7 @@ def bridge_orbitals(system, reference, space, start: np.ndarray, *,
     return np.ascontiguousarray(outcome.coeff), outcome.active, rec
 
 
-def localized_front_end(system, *, orbital_deadline: float = 0.0
+def localized_front_end(system, *, orbital_deadline: float = 0.0, freeze: bool = False
                         ) -> Tuple[object, np.ndarray, object, Dict, List[int]]:
     """Reference, per-centre localized active orbitals, the space, the diagnostics."""
     from kuiva.interface import api
@@ -1278,7 +1312,7 @@ def localized_front_end(system, *, orbital_deadline: float = 0.0
         start, space, orbitals = bridge_orbitals(
             system, reference, space,
             reference.spinors_in_ao() if start is None else start,
-            deadline=orbital_deadline)
+            deadline=orbital_deadline, freeze=freeze)
     loc = api.localize_active_space(reference, space, centres, coeff=start, report=False)
     coeff = np.ascontiguousarray(loc.coeff)
     #: the orbitals the localization started from, for the invariance assertion
@@ -1346,7 +1380,8 @@ def _split_solve(system, graph, template, ints, cap: int, roots: int, ckpt: Path
     status, error = _solve_outcome(first, ints)
     rec["block1"] = {"status": status or "converged", "wall_s": round(time.time() - t0, 3),
                      "cpu_s": round(time.process_time() - c0, 3),
-                     "checkpoint_written": bool(ckpt.is_file())}
+                     "checkpoint_written": bool(ckpt.is_file()),
+                     "error": error}
     if status not in (None, "unconverged"):
         rec.update(status=status, error=error)
         return None, rec
@@ -1357,8 +1392,13 @@ def _split_solve(system, graph, template, ints, cap: int, roots: int, ckpt: Path
                    wall_s=rec["block1"]["wall_s"], cpu_s=rec["block1"]["cpu_s"])
         return first, rec
     if not ckpt.is_file():
-        rec.update(status="failed", error="block 1 stopped unconverged and wrote no "
-                                          "network state to restart from")
+        # ⚠ No state after an unconverged block means the sweep never completed a sweep:
+        # the solver raised INSIDE one (a local eigensolve that did not converge is the
+        # case), which is the same "unconverged" outcome a plain ladder point records,
+        # with its error text — not a failure of the split.
+        rec.update(status="unconverged",
+                   error="block 1 raised before completing a sweep (no network state "
+                         "written): {}".format(error))
         return None, rec
     _, meta = read_network_state(ckpt, check_fingerprint=False)
     rec["block1"]["n_sweeps"] = int(meta.get("sweep", BRIDGE_SPLIT_SWEEPS))
@@ -1421,6 +1461,7 @@ def _product_model(template, ints, state, weights, sites, dim: int, ops: Dict,
     from kuiva.dmrg import UnderResolved, effective_model
     from kuiva.props.multiplet import HARTREE_TO_CM
     from kuiva.props.pseudospin import pseudospin_from_model
+    from kuiva.util import resources as res
 
     t0 = time.process_time()
     ttno = template.fill(ints.h_active_effective(), ints.active_eri())
@@ -1433,6 +1474,13 @@ def _product_model(template, ints, state, weights, sites, dim: int, ops: Dict,
                 "cpu_s": round(time.process_time() - t0, 3)}
     except ValueError as exc:
         return {"status": "refused", "error": "{}".format(exc)[:300],
+                "cpu_s": round(time.process_time() - t0, 3)}
+    except (MemoryError, res.MemoryLimitError) as exc:
+        # ⚠ The site-block contraction of the effective operator opens every operator leg
+        # of a site at once (44 GB on a five-node site of the 30-spinor operator, measured,
+        # as a raw allocation no plan had sized): a result about the extraction, recorded
+        # on the point rather than allowed to end the lane.
+        return {"status": "refused-memory", "error": "{}".format(exc).splitlines()[0][:300],
                 "cpu_s": round(time.process_time() - t0, 3)}
     spec = np.sort(model.spectrum()) + float(ints.e_core)
     ref = np.sort(np.asarray(e_ci, dtype=float))[:spec.size]
@@ -1526,7 +1574,8 @@ def stage_bridge(record, heartbeat, *, deadline: float, keys: Sequence[str],
         t_job, c_job = time.time(), time.process_time()
         reference, coeff, space, loc, centres = localized_front_end(
             system, orbital_deadline=max(0.0, min(BRIDGE_ORBITAL_BUDGET_S,
-                                                  deadline - time.time() - 1800.0)))
+                                                  deadline - time.time() - 1800.0)),
+            freeze=record.has_job(key))
         orbitals = loc.pop("orbitals")
         ints = camp.cas_integrals(reference, coeff, space)
         n = int(space.n_active)
@@ -1656,7 +1705,11 @@ def stage_bridge(record, heartbeat, *, deadline: float, keys: Sequence[str],
                       compile_cost["compile_cpu_s"]), flush=True)
             already = record.done_points()
             ckpt = camp.WORK / "bridge_{}_{}.network.h5".format(key, lane)
-            control_done = False
+            # once per lane across the whole record, not per invocation: a resumed run
+            # re-running the control legs at its first cap would repeat the adaptive leg,
+            # whose reconnected graph carries the lane's largest two-site problems
+            control_done = any("control" in q for q in record.data["points"]
+                               if q.get("key") == key and q.get("topology") == lane)
             for cap in ladder:
                 if (key, lane, int(cap)) in already:
                     print("  [{}/{}] D={:4d}  already measured; kept".format(key, lane, cap),
@@ -1703,11 +1756,17 @@ def stage_bridge(record, heartbeat, *, deadline: float, keys: Sequence[str],
                 point["product_model"] = _product_model(
                     template, ints, solver._state, r.weights, site_nodes, dim, ops,
                     system.n_active_elec, e_ci)
+                # the point is on disk BEFORE its control legs: the adaptive leg is the
+                # lane's largest and longest computation, and a kill inside it must not
+                # take the measured point with it
+                point["elapsed_s"] = round(time.time() - t_job, 1)
+                record.add_point(point)
                 # --- the control legs, once per lane -----------------------------------
                 if not control_done and int(cap) >= BRIDGE_CONTROL_CAP \
                         and time.time() < deadline:
                     control_done = True
                     point["control"] = {}
+                    record.flush()
                     _, plain = _plain_solve(system, graph, template, ints, cap, roots,
                                             max_sweeps)
                     if plain["status"] == "ok":
@@ -1725,7 +1784,7 @@ def stage_bridge(record, heartbeat, *, deadline: float, keys: Sequence[str],
                     point["control"]["adaptive_weight_rule"] = _adaptive_leg(
                         system, graph, ints, cap, roots, sites_modes, e_ci, max_sweeps)
                 point["elapsed_s"] = round(time.time() - t_job, 1)
-                record.add_point(point)
+                record.flush()
                 n_point += 1
                 heartbeat.tick(n_point, system=key, lane=lane, cap=int(cap),
                                status=point["status"], grade=point["grade"]["overall"])

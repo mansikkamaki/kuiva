@@ -962,6 +962,8 @@ def extrapolate(stage: str, key: str, topology: str,
     if job is None:
         return None
     ref = job["oracle"]["reduction"]
+    if ref is None:                          # an oracle-free ladder has nothing to grade against
+        return None
     points = [p for p in data.get("points", [])
               if p.get("key") == key and p.get("topology") == topology
               and p.get("status") == "ok" and p.get("cap") is not None

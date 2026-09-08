@@ -155,6 +155,14 @@ ion–radical–ion model is exact at D = 16, and the ordering test asserts the 
 limits entanglement-driven ordering: a two-state bridge shares at most `ln 2` nats with
 either neighbour. The rings are in the slow suite.
 
+The same generator carries two *study* stages that are not tests and write nothing the suite
+reads: the 30-spinor three-site operator compiled and swept per node partition, and the
+CI-checkable multi-site bridge (the coupled `ti2cl6` dimer and the far `ti3f9_far` trimer,
+localized per centre on a site-blocked chain, few roots, a binding cap, a checkpoint/restart
+split on every point, forced environment paging and the weight-rule adaptive driver as
+control legs, and the local-multiplet model of each truncated state graded against the exact
+CI). Their records live under `temp/`; what they established is in the package's notes.
+
 ## Cross-code comparison
 
 Kuiva, OpenMolcas and DIRAC will **not** agree to many digits, and the suite is built so this
