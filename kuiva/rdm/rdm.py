@@ -44,7 +44,9 @@ it", and the same is true of the block-completeness rule:
 
 3- and 4-RDMs are deliberately absent HERE — the network path has them
 -----------------------------------------------------------------------
-They belong to SC-NEVPT2, which does not exist yet on either CI branch. The
+They belong to SC-NEVPT2 (:mod:`kuiva.pt`), which stores no 3- or 4-RDM at all: the
+conventional-CI route works through applied strings and per-label perturber vectors, the
+network route through applied-string Gram contractions. The
 **network-side** builders do exist (:mod:`kuiva.dmrg.density`, ``network_rdm`` ranks 1–4):
 direct contraction, no cumulant — the chosen no-cumulant route — returning the same convention as
 this module (``Gamma_pqrs = <a+_p a+_r a_s a_q>``, pairs interleaved at every rank). The

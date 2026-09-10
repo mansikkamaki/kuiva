@@ -62,7 +62,8 @@ oppositely, so::
 
     D_LL = R D~ R^dag        ==>        D~ = R^-1 D_LL R^-dag
 
-**not** ``R^dag D_LL R``. ``R`` is Hermitian positive definite but **not** unitary, so the two
+**not** ``R^dag D_LL R``. ``R`` is positive and self-adjoint in the ``S`` metric (``S R`` is
+Hermitian) but, in the non-orthogonal AO basis, neither Hermitian nor unitary, so the two
 differ substantially, and both are Hermitian, both have plausible traces, and both give a
 correction of roughly the right size — and their spin-orbit splittings agree to 0.2%.
 

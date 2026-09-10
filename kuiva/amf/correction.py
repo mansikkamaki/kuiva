@@ -64,7 +64,8 @@ The asymmetry in ``X``, stated rather than hidden
 -------------------------------------------------------------
 Kuiva's one-electron path uses PySCF's exact **molecular** one-electron X2C
 (``x2c_approx="1e"``), while the AMF correction is atomic by construction — its ``X`` and
-``R`` come from an isolated-atom one-electron problem. This is standard for X2CAMF and is not
+``R`` come from the isolated atom's converged four-component Fock operator (see
+:mod:`kuiva.amf.decouple`: the Fock-``X`` convention, compensated in the one-electron term). This is standard for X2CAMF and is not
 a bug: the atomic approximation is applied to the *two-electron* picture change, which is the
 term that would otherwise be missing entirely, while the one-electron part stays exact. It is
 recorded in the provenance so that a comparison against another program is never ambiguous

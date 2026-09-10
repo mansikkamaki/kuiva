@@ -45,6 +45,7 @@ Usage::
     python tests/generate/dmrg_cost_ladder.py --stage s2.2 --budget 10800 # 30-spinor TTNO
     python tests/generate/dmrg_cost_ladder.py --stage s2.3a --budget 10800 # dimer bridge
     python tests/generate/dmrg_cost_ladder.py --stage s2.3b --budget 10800 # trimer bridge
+    python tests/generate/dmrg_cost_ladder.py --stage s2.4a --budget 10800 # Tier 3: mn3_linear
 
 Records: ``temp/dmrg_cost_ladder/<stage>.json``; log: ``temp/dmrg_cost_ladder/<stage>.log``.
 """
@@ -159,6 +160,12 @@ STAGES: Dict[str, Dict] = {
     "s2.3b": dict(kind="bridge", label="the 30-spinor three-site bridge with the Tier-3 "
                                        "protocol on",
                   jobs=(("ti3f9_far", ("r8",)),), budget=3.0 * 3600),
+    # ⚠ The first Tier-3 calculation has no oracle and no converged answer at this stage:
+    # its one lane is the S = 5/2 ground multiplet (six roots) and its "points" are
+    # BOUNDED sweeps per cap, measuring the cost shape S2.4b is decided on.
+    "s2.4a": dict(kind="tier3", label="the first Tier-3 calculation: mn3_linear front end "
+                                      "and feasibility ladder",
+                  jobs=(("mn3_linear", ("r6",)),), budget=3.0 * 3600),
 }
 
 
@@ -1309,7 +1316,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 ("s2.2", dmrg_phase2.summarize_feasibility,
                  dmrg_phase2.print_feasibility_summary),
                 ("s2.3a", dmrg_phase2.summarize_bridge, dmrg_phase2.print_bridge_summary),
-                ("s2.3b", dmrg_phase2.summarize_bridge, dmrg_phase2.print_bridge_summary)):
+                ("s2.3b", dmrg_phase2.summarize_bridge, dmrg_phase2.print_bridge_summary),
+                ("s2.4a", dmrg_phase2.summarize_tier3, dmrg_phase2.print_tier3_summary)):
             path = camp.RECORDS / "{}.json".format(stage)
             if path.is_file():
                 rows = summarize_fn(path)
@@ -1385,6 +1393,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     partitions=(None if args.caps is None else caps),
                     caps=None, n_roots=dmrg_phase2.FEASIBILITY_ROOTS,
                     max_sweeps=(dmrg_phase2.FEASIBILITY_SWEEPS if args.max_sweeps == 30
+                                else args.max_sweeps))
+            elif plan["kind"] == "tier3":
+                import dmrg_phase2
+                dmrg_phase2.stage_tier3(
+                    record, heartbeat, deadline=deadline, keys=[key], caps=caps,
+                    max_sweeps=(dmrg_phase2.TIER3_SWEEPS if args.max_sweeps == 30
                                 else args.max_sweeps))
             elif plan["kind"] == "bridge":
                 import dmrg_phase2

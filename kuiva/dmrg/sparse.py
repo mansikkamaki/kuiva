@@ -242,10 +242,14 @@ class SparseW(object):
         if np.any(b >= self._keys.size) or np.any(self._keys[np.minimum(
                 b, self._keys.size - 1)] != keys):
             raise KeyError("a requested entry lies in a block this operator does not carry")
-        lo, hi = self.indptr[b], self.indptr[b + 1]
-        pos = lo + np.array([int(np.searchsorted(self.flat[l:h], f))
-                             for l, h, f in zip(lo, hi, flat)], dtype=np.int64)
-        if np.any(pos >= hi) or np.any(self.flat[np.minimum(pos, self.nnz - 1)] != flat):
+        # entries are sorted by (block, flat), so one composite key per entry is sorted
+        # too and every request is one vectorized search
+        stride = int(self.flat.max()) + 1 if self.nnz else 1
+        block_of = np.repeat(np.arange(self.nblocks, dtype=np.int64), np.diff(self.indptr))
+        comp = block_of * stride + self.flat
+        want = b * stride + flat
+        pos = np.searchsorted(comp, want)
+        if np.any(pos >= comp.size) or np.any(comp[np.minimum(pos, comp.size - 1)] != want):
             raise KeyError("a requested entry is not present in its block")
         return pos
 

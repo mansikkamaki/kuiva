@@ -83,7 +83,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from ..ci.davidson import davidson, davidson_workspace_gb, subspace_cap
+from ..ci.davidson import (DENSE_SOLVE_MAX_DET, davidson, davidson_workspace_gb,
+                           subspace_cap)
 from ..props.multiplet import HARTREE_TO_CM
 from ..rdm.rdm import DEFAULT_DEGENERACY_TOL, degenerate_blocks, state_average_weights
 from ..util import output as out
@@ -101,6 +102,17 @@ log = get_logger(__name__)
 
 #: The boundary-gap warning threshold [cm^-1], restated here (module docstring).
 BOUNDARY_GAP_WARN_CM = 50.0
+
+#: Local two-site problems up to this dimension are solved **densely** — the CI
+#: solver's own rule (:data:`kuiva.ci.davidson.DENSE_SOLVE_MAX_DET`), decided on the
+#: local dimension. ⚠ Measured motive: the dimer bridge's four-root problem on a
+#: 135-dimensional bond, its triplet degenerate to 0.4 cm^-1, stalled at
+#: ``max|r| = 2.4e-7`` for 300 iterations at every cap from D = 12 up, batched or not —
+#: an eigensolver floor on a degenerate block, not the operator. A problem this small
+#: has no business being iterated: the dense route applies ``H_eff`` to the identity in
+#: one batched chain per memory-bounded slab and diagonalizes exactly, which cannot
+#: stall, and at these sizes it costs fewer applications than a converging Davidson.
+DENSE_LOCAL_MAX_DIM = DENSE_SOLVE_MAX_DET
 
 #: Default width of the batched effective-Hamiltonian application: how many of an
 #: iteration's new Davidson directions go through one contraction chain. ⚠ A measured
@@ -1758,20 +1770,25 @@ def _solve_local(ttno, state, cache, u, v, requested, davidson_tol, extra_roots=
     # that remains after the requirement above — the number of vectors whose batched
     # chain stays under it. Every blocked kernel in this program takes its blocking from
     # the same call, outside its loop; a width of one is the unbatched application.
-    prob.set_batch_budget(res.BUDGET.transient_gb(), width=batch)
+    dense = prob.dim <= DENSE_LOCAL_MAX_DIM
+    # ⚠ The dense route applies H_eff to every unit vector: with the batched chain that
+    # is one application per slab, and the slab is as wide as the transient budget
+    # allows rather than the measured cache-bound width, because at these dimensions
+    # the orchestration, not the arithmetic, is the cost (DENSE_LOCAL_MAX_DIM). The
+    # iterative route keeps the measured width.
+    prob.set_batch_budget(res.BUDGET.transient_gb(),
+                          width=max(int(batch), prob.dim) if dense else batch)
     merged = [tensordot(c, state.tensors[v],
                         axes=([_bond_axis(graph, u, v)], [_bond_axis(graph, v, u)]))
               for c in state.centers]
     guess = np.stack([prob.pack(m) for m in merged])
-    # ⚠ davidson's dense fallback applies H `ndet` times, which is the right trade for a
-    # cheap CI sigma and exactly wrong here, where one H_eff application is the expensive
-    # object — measured 40x on a D = 16 sweep. Only genuinely tiny problems go dense.
     # ⚠ ``apply_block``: every new expansion direction of an iteration — and, on a
     # state average, that is roughly one per root — goes through one batched chain
     # instead of one chain each (measured: 1575 applications for 59 iterations on a
     # 25-root FeCl2 bond tour, i.e. the Python orchestration paid 27 times per iteration).
     result = davidson(prob.apply, prob.diagonal(), n_solve, guess=guess,
-                      conv_tol=davidson_tol, dense_max_det=4 * n_solve + 2,
+                      conv_tol=davidson_tol,
+                      dense_max_det=DENSE_LOCAL_MAX_DIM if dense else 4 * n_solve + 2,
                       label="DMRG bond ({}, {})".format(u, v),
                       apply_block=prob.apply_block)
     gap = None if n_solve == n_roots \
@@ -1871,8 +1888,8 @@ def _expansion_columns(prob: _LocalProblem, stacked: BlockTensor) -> BlockTensor
     truncation's input is the two-site, ensemble form of the subspace expansion of Hubig,
     McCulloch, Schollwoeck & Wolf, Phys. Rev. B 91, 155115 (2015), and — because the SVD
     of the augmented matrix diagonalizes ``rho + alpha^2 sum_b T_b rho T_b^+`` — it is at
-    the same time the deterministic density-matrix perturbation of White, J. Chem. Phys.
-    122, 084108 (2005), evaluated instead of sampled.
+    the same time the deterministic density-matrix perturbation of White, Phys. Rev. B
+    72, 180403 (2005), doi:10.1103/PhysRevB.72.180403, evaluated instead of sampled.
 
     Returned with the same leg order and spaces as ``stacked`` except the trailing
     auxiliary leg, which fuses the ensemble leg with the open operator channel.
@@ -1994,4 +2011,5 @@ def _boundary_sweep(ttno, state, cache, requested, n_elec, trunc_tol, max_bond,
 
 
 __all__ = ["TTNState", "EnvironmentCache", "SweepResult", "random_state", "solve_ttn",
-           "state_gb", "state_to_dense", "BOUNDARY_GAP_WARN_CM", "DEFAULT_BATCH_WIDTH"]
+           "state_gb", "state_to_dense", "BOUNDARY_GAP_WARN_CM", "DEFAULT_BATCH_WIDTH",
+           "DENSE_LOCAL_MAX_DIM"]

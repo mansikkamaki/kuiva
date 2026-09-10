@@ -67,7 +67,7 @@ References:
   U. Wahlgren, O. Gropen, Chem. Phys. Lett. 251, 365 (1996) for the atomic mean-field idea.
   See :mod:`kuiva.amf` for the full reference list.
 - Two-electron SOC screening, rejected alternatives (recorded so they are not reintroduced):
-  J. C. Boettger, Phys. Rev. B 57, 8743 (1998), doi:10.1103/PhysRevB.57.8743 (SNSO);
+  J. C. Boettger, Phys. Rev. B 62, 7809 (2000), doi:10.1103/PhysRevB.62.7809 (SNSO);
   M. Filatov, W. Zou, D. Cremer, J. Chem. Phys. 139, 014106 (2013), doi:10.1063/1.4811776;
   B. de Souza, G. Farias, F. Neese, R. Izsak, J. Chem. Theory Comput. 15, 1896 (2019),
   doi:10.1021/acs.jctc.8b00841 (AMFI/RI-SOMF).
@@ -334,8 +334,10 @@ class PropertyIntegrals:
     -----
     ⚠ **No picture change is applied** (an explicit standing decision): these are the bare
     non-relativistic AO operators, used unchanged in the two-component basis. That matches
-    what OpenMolcas RASSI does, so the Tier-2 comparison is like-for-like, and it is an
-    approximation whose size nobody here has measured. :func:`kuiva.props.dump.write_dump`
+    what OpenMolcas RASSI does, so the Tier-2 comparison is like-for-like. The approximation
+    is measured (1e-4 to 1e-3 relative on free-ion g factors over Z = 5-81, ~2e-4 on a 3d
+    complex, splitting no degeneracy); ``property_picture_change=True`` removes it through
+    :func:`picture_changed_moment` and :func:`picture_changed_dipole`. :func:`kuiva.props.dump.write_dump`
     warns about it at the point the file is written and records it in the header.
 
     References
@@ -3353,8 +3355,8 @@ def apply_scf_controls(mf, *, level_shift=0.0, damp=0.0, init_guess=None, diis=N
     ``note`` is the human-readable summary of everything that is not a default, empty when
     nothing was asked for, and it is what the output block prints.
 
-    ⚠ ``second_order=True`` (the CIAH second-order solver, Sun, J. Chem. Phys. 144, 034102
-    (2016)) replaces the iteration entirely: DIIS, damping and the level shift are inputs to
+    ⚠ ``second_order=True`` (the CIAH second-order solver, Sun, "Co-iterative augmented Hessian
+    method for orbital optimization", arXiv:1610.08423 (2016)) replaces the iteration entirely: DIIS, damping and the level shift are inputs to
     the first-order iteration and are **not used** by it, so asking for both warns rather than
     silently dropping one of them. The wrap must come last — it copies the object's attributes
     at construction, so ``conv_tol``, ``max_cycle`` and the density fitting must already be on

@@ -629,7 +629,7 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
 # CI: J. Thyssen, T. Fleig, H. J. Aa. Jensen, J. Chem. Phys. 129, 034109 (2008),
 # doi:10.1063/1.2943670; T. Saue, H. J. Aa. Jensen, J. Chem. Phys. 111, 6211 (1999),
 # doi:10.1063/1.479958; the quaternion (self-dual) diagonalization itself, A. Bunse-Gerstner,
-# R. Byers, V. Mehrmann, SIAM J. Matrix Anal. Appl. 10, 419 (1989), doi:10.1137/0610030.
+# R. Byers, V. Mehrmann, SIAM J. Matrix Anal. Appl. 13, 419 (1992), doi:10.1137/0613028.
 
 #: Norm below which a candidate Ritz vector is judged to lie in the span of the pairs already
 #: selected, i.e. to be the *partner* of one of them rather than a new pair.

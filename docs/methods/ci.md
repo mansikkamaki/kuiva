@@ -16,7 +16,7 @@ analysis by XOR/popcount, as in modern selected-CI codes
 capping the active space at **64 spinors** (four d shells or four f shells — comfortably
 past where this algorithm is right at all). Two addressing modes exist: an explicit list
 with pairwise connection search for the selected CI of the pre-optimizer, and, for the
-complete CAS space the full CI runs on, **lexicographic combinatorial rank**
+complete CAS space the full CI runs on, **colexicographic combinatorial rank** (determinants ordered by increasing bitmask)
 [[188]](../references.md#r188)[[83]](../references.md#r83) — table-driven integer
 arithmetic, never a hash table (hundreds of MB at $`10^6`$ determinants, slow, and it would
 put the address map where a compiled backend cannot reach it).

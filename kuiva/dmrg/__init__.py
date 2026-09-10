@@ -33,7 +33,7 @@ from .block import (BlockTensor, FuseRecord, QuantumNumber, Space, TruncationInf
                     SCHMIDT_DEGENERACY_RTOL, SCHMIDT_STABILITY_RTOL, fuse, qr, split, svd)
 from .graph import NetworkGraph
 from .sparse import SparseW, dot_sparse, sparse_w_gb
-from .ttno import (FERMION_MODE, ModeBasis, ProductTerm, TTNO, TTNOTemplate,
+from .ttno import (FERMION_MODE, ModeBasis, ProductTerm, TermTable, TTNO, TTNOTemplate,
                    compile_ttno, consolidate, fermion_term,
                    hamiltonian_product_terms, one_electron_product_terms,
                    ttno_from_cas_integrals)
@@ -45,11 +45,11 @@ from .reconnect import (AdaptiveResult, BondReport, Move, ReconnectionPolicy,
                         SiteReport, StructureReport, discovered_structure,
                         solve_adaptive)
 from .manifold import (EffectiveModel, ManifoldResult, SiteSpace, UnderResolved,
-                       effective_model, effective_operator, model_gb, site_spaces,
-                       solve_manifold, MULTIPLET_GAP_RATIO_WARN,
+                       effective_model, effective_operator, effective_operator_from_terms,
+                       model_gb, site_spaces, solve_manifold, MULTIPLET_GAP_RATIO_WARN,
                        DEFAULT_MULTIPLET_WEIGHT_TOL)
 from .density import (annihilation_term, network_rdm, network_rdms,
-                      node_environments)
+                      node_environments, slot_values)
 from .extrapolate import BondSeriesResult, bond_series
 from .checkpoint import (NETWORK_SCHEMA_VERSION, NetworkCheckpointError,
                          NetworkCheckpointPolicy, network_checkpoint_gb,
@@ -60,7 +60,7 @@ __all__ = ["QuantumNumber", "Space", "BlockTensor", "FuseRecord", "TruncationInf
            "fuse", "split", "qr", "svd", "NetworkGraph",
            "SparseW", "dot_sparse", "sparse_w_gb",
            "SCHMIDT_DEGENERACY_RTOL", "SCHMIDT_STABILITY_RTOL",
-           "ModeBasis", "FERMION_MODE", "ProductTerm", "TTNO", "fermion_term",
+           "ModeBasis", "FERMION_MODE", "ProductTerm", "TermTable", "TTNO", "fermion_term",
            "consolidate", "hamiltonian_product_terms", "one_electron_product_terms",
            "compile_ttno", "ttno_from_cas_integrals",
            "TTNState", "SweepResult", "random_state", "solve_ttn", "state_gb",
@@ -70,11 +70,11 @@ __all__ = ["QuantumNumber", "Space", "BlockTensor", "FuseRecord", "TruncationInf
            "AdaptiveResult", "BondReport", "Move", "ReconnectionPolicy", "SiteReport",
            "StructureReport", "discovered_structure", "solve_adaptive",
            "EffectiveModel", "ManifoldResult", "SiteSpace", "UnderResolved",
-           "effective_model", "effective_operator", "model_gb", "site_spaces",
-           "solve_manifold", "MULTIPLET_GAP_RATIO_WARN",
+           "effective_model", "effective_operator", "effective_operator_from_terms",
+           "model_gb", "site_spaces", "solve_manifold", "MULTIPLET_GAP_RATIO_WARN",
            "DEFAULT_MULTIPLET_WEIGHT_TOL",
            "TTNOTemplate", "annihilation_term", "network_rdm", "network_rdms",
-           "node_environments", "DMRGSolver", "NetworkProposal",
+           "node_environments", "slot_values", "DMRGSolver", "NetworkProposal",
            "NETWORK_SCHEMA_VERSION", "NetworkCheckpointError", "NetworkCheckpointPolicy",
            "network_checkpoint_gb", "network_state_path", "read_network_state",
            "write_network_state", "BondSeriesResult", "bond_series"]

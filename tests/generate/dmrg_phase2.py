@@ -81,6 +81,21 @@ ingredient switched on rather than at saturating settings:
 * **extrapolation** through the campaign's own ``E(w_disc -> 0)`` fit over the recorded
   points (``dmrg_cost_ladder.py --stage extrapolate``).
 
+S2.4a — the first Tier-3 calculation: front end and feasibility
+---------------------------------------------------------------
+``mn3_linear`` — three high-spin Mn(II) d^5 sites on a path, CAS(15, 30 spinors), 1.6e8
+determinants, so no exact CI exists — through the same protocol the bridges rehearsed:
+the high-spin ROHF reference, the fifteen 3d orbitals by character (trap-checked
+against the reference's own occupations), localized per centre, the site-blocked chain
+of the finest partition that holds the six-root S = 5/2 ensemble. Measurement-first, in
+two child processes so the front end's memory is never resident beside the sweep: the
+front end writes the active integrals (plus the spin-operator blocks and the moment
+operators the analyses need) to a file, and the ladder child compiles the operator once
+and runs **bounded** sweeps per cap, recording the memory plan, the per-sweep CPU, the
+six energies with their Kramers pairing, ``<S^2>`` of every root, and the local-multiplet
+model at six states per site. Nothing here is a converged Tier-3 result: the deliverable
+is the per-sweep cost and the projected total on which S2.4b is decided.
+
 Run discipline (all stages): one JSON record per point written as it completes, a hard
 wall budget checked between points, a heartbeat line per point, refusals and
 non-convergence recorded as outcomes rather than raised.
@@ -1143,14 +1158,12 @@ BRIDGE_SPLIT_SWEEPS = 2
 #: 1e-7 Eh is 0.02 cm^-1 — sixteen times under the quantitative band's 0.35 cm^-1 floor.
 #: The achieved dE is recorded per point either way.
 BRIDGE_CONV_TOL = 1.0e-7
-#: ⚠ Also looser than the solver's 1e-8, by measurement: on the dimer's four-root lane the
-#: local Davidson on one interior bond stalls at max|r| = 2.4e-7 for 300 iterations at
-#: every cap from 12 up (135-dimensional two-site problem, a triplet degenerate to 0.4
-#: cm^-1 among the four roots), where D = 8 converged in seven sweeps — and the floor is
-#: the same with the unbatched application, so it is the eigensolver on the degenerate
-#: block, not the operator. A residual of 1e-6 bounds the local energy error at 1e-12 Eh,
-#: four orders under the finest grading band; the stall is recorded in the notes.
-BRIDGE_DAVIDSON_TOL = 1.0e-6
+#: The solver's own default. ⚠ The first bridge run loosened this to 1e-6 because the
+#: local Davidson on the dimer's 135-dimensional four-root problem stalled at
+#: max|r| = 2.4e-7 for 300 iterations at every cap from 12 up (a triplet degenerate to
+#: 0.4 cm^-1 among the roots); two-site problems that small are now diagonalized exactly
+#: (`kuiva.dmrg.sweep.DENSE_LOCAL_MAX_DIM`), and the lane converges at the default.
+BRIDGE_DAVIDSON_TOL = 1.0e-8
 #: The control cap per lane (the extra legs — uninterrupted, paged, adaptive — run there):
 #: the first cap of the ladder at or above this that the lane reaches.
 BRIDGE_CONTROL_CAP = 8
@@ -1453,10 +1466,12 @@ def _plain_solve(system, graph, template, ints, cap: int, roots: int, max_sweeps
 
 
 def _product_model(template, ints, state, weights, sites, dim: int, ops: Dict,
-                   n_elec: int, e_ci: np.ndarray) -> Dict:
+                   n_elec: int, e_ci: Optional[np.ndarray]) -> Dict:
     """The local-multiplet model of a (truncated) state, and what it says.
 
     ⚠ Re-gauges ``state`` in place; called after every other reading of the state.
+    ``e_ci=None`` is the Tier-3 case — no oracle — and then the model's spectrum is
+    recorded without a deviation or an interlacing verdict, never with an invented one.
     """
     from kuiva.dmrg import UnderResolved, effective_model
     from kuiva.props.multiplet import HARTREE_TO_CM
@@ -1476,24 +1491,27 @@ def _product_model(template, ints, state, weights, sites, dim: int, ops: Dict,
         return {"status": "refused", "error": "{}".format(exc)[:300],
                 "cpu_s": round(time.process_time() - t0, 3)}
     except (MemoryError, res.MemoryLimitError) as exc:
-        # ⚠ The site-block contraction of the effective operator opens every operator leg
-        # of a site at once (44 GB on a five-node site of the 30-spinor operator, measured,
-        # as a raw allocation no plan had sized): a result about the extraction, recorded
-        # on the point rather than allowed to end the lane.
+        # A memory refusal of the extraction (every array of the quotient-tree
+        # contraction is required before it exists) is a result about the extraction,
+        # recorded on the point rather than allowed to end the lane.
         return {"status": "refused-memory", "error": "{}".format(exc).splitlines()[0][:300],
                 "cpu_s": round(time.process_time() - t0, 3)}
     spec = np.sort(model.spectrum()) + float(ints.e_core)
-    ref = np.sort(np.asarray(e_ci, dtype=float))[:spec.size]
-    dev = (spec - spec[0]) - (ref - ref[0])
     rec: Dict = {"status": "ok", "model_dim": int(model.model_dim),
                  "sector_dim": int(spec.size),
                  "site_gap_ratios": [None if not np.isfinite(sp.gap_ratio)
                                      else round(float(sp.gap_ratio), 3)
                                      for sp in model.sites],
                  "site_n_electrons": [sp.n_electrons for sp in model.sites],
-                 "interlacing_ok": bool(np.all(spec >= ref - 1e-8)),
-                 "max_dev_cm": round(float(np.max(np.abs(dev))) * HARTREE_TO_CM, 4),
                  "rel_cm": camp.rel_cm(spec)}
+    if e_ci is not None:
+        ref = np.sort(np.asarray(e_ci, dtype=float))[:spec.size]
+        dev = (spec - spec[0]) - (ref - ref[0])
+        rec["interlacing_ok"] = bool(np.all(spec >= ref - 1e-8))
+        rec["max_dev_cm"] = round(float(np.max(np.abs(dev))) * HARTREE_TO_CM, 4)
+    else:
+        rec["interlacing_ok"] = None
+        rec["max_dev_cm"] = None
     try:
         ps = pseudospin_from_model(model, energy_shift=float(ints.e_core))
         rec["site_g"] = [[round(float(g), 6) for g in sp.g_values] for sp in ps.sites]
@@ -1572,10 +1590,14 @@ def stage_bridge(record, heartbeat, *, deadline: float, keys: Sequence[str],
         res.clear()
         camp.clear_templates()
         t_job, c_job = time.time(), time.process_time()
+        # ⚠ The reference orbitals are frozen whenever their checkpoint exists, not only
+        # on a resumed record: a fresh record after a code change re-measures the ladder
+        # on the SAME orbitals, which is what makes its points comparable with the
+        # earlier ones (a different orbital set is a different ladder).
         reference, coeff, space, loc, centres = localized_front_end(
             system, orbital_deadline=max(0.0, min(BRIDGE_ORBITAL_BUDGET_S,
                                                   deadline - time.time() - 1800.0)),
-            freeze=record.has_job(key))
+            freeze=record.has_job(key) or camp.orbital_checkpoint(system).is_file())
         orbitals = loc.pop("orbitals")
         ints = camp.cas_integrals(reference, coeff, space)
         n = int(space.n_active)
@@ -1890,6 +1912,713 @@ def print_bridge_summary(rows: Sequence[Dict]) -> None:
                     "/".join("{:.4f}".format(x) for x in g) for g in m["site_g"])))
 
 
+# ==============================================================================================
+# S2.4 — the first Tier-3 calculation: the front end and the feasibility ladder
+# ==============================================================================================
+
+#: The Tier-3 system of the first attempt (a campaign entry; its Tier-3 definition is
+#: ``tier3_systems.get("mn3_linear")``, and the two are checked against each other).
+TIER3_SYSTEM = "mn3_linear"
+#: The feasibility ladder, cheapest first. ⚠ Bounded sweeps at every cap: what is
+#: measured is the cost SHAPE — per-sweep CPU, the memory plan, whether the cap is honoured
+#: — never a converged energy. The cap a converged Tier-3 run needs is S2.4b's question and
+#: is decided on these numbers.
+TIER3_CAPS = (8, 16, 32, 64, 128)
+TIER3_SWEEPS = 2
+#: The ensemble is the WHOLE S = 5/2 ground multiplet — six states, three Kramers doublets
+#: (the system's ``n_states``). Not a cut inside it: Mn(II)'s zero-field splitting separates
+#: the doublets by well under a wavenumber, and a count inside a near-degenerate manifold is
+#: the defect the state-averaging rule exists for. Not a wider one either: the next
+#: multiplet (S = 3/2) sits a few |J| above, and whether ten roots is a boundary at these
+#: orbitals is S2.4b's first decision.
+TIER3_SITE_DIM = 6
+#: ⚠ The local Davidson tolerance of the bounded sweeps, looser than the solver's 1e-8 by
+#: measurement: at D = 32 the two-site problem on bond (8, 7) — 4204 determinants, six
+#: roots among which the Kramers pairs are exactly degenerate — stalled for 300
+#: iterations at max|r| = 4.5e-6, the residual floor the dimer bridge met on its
+#: 135-dimensional problem before that size got a dense route. 1e-6 bounds the local
+#: energy error at 1e-12 Eh, five orders under anything a bounded sweep resolves; the
+#: value is recorded on the child's record. A converged Tier-3 run (S2.4b) has to decide
+#: this for itself, and the stall is a finding it inherits.
+TIER3_DAVIDSON_TOL = 1.0e-6
+#: Wall budget of the front-end child: the SCF (~27 s per cycle on 352 AOs, direct
+#: integrals; ~25 cycles with the measured recipe), the Mn four-component solve (84 s,
+#: then cached), the direct Cholesky decomposition and the localization.
+TIER3_FRONT_END_BUDGET_S = 3600.0
+
+
+def tier3_integrals_path(key: str) -> Path:
+    return camp.WORK / "{}_tier3_integrals.npz".format(key)
+
+
+def _spin_blocks(reference, coeff: np.ndarray, space) -> Dict[str, np.ndarray]:
+    """The spin operator over the orbital spaces — what ``<S^2>`` needs on the network side.
+
+    Exactly the four pieces :func:`kuiva.props.spin.spin_analysis` builds (the active block,
+    the inactive trace, and the three out-of-CAS families), computed here in the front-end
+    process because the analysis layer has no integrals and the ladder child has no
+    reference: it reads them off the integrals file.
+    """
+    from kuiva.props.dump import inactive_moment, spinor_operator
+    from kuiva.spinor.expand import spin_operator
+
+    s_mo = spinor_operator(np.ascontiguousarray(coeff), spin_operator(reference.data.s_ao))
+    spaces = space.spaces
+    act = np.asarray(spaces.active, dtype=int)
+    inact = np.asarray(spaces.inactive, dtype=int)
+    virt = np.asarray(spaces.virtual, dtype=int)
+    return {"s_active": np.stack([sk[np.ix_(act, act)] for sk in s_mo]),
+            "s_inactive_trace": np.asarray(inactive_moment(s_mo, inact, name="S"),
+                                           dtype=float),
+            "s_b": np.stack([sk[np.ix_(act, inact)] for sk in s_mo]),
+            "s_c": np.stack([sk[np.ix_(virt, act)] for sk in s_mo]),
+            "s_d": np.stack([sk[np.ix_(virt, inact)] for sk in s_mo])}
+
+
+def tier3_front_end_child(key: str, out_path: Path, *, budget: float) -> int:
+    """The Tier-3 front end, in its own process: SCF, selection, localization, integrals.
+
+    Writes the active integrals, the spin-operator blocks and the active moment operators
+    to one ``.npz`` and a JSON record of every diagnostic beside it. ⚠ Two refusals are
+    recorded as outcomes and end the stage: an unconverged SCF (everything downstream is
+    built on those orbitals), and a character selection that did not land on the fifteen
+    singly occupied 3d orbitals (a wrong shell is a different calculation, and no
+    observable of a Tier-3 run can see it).
+    """
+    from manifold_ladder import active_moments
+    from progress import Heartbeat
+    from dmrg_memory_plan import rss_gb
+    from kuiva.interface import api
+    from kuiva.util import resources as res
+
+    import tier3_systems as t3
+
+    system = camp.get(key)
+    tier3 = t3.get(key)
+    heartbeat = Heartbeat("dmrg_cost_ladder_s2.4a_front", budget_seconds=budget,
+                          meta={"key": key, "pid": os.getpid()})
+    rec: Dict = {"key": key, "label": system.label, "pid": os.getpid(), "status": "running",
+                 "basis": system.basis, "charge": system.charge, "spin": system.spin,
+                 "atoms": [[s, list(xyz)] for s, xyz in system.atoms],
+                 "geometry_note": system.geom_note, "physics_note": system.physics_note,
+                 "protocol_note": system.protocol_note,
+                 "tier3_definition": {"formula": tier3.formula, "topology": tier3.topology,
+                                      "edges": [list(e) for e in tier3.edges],
+                                      "local_dims": list(tier3.local_dims),
+                                      "cas_electrons": tier3.cas_electrons,
+                                      "cas_spinors": tier3.cas_spinors,
+                                      "cas_determinants": tier3.cas_determinants,
+                                      "lieb_mattis_twice_spin": t3.lieb_mattis_twice_spin(
+                                          tier3)}}
+    t_start = time.time()
+
+    def flush(status: Optional[str] = None) -> None:
+        if status is not None:
+            rec["status"] = status
+        rec["elapsed_s"] = round(time.time() - t_start, 1)
+        tmp = out_path.with_suffix(".json.part")
+        with open(tmp, "w") as fh:
+            json.dump(rec, fh, indent=1, sort_keys=True, default=_jsonable)
+        os.replace(tmp, out_path)
+
+    # the campaign entry and the Tier-3 definition must describe the same calculation
+    if (2 * system.n_active_elec != 2 * tier3.cas_electrons
+            or system.n_active != tier3.cas_spinors
+            or system.n_det != tier3.cas_determinants):
+        rec["error"] = ("the campaign entry (CAS({}, {}), {} dets) disagrees with the "
+                        "Tier-3 definition (CAS({}, {}), {} dets)".format(
+                            system.n_active_elec, system.n_active, system.n_det,
+                            tier3.cas_electrons, tier3.cas_spinors, tier3.cas_determinants))
+        flush("definition-mismatch")
+        return 1
+    flush()
+    res.clear()
+    t0, c0 = time.time(), time.process_time()
+    reference = camp.build_reference(system)
+    rec["front_end"] = {"nao": int(reference.data.nao), "nspinor": int(reference.nspinor),
+                        "e_scf": float(reference.data.e_scf),
+                        "scf_converged": bool(reference.data.converged),
+                        "n_cholesky": int(reference.factors.naux),
+                        "wall_s": round(time.time() - t0, 1),
+                        "cpu_s": round(time.process_time() - c0, 1),
+                        "rss_gb": round(rss_gb(), 3)}
+    if reference.data.soc is not None:
+        rec["front_end"]["hamiltonian"] = reference.data.soc.provenance()
+    heartbeat.tick(1, stage="scf", converged=int(reference.data.converged))
+    flush()
+    print("    front end: {} AOs, {} Cholesky vectors, SCF {} E = {:.8f} Eh, {:.0f} CPU s, "
+          "RSS {:.2f} GB".format(rec["front_end"]["nao"], rec["front_end"]["n_cholesky"],
+                                 "converged" if reference.data.converged else "NOT CONVERGED",
+                                 rec["front_end"]["e_scf"], rec["front_end"]["cpu_s"],
+                                 rec["front_end"]["rss_gb"]), flush=True)
+    if not reference.data.converged:
+        rec["error"] = "the scalar SCF did not converge; fix the guess before anything runs"
+        flush("scf-unconverged")
+        heartbeat.finish(status="scf-unconverged")
+        return 1
+
+    # --- the active space, trap-checked against the reference's own occupations -------------
+    space = api.active_space_for(reference, **system.selection())
+    active = np.asarray(space.spaces.active, dtype=int)
+    occ = np.asarray(reference.data.mo_occ, dtype=float)
+    occ_active = occ[active // 2] if occ.ndim == 1 else None
+    rec["active_space"] = {"description": space.description,
+                           "n_active": int(space.n_active), "n_elec": int(space.n_elec),
+                           "spinor_indices": [int(i) for i in active],
+                           "reference_occupations": (None if occ_active is None
+                                                     else [float(x) for x in occ_active])}
+    if occ_active is None or not np.allclose(occ_active, 1.0):
+        rec["error"] = ("the {} lowest d-character pairs are not the singly occupied 3d "
+                        "shell of the high-spin reference: occupations {}".format(
+                            space.n_active // 2, None if occ_active is None
+                            else [round(float(x), 3) for x in occ_active]))
+        flush("selection-off-shell")
+        heartbeat.finish(status="selection-off-shell")
+        return 1
+    centres = [i for i, (sym, _) in enumerate(system.atoms) if sym == system.element]
+    loc = api.localize_active_space(reference, space, centres, report=False)
+    coeff = np.ascontiguousarray(loc.coeff)
+    site = np.asarray(loc.site, dtype=int)
+    if any(np.any(np.diff(np.nonzero(site == k)[0]) != 1) for k in range(loc.n_sites)):
+        rec["error"] = "the localized active orbitals are not site-blocked"
+        flush("localization-failed")
+        heartbeat.finish(status="localization-failed")
+        return 1
+    # the localization is an active-active rotation: the active SPAN is invariant, and
+    # with no CI to assert it on that is what is asserted — the overlap of the localized
+    # active block with the canonical one is unitary
+    s_ao = np.asarray(reference.data.s_ao)
+    nao = s_ao.shape[0]
+    c_can = np.ascontiguousarray(reference.spinors_in_ao())[:, active]
+    c_loc = coeff[:, active]
+    sc = np.concatenate([s_ao @ c_can[:nao], s_ao @ c_can[nao:]], axis=0)
+    m = c_loc.conj().T @ sc
+    rec["localization"] = {
+        "sites": [int(x) for x in site],
+        "site_sizes": [int(np.sum(site == k)) for k in range(loc.n_sites)],
+        "per_site_population_min": [round(float(loc.populations[site == k, k].min()), 4)
+                                    for k in range(loc.n_sites)],
+        "per_site_population_mean": [round(float(loc.populations[site == k, k].mean()), 4)
+                                     for k in range(loc.n_sites)],
+        "span_invariance": float(np.max(np.abs(m.conj().T @ m - np.eye(m.shape[1]))))}
+    heartbeat.tick(2, stage="localized")
+    flush()
+    print("    active space: {}; reference occupations {}; localized per-site populations "
+          "min {} (span invariance {:.1e})".format(
+              space.description, [round(float(x), 2) for x in occ_active],
+              rec["localization"]["per_site_population_min"],
+              rec["localization"]["span_invariance"]), flush=True)
+
+    # --- the integrals, the spin blocks, the moments: everything the ladder child reads -----
+    t0, c0 = time.time(), time.process_time()
+    ints = camp.cas_integrals(reference, coeff, space)
+    h = np.ascontiguousarray(ints.h_active_effective())
+    eri = np.ascontiguousarray(ints.active_eri())
+    blocks = _spin_blocks(reference, coeff, space)
+    mu = active_moments(reference, coeff, space)
+    path = tier3_integrals_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, h=h, eri=eri, e_core=float(ints.e_core),
+             n_elec=int(system.n_active_elec), sites=site.astype(np.int64), mu=mu,
+             e_ci=np.full(system.n_states, np.nan), **blocks)
+    rec["integrals"] = {"path": str(path), "e_core": float(ints.e_core),
+                        "wall_s": round(time.time() - t0, 1),
+                        "cpu_s": round(time.process_time() - c0, 1),
+                        "h_hermiticity": float(np.max(np.abs(h - h.conj().T))),
+                        "s_active_hermiticity": float(np.max(np.abs(
+                            blocks["s_active"] - blocks["s_active"].conj().transpose(0, 2, 1)))),
+                        "s_inactive_trace": [float(x) for x in blocks["s_inactive_trace"]],
+                        "s_leakage_max": max(float(np.max(np.abs(blocks[k]))) if blocks[k].size
+                                             else 0.0 for k in ("s_b", "s_c", "s_d"))}
+    rec["rss_peak_gb"] = round(rss_gb(), 3)
+    heartbeat.tick(3, stage="integrals")
+    flush("ok")
+    heartbeat.finish(status="ok")
+    return 0
+
+
+class _Tier3Integrals(_ActiveIntegrals):
+    """The integrals file plus the spin blocks and the moments the analysis reads."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        data = np.load(path)
+        self.mu = np.ascontiguousarray(data["mu"])
+        self.s_active = np.ascontiguousarray(data["s_active"])
+        self.s_inactive_trace = np.asarray(data["s_inactive_trace"], dtype=float)
+        self.s_leak = tuple(np.ascontiguousarray(data[k]) for k in ("s_b", "s_c", "s_d"))
+
+
+def _spin_of_roots(ints: _Tier3Integrals, template, graph, state, cap: int, n_roots: int
+                   ) -> Dict:
+    """``<S^2>`` of every stored root, through the same contraction a Tier-3 run reports.
+
+    The analysis contract is the solver's (``one_body_moments``), so the state is handed
+    to a solver shell on the same template — the props layer duck-types it and never sees
+    the network. Each root's own 1- and 2-RDM are contracted for it; a memory refusal of
+    that extraction is recorded on the point, not raised.
+    """
+    from kuiva.dmrg import DMRGSolver
+    from kuiva.props.spin import spin_from_s_squared, spin_squared_states
+    from kuiva.util import resources as res
+
+    t0 = time.process_time()
+    shell = DMRGSolver(ints.n_elec, max_bond=int(cap), n_roots=int(n_roots), graph=graph,
+                       rdms=False, on_split="warn")
+    shell._templates[graph] = template
+    shell._state = state
+    try:
+        s2, leak = spin_squared_states(shell, ints.s_active,
+                                       inactive_trace=ints.s_inactive_trace,
+                                       leak_blocks=ints.s_leak)
+    except (MemoryError, res.MemoryLimitError) as exc:
+        return {"status": "refused-memory", "error": "{}".format(exc).splitlines()[0][:300],
+                "cpu_s": round(time.process_time() - t0, 3)}
+    return {"status": "ok", "s_squared": [round(float(x), 6) for x in s2],
+            "spin": [round(float(spin_from_s_squared(x)), 4) for x in s2],
+            "leak": [round(float(x), 8) for x in leak],
+            "cpu_s": round(time.process_time() - t0, 3)}
+
+
+def tier3_ladder_child(key: str, ints_path: Path, out_path: Path, *, caps: Sequence[int],
+                       n_roots: int, max_sweeps: int, budget: float) -> int:
+    """The feasibility ladder of one Tier-3 system, in its own process.
+
+    The site-blocked chain of the finest partition that holds the ensemble, compiled once;
+    then, per cap and cheapest first: the memory plan (with and without the RDM
+    contraction a CASSCF would add), ``max_sweeps`` bounded sweeps from a seeded random
+    start with the per-sweep wall and CPU recorded, the six energies and their Kramers
+    pairing, ``<S^2>`` of every root, and the local-multiplet model at six states per site
+    with its site pseudospins. Every step is on disk before the next starts; a budget kill
+    leaves what was measured.
+    """
+    from progress import Heartbeat
+    from dmrg_memory_plan import PhaseSampler, instrument, rss_gb
+    from kuiva.dmrg import TTNOTemplate, one_electron_product_terms, random_state, solve_ttn
+    from kuiva.dmrg.plan import network_memory_plan
+    from kuiva.util.errors import SolverFailure
+    from kuiva.dmrg.sweep import environment_gb, state_gb
+    from kuiva.props.multiplet import HARTREE_TO_CM
+    from kuiva.util import resources as res
+
+    lims = res.ensure_configured()
+    deadline = time.time() + float(budget)
+    ints = _Tier3Integrals(ints_path)
+    n = ints._h.shape[0]
+    n_sites = int(max(ints.sites)) + 1
+    site_sizes = [sum(1 for s in ints.sites if s == k) for k in range(n_sites)]
+    sizes = bridge_partition(site_sizes, ints.n_elec, int(n_roots))
+    graph, site_nodes = bridge_graph(site_sizes, sizes)
+    worst = min(a + b for a, b in zip(sizes, sizes[1:])) if len(sizes) > 1 else n
+    rec: Dict = {"key": key, "roots": int(n_roots), "caps": [int(c) for c in caps],
+                 "sweeps": int(max_sweeps), "conv_tol": BRIDGE_CONV_TOL,
+                 "davidson_tol": TIER3_DAVIDSON_TOL,
+                 "n_modes": n, "n_elec": ints.n_elec, "site_sizes": site_sizes,
+                 "partition": {"node_sizes": sizes, "n_nodes": len(sizes),
+                               "two_site_floor": camp.two_site_floor(n, ints.n_elec, worst),
+                               "sites_as_nodes": [list(g) for g in site_nodes]},
+                 "graph": graph_record(graph),
+                 "memory_limit_gb": float(lims.memory_gb), "budget_s": float(budget),
+                 "pid": os.getpid(), "status": "running", "steps": {}, "points": []}
+    # ⚠ A cap already measured by an earlier invocation is kept, never repeated: the
+    # record on disk is the authority, and a child that died at one cap (a solver
+    # failure, a budget kill) resumes at the next.
+    kept: List[Dict] = []
+    if out_path.is_file():
+        try:
+            previous = json.loads(out_path.read_text())
+        except ValueError:
+            previous = {}
+        kept = [p for p in previous.get("points", [])
+                if p.get("status") not in (None, "running", "skipped")]
+        if kept:
+            rec["resumed_from"] = previous.get("elapsed_s")
+            rec["points"] = kept
+    done = {int(p["cap"]) for p in kept}
+    heartbeat = Heartbeat("dmrg_cost_ladder_s2.4a_ladder", budget_seconds=budget,
+                          meta={"key": key, "pid": os.getpid()})
+    t_start = time.time()
+
+    def flush(status: Optional[str] = None) -> None:
+        if status is not None:
+            rec["status"] = status
+        rec["elapsed_s"] = round(time.time() - t_start, 1)
+        tmp = out_path.with_suffix(".json.part")
+        with open(tmp, "w") as fh:
+            json.dump(rec, fh, indent=1, sort_keys=True, default=_jsonable)
+        os.replace(tmp, out_path)
+
+    sampler = PhaseSampler(res.BUDGET)
+    instrument(sampler)
+    sampler.start()
+    rec["rss_baseline_gb"] = round(sampler.baseline, 4)
+    flush()
+
+    # --- the compile, once --------------------------------------------------------------------
+    t0, c0 = time.time(), time.process_time()
+    try:
+        template = TTNOTemplate(graph)
+    except res.MemoryLimitError as exc:
+        rec["steps"]["compile"] = {"status": "refused-memory",
+                                   "error": "{}".format(exc).splitlines()[0],
+                                   "wall_s": round(time.time() - t0, 1),
+                                   "cpu_s": round(time.process_time() - c0, 1)}
+        flush("refused-memory")
+        heartbeat.finish(status="refused-memory")
+        return 0
+    op = template.ttno
+    rec["steps"]["compile"] = {
+        "status": "ok", "wall_s": round(time.time() - t0, 1),
+        "cpu_s": round(time.process_time() - c0, 1), "n_terms": int(template.n_terms),
+        "stored_gb": round(op.nbytes / 1024.0 ** 3, 4),
+        "max_operator_bond": int(max(op.bond_dimensions().values())),
+        "ledger_resident_gb": round(res.BUDGET.resident_gb(), 4),
+        "rss_after_gb": round(rss_gb(), 4)}
+    heartbeat.tick(1, stage="compiled", cpu=rec["steps"]["compile"]["cpu_s"])
+    flush()
+    print("    compile: {:.0f} CPU s, stored {:.3f} GB, max operator bond {}, RSS {:.2f} GB"
+          .format(rec["steps"]["compile"]["cpu_s"], rec["steps"]["compile"]["stored_gb"],
+                  rec["steps"]["compile"]["max_operator_bond"],
+                  rec["steps"]["compile"]["rss_after_gb"]), flush=True)
+    t0, c0 = time.time(), time.process_time()
+    ttno = template.fill(ints.h_active_effective(), ints.active_eri())
+    rec["steps"]["fill"] = {"status": "ok", "wall_s": round(time.time() - t0, 2),
+                            "cpu_s": round(time.process_time() - c0, 2)}
+    ops = {name: one_electron_product_terms(ints.mu[k])
+           for k, name in enumerate(("mu_x", "mu_y", "mu_z"))}
+    flush()
+
+    # --- per cap ------------------------------------------------------------------------------
+    for cap in caps:
+        if int(cap) in done:
+            print("    D={}: already measured; kept".format(cap), flush=True)
+            continue
+        if time.time() > deadline:
+            rec["points"].append({"cap": int(cap), "status": "skipped",
+                                  "reason": "ladder wall budget exhausted"})
+            flush()
+            break
+        point: Dict = {"cap": int(cap), "roots": int(n_roots), "protocol": "tier3"}
+        sampler.reset()
+        t0, c0 = time.time(), time.process_time()
+        try:
+            state = random_state(ttno, ints.n_elec, int(cap), n_roots=int(n_roots),
+                                 rng=np.random.default_rng(0))
+        except res.MemoryLimitError as exc:
+            point.update(status="refused-memory", where="state",
+                         error="{}".format(exc).splitlines()[0])
+            rec["points"].append(point)
+            flush()
+            continue
+        point["state_gb"] = round(state_gb(state), 5)
+        try:
+            phases = network_memory_plan(ttno, state, n_roots=int(n_roots),
+                                         max_bond=int(cap), rdm=False)
+            plan_sweep = float(res.plan_peak_gb(phases))
+            phases_rdm = network_memory_plan(ttno, state, n_roots=int(n_roots),
+                                             max_bond=int(cap), rdm=True)
+            plan_rdm = float(res.plan_peak_gb(phases_rdm))
+            point["plan"] = {"sweep_peak_gb": round(plan_sweep, 4),
+                             "with_rdm_peak_gb": round(plan_rdm, 4),
+                             "environments_gb": round(environment_gb(ttno, state), 4),
+                             "fits_limit": bool(plan_sweep <= lims.memory_gb),
+                             "fits_limit_with_rdm": bool(plan_rdm <= lims.memory_gb)}
+        except Exception as exc:                          # the plan itself may not fit
+            point["plan"] = {"status": "failed",
+                             "error": "{}: {}".format(type(exc).__name__, exc)[:300]}
+        flush()
+        print("    D={}: plan peak {} GB (with RDMs {} GB, environments {} GB) against "
+              "{:.1f} GB".format(cap, point["plan"].get("sweep_peak_gb", "?"),
+                                 point["plan"].get("with_rdm_peak_gb", "?"),
+                                 point["plan"].get("environments_gb", "?"), lims.memory_gb),
+              flush=True)
+        sweep_times: List[Dict] = []
+        t_sw = [time.time()]
+        c_sw = [time.process_time()]
+        # ⚠ The point is on disk from its first sweep, as "running": a cap whose second
+        # sweep the budget kills still leaves the first sweep's cost, which at the top of
+        # the ladder is the number the projection needs most.
+        point.update(status="running", sweeps=sweep_times)
+        rec["points"].append(point)
+
+        def on_sweep(state, sweep, energies, converged):
+            now, cpu = time.time(), time.process_time()
+            sweep_times.append({"sweep": int(sweep), "wall_s": round(now - t_sw[-1], 1),
+                                "cpu_s": round(cpu - c_sw[-1], 1),
+                                "energies": [float(e) + ints.e_core for e in energies],
+                                "rss_gb": round(rss_gb(), 3)})
+            t_sw.append(now)
+            c_sw.append(cpu)
+            flush()
+            heartbeat.tick(2, stage="sweep", cap=int(cap), sweep=int(sweep),
+                           cpu=sweep_times[-1]["cpu_s"])
+
+        t0, c0 = time.time(), time.process_time()
+        try:
+            result = solve_ttn(ttno, state, max_sweeps=int(max_sweeps),
+                               conv_tol=BRIDGE_CONV_TOL, davidson_tol=TIER3_DAVIDSON_TOL,
+                               max_bond=int(cap), n_elec=ints.n_elec, boundary_check=0,
+                               on_split="warn", checkpoint=on_sweep, memory_plan=True,
+                               plan_rdms=False, report=True)
+        except SolverFailure as exc:
+            # a local eigensolve that did not converge inside a sweep: the outcome a
+            # plain ladder point records as unconverged, with the sweeps it completed
+            point.update(status="unconverged", where="sweep", error="{}".format(exc)[:300],
+                         wall_s=round(time.time() - t0, 1),
+                         cpu_s=round(time.process_time() - c0, 1),
+                         sweeps=sweep_times, phases=sampler.table())
+            flush()
+            print("    D={}: UNCONVERGED: {}".format(cap, point["error"][:140]), flush=True)
+            continue
+        except res.MemoryLimitError as exc:
+            point.update(status="refused-memory", where="sweep",
+                         error="{}".format(exc).splitlines()[0],
+                         wall_s=round(time.time() - t0, 1),
+                         cpu_s=round(time.process_time() - c0, 1),
+                         sweeps=sweep_times, phases=sampler.table())
+            flush()
+            print("    D={}: REFUSED by the memory plan: {}".format(
+                cap, point["error"][:120]), flush=True)
+            continue
+        except ValueError as exc:
+            # the group-complete truncation rule: a cap that cuts a degenerate Schmidt
+            # group is refused, and which caps are refused is part of the answer
+            point.update(status="refused", where="sweep", error="{}".format(exc)[:300],
+                         wall_s=round(time.time() - t0, 1),
+                         cpu_s=round(time.process_time() - c0, 1),
+                         sweeps=sweep_times, phases=sampler.table())
+            flush()
+            print("    D={}: REFUSED: {}".format(cap, point["error"][:120]), flush=True)
+            continue
+        energies = np.asarray(result.energies, dtype=float) + float(ints.e_core)
+        e_cm = (energies - energies[0]) * HARTREE_TO_CM
+        n_pair = int(energies.size) // 2
+        point.update(status="ok" if result.converged else "bounded",
+                     converged=bool(result.converged),
+                     wall_s=round(time.time() - t0, 1),
+                     cpu_s=round(time.process_time() - c0, 1),
+                     n_sweeps=int(result.n_sweeps), w_disc=float(result.max_discarded),
+                     bond_used=int(result.max_bond_dim),
+                     saturating=bool(int(result.max_bond_dim) < int(cap)),
+                     energies=[float(e) for e in energies],
+                     rel_cm=[round(float(x), 4) for x in e_cm],
+                     history=[float(e) + ints.e_core for e in result.history],
+                     kramers_pair_spread_cm=round(float(np.max(
+                         e_cm[1:2 * n_pair:2] - e_cm[0:2 * n_pair:2])), 6) if n_pair else None,
+                     manifold_spread_cm=round(float(e_cm[-1]), 4),
+                     n_paged_out=int(result.n_paged_out), n_paged_in=int(result.n_paged_in),
+                     sweeps=sweep_times, phases=sampler.table(),
+                     rss_peak_gb=round(max(r["peak_rss_gb"] for r in sampler.table()), 3),
+                     ledger_resident_gb=round(res.BUDGET.resident_gb(), 4))
+        flush()
+        heartbeat.tick(3, stage="swept", cap=int(cap), cpu=point["cpu_s"])
+        per_sweep = [s["cpu_s"] for s in sweep_times]
+        print("    D={}: {} sweeps, {:.0f} CPU s (per sweep {}), w_disc {:.2e}, bond {}, "
+              "peak RSS {:.2f} GB; E0 {:.8f}, manifold spread {:.3f} cm^-1, Kramers pair "
+              "spread {} cm^-1".format(
+                  cap, point["n_sweeps"], point["cpu_s"], per_sweep, point["w_disc"],
+                  point["bond_used"], point["rss_peak_gb"], energies[0],
+                  point["manifold_spread_cm"], point["kramers_pair_spread_cm"]), flush=True)
+        # --- the analyses, each on disk before the next ------------------------------------
+        if time.time() < deadline:
+            point["spin"] = _spin_of_roots(ints, template, graph, result.state, cap, n_roots)
+            flush()
+            if point["spin"]["status"] == "ok":
+                print("    D={}: <S^2> {} (S {}), {:.0f} CPU s".format(
+                    cap, point["spin"]["s_squared"], point["spin"]["spin"],
+                    point["spin"]["cpu_s"]), flush=True)
+        if time.time() < deadline:
+            point["product_model"] = _product_model(
+                template, ints, result.state, result.weights, site_nodes, TIER3_SITE_DIM,
+                ops, ints.n_elec, None)
+            flush()
+            pm = point["product_model"]
+            print("    D={}: model {}{}, {:.0f} CPU s".format(
+                cap, pm["status"],
+                "" if pm.get("status") != "ok" else ": dim {}, spectrum {} cm^-1, site g {}"
+                .format(pm["model_dim"], pm["rel_cm"][:8],
+                        [["{:.4f}".format(x) for x in g] for g in pm.get("site_g", [])]),
+                pm["cpu_s"]), flush=True)
+        heartbeat.tick(4, stage="analysed", cap=int(cap))
+    sampler.stop()
+    flush("done")
+    heartbeat.finish(status="done")
+    return 0
+
+
+def _run_child(cmd: Sequence[str], out_path: Path, share: float) -> Tuple[Dict, str, Optional[int]]:
+    """Run one child to completion; ``(record, status, exit_code)`` from its own file."""
+    t0 = time.time()
+    killed = None
+    try:
+        proc = subprocess.run(list(cmd), timeout=share + 120.0, cwd=str(REPO))
+        exit_code: Optional[int] = int(proc.returncode)
+    except subprocess.TimeoutExpired:
+        exit_code = None
+        killed = "parent timeout after {:.0f} s".format(time.time() - t0)
+    child: Dict = {}
+    if out_path.is_file():
+        try:
+            child = json.loads(out_path.read_text())
+        except ValueError:
+            child = {}
+    status = child.get("status", "no record")
+    if killed is not None:
+        status = "killed: {}".format(killed)
+    elif exit_code is not None and exit_code < 0:
+        status = "killed by signal {}".format(-exit_code)
+    elif exit_code not in (0, None) and status in ("running", "no record"):
+        status = "child exit {}".format(exit_code)
+    return child, status, exit_code
+
+
+def stage_tier3(record, heartbeat, *, deadline: float, keys: Sequence[str],
+                caps: Optional[Sequence[int]] = None, max_sweeps: int = TIER3_SWEEPS) -> None:
+    """S2.4a: the Tier-3 front end, then the feasibility ladder — two child processes.
+
+    The parent holds nothing but the record, so the memory the front end leaves behind
+    (the factors, the SCF) is not resident beside the sweep — the residue-plus-next-phase
+    kill is a recorded failure mode of this campaign. ⚠ A finished child record is
+    adopted, never re-run: delete ``temp/dmrg_cost_ladder/s2.4a/<key>_*.json`` to
+    re-measure a step.
+    """
+    ladder = list(TIER3_CAPS if caps is None else caps)
+    out_dir = camp.RECORDS / "s2.4a"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for key in keys:
+        system = camp.get(key)
+        front_path = out_dir / "{}_front.json".format(key)
+        ints_path = tier3_integrals_path(key)
+        front: Dict = {}
+        if front_path.is_file():
+            try:
+                front = json.loads(front_path.read_text())
+            except ValueError:
+                front = {}
+        if front.get("status") == "ok" and ints_path.is_file():
+            print("  [{}] front end adopted from {}".format(key, front_path), flush=True)
+        else:
+            share = min(TIER3_FRONT_END_BUDGET_S, max(60.0, deadline - time.time() - 60.0))
+            cmd = [sys.executable, str(Path(__file__).resolve()), "--tier3-front-end", key,
+                   str(front_path), "--budget", "{:.0f}".format(share)]
+            print("  [{}] front-end child: {:.0f} s share -> {}".format(key, share, front_path),
+                  flush=True)
+            front, status, exit_code = _run_child(cmd, front_path, share)
+            front["child_exit"] = exit_code
+            if status != "ok":
+                front["status"] = status
+        job = {"key": key, "stage_kind": "tier3", "label": system.label,
+               "roots": int(system.n_states), "n_active": system.n_active,
+               "n_active_elec": system.n_active_elec, "n_det": system.n_det,
+               "protocol_note": system.protocol_note, "caps": ladder,
+               "sweeps": int(max_sweeps), "front": front}
+        # a resumed record replaces its job for this key: the front end may have failed
+        # last time and been re-run now, and the record must say what stands
+        record.data["jobs"] = [j for j in record.data["jobs"] if j.get("key") != key]
+        record.add_job(job)
+        heartbeat.tick(0, system=key, stage="front-end", status=front.get("status"))
+        if front.get("status") != "ok":
+            record.add_point({"key": key, "topology": "r{}".format(system.n_states),
+                              "cap": None, "status": "front-end-failed",
+                              "reason": "{}: {}".format(front.get("status"),
+                                                        front.get("error", ""))[:300]})
+            print("  [{}] FRONT END FAILED: {}: {}".format(
+                key, front.get("status"), front.get("error", "")[:200]), flush=True)
+            continue
+        fe = front["front_end"]
+        print("  [{}] front end: {} AOs, {} Cholesky vectors, SCF E = {:.8f} Eh ({:.0f} CPU s); "
+              "{}; localized site populations min {}".format(
+                  key, fe["nao"], fe["n_cholesky"], fe["e_scf"], fe["cpu_s"],
+                  front["active_space"]["description"],
+                  front["localization"]["per_site_population_min"]), flush=True)
+        lane = "r{}".format(system.n_states)
+        ladder_path = out_dir / "{}_ladder.json".format(key)
+        child: Dict = {}
+        if ladder_path.is_file():
+            try:
+                child = json.loads(ladder_path.read_text())
+            except ValueError:
+                child = {}
+        if child.get("status") not in (None, "running"):
+            status = child["status"]
+            print("  [{}/{}] ladder adopted from {} ({})".format(key, lane, ladder_path,
+                                                                 status), flush=True)
+        else:
+            share = max(60.0, deadline - time.time() - 60.0)
+            cmd = [sys.executable, str(Path(__file__).resolve()), "--tier3-ladder", key,
+                   str(ints_path), str(ladder_path), "--caps",
+                   ",".join(str(c) for c in ladder), "--roots", str(system.n_states),
+                   "--max-sweeps", str(max_sweeps), "--budget", "{:.0f}".format(share)]
+            print("  [{}/{}] ladder child: {:.0f} s share, caps {} -> {}".format(
+                key, lane, share, ladder, ladder_path), flush=True)
+            child, status, _ = _run_child(cmd, ladder_path, share)
+        for job_ in record.data["jobs"]:
+            if job_.get("key") == key:
+                job_["partition"] = child.get("partition")
+                job_["compile"] = child.get("steps", {}).get("compile")
+                job_["ladder_status"] = status
+        for p in child.get("points", []):
+            if p.get("status") == "running":
+                # the sweep the budget killed: its completed sweeps are the record
+                p = dict(p, status="killed", reason=status)
+            record.add_point(dict(p, key=key, topology=lane))
+        record.flush()
+        heartbeat.tick(1, system=key, stage="ladder", status=status)
+        print("  [{}/{}] ladder {}: {} point(s)".format(key, lane, status,
+                                                        len(child.get("points", []))),
+              flush=True)
+
+
+def summarize_tier3(record_path: Path) -> List[Dict]:
+    """Per cap: the cost shape and what the bounded state already says."""
+    data = json.loads(record_path.read_text())
+    rows: List[Dict] = []
+    for job in data.get("jobs", []):
+        key = job["key"]
+        for p in data.get("points", []):
+            if p.get("key") != key or p.get("cap") is None:
+                continue
+            sweeps = p.get("sweeps", [])
+            spin = p.get("spin", {})
+            pm = p.get("product_model", {})
+            rows.append({"key": key, "cap": int(p["cap"]), "status": p.get("status"),
+                         "bond_used": p.get("bond_used"), "w_disc": p.get("w_disc"),
+                         "n_sweeps": p.get("n_sweeps"),
+                         "cpu_per_sweep": [s["cpu_s"] for s in sweeps],
+                         "wall_per_sweep": [s["wall_s"] for s in sweeps],
+                         "plan_peak_gb": p.get("plan", {}).get("sweep_peak_gb"),
+                         "plan_rdm_gb": p.get("plan", {}).get("with_rdm_peak_gb"),
+                         "rss_peak_gb": p.get("rss_peak_gb"),
+                         "paged": [p.get("n_paged_out"), p.get("n_paged_in")],
+                         "e0": (p.get("energies") or [None])[0],
+                         "manifold_spread_cm": p.get("manifold_spread_cm"),
+                         "kramers_pair_spread_cm": p.get("kramers_pair_spread_cm"),
+                         "spin": spin.get("spin"), "spin_status": spin.get("status"),
+                         "model_status": pm.get("status"),
+                         "site_g": pm.get("site_g"), "twice_s": pm.get("twice_s"),
+                         "error": p.get("error")})
+    return rows
+
+
+def print_tier3_summary(rows: Sequence[Dict]) -> None:
+    head = "{:<11s} {:>5s} {:<9s} {:>5s} {:>9s} {:>16s} {:>7s} {:>7s} {:>13s} {:>12s}  {}".format(
+        "system", "D", "status", "bond", "w_disc", "CPU s / sweep", "plan", "RSS",
+        "E0 [Eh]", "spread cm^-1", "S per root / model")
+    print("\n" + head)
+    print("-" * len(head))
+    for r in rows:
+        print("{:<11s} {:>5d} {:<9s} {:>5s} {:>9s} {:>16s} {:>7s} {:>7s} {:>13s} {:>12s}  {}".format(
+            r["key"], r["cap"], (r["status"] or "-")[:9], str(r["bond_used"] or "-"),
+            "-" if r["w_disc"] is None else "{:.2e}".format(r["w_disc"]),
+            "/".join("{:.0f}".format(x) for x in r["cpu_per_sweep"]) or "-",
+            "-" if r["plan_peak_gb"] is None else "{:.2f}".format(r["plan_peak_gb"]),
+            "-" if r["rss_peak_gb"] is None else "{:.2f}".format(r["rss_peak_gb"]),
+            "-" if r["e0"] is None else "{:.6f}".format(r["e0"]),
+            "-" if r["manifold_spread_cm"] is None else "{:.3f}".format(r["manifold_spread_cm"]),
+            ("{} / {}".format(r["spin"], r["model_status"]) if r["spin"] else
+             (r["error"] or "-")[:60])))
+
+
 def _jsonable(o):
     if isinstance(o, (np.integer,)):
         return int(o)
@@ -1905,15 +2634,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     :mod:`dmrg_cost_ladder`)."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--feasibility-child", nargs=3, metavar=("INTS", "MODES", "OUT"))
+    ap.add_argument("--tier3-front-end", nargs=2, metavar=("KEY", "OUT"))
+    ap.add_argument("--tier3-ladder", nargs=3, metavar=("KEY", "INTS", "OUT"))
     ap.add_argument("--caps", default=",".join(str(c) for c in FEASIBILITY_CAPS))
     ap.add_argument("--roots", type=int, default=FEASIBILITY_ROOTS)
     ap.add_argument("--max-sweeps", type=int, default=FEASIBILITY_SWEEPS)
     ap.add_argument("--budget", type=float, default=1800.0)
     args = ap.parse_args(argv)
-    if args.feasibility_child is None:
-        ap.error("this module is driven by dmrg_cost_ladder.py --stage s2.1 / s2.2; the "
-                 "only direct entry point is --feasibility-child")
-    ints, modes, out = args.feasibility_child
+    if (args.feasibility_child is None and args.tier3_front_end is None
+            and args.tier3_ladder is None):
+        ap.error("this module is driven by dmrg_cost_ladder.py --stage s2.1 / s2.2 / "
+                 "s2.4a; the direct entry points are the child processes "
+                 "(--feasibility-child, --tier3-front-end, --tier3-ladder)")
+    out = (args.feasibility_child or args.tier3_front_end or args.tier3_ladder)[-1]
     from kuiva.util import logging as klog
     import logging
     klog.set_verbosity("INFO")
@@ -1923,6 +2656,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if isinstance(handler, logging.StreamHandler) \
                 and not isinstance(handler, logging.FileHandler):
             handler.setLevel(logging.WARNING)
+    if args.tier3_front_end is not None:
+        key, out = args.tier3_front_end
+        return tier3_front_end_child(key, Path(out), budget=float(args.budget))
+    if args.tier3_ladder is not None:
+        key, ints, out = args.tier3_ladder
+        return tier3_ladder_child(key, Path(ints), Path(out),
+                                  caps=[int(x) for x in args.caps.split(",")],
+                                  n_roots=int(args.roots), max_sweeps=int(args.max_sweeps),
+                                  budget=float(args.budget))
+    ints, modes, out = args.feasibility_child
     return feasibility_child(Path(ints), int(modes), Path(out),
                              caps=[int(x) for x in args.caps.split(",")],
                              n_roots=int(args.roots), max_sweeps=int(args.max_sweeps),

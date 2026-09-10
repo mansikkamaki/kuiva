@@ -30,9 +30,9 @@ allocated and no contraction performed:
   Davidson stacks, the roots and the pre-contracted operator halves a branching node may
   take, and whose transient part is the effective-Hamiltonian application above — the term
   that was missing;
-* the **RDM contraction**, which is a second environment set, the per-node operator
-  environments ``dE/dW_u`` (dense in the node's local dimension squared, all held at
-  once) with the transient of the chain that builds them, and the ``n^4`` two-particle
+* the **RDM contraction**, which is a second environment set, the transient of the
+  chains that evaluate each node's operator environment ``dE/dW_u`` at the slots the
+  template reads (never the dense environment itself), and the ``n^4`` two-particle
   array; it runs after the sweep on the same state.
 
 ⚠ **The bond that peaks is found, not assumed.** The tour visits every bond, the local
@@ -49,7 +49,7 @@ coming.
 """
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 from ..util import resources as res
 from .block import BlockShape
@@ -160,28 +160,23 @@ def network_memory_plan(ttno: TTNO, state: TTNState, *, n_roots: int,
             "application's intermediate quadratically in the local dimension"]),
     ]
     if rdm:
-        from .density import node_environments_gb
+        from .density import slot_extraction_gb
 
-        g_resident, g_transient = node_environments_gb(ttno, state, n_roots)
         phases.append(res.PhaseEstimate(name="network RDMs", allocations=[
             res.PlannedAllocation("state-averaged 2-RDM", res.rdm_gb(n, 2),
                                   note="{} spinors".format(n)),
             res.PlannedAllocation("per-node environments", envs, resident=False,
                                   note="a second environment set, released with the "
                                        "contraction"),
-            res.PlannedAllocation("operator environments dE/dW", g_resident,
+            res.PlannedAllocation("slot extraction", slot_extraction_gb(ttno, state, n_roots),
                                   resident=False,
-                                  note="one per node, dense in the node's local "
-                                       "dimension squared, all held until the last is "
-                                       "built"),
-            res.PlannedAllocation("dE/dW contraction", g_transient, resident=False,
-                                  note="largest step of any node's chain, input and "
-                                       "output together"),
+                                  note="largest chain of any node over every open leg and "
+                                       "channel sector, input and output together"),
         ], advice=["the 2-RDM is n^4 in the active space and no setting moves it",
+                   "reduce max_bond: a chain carries two bond legs and one operator "
+                   "bond",
                    "a finer node partition (more nodes, fewer modes each) shrinks the "
-                   "operator environments by the local dimension squared",
-                   "reduce max_bond: the contraction's intermediate carries two bond "
-                   "legs"]))
+                   "closing step by the local dimension squared"]))
     return phases
 
 

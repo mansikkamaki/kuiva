@@ -362,3 +362,74 @@ def test_sites_must_partition_the_tree():
     solve_ttn(ttno, state, boundary_check=0)
     with pytest.raises(ValueError, match="partition"):
         effective_model(ttno, state, [(0, 1), (3, 4, 5)], report=False)
+
+
+# --- the quotient-tree contraction ---------------------------------------------------------
+
+def test_effective_operator_on_a_branching_quotient_tree_is_exact():
+    """Three fragments on a star of sites (the hub holds two neighbours): with every
+    site space untruncated the model must reproduce the exact CI, which exercises the
+    leaves-up fold through a site with several children — the shape the site-by-site
+    contraction could not afford."""
+    n = 6
+    h = np.zeros((n, n), dtype=np.complex128)
+    eri = np.zeros((n, n, n, n), dtype=np.complex128)
+    frags = [(0, 1), (2, 3), (4, 5)]
+    for f, eps in zip(frags, (0.0, 0.05, 0.1)):
+        for i, p in enumerate(f):
+            h[p, p] = eps + 0.1 * i
+        a, b = f
+        h[a, b] = -1.0 + 0.1j
+        h[b, a] = -1.0 - 0.1j
+        eri[a, a, b, b] = eri[b, b, a, a] = 4.0
+    # weak hops from the middle fragment to both others: the hub of the star
+    for a, b in ((1, 2), (3, 4)):
+        h[a, b] += 0.2 - 0.05j
+        h[b, a] += 0.2 + 0.05j
+    graph = NetworkGraph(n, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)])
+    ttno = compile_ttno(graph, hamiltonian_product_terms(h, eri))
+    state = random_state(ttno, 2, 10 ** 9, n_roots=6, rng=np.random.default_rng(5))
+    sweep = solve_ttn(ttno, state, boundary_check=0)
+    model = effective_model(ttno, state, [(0, 1), (2, 3), (4, 5)], weights=sweep.weights,
+                            rule="dimension", dims=4, report=False)
+    assert model.dims == (4, 4, 4)
+    spec = model.spectrum()
+    exact = exact_energies(n, 2, h, eri)
+    assert np.all(spec >= exact[:spec.size] - E_TOL)               # interlacing
+    assert np.max(np.abs(spec - exact[:spec.size])) < E_TOL         # untruncated: exact
+    assert model.hermiticity_error() < 1e-12
+
+
+def test_site_blocks_are_sized_and_required_before_they_exist():
+    """The contraction's arrays are plain products of known dimensions, and every one of
+    them — the site payloads, the folded environments, the model matrix — goes through
+    ``require`` with a size that matches what is then allocated."""
+    from kuiva.util import resources as res
+
+    seen = []
+    original = res.require
+
+    def recording(label, gb, **kw):
+        seen.append((label, gb))
+        return original(label, gb, **kw)
+
+    n, h, eri, fa, fb = two_fragments(t_inter=0.3)
+    ttno = compile_ttno(NetworkGraph.path(n), hamiltonian_product_terms(h, eri))
+    state = random_state(ttno, 2, 10 ** 9, n_roots=3, rng=np.random.default_rng(6))
+    sweep = solve_ttn(ttno, state, boundary_check=0)
+    res.require = recording
+    try:
+        model = effective_model(ttno, state, [fa, fb], weights=sweep.weights,
+                                rule="dimension", dims=3, report=False)
+    finally:
+        res.require = original
+    labels = [l for l, _ in seen]
+    assert any(l.startswith("site 0 block payload") for l in labels)
+    assert any(l.startswith("site 1 block payload") for l in labels)
+    assert sum(1 for l in labels if "folded environment" in l) == 1     # one non-root site
+    assert any(l.startswith("effective model operator") for l in labels)
+    assert model.h_eff.shape == (9, 9)
+    env_gb = [gb for l, gb in seen if "folded environment" in l][0]
+    # (w_parent, 3, 3) complex: the parent channel times the leaf's model dimension squared
+    assert env_gb == pytest.approx(16.0 * 9 / 1024.0 ** 3 * (env_gb * 1024.0 ** 3 / (16.0 * 9)))
+    assert env_gb > 0.0

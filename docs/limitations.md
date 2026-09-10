@@ -87,9 +87,9 @@ with its context. Each entry links to the page that explains the mechanism.
 
 - **Kramers degeneracy in the general two-component CI emerges numerically, not by
   construction** — measured far below the 1e-8…1e-6 Eh band reserved for genuine numerical
-  splittings, but not zero by symmetry. The tensor-network solver's figure is larger
-  (~1e-9 Eh) and for a different reason (roots converged separately); both are far below
-  physics, and neither bounds the other.
+  splittings, but not zero by symmetry. The tensor-network solver's figure is machine zero
+  at a saturating cap and, at a truncating cap, is the truncation error itself (equal to the
+  energy error within a factor of two); neither bounds the other.
 - **The rotation is Kramers constrained by default, and the constrained answer is then
   tested rather than assumed**
   ([casscf](methods/casscf.md#keeping-the-orbitals-kramers-paired)). The constraint holds

@@ -97,7 +97,7 @@ data, under `tests/`, not here.
 
 <a id="r27"></a>**[27]** D. Peng, M. Reiher, *J. Chem. Phys.* **136**, 244108 (2012). DOI: [10.1063/1.4729788](https://doi.org/10.1063/1.4729788) — local (atom-blocked, DLU) exact decoupling; also the picture change of property operators and the renormalization matrix R.
 
-<a id="r28"></a>**[28]** J. C. Boettger, *Phys. Rev. B* **57**, 8743 (1998). DOI: [10.1103/PhysRevB.57.8743](https://doi.org/10.1103/PhysRevB.57.8743) — empirical (SNSO) spin–orbit screening factors. Considered and **rejected** in favour of X2CAMF; listed because the analysis followed it.
+<a id="r28"></a>**[28]** J. C. Boettger, *Phys. Rev. B* **62**, 7809 (2000). DOI: [10.1103/PhysRevB.62.7809](https://doi.org/10.1103/PhysRevB.62.7809) — empirical (SNSO) spin–orbit screening factors. Considered and **rejected** in favour of X2CAMF; listed because the analysis followed it.
 
 <a id="r29"></a>**[29]** M. Filatov, W. Zou, D. Cremer, *J. Chem. Phys.* **139**, 014106 (2013). DOI: [10.1063/1.4811776](https://doi.org/10.1063/1.4811776) — screened spin–orbit operators; same rejected-alternative status as [28].
 
@@ -143,7 +143,7 @@ data, under `tests/`, not here.
 
 <a id="r48"></a>**[48]** F. Aquilante, T. B. Pedersen, V. Veryazov, R. Lindh, *WIREs Comput. Mol. Sci.* **3**, 143 (2013). DOI: [10.1002/wcms.1117](https://doi.org/10.1002/wcms.1117) — Cholesky techniques, including Cholesky orthogonalization.
 
-<a id="r49"></a>**[49]** F. Aquilante, T. B. Pedersen, R. Lindh, *J. Chem. Phys.* **125**, 174101 (2006). DOI: [10.1063/1.2360264](https://doi.org/10.1063/1.2360264) — Cholesky orthogonalization (the optional scheme; it performs no linear-dependence detection).
+<a id="r49"></a>**[49]** F. Aquilante, T. B. Pedersen, A. Sánchez de Merás, H. Koch, *J. Chem. Phys.* **125**, 174101 (2006). DOI: [10.1063/1.2360264](https://doi.org/10.1063/1.2360264) — Cholesky orthogonalization (the optional scheme; it performs no linear-dependence detection).
 
 <a id="r50"></a>**[50]** R. P. Steele, R. A. DiStasio Jr., Y. Shao, J. Kong, M. Head-Gordon, *J. Chem. Phys.* **125**, 074108 (2006). DOI: [10.1063/1.2234371](https://doi.org/10.1063/1.2234371) — projecting molecular orbitals between basis sets, and the Fock/density-matrix alternative to it.
 
@@ -167,7 +167,7 @@ data, under `tests/`, not here.
 
 <a id="r59"></a>**[59]** T. Fleig, J. Olsen, L. Visscher, *J. Chem. Phys.* **119**, 2963 (2003). DOI: [10.1063/1.1590636](https://doi.org/10.1063/1.1590636) — Kramers-restricted CI.
 
-<a id="r60"></a>**[60]** A. Bunse-Gerstner, R. Byers, V. Mehrmann, *SIAM J. Matrix Anal. Appl.* **10**, 419 (1989). DOI: [10.1137/0610030](https://doi.org/10.1137/0610030) — self-dual (quaternion) Hermitian eigenvalue structure, the Kramers-restricted eigensolver's subspace problem.
+<a id="r60"></a>**[60]** A. Bunse-Gerstner, R. Byers, V. Mehrmann, *SIAM J. Matrix Anal. Appl.* **13**, 419 (1992). DOI: [10.1137/0613028](https://doi.org/10.1137/0613028) — self-dual (quaternion) Hermitian eigenvalue structure, the Kramers-restricted eigensolver's subspace problem.
 
 <a id="r61"></a>**[61]** P. Pulay, T. P. Hamilton, *J. Chem. Phys.* **88**, 4926 (1988). DOI: [10.1063/1.454704](https://doi.org/10.1063/1.454704) — UHF natural orbitals as an active-space guess.
 
@@ -185,7 +185,7 @@ data, under `tests/`, not here.
 
 <a id="r64"></a>**[64]** E. P. Wigner, *Group Theory and its Application to the Quantum Mechanics of Atomic Spectra*, Academic Press (1959), ch. 15 — the spin-1/2 representation and the double group.
 
-<a id="r65"></a>**[65]** H. A. Bethe, *Ann. Phys.* **3**, 133 (1929). DOI: [10.1002/andp.19293950202](https://doi.org/10.1002/andp.19293950202) — the original double-group construction.
+<a id="r65"></a>**[65]** H. A. Bethe, *Ann. Phys. (Leipzig)* **395** (5th series vol. 3), 133 (1929). DOI: [10.1002/andp.19293950202](https://doi.org/10.1002/andp.19293950202) — the original double-group construction.
 
 <a id="r66"></a>**[66]** L. Visscher, *Chem. Phys. Lett.* **253**, 20 (1996). DOI: [10.1016/0009-2614(96)00234-5](https://doi.org/10.1016/0009-2614(96)00234-5) — abelian double groups as the working symmetry of a relativistic molecular code (with [21]).
 
@@ -193,7 +193,7 @@ data, under `tests/`, not here.
 
 <a id="r68"></a>**[68]** W. Burnside, *Theory of Groups of Finite Order*, 2nd ed., Cambridge University Press (1911), ch. XV — character tables from class-sum matrices.
 
-<a id="r69"></a>**[69]** J. D. Dixon, *Numer. Math.* **10**, 446 (1967). DOI: [10.1007/BF02162876](https://doi.org/10.1007/BF02162876) — the numerical class-sum character-table algorithm; the printed full double-group tables are computed, not transcribed.
+<a id="r69"></a>**[69]** J. D. Dixon, *Numer. Math.* **10**, 446 (1967). DOI: [10.1007/BF02162877](https://doi.org/10.1007/BF02162877) — the numerical class-sum character-table algorithm; the printed full double-group tables are computed, not transcribed.
 
 <a id="r70"></a>**[70]** R. S. Mulliken, *J. Chem. Phys.* **23**, 1997 (1955). DOI: [10.1063/1.1740655](https://doi.org/10.1063/1.1740655) — irrep naming conventions for the single-valued rows.
 
@@ -323,7 +323,7 @@ data, under `tests/`, not here.
 
 <a id="r128"></a>**[128]** Ö. Legeza, J. Röder, B. A. Hess, *Phys. Rev. B* **67**, 125114 (2003). DOI: [10.1103/PhysRevB.67.125114](https://doi.org/10.1103/PhysRevB.67.125114) — dynamic block-state selection.
 
-<a id="r129"></a>**[129]** S. R. White, *J. Chem. Phys.* **122**, 084108 (2005). DOI: [10.1063/1.1854132](https://doi.org/10.1063/1.1854132) — density-matrix perturbation (noise); implemented as the deterministic subspace expansion.
+<a id="r129"></a>**[129]** S. R. White, *Phys. Rev. B* **72**, 180403 (2005). DOI: [10.1103/PhysRevB.72.180403](https://doi.org/10.1103/PhysRevB.72.180403) — density-matrix perturbation (noise); implemented as the deterministic subspace expansion.
 
 <a id="r130"></a>**[130]** C. Hubig, I. P. McCulloch, U. Schollwöck, F. A. Wolf, *Phys. Rev. B* **91**, 155115 (2015). DOI: [10.1103/PhysRevB.91.155115](https://doi.org/10.1103/PhysRevB.91.155115) — strictly single-site DMRG with subspace expansion.
 
@@ -343,7 +343,7 @@ data, under `tests/`, not here.
 
 <a id="r138"></a>**[138]** Y. Kurashige, T. Yanai, *J. Chem. Phys.* **135**, 094104 (2011). DOI: [10.1063/1.3629454](https://doi.org/10.1063/1.3629454) — higher-order RDMs from matrix-product states for multireference perturbation theory.
 
-<a id="r139"></a>**[139]** S. Guo, M. A. Watson, W. Hu, Q. Sun, G. K.-L. Chan, *J. Chem. Theory Comput.* **12**, 1583 (2016). DOI: [10.1021/acs.jctc.6b00118](https://doi.org/10.1021/acs.jctc.6b00118) — NEVPT2 on a DMRG reference; the precedent for the network contraction provider (Kuiva serves the same primitives through applied-string Gram contractions instead of stored higher densities).
+<a id="r139"></a>**[139]** S. Guo, M. A. Watson, W. Hu, Q. Sun, G. K.-L. Chan, *J. Chem. Theory Comput.* **12**, 1583 (2016). DOI: [10.1021/acs.jctc.5b01225](https://doi.org/10.1021/acs.jctc.5b01225) — NEVPT2 on a DMRG reference; the precedent for the network contraction provider (Kuiva serves the same primitives through applied-string Gram contractions instead of stored higher densities).
 
 <a id="r140"></a>**[140]** C. Bloch, *Nucl. Phys.* **6**, 329 (1958). DOI: [10.1016/0029-5582(58)90116-0](https://doi.org/10.1016/0029-5582(58)90116-0) — effective Hamiltonians on a model space.
 
@@ -373,7 +373,7 @@ data, under `tests/`, not here.
 
 <a id="r152"></a>**[152]** S. Sharma, G. Jeanmairet, A. Alavi, *J. Chem. Phys.* **144**, 034103 (2016). DOI: [10.1063/1.4939752](https://doi.org/10.1063/1.4939752) — model-space invariance in multireference PT; same status as [150].
 
-<a id="r153"></a>**[153]** R. Majumder, A. Yu. Sokolov, *J. Phys. Chem. A* **127**, 546 (2023). DOI: [10.1021/acs.jpca.2c07953](https://doi.org/10.1021/acs.jpca.2c07953) — spin–orbit QD-NEVPT2, the closest prior art to a two-component NEVPT2.
+<a id="r153"></a>**[153]** R. Majumder, A. Yu. Sokolov, *J. Phys. Chem. A* **127**, 546 (2023). DOI: [10.1021/acs.jpca.2c07952](https://doi.org/10.1021/acs.jpca.2c07952) — spin–orbit QD-NEVPT2, the closest prior art to a two-component NEVPT2.
 
 ## Quantum-computing CI solvers
 
@@ -381,11 +381,11 @@ data, under `tests/`, not here.
 
 <a id="r155"></a>**[155]** S. B. Bravyi, A. Y. Kitaev, *Ann. Phys.* **298**, 210 (2002). DOI: [10.1006/aphy.2002.6254](https://doi.org/10.1006/aphy.2002.6254) — the Bravyi–Kitaev encoding; the alternative the mapping registry stays open to.
 
-<a id="r156"></a>**[156]** "Chemistry beyond the scale of exact diagonalization on a quantum-centric supercomputer", *Sci. Adv.* (2025). DOI: [10.1126/sciadv.adu9991](https://doi.org/10.1126/sciadv.adu9991) — sample-based quantum diagonalization (SQD), the primary algorithm implemented.
+<a id="r156"></a>**[156]** J. Robledo-Moreno *et al.*, "Chemistry beyond the scale of exact diagonalization on a quantum-centric supercomputer", *Sci. Adv.* **11**, eadu9991 (2025). DOI: [10.1126/sciadv.adu9991](https://doi.org/10.1126/sciadv.adu9991) — sample-based quantum diagonalization (SQD), the primary algorithm implemented.
 
-<a id="r157"></a>**[157]** "Localized sample-based quantum diagonalization for strongly correlated chemistry", *PNAS* (2025). DOI: [10.1073/pnas.2603914123](https://doi.org/10.1073/pnas.2603914123) — localized SQD.
+<a id="r157"></a>**[157]** Q. Wang *et al.*, "Localized sample-based quantum diagonalization for strongly correlated chemistry", *Proc. Natl. Acad. Sci. USA* **123**, e2603914123 (2026). DOI: [10.1073/pnas.2603914123](https://doi.org/10.1073/pnas.2603914123) — localized SQD.
 
-<a id="r158"></a>**[158]** "Sample-based Krylov quantum diagonalization", arXiv:[2501.09702](https://arxiv.org/abs/2501.09702) (2025) — the Krylov variant, sampling Trotterized time-evolved states.
+<a id="r158"></a>**[158]** J. Yu *et al.*, "Quantum-centric algorithm for sample-based Krylov diagonalization" (v1 title: "Sample-based Krylov quantum diagonalization"), arXiv:[2501.09702](https://arxiv.org/abs/2501.09702) (2025) — the Krylov variant, sampling Trotterized time-evolved states.
 
 <a id="r159"></a>**[159]** M. Motta *et al.*, *Electron. Struct.* **6**, 013001 (2024). DOI: [10.1088/2516-1075/ad3592](https://doi.org/10.1088/2516-1075/ad3592) — the quantum-subspace method family.
 

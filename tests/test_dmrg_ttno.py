@@ -250,69 +250,131 @@ def test_dense_oracle_refuses_large_spaces():
         op.to_dense(max_dim=8)
 
 
-def test_transition_table_sizing_is_exact_on_every_node():
-    """Two-sided pin of the compile's own working set against the arrays it builds.
+def test_term_table_is_the_product_terms_in_the_same_order():
+    """The array-form term table (the compiler's input) must be, term for term, what
+    ``fermion_term`` + ``consolidate`` produce: same order, same modes, same matrices,
+    same coefficients — the table is a representation, not a different operator."""
+    from kuiva.dmrg.ttno import TermTable, consolidate
 
-    ⚠ The transition tables are a large allocation the ledger could not see: measured at
-    2.2 GB on a 20-spinor five-mode-per-node compile, second only to the two-site
-    application's intermediate. They are checked *before* they are built, which needs an
-    exact count in advance — so this replays the construction and compares byte for byte,
-    on every node of a multi-mode tree where the ``d x d`` local matrices are big enough
-    for a mistake to show.
-    """
-    import kuiva.dmrg.ttno as ttno_mod
+    n = 6
+    h, eri = random_spinor_integrals(n, seed=61)
+    table = hamiltonian_product_terms(h, eri)
+    assert isinstance(table, TermTable)
+    listed = []
+    for p in range(n):
+        for q in range(n):
+            listed.append(fermion_term(h[p, q], [(p, True), (q, False)]))
+    for p in range(n):
+        for q in range(n):
+            for r in range(n):
+                for s in range(n):
+                    listed.append(fermion_term(0.5 * eri[p, q, r, s],
+                                               [(p, True), (r, True), (s, False),
+                                                (q, False)]))
+    listed = consolidate(listed)
+    assert len(listed) == len(table)
+    for a, b in zip(listed, table):
+        assert a.modes == b.modes and a.coeff == b.coeff
+        assert all(np.array_equal(x, y) for x, y in zip(a.mats, b.mats))
+    # and the round trip through a plain term list is the identity on content
+    again = TermTable.from_terms(listed, reserve=False)
+    assert np.array_equal(again.modes, table.modes)
+    assert np.array_equal(again.coeff, table.coeff)
+    # the array queries the drivers use instead of iterating
+    inside = table.restricted_to([0, 1, 2])
+    assert all(set(t.modes) <= {0, 1, 2} for t in inside)
+    assert len(inside) == sum(1 for t in table if set(t.modes) <= {0, 1, 2})
 
-    rows = []
-    original = ttno_mod._node_tensor
 
-    def recording(u, root, children_u, registries, positions, bond_space, bond_labels,
-                  carrying, lab_idx, term_pairs, terms, modes_u, dims_u, phys_u, bases,
-                  mats, zero, attach=None, allocations=None):
-        d = phys_u[0].total_dim
-        id_index = -1 if u == root else registries[u].get(("1",), -1)
-        predicted = ttno_mod._transition_table_gb(u, root, children_u, carrying, lab_idx,
-                                                  term_pairs, modes_u, d, id_index)
-        cache, coefficients, identity_needed = {}, {}, False
+def test_pattern_tables_are_reserved_at_their_exact_size():
+    """The compile's local patterns are reserved before they are built, at exactly the
+    size of the nonzero lists it then builds — on five-mode nodes, where the dense
+    ``d x d`` tables they replace were 2.3x under-reserved and 186 GB at ten modes."""
+    from kuiva.dmrg.ttno import pattern_table_gb
+    from kuiva.util import resources as res
 
-        def local_matrix(key):
-            mat = cache.get(key)
-            if mat is None:
-                mat = np.eye(1, dtype=np.complex128)
-                for mode, mid in zip(modes_u, key):
-                    factor = np.eye(bases[mode].dim, dtype=np.complex128) if mid < 0 \
-                        else mats[mid]
-                    mat = np.kron(mat, factor)
-                cache[key] = mat
-            return mat
+    reserved = []
+    original = res.reserve
 
-        for ti, pairs in enumerate(term_pairs):
-            out_idx = 0 if u == root else int(lab_idx[ti, u])
-            if out_idx == id_index and u != root:
-                identity_needed = True
-                continue
-            in_idx = tuple(int(lab_idx[ti, c]) for c in children_u)
-            local = local_matrix(tuple(ttno_mod._term_matid_at(pairs, m) for m in modes_u))
-            out_carries = carrying[u][out_idx] if u != root else True
-            in_carries = any(bool(carrying[c][i]) for c, i in zip(children_u, in_idx))
-            if out_carries and not in_carries and (out_idx, in_idx) not in coefficients:
-                coefficients[(out_idx, in_idx)] = terms[ti].coeff * local
-        if identity_needed:
-            local_matrix(tuple(-1 for _ in modes_u))
-        actual = sum(m.nbytes for m in cache.values()) \
-            + sum(m.nbytes for m in coefficients.values())
-        rows.append((u, predicted, actual))
-        return original(u, root, children_u, registries, positions, bond_space,
-                        bond_labels, carrying, lab_idx, term_pairs, terms, modes_u,
-                        dims_u, phys_u, bases, mats, zero, attach, allocations)
+    def recording(label, gb, **kw):
+        reserved.append((label, gb))
+        return original(label, gb, **kw)
 
-    ttno_mod._node_tensor = recording
+    h, eri = random_spinor_integrals(10, seed=52)
+    slots = []
+    res.reserve = recording
     try:
-        h, eri = random_spinor_integrals(8, seed=51)
-        compile_ttno(NetworkGraph.path(4, contents=[(0, 1), (2, 3), (4, 5), (6, 7)]),
-                     hamiltonian_product_terms(h, eri))
+        compile_ttno(NetworkGraph.path(2, contents=[tuple(range(5)), tuple(range(5, 10))]),
+                     hamiltonian_product_terms(h, eri), slots=slots)
     finally:
-        ttno_mod._node_tensor = original
+        res.reserve = original
+    by_node = {rec.node: rec for rec in slots}
+    assert set(by_node) == {0, 1}                     # both nodes attach coefficients
+    checked = 0
+    for label, gb in reserved:
+        if label.endswith("local patterns"):
+            u = int(label.split()[2])
+            rec = by_node[u]
+            actual = (rec.pat_rows.nbytes + rec.pat_cols.nbytes + rec.pat_vals.nbytes
+                      + rec.pat_ptr.nbytes) / 1024.0 ** 3
+            assert gb == actual
+            assert gb == pattern_table_gb(np.diff(rec.pat_ptr))
+            checked += 1
+    assert checked == 2
 
-    assert len(rows) == 4
-    for u, predicted, actual in rows:
-        assert predicted * 1024.0 ** 3 == actual, "node {} sizing is not exact".format(u)
+
+def test_fat_node_compile_peak_is_covered_by_the_ledger():
+    """⚠ The measurement the transition tables failed: at ``d = 32`` a node's build took
+    2.3x its reservation and the process was killed with every check passed. The ledger's
+    peak over one compile must now cover the allocator's measured peak on a five-mode
+    node, and not by more than the temporaries it models — two-sided, so neither an
+    under-reservation nor a padded one can land."""
+    import gc
+    import tracemalloc
+    from kuiva.util import resources as res
+
+    h, eri = random_spinor_integrals(12, seed=53)
+    terms = hamiltonian_product_terms(h, eri)
+    graph = NetworkGraph.path(3, contents=[(0, 1), tuple(range(2, 7)), tuple(range(7, 12))])
+    if not res.BUDGET.configured:
+        res.configure(8.0)
+    res.clear()
+    gc.collect()
+    tracemalloc.start()
+    base, _ = tracemalloc.get_traced_memory()
+    op = compile_ttno(graph, terms)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    measured = (peak - base) / 1024.0 ** 3
+    ledger = res.BUDGET.peak_gb
+    assert op.nnz > 0
+    assert ledger >= measured, "ledger peak {:.4f} GB below the measured {:.4f} GB".format(
+        ledger, measured)
+    assert ledger <= 2.0 * measured, "ledger peak {:.4f} GB pads the measured {:.4f} GB".format(
+        ledger, measured)
+
+
+def test_term_table_construction_peak_is_covered_by_the_ledger():
+    """The term table's own construction — the 3 GB of objects it replaced was never on the
+    ledger — is a transient the ledger now models, and the model must cover the
+    allocator's measured peak without padding it."""
+    import gc
+    import tracemalloc
+    from kuiva.util import resources as res
+
+    h, eri = random_spinor_integrals(12, seed=54)
+    if not res.BUDGET.configured:
+        res.configure(8.0)
+    res.clear()
+    gc.collect()
+    tracemalloc.start()
+    base, _ = tracemalloc.get_traced_memory()
+    table = hamiltonian_product_terms(h, eri)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    measured = (peak - base) / 1024.0 ** 3
+    ledger = res.BUDGET.peak_gb
+    assert len(table) > 0
+    assert ledger >= measured, "ledger peak {:.4f} GB below the measured {:.4f} GB".format(
+        ledger, measured)
+    assert ledger <= 2.0 * measured

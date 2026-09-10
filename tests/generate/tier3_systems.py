@@ -8,7 +8,7 @@ Why there are no reference calculations here
 --------------------------------------------
 Every system below is deliberately beyond conventional CI. ``cas_determinants`` records the
 size of the complex-determinant space its honest active space would span (the conventional-CI ceiling sets the
-conventional-CI ceiling at ~12-14 spinors); the smallest entry here is ~10^7 and the largest
+conventional-CI ceiling at 20-22 half-filled spinors); the smallest entry here is ~10^7 and the largest
 ~10^11. PySCF, OpenMolcas and DIRAC cannot produce a reference for any of them, so **nothing
 in this tier is validated against a stored number from another program.** Instead each system
 is chosen so that rigorous, program-independent statements exist about it:
@@ -62,8 +62,8 @@ References
   121, 5302 (1999); A. Cornia et al., Angew. Chem. Int. Ed. 43, 1136 (2004).
 * ``cr8_ring`` - [Cr8F8(O2CtBu)16], S = 0 ground state: J. van Slageren et al., Chem. Eur. J.
   8, 277 (2002).
-* ``cr7ni_ring`` - [Cr7NiF8(O2CtBu)16], S = 1/2 ground state: S. Larsen et al., Phys. Rev.
-  Lett. 91, 067201 (2003); G. A. Timco et al., Nat. Nanotechnol. 4, 173 (2009).
+* ``cr7ni_ring`` - [Cr7NiF8(O2CtBu)16], S = 1/2 ground state: F. K. Larsen et al., Angew. Chem.
+  Int. Ed. 42, 101 (2003); G. A. Timco et al., Nat. Nanotechnol. 4, 173 (2009).
 * ``fe3_oxo`` - basic iron(III) carboxylate [Fe3O(O2CR)6L3]+ and its spin frustration:
   R. D. Cannon, R. P. White, Prog. Inorg. Chem. 36, 195 (1988).
 * ``fe4s4`` - biological [4Fe-4S] cluster: H. Beinert, R. H. Holm, E. Munck, Science 277, 653
@@ -853,7 +853,7 @@ SYSTEMS: Tuple[Tier3System, ...] = (
                      "that has the topology right but the local quantum numbers wrong "
                      "reproduces cr8_ring and fails here, which is exactly the bug this pair "
                      "is designed to catch (compare ce3p/yb3p in Tier 2)",
-        provenance="Larsen et al., Phys. Rev. Lett. 91, 067201 (2003); Timco et al., "
+        provenance="Larsen et al., Angew. Chem. Int. Ed. 42, 101 (2003); Timco et al., "
                    "Nat. Nanotechnol. 4, 173 (2009)",
     ),
 )

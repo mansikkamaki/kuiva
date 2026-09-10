@@ -92,10 +92,13 @@ instead).
   local two-site analogue of the boundary diagnostic reports the gap above the averaged set
   at convergence (warning below the same 50 cm⁻¹) — necessary, cheaper and **weaker** than
   the full-CI one: it cannot see a state the current bond dimension cannot represent.
-- ⚠ **Kramers degeneracy between paired roots comes out around 1e-9 Eh** even where nothing
-  is truncated — the sweeps converge roots separately — larger than the conventional CI's
-  figure and for a different reason; both are far below physics, and neither bounds the
-  other.
+- ⚠ **Kramers degeneracy between paired roots is machine zero at a saturating cap** (1e-16 Eh
+  at fixed orbitals, 1e-12 Eh through a full CASSCF, where the residual is the orbital
+  optimizer's convergence) — and where a residual does exist it is the **truncation error**,
+  equal to the state-averaged energy error within a factor of two over five orders of
+  magnitude: a network run whose paired states sit *X* apart has an energy roughly *X*/2 from
+  the exact one. It is neither a symmetry defect nor a convergence artefact, and the CI path's
+  figure is not a bound on it.
 
 ⚠ **Read `w_disc`.** The largest discarded ensemble weight is the network's primary quality
 number, and every energy from this solver is quoted with it; truncation *growing* as the

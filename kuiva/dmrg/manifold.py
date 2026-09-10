@@ -17,13 +17,29 @@ and solving those as individual roots is not viable. This module inverts the pro
    kron basis* (`ttno.py`'s JW convention), so every matrix element below is exact — no sign
    bookkeeping appears anywhere in this module, for the same reason as in ``guess.py``.
 3. **Open-index contraction.** ``H_eff = (kron_k V_k)^dag H (kron_k V_k)`` is computed by
-   contracting the TTNO with the bra and ket isometries site by site and joining the sites
-   over the quotient tree — the shared-basis idea of SA-DMRG applied to a *family* of
+   sandwiching the operator with the bra and ket isometries site by site and joining the
+   sites over the quotient tree — the shared-basis idea of SA-DMRG applied to a *family* of
    product states: every state shares every tensor except the open multiplet indices, so the
    whole ``prod d_k``-dimensional family costs one contraction, never ``prod d_k`` solves.
    Any operator with a term representation takes the same route
    (:func:`effective_operator`); the magnetic moments enter through
    :func:`~kuiva.dmrg.ttno.one_electron_product_terms`.
+
+   ⚠ **The operator is re-labelled on the quotient tree, one node per site, and never
+   contracted node by node through a site.** Threading the TTNO through a five-node site
+   opened every operator leg of the site at once — a 44 GB dense intermediate on the
+   30-spinor three-site operator, allocated raw by the block layer with no plan to refuse
+   it. On the quotient tree a site *is* one node: the compiler's label pass
+   (:func:`kuiva.dmrg.ttno.compile_labels`) says which operator channel every term
+   flows through on each inter-site bond and which local pattern it carries on the
+   site, and the site block ``V^dag W_site V`` is then one small sandwich
+   ``V^dag L V`` per distinct local pattern, summed into its channel tuple with the
+   term coefficients — ``n_ops x d_k^2`` complex, never ``w^2 d_site^2`` and never the
+   site's merged transition tables either (the 30-spinor ten-mode node's are 13 GB;
+   nothing here needs them). The join then folds leaves upward with the model legs
+   dense and one parent leg open, rooted at the site that keeps the largest folded
+   environment smallest; every array in it is a plain product of known dimensions,
+   reserved before it exists.
 4. **Diagonalize** ``H_eff`` densely — trivial at model dimensions — for the manifold
    spectrum, and hand the same matrices to the pseudospin export (kuiva/props/pseudospin.py,
    :mod:`kuiva.props.pseudospin`).
@@ -102,12 +118,13 @@ from ..util import output as out
 from ..util import resources as res
 from ..util.logging import get_logger
 from ..util.timing import timer
-from .block import (BlockTensor, QuantumNumber, tensordot, svd, _degenerate_groups,
+from .block import (BlockTensor, QuantumNumber, svd, _degenerate_groups,
                     SCHMIDT_DEGENERACY_RTOL, SCHMIDT_STABILITY_RTOL)
 from .graph import NetworkGraph
 from .reconnect import _move_center, discovered_structure
 from .sweep import TTNState, _Lab, _stack_roots, random_state, solve_ttn, SweepResult
-from .ttno import TTNO, compile_ttno
+from .ttno import (TTNO, TermTable, compile_labels, compile_ttno, node_transitions,
+                   pattern_tables)
 
 #: The local Z matrix a fermionic Jordan-Wigner string is made of (ttno.py convention).
 _Z2 = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=np.complex128)
@@ -385,46 +402,200 @@ def site_spaces(state: TTNState, sites: Sequence[Sequence[int]], *,
 
 # --- the open-index contraction -------------------------------------------------------------
 
-def _op_lab(ttno: TTNO, u: int) -> _Lab:
-    """One TTNO node tensor with per-node labels; the root's completed channel closed."""
-    w = ttno.tensors[u]
-    labels: List[tuple] = []
-    if u == ttno.root:
-        w = w.close_leading_leg()
-    else:
-        labels.append(("op", u, int(ttno.parent[u])))
-    for c in ttno.children[u]:
-        labels.append(("op", u, c))
-    labels += [("po", u), ("pi", u)]
-    return _Lab(w, labels)
+def _quotient_graph(graph: NetworkGraph, spaces: Sequence[SiteSpace]) -> NetworkGraph:
+    """The tree of sites: one node per site carrying the site's modes, one edge per tree
+    edge that crosses a site boundary."""
+    site_of: Dict[int, int] = {}
+    for k, sp in enumerate(spaces):
+        for u in sp.nodes:
+            site_of[int(u)] = k
+    edges = sorted({(min(site_of[a], site_of[b]), max(site_of[a], site_of[b]))
+                    for a, b in graph.edges if site_of[a] != site_of[b]})
+    return NetworkGraph(len(spaces), edges, [tuple(sp.orbitals) for sp in spaces])
 
 
-def _site_block(ttno: TTNO, space: SiteSpace, k: int) -> _Lab:
-    """``V_k^dag W_site V_k``: op legs to neighbouring sites plus ``(m, k)`` / ``(mc, k)``."""
-    graph = ttno.graph
-    inside = set(space.nodes)
-    order = [sorted(inside)[0]]
-    parent_of: Dict[int, Optional[int]] = {order[0]: None}
-    seen = {order[0]}
-    qi = 0
-    while qi < len(order):
-        u = order[qi]
-        qi += 1
-        for x in sorted(graph.neighbors(u)):
-            if x in inside and x not in seen:
-                seen.add(x)
-                parent_of[x] = u
-                order.append(x)
-    t = _op_lab(ttno, order[0])
-    for u in order[1:]:
-        p = parent_of[u]
-        t = t.dot(_op_lab(ttno, u), [(("op", p, u), ("op", u, p))])
+def _quotient_root(qgraph: NetworkGraph, dims: Sequence[int]) -> int:
+    """The site whose rooting keeps the largest folded environment smallest: the model
+    dimension of every subtree hanging off it is minimized over the choice of root."""
+    best = None
+    for r in range(qgraph.n_nodes):
+        parent, preorder = qgraph.parents(r)
+        sub = [1.0] * qgraph.n_nodes
+        for u in reversed([int(x) for x in preorder]):
+            sub[u] *= float(dims[u])
+            if u != r:
+                sub[int(parent[u])] *= sub[u]
+        worst = max((sub[u] for u in range(qgraph.n_nodes) if u != r), default=1.0)
+        if best is None or (worst, r) < best:
+            best = (worst, r)
+    return best[1]
 
-    nodes = sorted(space.nodes)
-    ket = _Lab(space.isometry, [("p", u) for u in nodes] + [("m", k)])
-    t = t.dot(ket, [(("pi", u), ("p", u)) for u in nodes])
-    bra = _Lab(space.isometry.conj(), [("q", u) for u in nodes] + [("mc", k)])
-    return t.dot(bra, [(("po", u), ("q", u)) for u in nodes])
+
+def _site_vector(space: SiteSpace, ttno: TTNO, ctx, k: int) -> np.ndarray:
+    """The site isometry as a dense ``(d_site, d_k)`` matrix over the quotient node's
+    sector-sorted physical basis.
+
+    The isometry's legs are the site's nodes' physical spaces (each in that node's sector
+    order); the quotient node's basis is the kron over *all* the site's modes ascending,
+    re-sorted into sectors. Both permutations are known, so this is index bookkeeping
+    and no arithmetic.
+    """
+    nodes = [int(u) for u in sorted(space.nodes)]
+    q_modes = list(ctx.node_modes[k])
+    q_dims = [ctx.bases[m].dim for m in q_modes]
+    stride = {}
+    acc = 1
+    for m, d in zip(reversed(q_modes), reversed(q_dims)):
+        stride[m] = acc
+        acc *= d
+    inv_q = np.argsort(ctx.phys[k][1])                     # site kron index -> sector pos
+    partial = []
+    for u in nodes:
+        modes_u = list(ttno.node_modes[u])
+        dims_u = tuple(int(d) for d in ttno.mode_dims[u])
+        perm_u = ttno.phys_perm[u]                          # sector pos -> node kron idx
+        part = np.zeros(perm_u.size, dtype=np.int64)
+        if modes_u:
+            digits = np.unravel_index(perm_u, dims_u)
+            for m, dig in zip(modes_u, digits):
+                part += dig.astype(np.int64) * stride[m]
+        partial.append(part)
+    site_kron = np.zeros((1,), dtype=np.int64)
+    for part in partial:
+        site_kron = (site_kron[:, None] + part[None, :]).reshape(-1)
+    dense = space.isometry.to_dense().reshape(-1, space.dim)
+    d_site = int(np.prod(q_dims)) if q_dims else 1
+    v = np.zeros((d_site, space.dim), dtype=np.complex128)
+    v[inv_q[site_kron], :] = dense
+    return v
+
+
+def _site_payload(ctx, k: int, v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """``V^dag W_site V`` per operator-channel tuple of quotient node ``k``:
+    ``(ops, payload)`` with ``ops`` the ``(n_ops, n_legs)`` global channel indices in W
+    leg order (the root's dim-1 completed channel dropped) and ``payload[e, mc, m]`` the
+    ``(d_k, d_k)`` block.
+
+    One sandwich per distinct local pattern (``L V`` is a gather, since a pattern has at
+    most one nonzero per column), then each unit transition takes its pattern's block
+    and each coefficient transition the coefficient-weighted sum of its terms' — a sparse
+    ``(transitions x patterns)`` coefficient matrix times the pattern blocks. Nothing of
+    size ``w^2``, ``d_site^2`` or the node's merged transition tables is formed.
+    """
+    from scipy import sparse as sp
+
+    tr = node_transitions(k, ctx)
+    pat_ptr, pat_rows, pat_cols, pat_vals, alloc = pattern_tables(k, ctx, tr)
+    try:
+        d_site, d_k = v.shape
+        n_pat = tr.nnz_pat.size
+        res.require("site {} pattern sandwiches".format(k),
+                    res.array_gb((n_pat, d_k, d_k), np.complex128)
+                    + res.array_gb((d_site, d_k), np.complex128),
+                    note="{} local patterns x ({}, {}) plus one (d_site, d_k) product".format(
+                        n_pat, d_k, d_k),
+                    advice=["a smaller site, or a lower multiplet dimension"])
+        m_pat = np.empty((n_pat, d_k, d_k), dtype=np.complex128)
+        lv = np.empty((d_site, d_k), dtype=np.complex128)
+        for p in range(n_pat):
+            lo, hi = int(pat_ptr[p]), int(pat_ptr[p + 1])
+            lv[:] = 0.0
+            np.add.at(lv, pat_rows[lo:hi], pat_vals[lo:hi, None] * v[pat_cols[lo:hi]])
+            m_pat[p] = v.conj().T @ lv
+        n_unit = tr.unit_keys.shape[0]
+        n_coeff = tr.coeff_keys.shape[0]
+        keys = np.vstack([tr.unit_keys, tr.coeff_keys])
+        n_keys = keys.shape[0]
+        res.require("site {} block payload".format(k),
+                    res.array_gb((n_keys, d_k, d_k), np.complex128),
+                    note="{} operator-channel tuples x ({}, {})".format(n_keys, d_k, d_k),
+                    advice=["reduce the site's multiplet dimension"])
+        payload = np.empty((n_keys, d_k, d_k), dtype=np.complex128)
+        payload[:n_unit] = m_pat[tr.unit_pat]
+        if n_coeff:
+            c_terms = tr.coeff_idx
+            weights = sp.csr_matrix((ctx.table.coeff[c_terms],
+                                     (tr.coeff_inv, tr.pat_of_term[c_terms])),
+                                    shape=(n_coeff, n_pat))
+            payload[n_unit:] = np.asarray(weights @ m_pat.reshape(n_pat, -1)).reshape(
+                n_coeff, d_k, d_k)
+    finally:
+        res.BUDGET.release(alloc)
+        res.BUDGET.release(tr.alloc)
+    # channel tuples: global bond-space index per leg, in W leg order
+    is_root = k == ctx.root
+    legs = []
+    if not is_root:
+        legs.append((ctx.bond_space[k], ctx.pos_sector[k], ctx.pos_offset[k], 0))
+    for j, c in enumerate(ctx.children[k]):
+        legs.append((ctx.bond_space[c], ctx.pos_sector[c], ctx.pos_offset[c], 1 + j))
+    ops = np.zeros((n_keys, len(legs)), dtype=np.int64)
+    for i, (space, psec, poff, col) in enumerate(legs):
+        lab = keys[:, col]
+        ops[:, i] = space.offsets[psec[lab]] + poff[lab]
+    return ops, payload
+
+
+def _fold_sites(ctx, qgraph: NetworkGraph, blocks: List[Tuple[np.ndarray, np.ndarray]],
+                dims: Sequence[int]) -> Tuple[np.ndarray, List[int]]:
+    """Join the site blocks leaves-upward over the quotient tree: each site's folded
+    environment is dense in its subtree's model legs and open on its parent channel,
+    ``(w_parent, D_sub, D_sub)`` with ``D_sub`` the subtree's model dimension; the root's
+    fold is the model matrix itself. Returns it with the product index in fold order
+    (a site, then its children's subtrees), plus that order."""
+    _, preorder = qgraph.parents(ctx.root)
+    children = ctx.children
+    env: Dict[int, np.ndarray] = {}
+    order_of: Dict[int, List[int]] = {}
+    for s in reversed([int(x) for x in preorder]):
+        ops, payload = blocks[s]
+        kids = list(children[s])
+        my_order = [s]
+        for c in kids:
+            my_order += order_of[c]
+        order_of[s] = my_order
+        d_sub = int(np.prod([dims[t] for t in my_order]))
+        is_root = s == ctx.root
+        col = 0
+        if not is_root:
+            w_par = ctx.bond_space[s].total_dim
+            gb = res.array_gb((w_par, d_sub, d_sub), np.complex128)
+            res.require("site {} folded environment".format(s), gb,
+                        note="({}, {}, {}): the parent channel x the subtree's model "
+                             "dimension squared".format(w_par, d_sub, d_sub),
+                        advice=["reduce a site's multiplet dimension: the subtree's model "
+                                "dimension is their product",
+                                "the join is rooted at the site keeping this smallest"])
+            out = np.zeros((w_par, d_sub, d_sub), dtype=np.complex128)
+            col = 1
+            groups = ops[:, 0]
+        else:
+            out = np.zeros((1, d_sub, d_sub), dtype=np.complex128)
+            groups = np.zeros(ops.shape[0], dtype=np.int64)
+        # the einsum over one parent-channel group: payload (e a b), each child's
+        # environment at the entry's channel (e c d), output (a c.. b d..) — one direct
+        # loop into the output slice, no intermediate of the product's size
+        letters = "cdfghijklmnopqrstuvwxyz"
+        subs = ["eab"]
+        bra_out, ket_out = "a", "b"
+        for j in range(len(kids)):
+            lc, lk = letters[2 * j], letters[2 * j + 1]
+            subs.append("e" + lc + lk)
+            bra_out += lc
+            ket_out += lk
+        expr = ",".join(subs) + "->" + bra_out + ket_out
+        for g in np.unique(groups):
+            sel = np.nonzero(groups == g)[0]
+            operands = [payload[sel]]
+            for j, c in enumerate(kids):
+                operands.append(env[c][ops[sel, col + j]])
+            block = np.einsum(expr, *operands, optimize=False)
+            out[int(g)] = block.reshape(d_sub, d_sub)
+        for c in kids:
+            del env[c]
+        env[s] = out
+    root_env = env[ctx.root]
+    return root_env[0], order_of[ctx.root]
 
 
 def model_gb(spaces: Sequence[SiteSpace]) -> float:
@@ -439,14 +610,13 @@ def model_gb(spaces: Sequence[SiteSpace]) -> float:
     return res.array_gb((d, d), np.complex128)
 
 
-def effective_operator(ttno: TTNO, spaces: Sequence[SiteSpace]) -> np.ndarray:
-    """Contract a TTNO with the multiplet indices left open (the open-index contraction).
-
-    Returns the dense ``(prod d_k, prod d_k)`` matrix of the operator over the model
-    product basis, sites in the order given (site 0 slowest, C order; within a site the
-    :class:`SiteSpace` basis order). The TTNO must be compiled on the same graph the
-    isometries were extracted from.
-    """
+def effective_operator_from_terms(terms, spaces: Sequence[SiteSpace], ttno: TTNO, *,
+                                  bases=None) -> np.ndarray:
+    """:func:`effective_operator` for an operator given as product terms (a
+    :class:`~kuiva.dmrg.ttno.TermTable` or a term sequence): compiled on the quotient
+    tree of the sites, sandwiched per site, folded over the tree (module docstring).
+    ``ttno`` supplies the graph and the node conventions the isometries were extracted
+    in; ``bases`` defaults to its."""
     covered = sorted(u for sp in spaces for u in sp.nodes)
     if covered != list(range(ttno.graph.n_nodes)):
         raise ValueError("site spaces must cover every node of the operator's tree")
@@ -456,26 +626,40 @@ def effective_operator(ttno: TTNO, spaces: Sequence[SiteSpace]) -> np.ndarray:
                     int(np.prod([sp.dim for sp in spaces]))),
                 advice=["reduce a site's multiplet dimension: the matrix scales as "
                         "(prod d_k)^2"])
-
-    blocks = [_site_block(ttno, sp, k) for k, sp in enumerate(spaces)]
-    acc = blocks[0]
-    remaining = list(blocks[1:])
-    while remaining:
-        for i, t in enumerate(remaining):
-            pairs = [(la, lb) for la in acc.labels if la[0] == "op"
-                     for lb in t.labels if lb[0] == "op"
-                     and lb[1] == la[2] and lb[2] == la[1]]
-            if pairs:
-                acc = acc.dot(t, pairs)
-                del remaining[i]
-                break
-        else:                                          # pragma: no cover - tree structure
-            raise AssertionError("site blocks do not join into a tree")
-
-    order = [("mc", k) for k in range(len(spaces))] + [("m", k) for k in range(len(spaces))]
-    dense = acc.to(order).to_dense()
-    d = int(np.prod([sp.dim for sp in spaces]))
+    table = TermTable.coerce(terms)
+    dims = [int(sp.dim) for sp in spaces]
+    qgraph = _quotient_graph(ttno.graph, spaces)
+    root = _quotient_root(qgraph, dims)
+    ctx = compile_labels(qgraph, table, bases=ttno.bases if bases is None else bases,
+                         root=root)
+    blocks = []
+    for k, sp in enumerate(spaces):
+        blocks.append(_site_payload(ctx, k, _site_vector(sp, ttno, ctx, k)))
+    folded, order = _fold_sites(ctx, qgraph, blocks, dims)
+    n = len(spaces)
+    fold_dims = [dims[t] for t in order]
+    t = folded.reshape(fold_dims + fold_dims)
+    inv = [order.index(k) for k in range(n)]
+    dense = t.transpose(inv + [n + i for i in inv])
+    d = int(np.prod(dims))
     return np.ascontiguousarray(dense.reshape(d, d))
+
+
+def effective_operator(ttno: TTNO, spaces: Sequence[SiteSpace]) -> np.ndarray:
+    """Contract an operator with the multiplet indices left open (the open-index contraction).
+
+    Returns the dense ``(prod d_k, prod d_k)`` matrix of the operator over the model
+    product basis, sites in the order given (site 0 slowest, C order; within a site the
+    :class:`SiteSpace` basis order). ``ttno`` must be compiled on the graph the isometries
+    were extracted from and carry its term table (every compiled or template-filled
+    operator does): the contraction recompiles it on the quotient tree of the sites.
+    """
+    if ttno.terms is None:
+        raise ValueError("the operator carries no term table; the model-space contraction "
+                         "compiles it on the quotient tree of the sites and needs the "
+                         "terms it was built from (compile_ttno and TTNOTemplate.fill "
+                         "both record them)")
+    return effective_operator_from_terms(ttno.terms, spaces, ttno, bases=ttno.bases)
 
 
 # --- the effective model --------------------------------------------------------------------
@@ -646,40 +830,39 @@ def effective_model(ttno: TTNO, state: TTNState, sites=None, *,
     model_ops: Dict[str, np.ndarray] = {}
     site_ops: Dict[str, List[np.ndarray]] = {}
     dims_t = tuple(sp.dim for sp in spaces)
+    op_bases = ttno.bases if bases is None else bases
     for name, terms in (operators or {}).items():
-        terms = [t for t in terms if t is not None]
-        op = compile_ttno(state.graph, terms, bases=bases, root=ttno.root)
+        table = TermTable.coerce(terms)
         with timer("effective operator {}".format(name)):
-            model_ops[name] = effective_operator(op, spaces)
+            model_ops[name] = effective_operator_from_terms(table, spaces, ttno,
+                                                            bases=op_bases)
         locals_: List[np.ndarray] = []
         for k, sp in enumerate(spaces):
             inside = set(sp.orbitals)
-            mine = [t for t in terms if set(t.modes) <= inside]
             # ⚠ a term whose *operator content* sits inside this site but whose support
             # leaks outside is a Jordan-Wigner string crossing another site (module
             # docstring): the site-local operator then cannot be represented on the site
             # factor at all, and silently dropping the term would corrupt the M
             # labelling downstream. Refused, with the cause named.
-            for t in terms:
-                modes = set(t.modes)
-                if modes <= inside or not modes & inside:
-                    continue
-                core = {m for m, mat in zip(t.modes, t.mats)
-                        if not (mat.shape == (2, 2) and np.array_equal(mat, _Z2))}
-                if core and core <= inside:
-                    raise ValueError(
-                        "operator {!r} has a term acting on site {} (modes {}) whose "
-                        "Jordan-Wigner string crosses other sites (support {}): the "
-                        "site-local operator cannot be represented on the site factor. "
-                        "Relabel the modes so each site is a contiguous label range "
-                        "(the cheap-CI seeding does this by construction)"
-                        .format(name, k, sorted(core), sorted(modes)))
-            if not mine:
+            crossing = table.crossing_terms(inside)
+            if crossing.size:
+                t = table[int(crossing[0])]
+                core = sorted(m for m, mat in zip(t.modes, t.mats)
+                              if not (mat.shape == (2, 2) and np.array_equal(mat, _Z2)))
+                raise ValueError(
+                    "operator {!r} has a term acting on site {} (modes {}) whose "
+                    "Jordan-Wigner string crosses other sites (support {}): the "
+                    "site-local operator cannot be represented on the site factor. "
+                    "Relabel the modes so each site is a contiguous label range "
+                    "(the cheap-CI seeding does this by construction)"
+                    .format(name, k, core, sorted(t.modes)))
+            mine = table.restricted_to(inside)
+            if len(mine) == 0:
                 locals_.append(np.zeros((sp.dim, sp.dim), dtype=np.complex128))
                 continue
-            op_k = compile_ttno(state.graph, mine, bases=bases, root=ttno.root)
-            locals_.append(_site_factor(effective_operator(op_k, spaces), dims_t, k,
-                                        name))
+            locals_.append(_site_factor(
+                effective_operator_from_terms(mine, spaces, ttno, bases=op_bases),
+                dims_t, k, name))
         site_ops[name] = locals_
 
     model = EffectiveModel(sites=tuple(spaces), h_eff=h_eff, operators=model_ops,
@@ -734,7 +917,7 @@ def solve_manifold(terms, graph: NetworkGraph, n_elec: int, *, bases=None,
     design: run :func:`~kuiva.dmrg.reconnect.solve_adaptive` first and pass the
     discovered graph if the topology is in question.
     """
-    terms = [t for t in terms if t is not None]
+    terms = TermTable.coerce(terms)
     rng = rng if rng is not None else np.random.default_rng()
     ttno = compile_ttno(graph, terms, bases=bases, root=ttno_root)
     cap = 10 ** 9 if max_bond is None else int(max_bond)
@@ -814,6 +997,7 @@ def solve_manifold(terms, graph: NetworkGraph, n_elec: int, *, bases=None,
 
 
 __all__ = ["SiteSpace", "EffectiveModel", "ManifoldResult", "UnderResolved",
-           "site_spaces", "effective_operator", "effective_model", "solve_manifold",
+           "site_spaces", "effective_operator", "effective_operator_from_terms",
+           "effective_model", "solve_manifold",
            "model_gb", "MULTIPLET_GAP_RATIO_WARN", "DEFAULT_MULTIPLET_WEIGHT_TOL",
            "MULTIPLET_RESOLUTION_RTOL"]

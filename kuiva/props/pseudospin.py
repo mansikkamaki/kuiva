@@ -156,7 +156,7 @@ class PseudospinModel:
     """The export deliverable, in memory: everything the Ouluspin file contains.
 
     ``h`` and ``mu`` are over the pseudospin **product** basis (site 0 slowest, C order;
-    within a site ``M = +S`` first); ``energies``/``unitary`` its eigen-decomposition,
+    within a site ``M = -S`` first, ascending); ``energies``/``unitary`` its eigen-decomposition,
     ``unitary[:, i]`` the i-th ab initio state over product-basis rows. Phases arbitrary
     throughout.
     """

@@ -33,13 +33,39 @@ Decisions this module realises (the tensor-network design)
   JW-relabeling move class (permute term mode indices, recompile, re-evaluate) is
   possible but is a different, full-energy-evaluation move — recorded, not planned.
 * **Acceptance is gated with a margin and hysteresis**: a candidate must beat the
-  incumbent metric by ``max(rel_margin * |incumbent|, abs_floor)``, and an adopted bond is
-  not re-examined for ``cooldown_sweeps`` sweeps, so greedy moves cannot cycle. A tie is a
-  tie and keeps the incumbent. Both acceptance rules run through
-  :func:`kuiva.dmrg.block.svd`, so every compared spectrum is **degenerate-group-complete**
-  — a Kramers pair is kept or dropped whole on every side of every candidate, which is
-  what makes "smaller truncated weight" a well-posed comparison at the exact degeneracies
-  this code targets.
+  incumbent metric by ``max(rel_margin * |incumbent|, abs_floor)``, and an adopted bond —
+  together with every bond a re-anchored branch now hangs on — is not re-examined for
+  ``cooldown_sweeps`` sweeps, so greedy moves cannot cycle. A tie is a tie and keeps the
+  incumbent. Both acceptance rules run through :func:`kuiva.dmrg.block.svd`, so every
+  compared spectrum is **degenerate-group-complete** — a Kramers pair is kept or dropped
+  whole on every side of every candidate, which is what makes "smaller truncated weight"
+  a well-posed comparison at the exact degeneracies this code targets.
+* ⚠ **The weight metric is the bond's discarded weight in BOTH directions of the tour.**
+  A shared-basis ensemble is not a state: its Schmidt rank across a cut depends on which
+  side the root leg sits on, up to ``roots x`` the small side's dimension when the
+  isometry is built on the *large* side. Measured on the dimer bridge at a binding cap,
+  the one-direction metric adopted a move on every sweep for thirty sweeps and never
+  settled: each candidate that hung a two-mode node as a leaf reported exactly zero on
+  the bond being split — the isometry then sits on the four-dimensional side — while the
+  return traversal of the same bond, isometry on the large side, discarded what the
+  incumbent had, and the next sweep undid the move. Summing the forward and the reverse
+  truncation (one extra SVD of the same stacked tensor, root leg on the other side) is the
+  bond's contribution to the tour's discarded weight, and it is what the incumbent and
+  every candidate are compared on; the entropy rule, measured on uncapped runs only, keeps
+  its one-sided definition.
+* ⚠ **The weight rule descends toward hubs, and cost is the brake.** Measured on the same
+  dimer once the metric was symmetric: the moves it then adopts hang a two-mode node as a
+  leaf on its neighbour — a leaf cut of dimension four discards almost nothing at any cap
+  — and two such moves made a degree-four node whose two-site problems were 65 000
+  dimensional with a 3 GB environment build, a sweep of five minutes where the chain's
+  took two seconds. Lower discarded weight at a higher cost per sweep is a trade the
+  metric cannot see, so :attr:`ReconnectionPolicy.max_local_growth` bounds it: a candidate
+  is refused when the largest two-site problem on the bonds it touches would grow by more
+  than that factor (dense products of the state's bond and physical dimensions, the ratio
+  being fair even though each side ignores the sectors). The weight rule's default is 2 —
+  a branch may move only where it does not multiply a neighbour's problem by a bond
+  dimension, which on a chain leaves the content swaps — and the entropy rule's is none,
+  since its uncapped structure discovery is measured with branch moves.
 * **Candidates with a vacuous side are excluded**: a side whose dense dimension is 1 (a
   bare dim-1 physical leg) minimizes any entanglement metric trivially by hanging a dead
   leaf on the tree. A genuine rank-1 cut through a product state remains a legal winner —
@@ -105,6 +131,9 @@ log = get_logger(__name__)
 _ABS_FLOORS = {"weight": 1e-12, "entropy": 1e-3}
 #: Per-rule relative margins a candidate must clear to win (hysteresis).
 _REL_MARGINS = {"weight": 0.2, "entropy": 0.05}
+#: Per-rule cost brakes (module docstring): the largest two-site problem on the bonds a
+#: move touches may grow by at most this factor. Measured on the dimer bridge at D = 8.
+_LOCAL_GROWTH = {"weight": 2.0}
 
 
 @dataclass(frozen=True)
@@ -113,19 +142,23 @@ class ReconnectionPolicy:
 
     ``rule``: ``"entropy"`` (least bipartite entanglement entropy of the untruncated
     ensemble spectrum — the Hikihara criterion) or ``"weight"`` (least ensemble discarded
-    weight at the shared truncation parameters). ⚠ Entropy is the default **by
+    weight at the shared truncation parameters, **summed over both tour directions** of
+    the bond — module docstring). ⚠ Entropy is the default **by
     measurement**, not preference (measured): whenever the
     bond dimension can represent the state exactly, *every* candidate discards nothing,
     the weight comparison is all ties, and a weight-based default sits inert
     while the entropy rule discovers the known product structure in the same runs. The
-    weight rule stays available for capped production runs, where discarded weight is
-    the direct error proxy — re-measure there before trusting either as final.
+    weight rule is the one for capped production runs, where discarded weight is the
+    direct error proxy.
     ``rel_margin``/``abs_floor`` define a *win* (per-rule defaults); ``cooldown_sweeps``
     keeps a just-reconnected bond untouched; ``attempt_interval`` rate-limits attempts
     (attempt every k-th sweep); ``max_degree`` bounds the node degree a move may create
     (update cost grows exponentially with degree); ``max_enumerated_branches`` caps the
     exhaustive ``2^nb`` enumeration, beyond which only single-branch moves and the plain
-    swap are tried.
+    swap are tried. ``max_local_growth`` is the cost brake (module docstring): the factor
+    by which the largest two-site problem on the bonds a move touches may grow;
+    ``None`` resolves per rule (2 for the weight rule, unbounded for entropy), and
+    ``float("inf")`` switches it off explicitly.
     """
 
     rule: str = "entropy"
@@ -135,6 +168,14 @@ class ReconnectionPolicy:
     attempt_interval: int = 1
     max_degree: int = 4
     max_enumerated_branches: int = 5
+    max_local_growth: Optional[float] = None
+
+    def growth(self) -> Optional[float]:
+        """The resolved cost brake, or ``None`` for unbounded."""
+        if self.max_local_growth is not None:
+            g = float(self.max_local_growth)
+            return None if not np.isfinite(g) else g
+        return _LOCAL_GROWTH.get(self.rule)
 
     def floor(self) -> float:
         if self.abs_floor is not None:
@@ -161,6 +202,10 @@ class Move:
     rule: str
     metric_before: float
     metric_after: float
+    #: the weight rule's two directions of the bond, ``(forward, reverse)``, for the
+    #: incumbent and the adopted candidate; ``None`` under the entropy rule
+    directions_before: Optional[Tuple[float, float]] = None
+    directions_after: Optional[Tuple[float, float]] = None
 
 
 @dataclass(eq=False)
@@ -254,6 +299,8 @@ class _Choice:
     phys_owner: int                        #: node whose modes end up at u
     metric: float
     incumbent_metric: float
+    directions: Optional[Tuple[float, float]] = None
+    incumbent_directions: Optional[Tuple[float, float]] = None
 
 
 def _spectrum_entropy(s_sectors) -> float:
@@ -268,16 +315,26 @@ def _spectrum_entropy(s_sectors) -> float:
 
 
 def _metric(stacked, left_axes, trunc_tol, max_bond, rule):
-    """The acceptance metric of one bipartition, or ``None`` if the split is refused
-    (e.g. the cap would cut the leading degenerate group — refusal, not rounding)."""
+    """The acceptance metric of one bipartition as ``(metric, directions)``, or
+    ``(None, None)`` if the split is refused (e.g. the cap would cut the leading
+    degenerate group — refusal, not rounding).
+
+    Under the weight rule the metric is the sum of the bond's discarded weight in both
+    tour directions (module docstring): ``left_axes`` with the root leg on the right is
+    the split being committed, the same axes plus the root leg is the return traversal.
+    """
     try:
         if rule == "entropy":
             _, s_sectors, _, _ = svd(stacked, left_axes, tol=0.0, max_bond=None)
-            return _spectrum_entropy(s_sectors)
-        _, _, _, info = svd(stacked, left_axes, tol=trunc_tol, max_bond=max_bond)
-        return float(info.discarded_weight)
+            return _spectrum_entropy(s_sectors), None
+        root_axis = stacked.ndim - 1
+        _, _, _, fwd = svd(stacked, left_axes, tol=trunc_tol, max_bond=max_bond)
+        _, _, _, rev = svd(stacked, tuple(left_axes) + (root_axis,), tol=trunc_tol,
+                           max_bond=max_bond)
+        pair = (float(fwd.discarded_weight), float(rev.discarded_weight))
+        return pair[0] + pair[1], pair
     except ValueError:
-        return None
+        return None, None
 
 
 def _enumerate_assignments(branches_u, branches_v, u, v, policy):
@@ -307,13 +364,63 @@ def _enumerate_assignments(branches_u, branches_v, u, v, policy):
             yield sub, owner
 
 
-def _choose_split(prob, roots, w_used, trunc_tol, max_bond, policy) -> Optional[_Choice]:
+def _two_site_peak(graph: NetworkGraph, bond_dims: Dict[Tuple[int, int], int],
+                   phys: Dict[int, int], nodes: Sequence[int]) -> int:
+    """The largest two-site problem (dense product of bond and physical dimensions) over
+    the bonds incident to ``nodes``."""
+    peak = 0
+    for a, b in graph.edges:
+        if a not in nodes and b not in nodes:
+            continue
+        size = phys[a] * phys[b]
+        for node, other in ((a, b), (b, a)):
+            for x in graph.neighbors(node):
+                if x != other:
+                    size *= bond_dims[(min(node, x), max(node, x))]
+        peak = max(peak, size)
+    return peak
+
+
+def _growth_allows(prob, state: TTNState, ttno: TTNO, sub, owner: int,
+                   growth: Optional[float]) -> bool:
+    """The cost brake (module docstring): whether hanging ``sub`` on ``u`` with ``owner``'s
+    modes there keeps the largest two-site problem on the touched bonds within
+    ``growth`` times the incumbent's."""
+    if growth is None:
+        return True
+    u, v = prob.u, prob.v
+    old_graph = state.graph
+    new_graph = _reconnected_graph(old_graph, u, v, tuple(sorted(sub)), owner)
+    dims = state.bond_dimensions()
+    phys = {x: ttno.phys_space[x].total_dim for x in range(old_graph.n_nodes)}
+    new_dims: Dict[Tuple[int, int], int] = {}
+    for a, b in new_graph.edges:
+        if {a, b} == {u, v}:
+            new_dims[(a, b)] = dims[(min(u, v), max(u, v))]
+        elif a in (u, v) or b in (u, v):
+            x = b if a in (u, v) else a
+            anchor = u if (min(u, x), max(u, x)) in dims else v
+            new_dims[(a, b)] = dims[(min(x, anchor), max(x, anchor))]
+        else:
+            new_dims[(a, b)] = dims[(a, b)]
+    new_phys = dict(phys)
+    new_phys[u] = phys[owner]
+    new_phys[v] = phys[v if owner == u else u]
+    before = _two_site_peak(old_graph, dims, phys, (u, v))
+    after = _two_site_peak(new_graph, new_dims, new_phys, (u, v))
+    return after <= growth * before
+
+
+def _choose_split(prob, roots, w_used, trunc_tol, max_bond, policy, state=None,
+                  ttno=None) -> Optional[_Choice]:
     """Evaluate every candidate bipartition of the merged ensemble; return a winning one.
 
     All candidates and the incumbent are measured with the same rule on the same stacked
     ensemble tensor — "at fixed everything else". Returns ``None`` when nothing
-    wins by the margin (a tie is a tie)."""
+    wins by the margin (a tie is a tie). With ``state`` and ``ttno`` given, candidates the
+    cost brake refuses (:func:`_growth_allows`) are never measured."""
     labels = list(prob.labels)
+    growth = policy.growth()
     branch_labels = {lab[2]: lab for lab in labels if lab[0] == "b"}
     phys_labels = {lab[1]: lab for lab in labels if lab[0] == "p"}
     dims = {lab: sp.total_dim for lab, sp in zip(labels, prob.template.spaces)}
@@ -323,7 +430,8 @@ def _choose_split(prob, roots, w_used, trunc_tol, max_bond, policy) -> Optional[
         return tuple(sorted(labels.index(l) for l in left_labels))
 
     incumbent_left = labels[:prob.n_left]
-    inc = _metric(stacked, axes_for(incumbent_left), trunc_tol, max_bond, policy.rule)
+    inc, inc_dirs = _metric(stacked, axes_for(incumbent_left), trunc_tol, max_bond,
+                            policy.rule)
     if inc is None:
         return None
     best = None
@@ -334,12 +442,15 @@ def _choose_split(prob, roots, w_used, trunc_tol, max_bond, policy) -> Optional[
         d_right = int(np.prod([dims[l] for l in labels if l not in left]))
         if d_left < 2 or d_right < 2:                  # vacuous side (module docstring)
             continue
-        m = _metric(stacked, axes_for(left), trunc_tol, max_bond, policy.rule)
+        if state is not None and not _growth_allows(prob, state, ttno, sub, owner, growth):
+            continue
+        m, dirs = _metric(stacked, axes_for(left), trunc_tol, max_bond, policy.rule)
         if m is None:
             continue
         if best is None or m < best.metric:
             best = _Choice(left_labels=left, left_branches=tuple(sorted(sub)),
-                           phys_owner=owner, metric=m, incumbent_metric=inc)
+                           phys_owner=owner, metric=m, incumbent_metric=inc,
+                           directions=dirs, incumbent_directions=inc_dirs)
     if best is None:
         return None
     if best.metric < inc - max(policy.margin() * abs(inc), policy.floor()):
@@ -481,7 +592,7 @@ def solve_adaptive(terms, graph: NetworkGraph, n_elec: int, *, bases=None,
                         suppressed = True
                     else:
                         choice = _choose_split(prob, roots, w_used, trunc_tol,
-                                               max_bond, policy)
+                                               max_bond, policy, state=state, ttno=ttno)
                 if choice is not None:
                     old_graph = state.graph
                     new_graph = _reconnected_graph(old_graph, u, v,
@@ -498,9 +609,19 @@ def solve_adaptive(terms, graph: NetworkGraph, n_elec: int, *, bases=None,
                     adopted = Move(sweep=sweep, bond=edge, moved_branches=moved,
                                    phys_swapped=choice.phys_owner != prob.u,
                                    rule=policy.rule, metric_before=choice.incumbent_metric,
-                                   metric_after=choice.metric)
+                                   metric_after=choice.metric,
+                                   directions_before=choice.incumbent_directions,
+                                   directions_after=choice.directions)
                     moves.append(adopted)
+                    # the bond itself, and every bond a re-anchored branch now hangs on:
+                    # a move that improved this cut has just changed those bonds' two-site
+                    # problems, and re-examining them on the same sweep is how a move
+                    # gets undone before its own sweep has been completed
                     cooldown[edge] = sweep + policy.cooldown_sweeps
+                    for x in moved:
+                        anchor = u if x in choice.left_branches else v
+                        cooldown[(min(x, anchor), max(x, anchor))] = \
+                            sweep + policy.cooldown_sweeps
                     log.debug("reconnection adopted on bond %s: moved branches %s, "
                               "phys swap %s, %s %.3e -> %.3e", edge, moved,
                               adopted.phys_swapped, policy.rule,
@@ -523,12 +644,23 @@ def solve_adaptive(terms, graph: NetworkGraph, n_elec: int, *, bases=None,
             if de is not None and abs(de) < conv_tol and attempts and not suppressed:
                 converged_adaptive = True              # stationary AND a refusing sweep
                 break
+    last_move = moves[-1].sweep if moves else 0
     table.end("topology {} after {} moves".format(
         "stationary" if converged_adaptive else "NOT stationary", len(moves)))
     if not converged_adaptive:
-        log.warning("adaptive DMRG did not reach a stationary topology in %d sweeps "
-                    "(%d moves adopted); the finishing solve runs on the last topology",
-                    max_sweeps, len(moves))
+        # ⚠ Two different failures share this exit and the message says which: moves
+        # that continued to the end of the budget (the cycle this driver used to have),
+        # or a topology that stopped moving while the sweep energy never met conv_tol —
+        # a binding cap's stall, which is the fixed-topology solver's own diagnosis.
+        if last_move >= max_sweeps - 1:
+            log.warning("adaptive DMRG did not reach a stationary topology in %d sweeps "
+                        "(%d moves adopted, the last on sweep %d); the finishing solve "
+                        "runs on the last topology", max_sweeps, len(moves), last_move)
+        else:
+            log.warning("adaptive DMRG's topology stopped moving after sweep %d (%d moves) "
+                        "but the sweep energy did not reach dE < %.1e in %d sweeps; the "
+                        "finishing solve runs on that topology", last_move, len(moves),
+                        conv_tol, max_sweeps)
 
     cache.release_all()
     final = solve_ttn(ttno, state, max_sweeps=max_sweeps, conv_tol=conv_tol,

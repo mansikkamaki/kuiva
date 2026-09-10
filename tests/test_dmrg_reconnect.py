@@ -202,3 +202,47 @@ def test_structure_report_is_purely_diagnostic():
     discovered_structure(state, weights=first.weights)
     second = solve_ttn(op, state, max_bond=32, boundary_check=0)
     assert abs(first.energies[0] - second.energies[0]) < E_TOL
+
+
+# --- the weight rule: both directions of the tour ------------------------------------------
+
+def test_weight_metric_sums_both_tour_directions():
+    """⚠ The mechanism behind the cycling weight rule: a shared-basis ensemble's Schmidt
+    rank across a cut depends on which side carries the root leg, so the one-direction
+    metric of a candidate that hangs a small node as a leaf reads exactly zero while the
+    return traversal of the same bond truncates. The metric is now the sum of both
+    directions, and the two are reported on the move."""
+    from kuiva.dmrg.block import Space, BlockTensor, QuantumNumber
+    from kuiva.dmrg.reconnect import _metric
+
+    # a 4-root ensemble across a cut with a 4-dimensional left side at cap 4: the
+    # forward split (root leg right) fits; the reverse (root leg left) needs up to 16
+    rng = np.random.default_rng(3)
+    qn0 = QuantumNumber(0)
+    left = Space([(qn0, 4)])
+    right = Space([(qn0, 16)])
+    aux = Space([(qn0, 4)])
+    stacked = BlockTensor.random((left, right, aux), (1, -1, 1), qn0, rng=rng)
+    metric, dirs = _metric(stacked, (0,), 0.0, 4, "weight")
+    assert dirs is not None
+    assert dirs[0] == 0.0 and dirs[1] > 0.1
+    assert metric == dirs[0] + dirs[1]
+    ent, none = _metric(stacked, (0,), 0.0, 4, "entropy")
+    assert none is None and ent > 0.0
+
+
+def test_capped_weight_rule_does_not_cycle():
+    """Under a binding cap the weight rule must reach a stationary topology rather than
+    adopt a move on every sweep: no topology is visited twice, and the run ends with a
+    refusing sweep well inside its budget."""
+    n, h, eri, _, _ = two_fragments()
+    graph = NetworkGraph(3, [(0, 1), (1, 2)], contents=[(0, 1), (2, 3), (4, 5)])
+    result = solve_adaptive(hamiltonian_product_terms(h, eri), graph, 2, n_roots=4,
+                            max_bond=4, policy=ReconnectionPolicy(rule="weight"),
+                            max_sweeps=20, rng=np.random.default_rng(4), boundary_check=0,
+                            on_split="warn", report_structure=False, report=False)
+    assert result.n_sweeps < 20
+    assert len(result.moves) <= 2
+    for m in result.moves:
+        assert m.directions_before is not None and m.directions_after is not None
+        assert m.metric_after < m.metric_before

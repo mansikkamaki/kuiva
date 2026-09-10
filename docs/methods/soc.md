@@ -54,8 +54,9 @@ $`\tilde D`$ behind the four-component one. Three parts of this expression are l
   numbers validate the molecular one.
 - ⚠ **The density is $`\tilde D = R^{-1} D_{LL} R^{-\dagger}`$, not $`R^\dagger D_{LL} R`$.**
   Coefficients and densities transform oppositely
-  ([notation](../notation.md#density-matrices)), and $`R`$ is Hermitian positive definite but
-  not unitary, so the two differ substantially — while both are Hermitian with plausible
+  ([notation](../notation.md#density-matrices)), and $`R`$ is positive and self-adjoint in the
+  $`S`$ metric but, in the non-orthogonal AO basis, neither Hermitian nor unitary, so the two
+  differ substantially — while both are Hermitian with plausible
   traces, and their spin–orbit *splittings* agree to 0.2%. What separates them, by five to
   six orders of magnitude, is the X2CAMF total-energy functional against four-component
   Dirac–Coulomb in the same basis (the $`c \to \infty`$ limit does **not** separate them —

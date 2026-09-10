@@ -163,6 +163,46 @@ def _pyramidal_mx3(metal: str, ligand: str, r: float,
     return atoms
 
 
+def _mn3_linear(d_mn_mn: float = 3.50, r_mn_oh: float = 2.12, r_mn_of: float = 2.15,
+                r_co: float = 1.26, angle_oco: float = 125.0, r_oh: float = 0.97,
+                r_ch: float = 1.09) -> List[Tuple[str, Tuple[float, ...]]]:
+    """Linear [Mn3(mu-OH)2(HCO2)4], the Tier-3 ``mn3_linear`` motif, as a model structure.
+
+    Three Mn on the z axis at ``-d, 0, +d``; each Mn-Mn pair is bridged by one
+    mu-hydroxide and two syn-syn formates, the three bridges 120 deg apart about the
+    axis, and the second bridge set rotated by 180 deg so the central Mn sees a trigonal
+    antiprism of six oxygens (the molecule is centrosymmetric). The terminal Mn are
+    three-coordinate: the formula the Tier-3 suite states carries no terminal ligands,
+    and truncation may touch no metal and no exchange pathway. Bond lengths are typical
+    Mn(II)-O values (hydroxide 2.12 A, carboxylate 2.15 A, C-O 1.26 A, O-C-O 125 deg),
+    which put Mn...Mn at 3.50 A and Mn-O(H)-Mn at 111 deg — the range of the
+    [Mn3(O2CR)6L2] family. A MODEL, stated so an independent implementation can define
+    the same calculation; never to be quoted as a prediction.
+
+    The three Mn come FIRST, so the site indices are 0, 1, 2.
+    """
+    half = 0.5 * d_mn_mn
+    atoms: List[Tuple[str, Tuple[float, ...]]] = [("Mn", (0.0, 0.0, -d_mn_mn)),
+                                                  ("Mn", (0.0, 0.0, 0.0)),
+                                                  ("Mn", (0.0, 0.0, d_mn_mn))]
+    a_oh = math.sqrt(r_mn_oh ** 2 - half ** 2)
+    s = r_co * math.sin(math.radians(0.5 * angle_oco))
+    r_of = math.sqrt(r_mn_of ** 2 - (half - s) ** 2)
+    r_c = r_of + r_co * math.cos(math.radians(0.5 * angle_oco))
+    for zc, phi0 in ((-half, 0.0), (half, 180.0)):
+        c0, s0 = math.cos(math.radians(phi0)), math.sin(math.radians(phi0))
+        atoms.append(("O", (a_oh * c0, a_oh * s0, zc)))
+        atoms.append(("H", ((a_oh + r_oh) * c0, (a_oh + r_oh) * s0, zc)))
+        for k in (1, 2):
+            phi = math.radians(phi0 + 120.0 * k)
+            c, sn = math.cos(phi), math.sin(phi)
+            atoms.append(("C", (r_c * c, r_c * sn, zc)))
+            atoms.append(("O", (r_of * c, r_of * sn, zc - s)))
+            atoms.append(("O", (r_of * c, r_of * sn, zc + s)))
+            atoms.append(("H", ((r_c + r_ch) * c, (r_c + r_ch) * sn, zc)))
+    return atoms
+
+
 # --- the campaign record --------------------------------------------------------------------
 @dataclass(frozen=True)
 class Campaign:
@@ -383,6 +423,66 @@ def systems() -> Dict[str, Campaign]:
                           "manifold of both centres whatever combination the guess put "
                           "it in"),
                 scf_options={"atomic_reference": True}, n_states=4, max_iter=60),
+        # --- Phase 2, S2.4: the first Tier-3 calculation ---------------------------------
+        Campaign(
+            key="mn3_linear", label="Mn(II)3 linear chain [Mn3(mu-OH)2(HCO2)4]",
+            atoms=_mn3_linear(), charge=0, spin=15,
+            basis="x2c-SVPall-2c", n_active=30, n_active_elec=15,
+            character=([0, 1, 2], "d"), n_states=6, caps=(8, 16, 32, 64, 128),
+            n_det=155117520, exact_oracle=False, orbitals="guess",
+            scf_prelude=dict(init_guess="atom", level_shift=0.5, damp=0.3, diis="adiis",
+                             max_cycle=20),
+            scf_options=dict(configuration={"Mn": "+2"}, second_order=True, max_cycle=30,
+                             verbose=4),
+            geom_note="linear Mn3 model, Mn...Mn 3.50 A, each pair bridged by one "
+                      "mu-hydroxide (Mn-O 2.12 A) and two syn-syn formates (Mn-O 2.15 A, "
+                      "C-O 1.26 A, O-C-O 125 deg), bridges 120 deg apart about the axis "
+                      "and the two sets staggered by 180 deg (centrosymmetric); the "
+                      "terminal Mn are three-coordinate because the Tier-3 formula "
+                      "carries no terminal ligands. A MODEL structure of the "
+                      "[Mn3(O2CR)6L2] family, stated for reproducibility",
+            physics_note="THE FIRST TIER-3 SYSTEM: three high-spin Mn(II) d^5 sites on a "
+                         "path, CAS(15, 30 spinors) = the three 3d shells, 155 117 520 "
+                         "determinants — no exact CI exists or will. Bipartite with "
+                         "sublattices {Mn1, Mn3} and {Mn2}, so Lieb-Mattis fixes the "
+                         "ground spin at S = |5 - 5/2| = 5/2 exactly: six states, three "
+                         "Kramers doublets, and every level a Kramers doublet (fifteen "
+                         "unpaired electrons). The ensemble is the WHOLE S = 5/2 "
+                         "multiplet, six roots — a state count inside it would cut a "
+                         "manifold Mn(II)'s zero-field splitting separates by well under "
+                         "a wavenumber. 3d is the lowest d shell, so the selection needs "
+                         "no ordinal window",
+            protocol_note="ORBITALS ARE THE SCALAR GUESS, and the reference is the "
+                          "HIGH-SPIN ROHF (2S = 15), by decision: the plan's wording "
+                          "was a broken-symmetry guess, but a broken-symmetry set is "
+                          "unrestricted and therefore not Kramers paired, and every "
+                          "stage downstream — the character selection, the site "
+                          "partition, the Kramers-paired CAS integrals — is built on a "
+                          "restricted set (the far-trimer bridge ran the same way). The "
+                          "high-spin ROHF puts one electron in each of the fifteen 3d "
+                          "orbitals, which is what makes the three sites equivalent and "
+                          "the localization clean; the antiferromagnetic coupling is the "
+                          "network's job. Localized per centre through the one "
+                          "site-partition implementation (an active-active rotation). "
+                          "The atomic mean field and the reference charges are stated "
+                          "at Mn(+2). ⚠ THE SCF RECIPE IS MEASURED, NOT DEFAULT: from the "
+                          "default guess the high-spin ROHF re-assigns its fifteen open "
+                          "shells every cycle — the guess sits at -4370.79 Eh, the first "
+                          "cycle jumps 23 Eh up, and after 20 cycles at ~27 s each it is "
+                          "still at |g| = 2.3 (a 300-cycle budget was two silent hours). "
+                          "The atomic guess with a 0.5 Eh level shift, 0.3 damping and "
+                          "ADIIS starts at -4374.63 Eh and descends monotonically from "
+                          "cycle 4 (|g| halving per cycle, 0.007 at cycle 12) and then "
+                          "CREEPS — -4375.53176546 Eh after 100 cycles, unconverged at "
+                          "1e-10, the shape uf3's record shows — so it is the 20-cycle "
+                          "PRELUDE and the second-order solver seeded from it finishes "
+                          "(an unshifted ADIIS finish from the same |g| = 7e-4 start "
+                          "drifted up and stalled at |g| = 0.004; the second-order solver "
+                          "from the bare atomic guess did not finish one macro-iteration "
+                          "in ten minutes). No reference CASSCF: a conventional CI over 1.6e8 "
+                          "determinants is what this system exists to be beyond, and a "
+                          "DMRG-CASSCF is an S2.4b decision to be taken on S2.4a's "
+                          "measured per-sweep cost"),
         # --- new: the named target and its actinide sibling ----------------------------
         Campaign(
             key="dycl3", label="DyCl3",
@@ -647,35 +747,47 @@ def build_reference(camp: Campaign):
 
     molecule = api.Molecule(atoms=camp.atoms, basis=camp.basis, charge=camp.charge,
                             spin=camp.spin)
+    if not camp.exact_oracle:
+        # ⚠ An oracle-free rung: the front end's pre-flight plans the conventional CI for
+        # ``n_states`` and refuses it (23 GB at 24 spinors, 2.6 TB at 30), but that CI is
+        # exactly the solve this rung is declared oracle-free to avoid and it never runs —
+        # the ladder runs at guess orbitals. So the refusal is downgraded for the REFERENCE
+        # BUILD ONLY — the prelude included, whose plan carries the same CI — and the
+        # honest limit is restored before any network phase, which is where the memory
+        # plan has to refuse rather than warn.
+        from dataclasses import replace as _replace
+        from kuiva.util import resources as res
+
+        # configured first: in a fresh process (the Tier-3 front-end child) nothing has
+        # installed the limits yet, and ``BUDGET.limits`` is then None rather than a record
+        lims = res.ensure_configured()
+        res.BUDGET.configure(_replace(lims, allow_overcommit=True))
+        try:
+            return _build_reference(camp, molecule)
+        finally:
+            res.BUDGET.configure(lims)
+    return _build_reference(camp, molecule)
+
+
+def _build_reference(camp: Campaign, molecule):
+    from kuiva.interface import api
+
     kw = dict(camp.scf_options)
     if camp.scf_prelude is not None:
         # ⚠ The prelude is allowed to stop unconverged BY DESIGN: its job is to leave the
         # orbitals in the right basin, not to solve anything. It runs without the
         # two-electron spin-orbit screening because a guess is orbitals and the screening
         # is applied after the SCF, so paying a four-component atomic solve for it would
-        # be pure cost.
+        # be pure cost. ⚠ It states the active space, because the memory plan of a front
+        # end that does not know one budgets the whole occupied three-index block — 8 GB
+        # on a 352-AO trimer, refused — where the real run's block is thirty spinors wide.
         warm = api.scalar_x2c_reference(molecule, screening="none",
                                         allow_unconverged_scf=True,
+                                        n_active=camp.n_active,
+                                        n_active_elec=camp.n_active_elec,
+                                        n_states=camp.n_states,
                                         **dict(camp.scf_prelude))
         kw["guess_from"] = warm
-    if not camp.exact_oracle:
-        # ⚠ An oracle-free rung: the front end's pre-flight plans the conventional CI for
-        # ``n_states`` and refuses it (23 GB at 24 spinors), but that CI is exactly the
-        # solve this rung is declared oracle-free to avoid and it never runs — the ladder
-        # runs at guess orbitals. So the refusal is downgraded for the REFERENCE BUILD
-        # ONLY, and the honest limit is restored before any network phase, which is where
-        # the memory plan has to refuse rather than warn.
-        from dataclasses import replace as _replace
-        from kuiva.util import resources as res
-
-        lims = res.BUDGET.limits
-        res.BUDGET.configure(_replace(lims, allow_overcommit=True))
-        try:
-            return api.spinor_reference(molecule, n_active=camp.n_active,
-                                        n_active_elec=camp.n_active_elec,
-                                        n_states=camp.n_states, **kw)
-        finally:
-            res.BUDGET.configure(lims)
     return api.spinor_reference(molecule, n_active=camp.n_active,
                                 n_active_elec=camp.n_active_elec,
                                 n_states=camp.n_states, **kw)

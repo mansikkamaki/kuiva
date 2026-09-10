@@ -600,3 +600,60 @@ def test_the_memory_plan_can_be_switched_off_without_changing_the_answer():
     a = solve(NetworkGraph.path(n), h, eri, k, n_roots=2)
     b = solve(NetworkGraph.path(n), h, eri, k, n_roots=2, memory_plan=False)
     assert np.array_equal(a.energies, b.energies)
+
+
+# --- the dense local route ------------------------------------------------------------------
+
+def test_small_local_problems_are_solved_densely_with_a_wide_batch(monkeypatch):
+    """⚠ A two-site problem up to the CI solver's dense threshold is diagonalized exactly,
+    never iterated (the dimer bridge's 135-dimensional four-root problem stalled at
+    ``max|r| = 2.4e-7`` for 300 iterations, batched or not), and its identity is applied
+    in slabs as wide as the transient budget allows rather than the cache-bound width the
+    iterative route keeps. Both are pinned through what the sweep hands the eigensolver."""
+    import kuiva.dmrg.sweep as sweep_mod
+    from kuiva.dmrg.sweep import DENSE_LOCAL_MAX_DIM
+
+    calls = []
+    original = sweep_mod.davidson
+
+    def recording(apply_h, diagonal, n_roots, **kw):
+        result = original(apply_h, diagonal, n_roots, **kw)
+        block = kw["apply_block"]
+        calls.append((diagonal.size, kw["dense_max_det"], result.dense, block.__self__.batch_cap))
+        return result
+
+    monkeypatch.setattr(sweep_mod, "davidson", recording)
+    n, k = 6, 2
+    h, eri = random_spinor_integrals(n, seed=71)
+    result = solve(NetworkGraph.path(n), h, eri, k, n_roots=2, max_bond=8)
+    assert result.converged
+    assert calls
+    for dim, threshold, dense, cap in calls:
+        assert dim <= DENSE_LOCAL_MAX_DIM
+        assert threshold == DENSE_LOCAL_MAX_DIM and dense
+        assert cap >= min(dim, 4)                    # wider than the measured width
+    ref = exact_energies(n, k, h, eri, 2)
+    assert np.max(np.abs(np.sort(result.energies) - ref)) < E_TOL
+
+
+def test_large_local_problems_keep_the_iterative_route(monkeypatch):
+    import kuiva.dmrg.sweep as sweep_mod
+    from kuiva.dmrg.sweep import DENSE_LOCAL_MAX_DIM
+
+    calls = []
+    original = sweep_mod.davidson
+
+    def recording(apply_h, diagonal, n_roots, **kw):
+        result = original(apply_h, diagonal, n_roots, **kw)
+        calls.append((diagonal.size, result.dense))
+        return result
+
+    monkeypatch.setattr(sweep_mod, "davidson", recording)
+    n, k = 12, 6
+    h, eri = random_spinor_integrals(n, seed=72)
+    graph = NetworkGraph.path(6, contents=[(2 * i, 2 * i + 1) for i in range(6)])
+    solve(graph, h, eri, k, n_roots=1, max_bond=32, max_sweeps=2)
+    big = [dim for dim, dense in calls if dim > DENSE_LOCAL_MAX_DIM]
+    assert big, "the case must contain a bond above the dense threshold"
+    assert all(not dense for dim, dense in calls if dim > DENSE_LOCAL_MAX_DIM)
+    assert all(dense for dim, dense in calls if dim <= DENSE_LOCAL_MAX_DIM)

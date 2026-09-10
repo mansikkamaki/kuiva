@@ -63,7 +63,7 @@ References
 * Optimization with inexact or adaptive function information — the framing this contract
   borrows from, though the mechanism here is event control rather than noise modelling:
   R. G. Carter, SIAM J. Numer. Anal. 28, 251 (1991), doi:10.1137/0728014; A. S. Berahas,
-  R. H. Byrd, J. Nocedal, SIAM J. Optim. 29, 965 (2019), doi:10.1137/18M1190164.
+  R. H. Byrd, J. Nocedal, SIAM J. Optim. 29, 965 (2019), doi:10.1137/18M1177718.
 * The selection whose decision boundaries make the surface piecewise: B. Huron, J. P. Malrieu,
   P. Rancurel, J. Chem. Phys. 58, 5745 (1973), doi:10.1063/1.1679199 (CIPSI); N. M. Tubman
   et al., J. Chem. Phys. 145, 044112 (2016), doi:10.1063/1.4955109 (ASCI).

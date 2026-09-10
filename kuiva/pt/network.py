@@ -61,7 +61,7 @@ References
   114, 10252 (2001), doi:10.1063/1.1361246; C. Angeli, R. Cimiraglia, J.-P. Malrieu,
   J. Chem. Phys. 117, 9138 (2002), doi:10.1063/1.1515317 — SC-NEVPT2.
 * S. Guo, M. A. Watson, W. Hu, Q. Sun, G. K.-L. Chan, J. Chem. Theory Comput. 12, 1583
-  (2016), doi:10.1021/acs.jctc.6b00118 — DMRG-SC-NEVPT2, the precedent for serving the
+  (2016), doi:10.1021/acs.jctc.5b01225 — DMRG-SC-NEVPT2, the precedent for serving the
   perturbation from a matrix-product reference (via stored higher densities there; via
   applied-string Grams here, the departure recorded above).
 """

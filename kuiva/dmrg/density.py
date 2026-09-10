@@ -18,15 +18,28 @@ shadow ``kuiva.rdm`` in a relative import — the same never-shadow-a-package ru
 Two routes, deliberately different
 ----------------------------------
 **Ranks 1–2, the production path** (:func:`network_rdms`): one backward pass over the
-network computes every node's operator environment ``G_u = dE/dW_u`` — the contraction of
-bra, ket and every *other* node's W tensor around node ``u`` — and
-:meth:`kuiva.dmrg.ttno.TTNOTemplate.rdms_from_environments` reads each elementary
-operator's expectation out of its coefficient-attachment slot. This costs about two sweeps'
-worth of environment builds per call, independent of ``n^4``, which is what a CASSCF
-macro-iteration needs. Correctness rests on the TTNO compiler's label-completeness (a
-channel's operator content is uniquely determined by its label, so the read is
+network builds every node's environments, and each elementary operator's expectation is
+read at its coefficient-attachment slot of the node's operator environment
+``G_u = dE/dW_u`` — the contraction of bra, ket and every *other* node's W tensor around
+node ``u`` (:meth:`kuiva.dmrg.ttno.TTNOTemplate.rdms_from_slot_values`). This costs about
+two sweeps' worth of environment builds per call, independent of ``n^4``, which is what a
+CASSCF macro-iteration needs. Correctness rests on the TTNO compiler's label-completeness
+(a channel's operator content is uniquely determined by its label, so the read is
 uncontaminated by other terms' coefficients — see the template's docstring), and is
 asserted by the energy-closure and CI-parity tests rather than trusted.
+
+⚠ **``G_u`` is never formed.** It has every leg of ``W_u`` open — two operator bond
+dimensions times the local dimension squared, dense — and on a five-mode node of a
+20-spinor space that was 5.75 GB for one node while the sweep's largest array was 8 MB; the
+RDM phase, not the sweep, bounded the reachable node partition. What the template reads
+is a sparse subset of it: the slots, one ``(channel tuple, i, j)`` per (term, matrix
+element). :func:`slot_values` evaluates exactly those, grouped by the channel values on
+all but one operator leg: the environments of the grouped legs are *sliced* at their
+channel (a bra/ket matrix each), contracted into the ket, closed by the bra, and the one
+remaining environment opens its operator leg last — ``D^k d r``, ``D^2 d^2`` and
+``w d^2`` per group, never ``w^2 d^2``. The dense ``G_u`` survives as the validation
+oracle (:func:`node_environments`, :meth:`~kuiva.dmrg.ttno.TTNOTemplate.rdms_from_environments`)
+the production route is pinned against.
 
 **Ranks 1–4, the direct-contraction path** (:func:`network_rdm`): the Gram matrix
 ``M[A, B] = <chi_A | chi_B>`` of *annihilated states* ``chi_A = a_{A1} a_{A2} .. |psi>``.
@@ -64,7 +77,7 @@ References
 * Higher-order RDMs from matrix-product states for multireference perturbation theory
   (the chosen no-cumulant route): Y. Kurashige, T. Yanai, J. Chem. Phys. 135, 094104
   (2011), doi:10.1063/1.3629454; S. Guo, M. A. Watson, W. Hu, Q. Sun, G. K.-L. Chan,
-  J. Chem. Theory Comput. 12, 1583 (2016), doi:10.1021/acs.jctc.6b00118.
+  J. Chem. Theory Comput. 12, 1583 (2016), doi:10.1021/acs.jctc.5b01225.
 * Jordan-Wigner transformation: P. Jordan, E. Wigner, Z. Phys. 47, 631 (1928),
   doi:10.1007/BF01331938.
 """
@@ -79,7 +92,7 @@ from ..rdm.rdm import DEFAULT_DEGENERACY_TOL, state_average_weights
 from ..util import resources as res
 from ..util.logging import get_logger
 from ..util.timing import timer
-from .block import BlockShape, BlockTensor, QuantumNumber, Space, tensordot
+from .block import BlockShape, BlockTensor, Space, _row_keys, tensordot
 from .sweep import (EnvironmentCache, TTNState, _Lab, _stack_roots, _w_lab, choose_fold,
                     renormalize)
 from .ttno import (FERMION_MODE, ProductTerm, TTNO, TTNOTemplate, _I2, _Z,
@@ -125,6 +138,10 @@ def _down_message(ttno: TTNO, state: TTNState, cache: EnvironmentCache,
 def node_environments(ttno: TTNO, state: TTNState,
                       weights: Sequence[float]) -> List[BlockTensor]:
     """``G_u = dE/dW_u`` for every node: bra, ket and every other node's W contracted.
+
+    ⚠ The validation oracle, not the production path (module docstring): it forms every
+    node's dense ``G_u``, which :func:`slot_values` exists to avoid, and it is what the
+    slot extraction is pinned against.
 
     Legs in W-tensor order ``[parent-op, child-ops ascending, phys-bra, phys-ket]`` over
     the same spaces, so :meth:`~kuiva.dmrg.ttno.TTNOTemplate.expectations` can read
@@ -272,6 +289,300 @@ def node_environments_gb(ttno: TTNO, state: TTNState, n_roots: int) -> Tuple[flo
     return resident / 1024.0 ** 3, transient / 1024.0 ** 3
 
 
+# --- slot extraction: G_u at the template's slots, never the whole of it --------------------
+
+def _take_op(env, sector: int, offset: int):
+    """The environment sliced at one operator channel: legs ``[bra, ket]``, the operator
+    leg's quantum number folded into the charge — over data or over structure."""
+    spaces, signs = env.spaces, env.signs
+    qn = spaces[1].qns[int(sector)]
+    charge = env.charge - qn if signs[1] > 0 else env.charge + qn
+    keep = env.sectors[:, 1] == int(sector)
+    rows = np.ascontiguousarray(env.sectors[keep][:, [0, 2]])
+    out_spaces = (spaces[0], spaces[2])
+    out_signs = (signs[0], signs[2])
+    if isinstance(env, BlockShape):
+        return BlockShape(out_spaces, out_signs, charge, rows)
+    blocks = [np.ascontiguousarray(b[:, int(offset), :])
+              for b, k in zip(env.blocks, keep) if k]
+    # correct by construction (the rows keep their order once the middle leg is fixed,
+    # and the flux moved into the charge): the validating constructor's per-block Python
+    # arithmetic was most of a slot group's cost on a fat node
+    keys = _row_keys(rows, [sp.nsectors for sp in out_spaces])
+    return BlockTensor._trusted(out_spaces, out_signs, charge, rows, keys, blocks)
+
+
+def _leg_positions(ttno: TTNO, u: int, nbrs: Sequence[int]) -> List[int]:
+    """W-leg position of every neighbour's operator leg: the parent's is 0, child ``j``'s
+    is ``1 + j``; the root's leg 0 is its dim-1 completed channel and belongs to no
+    neighbour."""
+    out = []
+    for x in nbrs:
+        if u != ttno.root and x == int(ttno.parent[u]):
+            out.append(0)
+        else:
+            out.append(1 + ttno.children[u].index(x))
+    return out
+
+
+def _slot_group_chain(u: int, ket, nbrs: Sequence[int], env_of: Dict[int, object],
+                      at_center: bool, open_leg: Optional[int],
+                      prefix: Sequence[Tuple[int, int, int]],
+                      sizes: Optional[List[int]] = None):
+    """The contraction that yields ``G_u`` restricted to one channel group: every prefix
+    leg ``(x, sector, offset)`` sliced, the bra closed early, the open leg's environment
+    last — over data (:class:`~kuiva.dmrg.block.BlockTensor`) or over structure
+    (:class:`~kuiva.dmrg.block.BlockShape`), one description of the chain for both.
+
+    Returns the labelled result with legs ``[op(open), cp, p]`` (``[cp, p]`` for a node
+    with no neighbours); ``sizes`` collects every intermediate's byte count.
+    """
+    labels = [("b", u, x) for x in nbrs] + [("p", u)] + ([("r",)] if at_center else [])
+    t = _Lab(ket, labels)
+    bra_labels = [("cb", u, x) for x in nbrs] + [("cp",)] + ([("cr",)] if at_center else [])
+    bra = _Lab(ket.conj(), bra_labels)
+    root_pair = [(("r",), ("cr",))] if at_center else []
+    for x, sec, off in prefix:
+        env = _Lab(_take_op(env_of[x], sec, off), [("bra", x), ("ket", x)])
+        t = t.dot(env, [(("b", u, x), ("ket", x))])
+        if sizes is not None:
+            sizes.append(t.t.nbytes)
+    early = [(("bra", x), ("cb", u, x)) for x, _, _ in prefix] + root_pair
+    if open_leg is None:
+        t = t.dot(bra, early)
+        if sizes is not None:
+            sizes.append(t.t.nbytes)
+        return t
+    env = _Lab(env_of[open_leg], [("bra", open_leg), ("op", open_leg), ("ket", open_leg)])
+    if early:
+        t = t.dot(bra, early)
+        if sizes is not None:
+            sizes.append(t.t.nbytes)
+        t = t.dot(env, [(("b", u, open_leg), ("ket", open_leg)),
+                        (("cb", u, open_leg), ("bra", open_leg))])
+    else:
+        t = t.dot(env, [(("b", u, open_leg), ("ket", open_leg))])
+        if sizes is not None:
+            sizes.append(t.t.nbytes)
+        t = t.dot(bra, [(("bra", open_leg), ("cb", u, open_leg))])
+    if sizes is not None:
+        sizes.append(t.t.nbytes)
+    return t
+
+
+def _chain_peak(ket_bytes: int, steps: Sequence[int]) -> int:
+    return max(a + b for a, b in zip([ket_bytes] + list(steps[:-1]), steps)) if steps else 0
+
+
+def _composite(cols: np.ndarray, widths: Sequence[int]) -> np.ndarray:
+    """One int64 key per row of ``cols`` (mixed radix over ``widths``) — the row-wise
+    unique the grouping needs, at the cost of a one-dimensional sort instead of a
+    structured one (measured 30x on half a million slots)."""
+    key = np.zeros(cols.shape[0], dtype=np.int64)
+    for j, w in enumerate(widths):
+        key = key * int(w) + cols[:, j]
+    return key
+
+
+class _SlotGroups(object):
+    """The channel grouping of one node's slots: which operator leg stays open, and the
+    slots sorted by their prefix-channel group (:func:`_node_slot_values` runs one chain
+    per group, over data or over structure, from this one record)."""
+
+    __slots__ = ("open_leg", "pos", "prefix_legs", "order", "bounds", "widths")
+
+    def __init__(self, ttno: TTNO, u: int, nbrs: Sequence[int], rows: np.ndarray,
+                 index: np.ndarray):
+        self.pos = _leg_positions(ttno, u, nbrs)
+        n_slots = rows.shape[0]
+        channel = np.zeros((n_slots, len(nbrs)), dtype=np.int64)
+        widths = []
+        for k, (x, pk) in enumerate(zip(nbrs, self.pos)):
+            space = ttno.bond_space[u] if pk == 0 \
+                else ttno.bond_space[ttno.children[u][pk - 1]]
+            channel[:, k] = space.offsets[rows[:, pk]] + index[:, pk]
+            widths.append(space.total_dim)
+        self.widths = widths
+        # the open leg: fewest groups times its width, the groups being the distinct
+        # channel tuples on the other legs — decided over the slots actually read
+        best = None
+        for k, x in enumerate(nbrs):
+            others = [j for j in range(len(nbrs)) if j != k]
+            n_groups = np.unique(_composite(channel[:, others],
+                                            [widths[j] for j in others])).size \
+                if others else 1
+            cost = (n_groups * widths[k], x)
+            if best is None or cost < best[0]:
+                best = (cost, x)
+        self.open_leg = None if best is None else best[1]
+        self.prefix_legs = [(k, x) for k, x in enumerate(nbrs) if x != self.open_leg]
+        if self.prefix_legs:
+            pre = [k for k, _ in self.prefix_legs]
+            key = _composite(channel[:, pre], [widths[k] for k in pre])
+            self.order = np.argsort(key, kind="stable")
+            sorted_key = key[self.order]
+            starts = np.nonzero(np.concatenate([[True], sorted_key[1:] != sorted_key[:-1]]))[0]
+            self.bounds = np.concatenate([starts, [n_slots]])
+        else:
+            self.order = np.arange(n_slots, dtype=np.int64)
+            self.bounds = np.array([0, n_slots], dtype=np.int64)
+
+    @property
+    def n_groups(self) -> int:
+        return int(self.bounds.size - 1)
+
+    def members(self, g: int) -> np.ndarray:
+        return self.order[int(self.bounds[g]):int(self.bounds[g + 1])]
+
+
+def _node_slot_values(u: int, ket, nbrs: Sequence[int], env_of: Dict[int, object],
+                      at_center: bool, ttno: TTNO, rows: np.ndarray, index: np.ndarray,
+                      groups: _SlotGroups,
+                      sizes: Optional[Dict[tuple, List[int]]] = None) -> np.ndarray:
+    """``G_u`` at the slots ``(rows, index)`` — W-leg order ``[parent-op, child-ops,
+    phys-bra, phys-ket]`` — by :func:`_slot_group_chain` per channel group.
+
+    Over structure (``BlockShape`` operands) it runs every distinct prefix *sector*
+    tuple once and fills ``sizes`` with each chain's intermediates, returning nothing
+    numerical; over data it returns one complex value per slot.
+    """
+    structural = isinstance(ket, BlockShape)
+    open_leg, pos = groups.open_leg, groups.pos
+    n_slots = rows.shape[0]
+    values = np.zeros(n_slots, dtype=np.complex128)
+    if open_leg is None:
+        read_cols = [rows.shape[1] - 2, rows.shape[1] - 1]
+    else:
+        po = pos[nbrs.index(open_leg)]
+        read_cols = [po, rows.shape[1] - 2, rows.shape[1] - 1]
+    seen_sector_tuples = set()
+    for g in range(groups.n_groups):
+        members = groups.members(g)
+        first = int(members[0])
+        prefix = [(x, int(rows[first, pos[k]]), int(index[first, pos[k]]))
+                  for k, x in groups.prefix_legs]
+        if structural:
+            key = tuple((x, sec) for x, sec, _ in prefix)
+            if key in seen_sector_tuples:
+                continue
+            seen_sector_tuples.add(key)
+            steps: List[int] = []
+            _slot_group_chain(u, ket, nbrs, env_of, at_center, open_leg, prefix, sizes=steps)
+            sizes[key] = steps
+            continue
+        t = _slot_group_chain(u, ket, nbrs, env_of, at_center, open_leg, prefix)
+        m = t.to([("cp",), ("p", u)] if open_leg is None
+                 else [("op", open_leg), ("cp",), ("p", u)])
+        sub_rows = rows[members][:, read_cols]
+        sub_idx = index[members][:, read_cols]
+        keys = _row_keys(sub_rows, [sp.nsectors for sp in m.spaces])
+        # one sort of the group's slots by block, then one gather per block
+        order = np.argsort(keys, kind="stable")
+        sorted_keys = keys[order]
+        starts = np.nonzero(np.concatenate([[True], sorted_keys[1:] != sorted_keys[:-1]]))[0]
+        bounds = np.concatenate([starts, [keys.size]])
+        for b in range(starts.size):
+            sel = order[int(bounds[b]):int(bounds[b + 1])]
+            blk = m.find(sub_rows[sel[0]])
+            if blk is None:
+                continue
+            values[members[sel]] = blk[tuple(sub_idx[sel].T)]
+    return values
+
+
+def _node_slot_transient(u: int, ket_shape: BlockShape, nbrs: Sequence[int],
+                         env_shapes: Dict[int, BlockShape], at_center: bool, ttno: TTNO,
+                         rows: np.ndarray, index: np.ndarray, groups: _SlotGroups) -> int:
+    """Largest step [bytes] any group's chain at node ``u`` holds, over structure."""
+    sizes: Dict[tuple, List[int]] = {}
+    _node_slot_values(u, ket_shape, nbrs, env_shapes, at_center, ttno, rows, index, groups,
+                      sizes=sizes)
+    return max((_chain_peak(ket_shape.nbytes, steps) for steps in sizes.values()),
+               default=0)
+
+
+def slot_values(template: TTNOTemplate, ttno: TTNO, state: TTNState,
+                weights: Sequence[float]) -> List[np.ndarray]:
+    """The value of ``G_u`` at every slot the template reads, node by node — the
+    production RDM extraction (module docstring), one array per
+    :attr:`~kuiva.dmrg.ttno.TTNOTemplate.slot_nodes` entry.
+
+    The environments are the ones :func:`node_environments` builds (the down messages
+    included); what differs is that no node's ``G_u`` is ever assembled. Each node's
+    chains are sized over structure and ``require``d before they run.
+    """
+    graph = state.graph
+    w = np.asarray(weights, dtype=float)
+    stacked = _stack_roots(state.centers, w / float(np.sum(w)))
+    cache = EnvironmentCache(ttno, state)
+    parent, preorder = graph.parents(state.center)
+    center_side = {int(x): int(parent[x]) for x in preorder[1:]}
+    down: Dict[Tuple[int, int], BlockTensor] = {}
+    for x in [int(i) for i in preorder[1:]]:
+        v = center_side[x]
+        down[(v, x)] = _down_message(ttno, state, cache, down, center_side, stacked, v, x)
+    values: List[np.ndarray] = []
+    with timer("network RDM slot extraction"):
+        for rec in template.slot_nodes:
+            u = rec.node
+            nbrs = sorted(graph.neighbors(u))
+            at_center = u == state.center
+            ket = stacked if at_center else state.tensors[u]
+            env_of = {x: (down[(x, u)] if (not at_center and x == center_side[u])
+                          else cache.get(x, u)) for x in nbrs}
+            groups = _SlotGroups(ttno, u, nbrs, rec.slot_rows, rec.slot_index)
+            transient = _node_slot_transient(
+                u, BlockShape.of(ket), nbrs, {x: BlockShape.of(e) for x, e in env_of.items()},
+                at_center, ttno, rec.slot_rows, rec.slot_index, groups)
+            res.require("network RDM slot extraction (node {})".format(u),
+                        transient / 1024.0 ** 3,
+                        note="{} slots over {} operator leg(s)".format(rec.slot.size,
+                                                                       len(nbrs)),
+                        advice=["reduce max_bond: a group's chain carries two bond legs "
+                                "and the node's local dimension",
+                                "a finer node partition: the closing step is dense in the "
+                                "local dimension squared times one operator bond"])
+            values.append(_node_slot_values(u, ket, nbrs, env_of, at_center, ttno,
+                                            rec.slot_rows, rec.slot_index, groups))
+    cache.release_all()
+    return values
+
+
+def slot_extraction_gb(ttno: TTNO, state: TTNState, n_roots: int) -> float:
+    """Transient [GB] of :func:`slot_values` from structure alone — a bound, since the
+    template's slots are not in hand at plan time: for every node, the largest chain over
+    every choice of open leg and every prefix sector tuple.
+
+    Environments come from :class:`~kuiva.dmrg.sweep.ShapeEnvironments` on the
+    centre-filled shape state, standing in for the down messages the real contraction
+    uses on the centre side (same spaces, the same sector sets up to the centre charge).
+    """
+    from .sweep import ShapeEnvironments, shape_state
+
+    shapes = shape_state(state, fill_center=True)
+    cache = ShapeEnvironments(ttno, shapes)
+    graph = state.graph
+    peak = 0
+    for u in range(graph.n_nodes):
+        nbrs = sorted(graph.neighbors(u))
+        at_center = u == state.center
+        ket = _stacked_shape(shapes.tensors[u], n_roots) if at_center else shapes.tensors[u]
+        env_of = {x: cache.get(x, u) for x in nbrs}
+        candidates = [None] if not nbrs else list(nbrs)
+        for open_leg in candidates:
+            prefix_legs = [x for x in nbrs if x != open_leg]
+            sector_sets = [range(env_of[x].spaces[1].nsectors) for x in prefix_legs]
+            for secs in itertools.product(*sector_sets):
+                prefix = [(x, int(sec), 0) for x, sec in zip(prefix_legs, secs)]
+                if any(not np.any(env_of[x].sectors[:, 1] == sec) for x, sec, _ in prefix):
+                    continue
+                steps: List[int] = []
+                _slot_group_chain(u, ket, nbrs, env_of, at_center, open_leg, prefix,
+                                  sizes=steps)
+                peak = max(peak, _chain_peak(ket.nbytes, steps))
+    return peak / 1024.0 ** 3
+
+
 def _prepend_root_channel(g, ttno: TTNO):
     """Add the root W tensor's dim-1 completed-channel leg back onto ``G_root``.
 
@@ -325,8 +636,8 @@ def network_rdms(template: TTNOTemplate, state: TTNState, *,
     else:
         w = np.asarray(weights, dtype=float)
         w = w / np.sum(w)
-    envs = node_environments(template.ttno if ttno is None else ttno, state, w)
-    return template.rdms_from_environments(envs)
+    values = slot_values(template, template.ttno if ttno is None else ttno, state, w)
+    return template.rdms_from_slot_values(values)
 
 
 # --- annihilated states and their Gram matrix (ranks 1-4) ----------------------------------
@@ -734,8 +1045,7 @@ def state_rdms(template: TTNOTemplate, state: TTNState, *,
     for r in range(state.n_roots):
         weights = np.zeros(state.n_roots)
         weights[r] = 1.0
-        envs = node_environments(op, state, weights)
-        out.append(template.rdms_from_environments(envs))
+        out.append(template.rdms_from_slot_values(slot_values(template, op, state, weights)))
     return out
 
 
@@ -837,5 +1147,6 @@ def network_rdm(ttno: TTNO, state: TTNState, rank: int, *,
     return gamma
 
 
-__all__ = ["network_rdms", "network_rdm", "node_environments", "annihilation_term",
-           "state_rdms", "transition_rdm1s", "koopmans_gram", "IDENTITY_TERM"]
+__all__ = ["network_rdms", "network_rdm", "node_environments", "slot_values",
+           "slot_extraction_gb", "annihilation_term", "state_rdms", "transition_rdm1s",
+           "koopmans_gram", "IDENTITY_TERM"]

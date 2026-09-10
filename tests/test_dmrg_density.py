@@ -386,3 +386,86 @@ def test_rank_out_of_range_is_refused():
     tpl, op, state, result = solved(n, k, h, eri)
     with pytest.raises(ValueError, match="rank"):
         network_rdm(op, state, 5)
+
+
+# --- the slot extraction: G_u never formed --------------------------------------------------
+
+def test_slot_extraction_matches_the_dense_environments():
+    """The production RDM route reads ``G_u`` only at the template's slots, by chains
+    that never hold ``G_u``; the dense-environment route is the oracle it must equal to
+    rounding — on a tree with a degree-3 node, multi-mode nodes and a state average, so
+    every leg-position and grouping case is exercised."""
+    from kuiva.dmrg.density import slot_values
+
+    n, k = 8, 3
+    h, eri = kramers_spinor_integrals(4, seed=31)
+    graph = NetworkGraph(5, [(0, 1), (1, 2), (1, 3), (3, 4)],
+                         contents=[(0, 1), (2,), (3, 4), (5,), (6, 7)])
+    tpl, op, state, result = solved(n, k, h, eri, graph=graph, n_roots=2)
+    w = np.array([0.5, 0.5])
+    dense = tpl.rdms_from_environments(node_environments(op, state, w))
+    sparse = tpl.rdms_from_slot_values(slot_values(tpl, op, state, w))
+    assert np.max(np.abs(dense[0] - sparse[0])) < 1e-12
+    assert np.max(np.abs(dense[1] - sparse[1])) < 1e-12
+    e_sa = float(np.dot(w, result.energies))
+    assert abs(active_space_energy(h, eri, *sparse) - e_sa) < 1e-9
+
+
+def test_slot_chains_are_sized_by_their_own_structure():
+    """Every group's chain in the slot extraction, walked over ``BlockShape`` operands,
+    reports byte for byte the tensors the same chain builds over data — the pin that lets
+    the per-node ``require`` refuse a chain instead of the allocator killing it."""
+    from kuiva.dmrg import density as dens
+    from kuiva.dmrg import sweep as sweep_mod
+    from kuiva.dmrg.block import BlockShape
+    from kuiva.dmrg.sweep import EnvironmentCache, _stack_roots
+
+    n, k = 7, 2
+    h, eri = random_spinor_integrals(n, seed=23)
+    graph = NetworkGraph(5, [(0, 1), (1, 2), (1, 3), (3, 4)],
+                         contents=[(0, 1), (2,), (3,), (4, 5), (6,)])
+    tpl, op, state, result = solved(n, k, h, eri, graph=graph, n_roots=2)
+    w = np.array([0.5, 0.5])
+    stacked = _stack_roots(state.centers, w)
+    cache = EnvironmentCache(op, state)
+    parent, preorder = graph.parents(state.center)
+    center_side = {int(x): int(parent[x]) for x in preorder[1:]}
+    down = {}
+    for x in [int(i) for i in preorder[1:]]:
+        v = center_side[x]
+        down[(v, x)] = dens._down_message(op, state, cache, down, center_side, stacked,
+                                          v, x)
+    checked = 0
+    for rec in tpl.slot_nodes:
+        u = rec.node
+        nbrs = sorted(graph.neighbors(u))
+        at_center = u == state.center
+        ket = stacked if at_center else state.tensors[u]
+        env_of = {x: (down[(x, u)] if (not at_center and x == center_side[u])
+                      else cache.get(x, u)) for x in nbrs}
+        groups = dens._SlotGroups(op, u, nbrs, rec.slot_rows, rec.slot_index)
+        open_leg, pos = groups.open_leg, groups.pos
+        first = int(groups.members(0)[0])
+        prefix = [(x, int(rec.slot_rows[first, pos[kk]]), int(rec.slot_index[first, pos[kk]]))
+                  for kk, x in groups.prefix_legs]
+        real = []
+        original = sweep_mod._Lab.dot
+
+        def recording(self, other, pairs):
+            out = original(self, other, pairs)
+            real.append(out.t.nbytes)
+            return out
+
+        sweep_mod._Lab.dot = recording
+        try:
+            dens._slot_group_chain(u, ket, nbrs, env_of, at_center, open_leg, prefix)
+        finally:
+            sweep_mod._Lab.dot = original
+        steps = []
+        dens._slot_group_chain(u, BlockShape.of(ket), nbrs,
+                               {x: BlockShape.of(e) for x, e in env_of.items()},
+                               at_center, open_leg, prefix, sizes=steps)
+        assert steps == real
+        checked += 1
+    assert checked >= 3
+    assert dens.slot_extraction_gb(op, state, 2) > 0.0

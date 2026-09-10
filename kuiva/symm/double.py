@@ -45,7 +45,7 @@ References
 * Class-sum construction of a character table: W. Burnside, "Theory of Groups of Finite
   Order", 2nd ed., Cambridge University Press (1911), ch. XV; the numerical form used here
   (simultaneous eigenvectors of the class-sum matrices) follows J. D. Dixon, "High speed
-  computation of group characters", Numer. Math. **10**, 446 (1967), doi:10.1007/BF02162876.
+  computation of group characters", Numer. Math. **10**, 446 (1967), doi:10.1007/BF02162877.
 * Irrep naming: R. S. Mulliken, "Report on Notation for the Spectra of Polyatomic Molecules",
   J. Chem. Phys. **23**, 1997 (1955), doi:10.1063/1.1740655.
 * The double groups and the published tables the suite checks the names against:

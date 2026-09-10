@@ -80,7 +80,7 @@ References
   though those methods *model* the noise where this one removes it by taking control of its
   source: R. G. Carter, SIAM J. Numer. Anal. 28, 251 (1991), doi:10.1137/0728014;
   A. S. Berahas, R. H. Byrd, J. Nocedal, SIAM J. Optim. 29, 965 (2019),
-  doi:10.1137/18M1190164.
+  doi:10.1137/18M1177718.
 * The MCSCF machinery this drives is unchanged; its references are in
   :mod:`kuiva.mcscf.orbopt`.
 """

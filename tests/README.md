@@ -348,7 +348,7 @@ and they live here rather than there.
   `kuiva` nor DIRAC. J. Nieplocha, R. J. Harrison, R. J. Littlefield, _Proc. Supercomputing '94_,
   340–349 (1994), DOI:10.1109/SUPERC.1994.344297; J. Nieplocha _et al._, _Int. J. High Perform.
   Comput. Appl._ **20**, 203–231 (2006), DOI:10.1177/1094342006064503.
-- **Build toolchain** — Intel oneAPI 2023.2 (`icx`/`icpx`/`ifx`, MKL, Intel MPI, TBB), Intel
+- **Build toolchain** — Intel oneAPI 2026.1 (`icx`/`icpx`/`ifx`, MKL, Intel MPI, TBB), Intel
   Corporation; OpenMPI 5.0.10 as a portability reference, E. Gabriel _et al._, _Proc. 11th
   European PVM/MPI Users' Group Meeting_, LNCS **3241**, 97–104 (2004),
   DOI:10.1007/978-3-540-30218-6_19.
@@ -375,8 +375,8 @@ calculation. Each system is also cited at the point of use in `tests/generate/ti
   _Angew. Chem. Int. Ed._ **43**, 1136–1139 (2004).
 - **Cr₈ ring** (`cr8_ring`), experimental S = 0 — [Cr₈F₈(O₂C^tBu)₁₆]. J. van Slageren _et al._,
   _Chem. Eur. J._ **8**, 277–285 (2002).
-- **Cr₇Ni ring** (`cr7ni_ring`), experimental S = 1/2. S. Larsen _et al._, _Phys. Rev. Lett._
-  **91**, 067201 (2003), DOI:10.1103/PhysRevLett.91.067201; G. A. Timco _et al._, _Nat.
+- **Cr₇Ni ring** (`cr7ni_ring`), experimental S = 1/2. F. K. Larsen _et al._, _Angew. Chem. Int. Ed._
+  **42**, 101–105 (2003), DOI:10.1002/anie.200390034; G. A. Timco _et al._, _Nat.
   Nanotechnol._ **4**, 173–178 (2009), DOI:10.1038/nnano.2008.404.
 - **Basic iron(III) carboxylate triangle** (`fe3_oxo`). R. D. Cannon, R. P. White, _Prog. Inorg.
   Chem._ **36**, 195–298 (1988), DOI:10.1002/9780470166376.ch3.

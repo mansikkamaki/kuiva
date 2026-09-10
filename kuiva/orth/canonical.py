@@ -59,7 +59,8 @@ References
 * Cholesky orthogonalization (the ``cholesky`` scheme): F. Aquilante, T. B. Pedersen,
   V. Veryazov, R. Lindh, "MOLCAS - a software for multiconfigurational quantum chemistry
   calculations", WIREs Comput. Mol. Sci. 3, 143 (2013), doi:10.1002/wcms.1117, and the
-  Cholesky-basis discussion in F. Aquilante et al., J. Chem. Phys. 125, 174101 (2006),
+  Cholesky-basis discussion in F. Aquilante, T. B. Pedersen, A. Sanchez de Meras, H. Koch,
+  J. Chem. Phys. 125, 174101 (2006),
   doi:10.1063/1.2360264.
 """
 from __future__ import annotations
