@@ -197,13 +197,20 @@ The energy-window form of `n_states` ([casscf](casscf.md#resolving-the-count-fro
 works here through the same rule and the same round loop; what differs is the cost and the
 kind of evidence a rung can produce, and both are stated in the output rather than assumed.
 
-**A rung is a whole sweep campaign.** The ladder asks the network for the lowest $`n`$ roots,
-which is a state-averaged solve to convergence on a cold state — so the rung table prints the
+**A rung is a whole sweep campaign, and a spectrum probe.** The ladder asks the network for
+the lowest $`n`$ roots, which is a state-averaged solve to convergence on a cold state — so the rung table prints the
 sweeps and the CPU seconds each rung took, and an expensive ladder is visible rather than
 inferred. Growth is by a factor of 1.5 rather than the CI's doubling for the same reason, and
 a grown rung starts **cold**: warm-starting across a root-count change by padding the
-incumbent shared basis with random centers is the obvious variant and is an unmeasured one,
-so it stays out until it is measured — what it would buy is time, never correctness.
+incumbent shared basis with random centers is the obvious variant, and it is measured and
+rejected — it saves 4 to 11 % of a ladder where both complete and, at a truncating cap, ⚠
+takes a *different path to a different verdict*, which is not a trade a reproducible default
+makes for a tenth of the cost. A rung also builds no RDMs, so the state-averaging gate — a
+rule about RDMs — does not refuse one: at a truncating cap an odd-electron trial ensemble
+has every Kramers pair split, and refusing there would refuse the whole calculation for a
+property of a throwaway spectrum. ⚠ The ladder can still climb into a rung that will not
+converge at the working cap; that refusal is clean, names the three knobs, and arrives
+several campaigns in, which is one more reason to state the first rung.
 
 **The witness roots are converged network roots.** A rung solves the count *plus a whole
 Kramers pair* and reads the gap between the last state inside the window and the first
@@ -226,10 +233,28 @@ a cap tight enough to truncate a bond can put a rung past what that bond actuall
 sweep refuses that too, and the ladder re-raises it saying the roots were a rung's rather
 than a stated count, because the two have different fixes.
 
+**⚠ A verdict is only as good as the cap it was read at.** A truncating bond dimension does
+not merely blur a spectrum, it *splits degenerate manifolds* — measured on a far trimer whose
+eight exactly degenerate product states came back spread over 13 096 cm⁻¹ at D = 8, from a
+sweep that had **converged** — and the rule then reads a cut that may sit inside a manifold,
+which is the one thing a window exists to prevent. Where the electron count is odd the
+resolution measures this directly: every level is at least doubly degenerate by Kramers'
+theorem, so any splitting inside a pair of the selected roots is the truncation's, and a
+splitting wider than the manifold gap is reported as a warning naming the bond dimension. A
+window on a truncating network is a statement about the network's spectrum, not about the
+exact one.
+
 **The first rung comes from a pilot** when nothing upstream supplies one: a short campaign
 (four sweeps) at a small bond dimension (8) over a generous root count, whose spectrum the
-rule reads for the first rung only. A pilot is variational from above per root and its
-splittings are rough — which is what a first rung is for, and why the rule is re-run on the
+rule reads for the first rung only. ⚠ **Its count is a lower bound on a multi-site system**,
+and measurably so: on a coupled dimer it hands over 1 where the exact answer is 4, on a far
+trimer 4 where the answer is 8. The error is the *cap* and not the sweep budget — twelve
+sweeps buy nothing over four, while a cap of 16 makes the trimer exact at 2.4× the cost and
+a coupled dimer needs 32 — and the default stays at 8 because a sixteen-root solve at 16 does
+not fit the machine on the first Tier-3 system, which is the system the pilot exists for.
+Where the first rung matters, state it (`initial=`) or take it from a `CheapCI` upstream.
+A pilot is variational from above per root and its splittings are rough — which is what a
+first rung is for, and why the rule is re-run on the
 production spectrum rather than trusted there. A [`CheapCI`](../reference/stages/CheapCI.md)
 upstream supplies the estimate instead and the pilot is not paid for at all; `initial=` on
 the window overrides both. The pilot runs once per calculation, not once per round.

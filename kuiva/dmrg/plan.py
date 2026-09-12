@@ -49,6 +49,7 @@ coming.
 """
 from __future__ import annotations
 
+import math
 from typing import List, Optional, Tuple
 
 from ..util import resources as res
@@ -106,30 +107,50 @@ def two_site_peak(ttno: TTNO, state: TTNState, *, n_roots: int,
     return best
 
 
-def two_site_capacity(ttno: TTNO, state: TTNState) -> int:
-    """The largest root count every two-site window of the tour can hold.
+def block_sector_floor(n_modes: int, n_elec: int, block: int) -> int:
+    """Smallest dimension a two-site problem spanning ``block`` modes can have.
 
-    The minimum over the sweep schedule of the two-site problem's dimension, run over
-    structure exactly as :func:`two_site_peak` is. ⚠ It is a property of the **topology and
-    the charge sectors**, not of the bond-dimension cap: a bond that separates very few
-    spinors from the rest carries a two-site space smaller than the root count no matter how
-    large ``max_bond`` is, and :func:`kuiva.dmrg.sweep._solve_local` refuses an ensemble it
-    cannot represent rather than truncating it. Asking here is what lets a caller that
-    *chooses* a root count — an energy window's ladder — stop below that refusal instead of
-    walking into it.
-
-    ⚠ An upper bound on the state count of a freshly canonicalized state, for the reason
-    :func:`two_site_peak` gives: every bond carries the full allowed sector set at its
-    centring, which a truncated state may not have kept.
+    ``sum_q C(block, q)`` over the electron numbers ``q`` that block may hold while the
+    remaining ``n_modes - block`` modes carry the rest — the state's first allocation, one
+    dimension per reachable charge sector.
     """
-    from .sweep import _LocalProblem                      # local: _LocalProblem is private
+    lo = max(0, int(n_elec) - (int(n_modes) - int(block)))
+    hi = min(int(block), int(n_elec))
+    return sum(math.comb(int(block), q) for q in range(lo, hi + 1)) if hi >= lo else 0
 
-    best: Optional[int] = None
-    for u, v in state.graph.sweep_schedule(state.center):
-        shapes = _recentred(ttno, state, u)
-        problem = _LocalProblem(ttno, shapes, ShapeEnvironments(ttno, shapes), u, v)
-        best = problem.dim if best is None else min(best, problem.dim)
-    return 0 if best is None else int(best)
+
+def two_site_capacity(graph, n_elec: int) -> int:
+    """The largest root count every two-site window of the tour is guaranteed to hold.
+
+    ⚠ **It is a property of the topology and the charge sectors, and of nothing else** — the
+    bond-dimension cap does not open it. A two-site update solves for the whole ensemble
+    inside the block of modes its two nodes cover, so a bond whose two-site space is smaller
+    than the root count cannot represent the ensemble and
+    :func:`kuiva.dmrg.sweep._solve_local` refuses it rather than silently averaging over a
+    smaller one. Asking here is what lets a caller that *chooses* a root count — an energy
+    window's ladder — stop below that refusal instead of walking into it.
+
+    The bound is the minimum over the graph's edges of :func:`block_sector_floor`, which is a
+    **lower** bound on the dimension the solve actually has (the environment bond spaces
+    multiply it), so a root count at or under it is safe at any cap.
+
+    ⚠ **Measured rather than derived from a state, and that is the fix for a real defect**:
+    reading the dimension off a *probe* state's re-centred shapes instead makes the answer
+    depend on the truncation that probe happened to carry, and on a fifteen-node half-filled
+    chain it read **zero** at two bonds of a network that solves sixteen roots without
+    complaint. The combinatorial floor has no probe, costs nothing, and reproduces the
+    solver's own refusals.
+
+    ⚠ With symmetry labels on, the sector the solve targets is finer than particle number
+    alone and the true capacity is smaller than this; a labelled network that refuses at a
+    bond is reporting the finer bound.
+    """
+    sizes = [len(c) for c in graph.contents]
+    n_modes = int(sum(sizes))
+    if not graph.edges:
+        return block_sector_floor(n_modes, n_elec, n_modes)
+    return min(block_sector_floor(n_modes, n_elec, sizes[u] + sizes[v])
+               for u, v in graph.edges)
 
 
 def network_memory_plan(ttno: TTNO, state: TTNState, *, n_roots: int,
@@ -206,4 +227,5 @@ def network_memory_plan(ttno: TTNO, state: TTNState, *, n_roots: int,
     return phases
 
 
-__all__ = ["network_memory_plan", "two_site_capacity", "two_site_peak"]
+__all__ = ["block_sector_floor", "network_memory_plan", "two_site_capacity",
+           "two_site_peak"]

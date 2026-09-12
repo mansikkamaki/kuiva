@@ -124,20 +124,27 @@ def test_an_upstream_estimate_is_used_instead_of_a_pilot(system):
 
 
 def test_a_window_the_topology_cannot_hold_is_refused(system):
-    """⚠ The narrowest two-site window of the tour bounds the ensemble whatever the cap is.
-    On the six-node path of this system that bound is three roots — two, in whole Kramers
-    pairs — so a cutoff reaching past them has no converged witness and the window is
-    refused with the capacity, the sector and the fix named, never rounded down to the roots
-    the network happens to be able to hold."""
+    """⚠ The narrowest two-site window of the tour bounds the ensemble whatever the cap is,
+    and the bound is the **charge sectors** the block can reach, not the bond dimension. On
+    the six-node path of this system two adjacent one-spinor nodes reach four sectors, so a
+    cutoff whose count plus a witness pair needs more than four roots has no converged
+    witness and the window is refused with the capacity, the sector and the fix named —
+    never rounded down to the roots the network happens to be able to hold.
+
+    The coarse two-node partition of the same system reaches fifteen (the whole sector),
+    which is why the fixture above answers the same request."""
     n, h, eri, _, _ = two_fragments()
-    ttno = TTNOTemplate(NetworkGraph.path(6)).fill(h, eri)
-    probe = random_state(ttno, 2, 16, n_roots=1, rng=np.random.default_rng(0))
-    assert two_site_capacity(ttno, probe) < 15
+    graph = NetworkGraph.path(6)
+    ttno = TTNOTemplate(graph).fill(h, eri)
+    assert two_site_capacity(graph, 2) == 4
+    assert two_site_capacity(NetworkGraph(2, [(0, 1)], contents=[(0, 1, 2), (3, 4, 5)]),
+                             2) == 15
     with pytest.raises(ValueError, match="coarser node partition"):
         resolve_network_window(ttno, 2, _window(12.0), max_bond=16, report=False)
-    # and one that fits inside the capacity is answered on the same topology
-    resolved = resolve_network_window(ttno, 2, _window(3.0), max_bond=16, report=False)
-    assert resolved.resolution.count == 5
+    # a cutoff whose count and witness fit inside the capacity is answered on the same
+    # topology: one state, with the pair above it as the witness
+    resolved = resolve_network_window(ttno, 2, _window(1.0), max_bond=16, report=False)
+    assert resolved.resolution.count == 1 and resolved.resolution.complete
 
 
 def test_a_cap_that_truncates_a_bond_below_a_rung_is_refused_as_the_ladder(system):
@@ -149,11 +156,70 @@ def test_a_cap_that_truncates_a_bond_below_a_rung_is_refused_as_the_ladder(syste
     from kuiva.dmrg import TwoSiteCapacityError
 
     n, h, eri, _, _ = two_fragments()
-    ttno = TTNOTemplate(NetworkGraph.path(6)).fill(h, eri)
-    probe = random_state(ttno, 2, 2, n_roots=1, rng=np.random.default_rng(0))
-    assert two_site_capacity(ttno, probe) == 4          # the full allowed set says four
+    graph = NetworkGraph.path(6)
+    ttno = TTNOTemplate(graph).fill(h, eri)
+    assert two_site_capacity(graph, 2) == 4            # the charge sectors allow four
+    # ... but at a cap of two the state carries only three of them, and a rung that asks for
+    # the fourth meets the sweep's own refusal rather than the ladder's ceiling
     with pytest.raises(TwoSiteCapacityError, match="rung of an energy window"):
-        resolve_network_window(ttno, 2, _window(3.0), max_bond=2, report=False)
+        resolve_network_window(ttno, 2, _window(3.0, gap=0.05, initial=3), max_bond=2,
+                               report=False)
+
+
+def test_warm_growth_reaches_the_same_verdict_as_cold(system):
+    """The measured-only variant: a grown rung started from the previous rung's ensemble
+    padded with random centers. ⚠ What it may change is the number of sweeps; what it may not
+    change is the answer — so the verdict, the count and the spectrum are pinned against the
+    cold ladder on the same system."""
+    ttno, n_elec, exact = system
+    window = _window(3.0, initial=1)
+    cold = resolve_network_window(ttno, n_elec, window, max_bond=16, report=False)
+    warm = resolve_network_window(ttno, n_elec, window, max_bond=16, warm_growth=True,
+                                  report=False)
+    assert warm.resolution.count == cold.resolution.count == 5
+    assert [r.n_roots for r in warm.resolution.rungs] == [r.n_roots
+                                                          for r in cold.resolution.rungs]
+    m = warm.resolution.count
+    assert np.max(np.abs(warm.resolution.energies[:m] - exact[:m])) < 1e-8
+
+
+def test_pad_roots_keeps_the_incumbent_basis_and_appends_centers(system):
+    ttno, n_elec, _ = system
+    from kuiva.dmrg.window import pad_roots
+
+    state = random_state(ttno, n_elec, 8, n_roots=2, rng=np.random.default_rng(2))
+    grown = pad_roots(state, 5, np.random.default_rng(3))
+    assert grown.n_roots == 5 and state.n_roots == 2      # the original is untouched
+    assert grown.graph == state.graph and grown.center == state.center
+    for a, b in zip(grown.centers, state.centers):        # the incumbent roots are kept
+        assert np.max(np.abs(a.to_dense() - b.to_dense())) == 0.0
+    # and asking for fewer is the truncation, not an error
+    assert pad_roots(state, 1, np.random.default_rng(4)).n_roots == 1
+
+
+def test_a_rung_is_a_spectrum_probe_and_the_rdm_gate_does_not_refuse_it():
+    """⚠ A rung builds no RDMs, so the state-averaging gate — which is about RDMs — may not
+    refuse it. Measured on the first Tier-3 system: at a truncating cap every Kramers pair of
+    a 16-root trial ensemble is split, the gate raised, and the window could not be resolved
+    at all. What the splitting means is *reported* instead, by
+    :func:`~kuiva.dmrg.window.kramers_split_cm`, which is the statement a user can act on."""
+    from kuiva.dmrg.window import kramers_split_cm
+
+    # the diagnostic itself: an odd electron count, pairs split by the truncation
+    e = np.array([0.0, 1.0e-5, 3.0e-3, 3.0e-3 + 2.0e-5])
+    split = kramers_split_cm(e, 4, n_elec=3)
+    assert abs(split - 2.0e-5 * 219474.6313632) < 1e-6
+    assert kramers_split_cm(e, 4, n_elec=4) is None      # even N: no theorem, no claim
+    assert kramers_split_cm(e, 1, n_elec=3) is None      # one root has no pair
+
+    # and a rung that splits pairs resolves rather than raising: an odd-electron model whose
+    # truncation cannot hold the ensemble exactly
+    n, h, eri, _, _ = two_fragments()
+    graph = NetworkGraph(2, [(0, 1)], contents=[(0, 1, 2), (3, 4, 5)])
+    ttno = TTNOTemplate(graph).fill(h, eri)
+    resolved = resolve_network_window(ttno, 3, _window(3.0), max_bond=4, report=False)
+    assert resolved.resolution.count >= 1
+    assert "kramers_split_cm" in resolved.resolution.extra
 
 
 def test_truncate_roots_keeps_the_shared_basis_and_drops_the_witness(system):

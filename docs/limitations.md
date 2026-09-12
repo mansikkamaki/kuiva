@@ -125,6 +125,15 @@ with its context. Each entry links to the page that explains the mechanism.
   refused outright, because the narrowest two-site window of the topology bounds the ensemble
   and therefore the witness root the verdict needs
   ([dmrg](methods/dmrg.md#resolving-a-state-count-on-the-network)).
+- ⚠ **A window resolved on a truncating tensor network is a statement about the network's
+  spectrum, not the exact one** — and a truncating cap *splits degenerate manifolds*:
+  measured, a far trimer's eight exactly degenerate product states came back spread over
+  13 096 cm⁻¹ at a bond dimension of 8, from a **converged** sweep. The rule then reads a cut
+  that can sit inside a manifold. Where the electron count is odd the resolution measures the
+  splitting inside each Kramers pair (it is the truncation's, by theorem) and warns when it
+  exceeds the manifold gap; where it is even there is no theorem to measure against, and the
+  bond-dimension series is the only evidence. The pilot that supplies the ladder's first rung
+  is subject to the same effect and its count is a **lower bound** on a multi-site system.
 - **Point-group symmetry is abelian double groups only, opt-in, and does not make a state
   average safe** ([symmetry](methods/symmetry.md#what-abelian-symmetry-cannot-promise)): a
   per-irrep count can split a physically degenerate manifold exactly as a plain count can.

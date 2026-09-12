@@ -1252,7 +1252,8 @@ class FullCISolver:
         return self.last
 
     def spectrum(self, h: np.ndarray, eri: np.ndarray, n_states: int, *,
-                 e_core: float = 0.0, seed_warm_start: bool = False) -> np.ndarray:
+                 e_core: float = 0.0, seed_warm_start: bool = False,
+                 generic: Optional[bool] = None) -> np.ndarray:
         """``n_states`` eigenvalues at these integrals — **no RDMs, nothing stored**.
 
         For :func:`state_average_boundary`, which needs roots this solver is not averaging
@@ -1262,6 +1263,16 @@ class FullCISolver:
 
         ⚠ Not a substitute for :meth:`solve_active`: no state averaging, no Kramers check, no
         density. Asking it for the states you intend to use would skip the state-averaging gate entirely.
+
+        ``generic`` adds the eigensolver's generic starting vectors in front of the warm start
+        (``None``: the cold-start-only default, which is what every caller had before the
+        keyword existed). ⚠ It is the same exposure an energy window's ladder has and
+        answers with ``True``: this solve asks for more roots than the warm start has
+        vectors, and a Krylov method cannot leave the invariant subspaces its starting
+        vectors lie in, so the extra roots can converge above the true next eigenvalue and
+        report a gap that is too *large*. The diagnostic is advisory, so nothing has ever
+        been wrong because of it; what the keyword is for is measuring whether it ever
+        moves a gap.
 
         ``seed_warm_start`` is the one sanctioned exception to "leaves the warm start alone",
         and it exists for the **pre-flight** boundary check of :func:`casscf`. There the
@@ -1282,7 +1293,8 @@ class FullCISolver:
         diagonal = diagonal_energies(self.space, h, eri)
         result: DavidsonResult = self._davidson(
             sigma, diagonal, n_states, guess=self._guess if self.warm_start else None,
-            label="CAS boundary", requests=self._boundary_requests(n_states - self.n_states))
+            label="CAS boundary", requests=self._boundary_requests(n_states - self.n_states),
+            generic=generic)
         if seed_warm_start and self.warm_start:
             # ⚠ Truncated to what was asked for. In the Kramers-restricted mode an odd request
             # is rounded up to a whole pair, and seeding the warm start with the extra state
@@ -1299,6 +1311,11 @@ class FullCISolver:
         selection that ends inside a near-degenerate cluster *of one sector's own states*
         breaks the average exactly as a plain count does, and only a per-sector spectrum can
         see it. No RDMs, nothing stored, and the warm start is left alone.
+
+        ⚠ Generic starting vectors go in front of the warm start here for the same reason
+        :meth:`spectrum` uses them: this solve asks each sector for more roots than the warm
+        start has vectors in it. Measured to move no gap and to cost nothing on the suite's
+        hardest cases.
         """
         self._require_resolved("measure a boundary")
         if self.state_request is None:
@@ -1312,7 +1329,7 @@ class FullCISolver:
         for request in self._boundary_requests(extra):
             label = request[0]
             result = self._davidson_sectors(sigma, diagonal, [request], guess=guess,
-                                            label="CAS boundary")
+                                            label="CAS boundary", generic=True)
             energies = np.asarray(result.energies, dtype=float)
             if self._kramers_map is not None \
                     and self._sectors.group.conjugate(label) != label:
@@ -1993,9 +2010,17 @@ def state_average_boundary(solver: FullCISolver, ints: CASIntegrals, *,
     if solver.state_request is not None:
         return _sector_boundary(solver, ints, n_extra, warn_cm=warn_cm, where=where,
                                 leaning=leaning)
+    # ⚠ **Generic starting vectors, measured rather than assumed** (2026-09-12): this solve
+    # asks for more roots than the warm start has vectors, and a Krylov method cannot leave
+    # the invariant subspaces its starting vectors lie in — the same exposure an energy
+    # window's ladder answers with generic vectors at every rung. Measured on the suite's
+    # hardest diagnostics (a 134-root Dy(3+) free ion and a 38 760-determinant double-shell
+    # FeCl2 among them) it moves no gap at all and costs 0.93 to 1.04 of the warm-only
+    # solve, so it is on: free insurance against the case where the warm subspace *is*
+    # blind, which on this system class converged 6 766 cm^-1 too high once.
     energies = solver.spectrum(np.ascontiguousarray(ints.h_active_effective()),
                                ints.active_eri(), n_states + n_extra,
-                               seed_warm_start=seed_warm_start)
+                               seed_warm_start=seed_warm_start, generic=True)
     relative = (energies - energies[0]) * HARTREE_TO_CM
     return BoundaryReport(n_states=n_states, ndet=ndet, margin=n_extra,
                           gap_cm=float(relative[n_states] - relative[n_states - 1]),

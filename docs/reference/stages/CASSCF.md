@@ -33,7 +33,7 @@ because an active space is a physical statement (elaboration:
 |---|---|---|
 | `n_states` | `1` | a count; an `EnergyWindow` (below); or — with point-group labels present — a per-irrep mapping `{irrep: n}`, which may hold one window beside fixed counts |
 | `weights` | equal | state-average weights; ⚠ equalized inside a degenerate block by the gate, and a count that splits a Kramers pair is refused. Refused beside a window |
-| `boundary_check` | `8` | extra roots solved (and discarded) to measure the state-average boundary gap, at the starting **and** converged orbitals; `0` switches the diagnostic off. Advisory — it never kills a run. Refused beside a window, which *is* the boundary measurement |
+| `boundary_check` | `8` | extra roots solved (and discarded) to measure the state-average boundary gap, at the starting **and** converged orbitals; `0` switches the diagnostic off. Advisory — it never kills a run. Refused beside a window, which *is* the boundary measurement. Its extra roots are solved with generic starting vectors, so a gap it reports cannot be an artefact of a warm start that was blind to a sector |
 | `preserve_symmetry` | `False` | mask inter-irrep orbital rotations, so the labels stay exact at convergence. ⚠ A constraint: converges to the lowest *symmetric* solution |
 | `classify` | `True` | the non-abelian classification of converged degenerate blocks (where active) |
 

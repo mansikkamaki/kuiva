@@ -182,8 +182,11 @@ a count that splits a block refused, and the *same* equalized weights producing 
 reported state-averaged energy. Around that gate sit the diagnostics, because the gate
 alone cannot see a near-degenerate manifold cut in half:
 
-- **The boundary-gap diagnostic** solves a few roots the average does *not* use and reports
-  the gap between the averaged set and the first discarded root — at the **starting**
+- **The boundary-gap diagnostic** solves a few roots the average does *not* use — with the
+  eigensolver's generic starting vectors in front of the warm start, since it asks for more
+  roots than that warm start has vectors and a gap read off a subspace that was blind to a
+  sector would be too *large* — and reports the gap between the averaged set and the first
+  discarded root — at the **starting**
   orbitals (what says the trajectory was safe) and at the **converged** ones — warning
   below 50 cm⁻¹. The threshold is a statement that the boundary is *unambiguous*, not a
   physical tolerance. It is advisory and never kills a run: a failure to measure is a

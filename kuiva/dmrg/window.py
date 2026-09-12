@@ -28,8 +28,11 @@ rule is re-run on the production spectrum afterwards rather than trusted here.
 **Growth is cold.** An incomplete verdict rebuilds the state at the grown count from
 :func:`kuiva.dmrg.sweep.random_state`, as :func:`kuiva.dmrg.manifold.solve_manifold` does for
 the same reason: adding random centers to the incumbent shared basis is the obvious warm
-variant and warm-starting across a root-count change is an **unmeasured** optimization. It
-stays out until it is measured, and what it would buy is time, never correctness.
+variant and warm-starting across a root-count change is an **unmeasured** optimization. The
+variant exists here as :func:`pad_roots`, reached by ``resolve_network_window(warm_growth=
+True)`` and **off**: what it can buy is time, never correctness, and what it must be shown not
+to move is the resolved count. Until that measurement exists on a real multi-site system the
+default is the cold rebuild.
 
 ⚠ **A root count the network cannot represent is refused, not truncated.** The two-site
 window at some bond of the tour can be smaller than the root count no matter how large the
@@ -37,10 +40,11 @@ cap is (:func:`kuiva.dmrg.plan.two_site_capacity`), so the ladder's ceiling is t
 as well as the cutoff's own cap: the rungs stop below the refusal instead of walking into
 it, and a window that would need more roots than the topology can hold is refused with the
 capacity, the sector and the fix named. The same bound applies to the pilot. That ceiling is
-measured over the *full* allowed sector set, which a capped state need not have kept, so a
-tight ``max_bond`` can still put a rung past a bond's real dimension; the sweep's own
-:class:`~kuiva.dmrg.sweep.TwoSiteCapacityError` catches that one and the ladder re-raises it
-saying the roots were a rung's rather than a stated count.
+the **guaranteed** dimension — one per reachable charge sector — while a state at a tight cap
+may carry fewer of the sectors than the bond allows, so a rung can still land past a bond's
+actual dimension; the sweep's own :class:`~kuiva.dmrg.sweep.TwoSiteCapacityError` catches
+that one and the ladder re-raises it saying the roots were a rung's rather than a stated
+count.
 
 References
 ----------
@@ -59,10 +63,13 @@ import numpy as np
 
 from ..util import output as out
 from ..util.logging import get_logger
+from ..util.units import HARTREE_TO_CM
 from ..util.window import (EnergyWindow, WindowResolution, resolve_states,
                           resolve_window)
 from .plan import two_site_capacity
-from .sweep import TTNState, TwoSiteCapacityError, random_state, solve_ttn
+from .block import BlockTensor
+from .sweep import (TTNState, TwoSiteCapacityError, _normalized, random_state,
+                    solve_ttn)
 from .ttno import TTNO
 
 log = get_logger(__name__)
@@ -109,6 +116,50 @@ def truncate_roots(state: TTNState, count: int) -> TTNState:
                     centers=[c.copy() for c in state.centers[:count]], charge=state.charge)
 
 
+def pad_roots(state: TTNState, count: int, rng) -> TTNState:
+    """The ensemble grown to ``count`` roots by appending random centers — **warm growth**.
+
+    The isometries and every bond space are the incumbent's, so what the grown rung starts
+    from is the shared basis the previous rung converged; the new centers are random tensors
+    of the same block structure, which is what :func:`~kuiva.dmrg.sweep.random_state` builds
+    every center as anyway (they are not mutually orthogonalized there either — the local
+    eigensolver orthogonalizes its own guess).
+
+    ⚠ **Measured-only, and off by default** (see :func:`resolve_network_window`): whether this
+    beats a cold rebuild at the grown count is a cost question on a real multi-site system, and
+    the resolved count must be shown not to move.
+    """
+    count = int(count)
+    if count <= state.n_roots:
+        return truncate_roots(state, count)
+    seed = state.centers[0]
+    extra = [_normalized(BlockTensor.random(seed.spaces, seed.signs, seed.charge, rng=rng))
+             for _ in range(count - state.n_roots)]
+    return TTNState(graph=state.graph, center=state.center,
+                    tensors=[None if t is None else t.copy() for t in state.tensors],
+                    centers=[c.copy() for c in state.centers] + extra, charge=state.charge)
+
+
+def kramers_split_cm(energies: Sequence[float], count: int, n_elec: int) -> Optional[float]:
+    """The worst splitting inside a Kramers pair of the selected roots [cm^-1], or ``None``.
+
+    ⚠ **What a window's verdict on a truncating network actually rests on.** With an odd
+    electron count every level is at least doubly degenerate as a matter of theorem, so any
+    splitting between roots ``2i`` and ``2i+1`` of a converged ensemble is the *truncation's*,
+    not the physics'. When it exceeds the manifold gap the rule is reading a spectrum whose
+    own degeneracies are broken, and the count it returns can cut a manifold — which is the
+    one thing a window exists to prevent. It is reported rather than acted on: the remedy is
+    a larger bond dimension, and only the caller can decide to pay for it.
+    """
+    if int(n_elec) % 2 == 0:
+        return None
+    e = np.asarray(energies, dtype=float)[:int(count)]
+    if e.size < 2:
+        return None
+    pairs = e[1:e.size - e.size % 2:2] - e[0:e.size - e.size % 2:2]
+    return float(np.max(pairs)) * HARTREE_TO_CM if pairs.size else None
+
+
 @dataclass
 class PilotEstimate:
     """What the pilot campaign read, and what it cost."""
@@ -140,15 +191,33 @@ class PilotEstimate:
 
 
 def _solve_roots(ttno: TTNO, n_elec: int, n_roots: int, *, max_bond: int, rng, charge,
-                 solve_kwargs: Dict[str, Any], memory_plan: bool,
-                 max_sweeps: int) -> Tuple[np.ndarray, TTNState, int, bool]:
-    """One cold campaign at ``n_roots`` roots: ``(energies, state, n_sweeps, converged)``."""
-    state = random_state(ttno, int(n_elec), int(max_bond), n_roots=int(n_roots), rng=rng,
-                         charge=charge)
+                 solve_kwargs: Dict[str, Any], memory_plan: bool, max_sweeps: int,
+                 start: Optional[TTNState] = None
+                 ) -> Tuple[np.ndarray, TTNState, int, bool]:
+    """One campaign at ``n_roots`` roots: ``(energies, state, n_sweeps, converged)``.
+
+    Cold from :func:`~kuiva.dmrg.sweep.random_state` unless ``start`` supplies an ensemble
+    already at that root count (warm growth, measured-only).
+
+    ⚠ **A rung is a spectrum probe and passes ``on_split="warn"``.** The state-averaging
+    gate refuses a count that splits a degenerate block because a state-averaged **RDM**
+    built from one depends on an arbitrary rotation inside the split pair — and a rung builds
+    no RDMs, keeps no state the calculation uses and is thrown away the moment the rule has
+    read its energies. Leaving the gate on "raise" here refuses the *ladder* for a property
+    of the trial ensemble: measured on the first Tier-3 system, where a 16-root rung at
+    D = 8 has every Kramers pair split by the truncation and the run died before the window
+    could be resolved at all. What the splitting means for the verdict is reported instead
+    (:func:`kramers_split_cm`), which is the statement a user can act on; the production
+    solve at the resolved count meets the gate unchanged.
+    """
+    state = start if start is not None else random_state(
+        ttno, int(n_elec), int(max_bond), n_roots=int(n_roots), rng=rng, charge=charge)
+    kwargs = dict(solve_kwargs)
+    kwargs.setdefault("on_split", "warn")
     result = solve_ttn(ttno, state, max_bond=int(max_bond), n_elec=int(n_elec),
                        max_sweeps=int(max_sweeps), boundary_check=0, weights=None,
                        memory_plan=memory_plan, plan_rdms=False, report=False,
-                       **solve_kwargs)
+                       **kwargs)
     return (np.asarray(result.energies, dtype=float), result.state, int(result.n_sweeps),
             bool(result.converged))
 
@@ -169,12 +238,10 @@ def pilot_estimate(ttno: TTNO, n_elec: int, window: EnergyWindow, *,
     """
     rng = np.random.default_rng(0) if rng is None else rng
     if ceiling is None:
-        # The same bound the ladder uses, measured rather than assumed: a pilot asked for
-        # more roots than the tour's narrowest two-site window can hold is refused by the
-        # sweep, and a *pilot* has no business raising that.
-        probe = random_state(ttno, int(n_elec), int(cap), n_roots=1,
-                             rng=np.random.default_rng(0), charge=charge)
-        ceiling = two_site_capacity(ttno, probe)
+        # The same bound the ladder uses: a pilot asked for more roots than the tour's
+        # narrowest two-site window can hold is refused by the sweep, and a *pilot* has no
+        # business raising that.
+        ceiling = two_site_capacity(ttno.graph, n_elec)
     asked = min(PILOT_ROOTS if n_roots is None else int(n_roots),
                 int(ceiling), window.max_states)
     # ⚠ Whole Kramers pairs, and the clamp is what decides the direction: rounding *up*
@@ -213,7 +280,7 @@ class NetworkSpectrumOracle:
 
     def __init__(self, ttno: TTNO, n_elec: int, *, max_bond: int, ceiling: int,
                  e_core: float = 0.0, rng=None, charge=None,
-                 max_sweeps: int = 30, planned: int = 0,
+                 max_sweeps: int = 30, planned: int = 0, warm: bool = False,
                  solve_kwargs: Optional[Dict[str, Any]] = None) -> None:
         self.ttno, self.n_elec = ttno, int(n_elec)
         self.max_bond, self.ceiling = int(max_bond), int(ceiling)
@@ -228,6 +295,9 @@ class NetworkSpectrumOracle:
         self.sweeps: List[int] = []
         self.n_apply: Optional[int] = None
         self._planned = int(planned)
+        #: Grow a rung from the previous one's ensemble (:func:`pad_roots`) instead of
+        #: rebuilding it cold. ⚠ Measured-only and off by default (module docstring).
+        self.warm = bool(warm)
 
     def spectrum(self, n_roots: int) -> np.ndarray:
         asked = min(int(n_roots) + WITNESS_ROOTS, self.ceiling)
@@ -236,11 +306,13 @@ class NetworkSpectrumOracle:
                                .format(n_roots, self.ceiling))
         plan = asked > self._planned
         self._planned = max(self._planned, asked)
+        start = (pad_roots(self.state, asked, self.rng)
+                 if self.warm and self.state is not None else None)
         try:
             energies, state, n_sweeps, converged = _solve_roots(
                 self.ttno, self.n_elec, asked, max_bond=self.max_bond, rng=self.rng,
                 charge=self.charge, solve_kwargs=self.solve_kwargs, memory_plan=plan,
-                max_sweeps=self.max_sweeps)
+                max_sweeps=self.max_sweeps, start=start)
         except TwoSiteCapacityError as exc:
             # ⚠ The structural ceiling is computed over the FULL allowed sector set, which a
             # capped state need not have kept — so a cap tight enough to truncate a bond can
@@ -293,6 +365,7 @@ def resolve_network_window(ttno: TTNO, n_elec: int, window: EnergyWindow, *,
                            pilot: bool = True, pilot_cap: int = PILOT_CAP,
                            pilot_sweeps: int = PILOT_SWEEPS,
                            pilot_roots: Optional[int] = None, planned: int = 0,
+                           warm_growth: bool = False,
                            estimate_source: str = "the upstream estimate",
                            where: str = "", report: bool = True,
                            level: int = logging.INFO) -> NetworkResolution:
@@ -311,9 +384,7 @@ def resolve_network_window(ttno: TTNO, n_elec: int, window: EnergyWindow, *,
     """
     n_modes = sum(len(c) for c in ttno.graph.contents)
     sector = sector_upper_bound(n_modes, n_elec)
-    probe = random_state(ttno, int(n_elec), int(max_bond), n_roots=1,
-                         rng=np.random.default_rng(0), charge=charge)
-    capacity = two_site_capacity(ttno, probe)
+    capacity = two_site_capacity(ttno.graph, n_elec)
     ceiling = max(1, min(sector, capacity))
     # ⚠ Whole Kramers pairs, at the ceiling as well as at every rung: with an odd electron
     # count an odd ensemble splits a degenerate pair and the state-averaging gate refuses the
@@ -337,7 +408,7 @@ def resolve_network_window(ttno: TTNO, n_elec: int, window: EnergyWindow, *,
     oracle = NetworkSpectrumOracle(ttno, n_elec, max_bond=max_bond, ceiling=ceiling,
                                    e_core=e_core, rng=rng, charge=charge,
                                    max_sweeps=max_sweeps, planned=planned,
-                                   solve_kwargs=solve_kwargs)
+                                   warm=warm_growth, solve_kwargs=solve_kwargs)
     resolution = resolve_states(oracle, window, n_elec=n_elec, space_size=ceiling,
                                 estimate=estimate, n_prev=n_prev, growth=NETWORK_GROWTH,
                                 witness=WITNESS_KIND)
@@ -366,6 +437,21 @@ def resolve_network_window(ttno: TTNO, n_elec: int, window: EnergyWindow, *,
                                      "cpu_seconds": round(measured.cpu_seconds, 3),
                                      "count": measured.count}
     resolution.extra["sweeps"] = list(oracle.sweeps)
+    split = kramers_split_cm(resolution.energies, resolution.count, n_elec)
+    if split is not None:
+        resolution.extra["kramers_split_cm"] = round(float(split), 4)
+        if split > window.gap_cm:
+            # ⚠ Loud, because it is the one thing that can make a clean-looking verdict wrong
+            # on this route: the rule read a spectrum whose own Kramers degeneracies the
+            # truncation had broken, so the "cut" it found may sit inside a manifold.
+            log.warning(
+                "the resolved ensemble's Kramers pairs are split by up to %.2f cm^-1 at "
+                "max_bond = %d, which is more than the window's manifold gap (%.2f cm^-1): "
+                "with an odd electron count every level is at least doubly degenerate by "
+                "theorem, so that splitting is the TRUNCATION's and the count %d was read "
+                "from a spectrum whose degeneracies are already broken. Raise max_bond until "
+                "it falls below the gap before trusting this cut",
+                split, max_bond, window.gap_cm, resolution.count)
     if report:
         resolution.report(log, level=level, where=where)
         out.entry(log, "sweeps per rung", ", ".join(str(s) for s in oracle.sweeps), "",
@@ -379,6 +465,7 @@ def resolve_network_window(ttno: TTNO, n_elec: int, window: EnergyWindow, *,
 
 
 __all__ = ["NetworkResolution", "NetworkSpectrumOracle", "PilotEstimate",
+           "kramers_split_cm", "pad_roots",
            "pilot_estimate", "resolve_network_window", "sector_upper_bound",
            "truncate_roots", "NETWORK_GROWTH", "PILOT_CAP", "PILOT_ROOTS",
            "PILOT_SWEEPS", "WITNESS_KIND", "WITNESS_ROOTS"]
