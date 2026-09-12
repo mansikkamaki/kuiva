@@ -404,9 +404,13 @@ def resolve_window(energies_asc: Sequence[float], window: EnergyWindow, *,
     # move the count sits within one manifold gap of the cutoff on its side.
     if steps[n_prev - 1] <= gap:
         return verdict
+    # ⚠ "Near" is **within one manifold gap of the cutoff**, on whichever side the mover is.
+    # Written as ``mover - delta <= gap`` the entering branch is true for every state below
+    # the cutoff, however far below, so any count that grew between rounds would be held at
+    # the old one for ever — found by a two-round CASSCF whose second round never ran.
     if verdict.count > n_prev:
         mover = rel[n_prev]                  # the first state that entered the window
-        near = (mover - delta) <= gap and mover <= delta
+        near = mover <= delta and (delta - mover) <= gap
     else:
         mover = rel[n_prev - 1]              # the last state that left the window
         near = mover > delta and (mover - delta) <= gap

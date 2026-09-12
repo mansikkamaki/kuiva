@@ -408,11 +408,19 @@ class CheapCI(_Stage):
     is the stage AVAS belongs on when a pre-optimization is wanted: it works from the
     reference's integer occupations, which the cheap CI's natural occupations are not.
 
+    ``n_states`` is a count or an :class:`~kuiva.util.window.EnergyWindow`. With a window the
+    count is resolved on the **reference space's** spectrum at the first solve and held for
+    the orbital loop (one round: this stage is qualitative and its count is an estimate),
+    then re-resolved at the pre-optimized orbitals for the report. ⚠ What that count is for
+    is the *handoff*: a :class:`CASSCF` built on this stage and given its own window takes
+    the ladder's first **rung** from :attr:`spectrum_cm`, never a verdict — a truncated CI
+    in a truncated space says roughly how many roots lie inside a cutoff and no more.
+
     After :meth:`run`: :attr:`orbitals`, :attr:`occupations`, :attr:`natural_occupation`,
-    :attr:`entropy`, :attr:`mutual_information`, :meth:`suggested_active`,
-    :meth:`dmrg_ordering`, the full :class:`~kuiva.mcscf.preopt.PreoptResult` as
-    :attr:`result`, and (with ``avas=``) the :class:`~kuiva.mcscf.avas.AVASResult` as
-    :attr:`avas`.
+    :attr:`entropy`, :attr:`mutual_information`, :attr:`n_states`, :attr:`spectrum_cm`,
+    :attr:`window`, :meth:`suggested_active`, :meth:`dmrg_ordering`, the full
+    :class:`~kuiva.mcscf.preopt.PreoptResult` as :attr:`result`, and (with ``avas=``) the
+    :class:`~kuiva.mcscf.avas.AVASResult` as :attr:`avas`.
     """
 
     _EXCLUDE = ("factors", "h_ao", "c_spinor", "spaces", "n_active_elec", "e_nuc",
@@ -420,12 +428,26 @@ class CheapCI(_Stage):
 
     def __init__(self, reference: Reference, *, active=None, character=None,
                  n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
-                 threshold: Optional[float] = None, avas=None, **options) -> None:
+                 threshold: Optional[float] = None, avas=None, n_states=1,
+                 **options) -> None:
         super().__init__()
         from ..mcscf.preopt import cheap_ci, preoptimize
+        from ..util.window import EnergyWindow, is_window_request
         self.reference_stage = self._finished(reference, Reference, "CheapCI")
         _check_options(options, _allowed_options(preoptimize, cheap_ci,
-                                                 exclude=self._EXCLUDE), "CheapCI")
+                                                 exclude=self._EXCLUDE + ("n_states",)),
+                       "CheapCI")
+        #: The energy window the count is resolved from, or ``None`` for a stated count.
+        self.window_request: Optional[EnergyWindow] = None
+        #: The resolution at the pre-optimized orbitals after :meth:`run`.
+        self.window = None
+        if is_window_request(n_states):
+            self.window_request = n_states
+            #: ``None`` until :meth:`run` with a window; the resolved count after it.
+            self.n_states: Optional[int] = None
+        else:
+            self.n_states = int(n_states)
+        self._n_states_arg = n_states
         self.avas, self._orbitals = None, None
         if avas is not None:
             if n_active_elec is not None:
@@ -449,7 +471,8 @@ class CheapCI(_Stage):
             self.avas.report(log)
         self.result = preoptimize(ref.factors, ref.h_one_electron(), start,
                                   self.space.spaces, self.space.n_elec,
-                                  e_nuc=ref.data.e_nuc, **self.options)
+                                  e_nuc=ref.data.e_nuc, n_states=self._n_states_arg,
+                                  **self.options)
         # ⚠ Restore exact Kramers pairing before anything downstream consumes the orbitals.
         # The cheap CI's truncated determinant space is not closed under time reversal, so
         # the orbitals it optimizes drift off pairing — legitimately, it is a *cheap* stage —
@@ -470,6 +493,12 @@ class CheapCI(_Stage):
         self.natural_occupation = self.result.natural_occupation
         self.entropy = self.result.entropy
         self.mutual_information = self.result.mutual_information
+        #: The state spectrum of the analysis solve, relative to the lowest [cm^-1]. ⚠ The
+        #: read side of the handoff, and **qualitative**: a downstream energy window takes
+        #: its ladder's first *rung* from it, never a verdict.
+        self.spectrum_cm = self.result.ci.relative_cm
+        self.window = self.result.ci.window
+        self.n_states = int(np.asarray(self.result.ci.energies).size)
 
     def suggested_active(self, **kwargs) -> np.ndarray:
         """Fractionally occupied active spinors — ⚠ a **lower bound** on the active space,
@@ -485,7 +514,7 @@ class CheapCI(_Stage):
 
     def _summary_entries(self):
         occ = ", ".join("{:.3f}".format(x) for x in self.occupations)
-        return [
+        entries = [
             ("active space", "CAS({}, {})  {}".format(self.space.n_elec,
                                                       self.space.n_active,
                                                       self.space.description)),
@@ -493,6 +522,10 @@ class CheapCI(_Stage):
             ("orbital occupations", occ),
             ("suggested active spinors", str(self.suggested_active().tolist())),
         ]
+        if self.window_request is not None:
+            entries.insert(1, ("states", "{} (resolved from {})".format(
+                self.n_states, self.window_request)))
+        return entries
 
 
 # --- 4. the CASSCF ---------------------------------------------------------------------------
@@ -643,6 +676,23 @@ class CASSCF(_Stage):
     assignment is an inference and prints as its own report, never as a column of the state
     table.
 
+    Choosing the states by an energy cutoff
+    ---------------------------------------
+    ``n_states=kuiva.EnergyWindow(1000)`` averages over every state within 1000 cm^-1 of the
+    lowest, extended to the top of any manifold the cutoff falls inside
+    (:class:`~kuiva.util.window.EnergyWindow`; ``{irrep: EnergyWindow}`` beside fixed counts
+    is its per-irrep form). :attr:`n_states` is then ``None`` until :meth:`run` and the
+    resolved count after it, :attr:`window` carries the
+    :class:`~kuiva.util.window.WindowResolution` and :attr:`rounds` the rounds it took.
+
+    ⚠ **The count is resolved at fixed orbitals and held for a whole orbital optimization;
+    it may change only between rounds** — the optimizer never sees a window, and a run whose
+    first round resolves to ``n`` and stays there is the fixed-count run at ``n``. ``max_iter``
+    is therefore the budget **across** rounds, and a window that never settles keeps the last
+    converged result and says so rather than picking a side (:mod:`kuiva.mcscf.rounds`).
+    ⚠ ``weights=`` is refused with a window, and so is ``solver="dmrg"`` for now. A
+    :class:`CheapCI` upstream supplies the ladder's first rung from its own spectrum.
+
     With point-group symmetry on (``point_group=`` at the front end), ``n_states`` may be a
     mapping ``{irrep: n}`` instead of a count — each irrep is then solved in its own sector of
     the determinant space, which is a request "lowest n" cannot express — and
@@ -683,19 +733,37 @@ class CASSCF(_Stage):
         if solver not in ("ci", "dmrg"):
             raise ValueError("solver must be 'ci' or 'dmrg'; got {!r}".format(solver))
         self.solver_kind = solver
-        from ..util.window import is_window_request
-        if is_window_request(n_states):
-            raise NotImplementedError(
-                "a CASSCF driven by an energy window is not implemented yet: the count is "
-                "resolved between rounds of the orbital optimization and that round loop does "
-                "not exist yet. kuiva.CASCI takes n_states=kuiva.EnergyWindow(...) as it "
-                "stands; for the CASSCF state a count for now")
-        #: ``n_states`` is either a count or, with point-group labels present, a per-irrep
-        #: mapping ``{irrep: n}``. The two are forms of one argument; the mapping's total is
-        #: what :attr:`n_states` reports so every consumer of the count still works.
+        from ..util.window import EnergyWindow, is_window_request, shared_window
+        #: The energy window the count is resolved from, or ``None`` for a stated count.
+        self.window_request: Optional[EnergyWindow] = None
+        #: The :class:`~kuiva.util.window.WindowResolution` at the converged orbitals after
+        #: :meth:`run`; ``None`` before it and for a stated count.
+        self.window = None
+        #: ``n_states`` is a count, a per-irrep mapping ``{irrep: n}`` with point-group
+        #: labels present, or an energy window. The three are forms of one argument; a
+        #: mapping's total and a window's resolved count are what :attr:`n_states` reports,
+        #: so every consumer of the count still works.
         self.state_request = dict(n_states) if isinstance(n_states, dict) else None
-        self.n_states = (sum(int(v) for v in n_states.values())
-                         if self.state_request is not None else int(n_states))
+        if is_window_request(n_states):
+            if solver != "ci":
+                raise NotImplementedError(
+                    "a tensor-network CASSCF driven by an energy window is not implemented "
+                    "yet: a rung of the ladder is a whole sweep campaign and the network's "
+                    "own first-rung estimate (a pilot sweep) does not exist yet. "
+                    "solver='ci' takes n_states=kuiva.EnergyWindow(...) as it stands; here, "
+                    "state a count")
+            if weights is not None:
+                raise ValueError("weights= cannot be combined with an energy window: a "
+                                 "window's weights are equal by construction and the "
+                                 "state-averaging gate equalizes them inside degenerate "
+                                 "blocks. Drop weights=, or state a count")
+            self.window_request = (n_states if isinstance(n_states, EnergyWindow)
+                                   else shared_window(n_states))
+            self.n_states: Optional[int] = None
+        else:
+            self.n_states = (sum(int(v) for v in n_states.values())
+                             if self.state_request is not None else int(n_states))
+        self._n_states_arg = n_states
         self.preserve_symmetry = bool(preserve_symmetry)
         if self.preserve_symmetry and solver != "ci":
             raise ValueError("preserve_symmetry= constrains the shared orbital optimizer and "
@@ -787,7 +855,8 @@ class CASSCF(_Stage):
                          "n_active_elec",
                          "e_nuc", "n_states", "weights", "solver", "active",
                          "solver_options", "callback", "report", "optimizer_state",
-                         "start_iteration", "space_key", "history", "extra_columns"))
+                         "start_iteration", "space_key", "history", "extra_columns",
+                         "window_estimate", "on_round"))
             # api.casscf's own, and named rather than swept in with the rest of that
             # function's keywords: those are this stage's explicit arguments and letting
             # them through here would let one be given twice.
@@ -954,7 +1023,20 @@ class CASSCF(_Stage):
 
         ⚠ **Only the converged-orbital boundary diagnostic comes back.** The starting-orbital
         one is a statement about a trajectory and belongs to the run that wrote the file.
+
+        ⚠ ``n_states`` may not be an :class:`~kuiva.util.window.EnergyWindow` here. A window
+        is resolved against a trajectory's orbitals and can change the count between rounds;
+        there is no trajectory left, so a file written by a windowed run supplies its
+        **resolved count** and keeps the window as provenance, which is the only reading that
+        can be right.
         """
+        from ..util.window import is_window_request
+        if is_window_request(n_states):
+            raise ValueError(
+                "n_states= cannot be an energy window here: a materialization configures "
+                "nothing and resolves nothing, so the count comes from the file (with the "
+                "window it was resolved from kept as provenance). Leave n_states out, or "
+                "state a count to re-solve a different number of states at these orbitals")
         stage = cls(reference, restart=path,
                     n_states=1 if n_states is None else n_states, weights=weights,
                     solver_options=solver_options, report=report, classify=classify)
@@ -973,9 +1055,11 @@ class CASSCF(_Stage):
                                                   self.restart, report=self.report,
                                                   **self._materialize))
             return
+        options = dict(self.optimizer_options)
+        if self.window_request is not None:
+            options["window_estimate"] = self._window_first_rung()
         outcome = _api_casscf(self.reference_stage.reference, active=self.space,
-                              n_states=(self.state_request if self.state_request is not None
-                                        else self.n_states),
+                              n_states=self._n_states_arg,
                               preserve_symmetry=self.preserve_symmetry,
                               weights=self.weights,
                               coeff=self._orbitals, checkpoint=self.checkpoint,
@@ -983,8 +1067,29 @@ class CASSCF(_Stage):
                               checkpoint_options=self.checkpoint_options,
                               solver_options=self.solver_options, callback=self.callback,
                               deadline=self.deadline, signals=self.signals,
-                              report=self.report, **self.optimizer_options)
+                              report=self.report, **options)
         self._adopt_ci(outcome)
+
+    def _window_first_rung(self) -> Optional[int]:
+        """The ladder's first rung, from an upstream :class:`CheapCI`'s own spectrum.
+
+        ⚠ **A rung, never a verdict.** The cheap CI's energies are qualitative by
+        construction — a truncated CI in a truncated space — so what its spectrum is good for
+        is saying roughly how many roots lie inside the cutoff, which is exactly what the
+        first rung is. The rule then runs on the full CI's spectrum from there, and the
+        output states where the rung came from. With no upstream spectrum (a ``Reference``
+        upstream, or a cheap CI run at one root) the ladder takes its own default, and
+        ``EnergyWindow(initial=)`` overrides both.
+        """
+        spectrum = getattr(self.upstream, "spectrum_cm", None)
+        if spectrum is None:
+            return None
+        from ..util.units import HARTREE_TO_CM
+        from ..util.window import resolve_window
+        energies = np.asarray(spectrum, dtype=float).ravel() / HARTREE_TO_CM
+        if energies.size < 2:
+            return None
+        return max(1, int(resolve_window(energies, self.window_request).count))
 
     def _adopt_ci(self, outcome) -> None:
         """Publish a conventional-CI outcome as this stage's results.
@@ -1004,6 +1109,11 @@ class CASSCF(_Stage):
         self.ci = outcome.ci
         self.boundary = outcome.boundary
         self.boundary_initial = outcome.boundary_initial
+        #: The window resolution (``None`` for a stated count). A window resolves to a count
+        #: at run time and the stage then reports that count exactly as a stated one, so
+        #: every consumer of :attr:`n_states` reads a number.
+        self.window = outcome.window
+        self.rounds = outcome.rounds
         self.checkpoint_path = outcome.checkpoint_path
         self._energies = np.asarray(outcome.ci.total_energies, dtype=float)
         # ⚠ A materialized stage was constructed before the file was read, so its declared
@@ -1337,6 +1447,13 @@ class CASSCF(_Stage):
             ("|grad|", "{:.2e}".format(self.orbital.grad_norm)),
             ("states", str(self._energies.size)),
         ]
+        if self.window is not None:
+            gap = self.window.boundary_gap_cm
+            entries.append(("state window", "{}; {} round(s), witness gap {}{}".format(
+                self.window.window.describe(), len(self.rounds),
+                "none (whole space)" if gap is None else "{:.2f} cm^-1".format(gap),
+                "; AMBIGUOUS, the verdict was still moving" if self.window.ambiguous
+                else "")))
         if self.solver_kind == "dmrg":
             entries.append(("largest bond dimension", str(self.solver.last.max_bond_dim)))
             # ⚠ Beside the bond dimension, never instead of it: the cap says what was

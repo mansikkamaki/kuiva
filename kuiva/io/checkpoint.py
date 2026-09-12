@@ -706,7 +706,51 @@ def state_average_key(solver) -> Optional[str]:
     window = getattr(solver, "window", None)
     if window is not None and hasattr(window, "to_json"):
         request += ";window={}".format(window.to_json())
+        # ⚠ A per-irrep window resolves to a count *per sector*, and the request field above
+        # records the window rather than those counts — so without this the file would say
+        # how many states in total and never which sectors they came from, and a restart
+        # could resume one selection as another. The plain form needs nothing: its resolved
+        # count is the ``n_states`` field itself.
+        resolved = getattr(solver, "state_request", None)
+        if resolved is not None and isinstance(requested, dict):
+            sectors = getattr(solver, "_sectors", None)
+            request += ";counts={}".format(json.dumps(
+                {(sectors.name(label) if sectors is not None else str(label)): int(count)
+                 for label, count in resolved}, sort_keys=True))
     return "n_states={}{};weights={}".format(int(n_states), request, rendered)
+
+
+def _state_average_fields(key: Optional[str]) -> Dict[str, str]:
+    """``name -> value`` of a :func:`state_average_key` string; empty for ``None``."""
+    fields: Dict[str, str] = {}
+    if not key:
+        return fields
+    for chunk in str(key).split(";"):
+        name, _, value = chunk.partition("=")
+        fields[name.strip()] = value.strip()
+    return fields
+
+
+def state_average_window(key: Optional[str]):
+    """The :class:`~kuiva.util.window.EnergyWindow` a key records, or ``None``.
+
+    A run whose state count was resolved from an energy cutoff records the cutoff beside the
+    count, because the two answer different questions: the count is what the calculation ran
+    at and is what a restart must reproduce exactly, the window is what it was *asked* for and
+    is what a restart restates. ⚠ A restart therefore takes the count from the file and
+    compares the window — a changed cutoff is a different calculation, exactly as a changed
+    count is.
+    """
+    from ..util.window import EnergyWindow
+
+    text = _state_average_fields(key).get("window")
+    return None if not text else EnergyWindow.from_json(text)
+
+
+def state_average_counts(key: Optional[str]):
+    """The resolved per-irrep counts a windowed per-irrep key records, or ``None``."""
+    text = _state_average_fields(key).get("counts")
+    return None if not text else {str(k): int(v) for k, v in json.loads(text).items()}
 
 
 def parse_state_average_key(key: Optional[str]):
@@ -720,10 +764,7 @@ def parse_state_average_key(key: Optional[str]):
     """
     if not key:
         return None, None
-    fields: Dict[str, str] = {}
-    for chunk in str(key).split(";"):
-        name, _, value = chunk.partition("=")
-        fields[name.strip()] = value.strip()
+    fields = _state_average_fields(key)
     if "request" in fields:
         # A per-irrep request that held an energy window records the window's JSON where a
         # count would be; the count that request resolved to is the `n_states` field.
@@ -828,6 +869,17 @@ class CheckpointPolicy:
         self.stats = CheckpointStats()
         self._last_write = time.time()
         self._bandwidth: Optional[float] = None
+
+    def rebind(self, solver) -> None:
+        """Point the policy at the solver now driving the optimization.
+
+        ⚠ Needed by exactly one caller and for one reason: a CASSCF whose state count is
+        resolved from an energy cutoff runs each round on a **sibling** solver built at that
+        round's count (:mod:`kuiva.mcscf.rounds`), and the state average this policy records
+        is read off the solver. Without this the file would carry the state average of a
+        solver that never solved anything, and a restart would be checked against it.
+        """
+        self.solver = solver
 
     # -- the optimizer hook ---------------------------------------------------------------
     def callback(self, info: dict):
@@ -1062,4 +1114,5 @@ __all__ = ["CASSCFCheckpoint", "CheckpointError", "CheckpointPolicy", "Checkpoin
            "SCHEMA_VERSION", "FINGERPRINTED_MODULES", "CURVATURE_KEYS", "THINNING_LADDER",
            "STATE_AVERAGE_KEY", "SYSTEM_KEY", "checkpoint_size_gb", "check_system",
            "code_fingerprint", "parse_state_average_key", "read_checkpoint",
-           "state_average_key", "system_fingerprint", "write_checkpoint"]
+           "state_average_counts", "state_average_key", "state_average_window",
+           "system_fingerprint", "write_checkpoint"]

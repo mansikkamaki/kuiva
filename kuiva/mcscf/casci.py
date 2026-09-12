@@ -76,9 +76,10 @@ References
 from __future__ import annotations
 
 import copy
+import inspect
 import itertools
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Hashable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -908,6 +909,23 @@ class FullCISolver:
         clone.n_solves = 0
         return clone
 
+    def adopt_window(self, window: EnergyWindow) -> "FullCISolver":
+        """Record ``window`` as the provenance of a count that is **already** resolved.
+
+        For a calculation read back from a file: a checkpoint written by a windowed run
+        stores the resolved count beside the window it came from, and a solver built at that
+        count has to carry the window too or the restart check reads it as a different state
+        average. ⚠ Not a request — nothing is resolved here and no ladder runs; the count
+        stands as it was given. Building a solver with ``n_states=window`` is the request.
+        """
+        if self.n_states is None:                          # pragma: no cover - defensive
+            raise RuntimeError("adopt_window records a window beside a resolved count; this "
+                               "solver has none")
+        self.window = window
+        if not isinstance(self.requested_states, dict):
+            self.requested_states = window
+        return self
+
     def _resolve_conjugate_units(self, requests=None, *, strict: bool = True):
         """``[(label, mask, n_pairs)]`` for a per-irrep request under Kramers restriction.
 
@@ -1724,6 +1742,11 @@ def _report_states(result: CASCIResult) -> None:
 #: the window.
 BOUNDARY_MARGIN = 8
 
+#: The orbital optimizer's own ``max_iter`` default, read from it rather than restated: a
+#: windowed run spends that budget across its rounds and has to know what it is when the
+#: caller did not say. Two copies of this number would differ the day one of them moved.
+_ORBOPT_MAX_ITER = inspect.signature(optimize_orbitals).parameters["max_iter"].default
+
 #: Above this, the averaged density is reported as **leaning on the spin-orbit structure**:
 #: its stability rests entirely on the boundary gap rather than on an invariance of the
 #: ensemble. Term-complete and full-space averages measure <=0.02 (machine zero for a free
@@ -1898,6 +1921,7 @@ class BoundaryReport:
 
 def boundary_report_from_window(resolution: WindowResolution, ndet: int, *,
                                 where: str = "fixed orbitals",
+                                n_states: Optional[int] = None,
                                 spin_noninvariance: Optional[float] = None
                                 ) -> BoundaryReport:
     """The :class:`BoundaryReport` a window resolution *is*.
@@ -1907,13 +1931,32 @@ def boundary_report_from_window(resolution: WindowResolution, ndet: int, *,
     object the CASSCF outcome carries is built from the verdict rather than measured a second
     time. A resolution that spans the whole space reports no gap (a pass, not a zero), exactly
     as :func:`state_average_boundary` does.
+
+    ``n_states`` states the count the average **actually used** where it is not the verdict's
+    own: the one case is a windowed CASSCF whose rounds ran out with the verdict still
+    moving, where the kept result is the converged one at the previous count and the boundary
+    belongs to *it* rather than to the count nothing optimized at. The gap is then read off
+    the resolution's own spectrum at that count, which is the same measurement one root over.
     """
     verdict = resolution.verdict
-    return BoundaryReport(n_states=int(resolution.count), ndet=int(ndet),
-                          margin=max(0, int(verdict.n_solved) - int(resolution.count)),
-                          gap_cm=verdict.witness_gap_cm,
-                          next_cm=tuple(verdict.relative_cm), where=where,
-                          sector=resolution.sector, spin_noninvariance=spin_noninvariance)
+    count = int(resolution.count) if n_states is None else int(n_states)
+    if count == int(resolution.count):
+        return BoundaryReport(n_states=count, ndet=int(ndet),
+                              margin=max(0, int(verdict.n_solved) - count),
+                              gap_cm=verdict.witness_gap_cm,
+                              next_cm=tuple(verdict.relative_cm), where=where,
+                              sector=resolution.sector,
+                              spin_noninvariance=spin_noninvariance)
+    energies = np.asarray(resolution.energies, dtype=float).ravel()
+    if energies.size <= count:
+        return BoundaryReport(n_states=count, ndet=int(ndet), margin=0, gap_cm=None,
+                              where=where, spin_noninvariance=spin_noninvariance)
+    relative = (energies - energies[0]) * HARTREE_TO_CM
+    return BoundaryReport(n_states=count, ndet=int(ndet),
+                          margin=int(energies.size) - count,
+                          gap_cm=float(relative[count] - relative[count - 1]),
+                          next_cm=tuple(float(x) for x in relative[count - 1:]),
+                          where=where, spin_noninvariance=spin_noninvariance)
 
 
 def state_average_boundary(solver: FullCISolver, ints: CASIntegrals, *,
@@ -2051,6 +2094,24 @@ class CASSCFOutcome:
     #: one that says whether the trajectory was safe; the converged one only says whether the
     #: answer is. They can disagree, and when they do it is this one that matters.
     boundary_initial: Optional[BoundaryReport] = None
+    #: With ``n_states`` an :class:`~kuiva.util.window.EnergyWindow`: the resolution at the
+    #: **converged** orbitals of the last round — the count, the ladder that found it and the
+    #: witness gap. ``None`` for a stated count. ⚠ Its
+    #: :attr:`~kuiva.util.window.WindowResolution.ambiguous` flag says the rounds ran out
+    #: with the verdict still moving, in which case the count this outcome was optimized at
+    #: is :attr:`~kuiva.mcscf.casci.FullCISolver.n_states` and **not** the resolution's.
+    window: Optional[WindowResolution] = None
+    #: The rounds a windowed run took (:class:`kuiva.mcscf.rounds.Round`); empty otherwise.
+    rounds: List[Any] = field(default_factory=list)
+
+    @property
+    def n_rounds(self) -> int:
+        return len(self.rounds)
+
+    @property
+    def n_states(self) -> int:
+        """The state count the average actually ran at."""
+        return int(np.asarray(self.ci.energies).size)
 
     @property
     def energy(self) -> float:
@@ -2081,6 +2142,9 @@ def casscf(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: OrbitalSpace
            solver_options: Optional[Dict[str, Any]] = None,
            boundary_check: int = BOUNDARY_MARGIN,
            spin_ao_2c: Optional[np.ndarray] = None, classifier=None,
+           window_estimate: Optional[int] = None,
+           window_resolved: Optional[Tuple[WindowResolution, "FullCISolver"]] = None,
+           on_round: Optional[Any] = None,
            **optimizer_kwargs) -> CASSCFOutcome:
     """State-averaged two-component CASSCF: full CI in, orbital rotation out.
 
@@ -2088,6 +2152,17 @@ def casscf(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: OrbitalSpace
     :func:`~kuiva.mcscf.orbopt.optimize_orbitals` and nothing about the optimizer changes.
     ``optimizer_kwargs`` go straight through (``mode``, ``max_iter``, ``conv_grad``,
     ``conv_energy``, ``callback``, ...).
+
+    ``n_states`` as an :class:`~kuiva.util.window.EnergyWindow` selects the states by an
+    energy cutoff instead of a count. ⚠ **The count is then resolved at fixed orbitals and
+    held for a whole orbital optimization; it may change only between rounds**, and the
+    optimizer never sees a window — see :mod:`kuiva.mcscf.rounds` for the loop and for what
+    happens when the verdict does not settle. The resolution comes back on
+    :attr:`CASSCFOutcome.window` and the rounds on :attr:`CASSCFOutcome.rounds`; ``max_iter``
+    is the budget **across** rounds, and ``boundary_check=`` is refused, because the window
+    *is* the boundary measurement. ``window_estimate`` is the ladder's first rung from an
+    upstream cheap CI (:class:`kuiva.CheapCI`), and ``on_round`` is called with the solver
+    that drives each round, for a caller holding something keyed on it.
 
     The state-average boundary is measured **twice**, and the two are different
     statements: :attr:`~CASSCFOutcome.boundary_initial` at the orbitals the optimization starts
@@ -2115,13 +2190,23 @@ def casscf(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: OrbitalSpace
     """
     solver = solver or FullCISolver(spaces.n_active, n_elec, n_states=n_states,
                                     weights=weights, **(solver_options or {}))
-    if solver.window is not None and solver.n_states is None:
-        raise NotImplementedError(
-            "a CASSCF driven by an energy window ({!r}) is not implemented yet: the count "
-            "is resolved between rounds of the orbital optimization and that round loop does "
-            "not exist yet. A CASCI takes the window as it stands; for the CASSCF state a "
-            "count for now".format(solver.window))
     report_level = (logging.INFO if optimizer_kwargs.get("report", True) else logging.DEBUG)
+    if solver.window is not None:
+        # ⚠ The whole of the window's machinery is the round loop, and it wraps this driver
+        # rather than modifying it: what runs inside is the same fixed-count optimization,
+        # started from the same orbitals with the same warm start.
+        if int(boundary_check) != BOUNDARY_MARGIN:
+            raise ValueError(
+                "boundary_check= cannot be combined with an energy window: the window IS the "
+                "boundary measurement -- it solves the roots the average does not use and "
+                "reads the count off the gap instead of checking one against it -- and a "
+                "second margin would be a second definition of the witness. Drop "
+                "boundary_check=, or state a count")
+        return _casscf_windowed(
+            factors, h_ao, c_spinor, spaces, n_elec, solver=solver, e_nuc=e_nuc,
+            active=active, spin_ao_2c=spin_ao_2c, classifier=classifier,
+            window_estimate=window_estimate, on_round=on_round, report_level=report_level,
+            optimizer_kwargs=optimizer_kwargs)
 
     # ⚠ **The boundary is checked BEFORE the optimization as well, and that is the check that
     # can actually save the run**. An incomplete average does its damage *along* the
@@ -2148,33 +2233,9 @@ def casscf(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: OrbitalSpace
     optimizer_kwargs.setdefault("n_active_elec", n_elec)
     orbital = optimize_orbitals(factors, h_ao, np.ascontiguousarray(c_spinor), spaces,
                                 solver, e_nuc=e_nuc, **optimizer_kwargs)
-    if solver.last is None:                                   # pragma: no cover - defensive
-        raise RuntimeError("the optimizer returned without ever solving the CI")
-
-    # ⚠ The optimizer's *last* CI solve is not necessarily at the orbitals it returns: a
-    # rejected trial step solves the CI at orbitals that are then thrown away, and a run that
-    # stops on a rejection (max_iter, or a callback) leaves ``solver.last`` there. The states
-    # this outcome reports — and the property matrices built from them — must belong to
-    # ``orbital.coeff``, so the mismatch is detected and repaired rather than trusted. The
-    # test is exact: a step is rejected only when it *raises* the energy by more than
-    # ``conv_energy``, so equal energies mean the same point.
-    if solver.last.energy != orbital.energy:
-        log.debug("the optimizer's last CI solve was at rejected orbitals (E = %.10f Eh "
-                  "against the returned %.10f Eh); re-solving at the returned orbitals so "
-                  "the reported states belong to them", solver.last.energy, orbital.energy)
-        final = CASIntegrals.build(factors, h_ao, orbital.coeff, spaces, e_nuc=e_nuc)
-        solver.casci(final)
-    solver.last.coeff, solver.last.spaces = orbital.coeff, spaces
-    if active is not None:
-        solver.last.description = active.description
-    # ⚠ The classifier is built from the *starting* orbitals but applied to the converged
-    # ones, so it is rebuilt here rather than reused: an operator matrix belongs to the
-    # orbital set it was computed from, and a converged CASSCF has rotated them.
-    classify_multiplets(solver.last, classifier, rebuild_at=(orbital.coeff, spaces),
-                        on_split=solver.on_split,
-                        report=optimizer_kwargs.get("report", True), level=report_level)
-    if optimizer_kwargs.get("report", True):
-        _report_states(solver.last)
+    _finish_states(solver, orbital, factors, h_ao, spaces, e_nuc, active=active,
+                   classifier=classifier, report=optimizer_kwargs.get("report", True),
+                   level=report_level)
 
     # ⚠ **Is the state average complete?** The only evidence is a root the average did
     # not take, so this solves a few extra at the converged orbitals and discards them. Cost is
@@ -2195,6 +2256,163 @@ def casscf(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: OrbitalSpace
     return CASSCFOutcome(orbital=orbital, ci=solver.last, solver=solver,
                          active=active or ActiveSpace(spaces=spaces, n_elec=n_elec),
                          boundary=boundary, boundary_initial=boundary_initial)
+
+
+def _finish_states(solver: FullCISolver, orbital: CASSCFResult, factors, h_ao: np.ndarray,
+                   spaces: OrbitalSpaces, e_nuc: float, *, active, classifier,
+                   report: bool, level: int) -> None:
+    """Pin the reported states to the orbitals the optimizer returned, then label them.
+
+    ⚠ The optimizer's *last* CI solve is not necessarily at the orbitals it returns: a
+    rejected trial step solves the CI at orbitals that are then thrown away, and a run that
+    stops on a rejection (``max_iter``, a deadline, a callback) leaves ``solver.last`` there.
+    The states this outcome reports — and the property matrices built from them — must belong
+    to ``orbital.coeff``, so the mismatch is detected and repaired rather than trusted. The
+    test is exact: a step is rejected only when it *raises* the energy by more than
+    ``conv_energy``, so equal energies mean the same point.
+
+    Shared by the fixed-count driver and the windowed one, which is the point: a window
+    resolves to a count, and after that the two are the same calculation.
+    """
+    if solver.last is None:                                   # pragma: no cover - defensive
+        raise RuntimeError("the optimizer returned without ever solving the CI")
+    if solver.last.energy != orbital.energy:
+        log.debug("the optimizer's last CI solve was at rejected orbitals (E = %.10f Eh "
+                  "against the returned %.10f Eh); re-solving at the returned orbitals so "
+                  "the reported states belong to them", solver.last.energy, orbital.energy)
+        final = CASIntegrals.build(factors, h_ao, orbital.coeff, spaces, e_nuc=e_nuc)
+        solver.casci(final)
+    solver.last.coeff, solver.last.spaces = orbital.coeff, spaces
+    if active is not None:
+        solver.last.description = active.description
+    # ⚠ The classifier is built from the *starting* orbitals but applied to the converged
+    # ones, so it is rebuilt here rather than reused: an operator matrix belongs to the
+    # orbital set it was computed from, and a converged CASSCF has rotated them.
+    classify_multiplets(solver.last, classifier, rebuild_at=(orbital.coeff, spaces),
+                        on_split=solver.on_split, report=report, level=level)
+    if report:
+        _report_states(solver.last)
+
+
+def _casscf_windowed(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: OrbitalSpaces,
+                     n_elec: int, *, solver: FullCISolver, e_nuc: float, active,
+                     spin_ao_2c: Optional[np.ndarray], classifier,
+                     window_estimate: Optional[int], on_round,
+                     report_level: int, optimizer_kwargs: Dict[str, Any]) -> CASSCFOutcome:
+    """:func:`casscf` with the state count resolved from an energy cutoff.
+
+    The whole mechanism is :func:`kuiva.mcscf.rounds.optimize_rounds`, whose docstring holds
+    the design; this supplies the two closures it drives. ⚠ Nothing about the optimizer
+    changes: each round is an ordinary fixed-count
+    :func:`~kuiva.mcscf.orbopt.optimize_orbitals` run on a sibling solver, started from the
+    ladder's own converged vectors, so a window
+    whose first round resolves to ``n`` and stays there reproduces the fixed-count run at
+    ``n`` step for step.
+
+    ⚠ **The resolution replaces the boundary diagnostic rather than being added to it**: the
+    ladder already solves the roots the average does not use and reads the gap to the first of
+    them, so :attr:`CASSCFOutcome.boundary` and ``boundary_initial`` are built from the
+    verdicts (:func:`boundary_report_from_window`) and no second Davidson solve is paid for.
+    """
+    from .rounds import optimize_rounds
+
+    window = solver.window
+    report = bool(optimizer_kwargs.get("report", True))
+    # ⚠ The budget is total across rounds, and a restart brings its own starting point.
+    max_iter = int(optimizer_kwargs.get("max_iter", _ORBOPT_MAX_ITER))
+    started_at = int(optimizer_kwargs.get("start_iteration", 0) or 0)
+    # ⚠ The active electron count decides whether a Kramers constraint may be released at the
+    # converged point, and the optimizer cannot see it (its contract is RDMs in, rotation out).
+    optimizer_kwargs = dict(optimizer_kwargs)
+    optimizer_kwargs.setdefault("n_active_elec", n_elec)
+
+    def resolve(coeff, current, *, n_prev, where):
+        ints = CASIntegrals.build(factors, h_ao, np.ascontiguousarray(coeff), spaces,
+                                  e_nuc=e_nuc)
+        return current.resolve_window(np.ascontiguousarray(ints.h_active_effective()),
+                                      ints.active_eri(), e_core=ints.e_core,
+                                      estimate=window_estimate, n_prev=n_prev, where=where,
+                                      report=report, level=report_level)
+
+    def optimize(coeff, current, *, round_index, start_iteration, max_iter):
+        kwargs = dict(optimizer_kwargs)
+        kwargs["max_iter"] = int(max_iter)
+        kwargs["start_iteration"] = int(start_iteration)
+        if round_index > 1:
+            # ⚠ Curvature is chart-scoped: a new count is a new energy functional, so the
+            # L-BFGS pairs and the augmented-Hessian warm start of the previous round are a
+            # memory of another surface. A restart's state belongs to round 1 alone.
+            kwargs.pop("optimizer_state", None)
+            kwargs.pop("history", None)
+        kwargs["callback"] = _round_callback(kwargs.get("callback"), round_index, current)
+        if on_round is not None:
+            # Whoever holds a per-run object keyed on the solver — the checkpoint writer —
+            # is told which solver drives this round, because the sibling at a new count is
+            # a different object carrying a different state average.
+            on_round(current)
+        try:
+            return optimize_orbitals(factors, h_ao, np.ascontiguousarray(coeff), spaces,
+                                     current, e_nuc=e_nuc, **kwargs)
+        except res.MemoryLimitError as exc:
+            raise res.MemoryLimitError(
+                "{}\n   This allocation is round {} of the energy window {}, at the {} states "
+                "it resolved to -- not a count anybody stated. Lower the cutoff, lower "
+                "max_states, or raise the memory limit"
+                .format(exc, round_index, repr(window), current.n_states)) from exc
+
+    outcome = optimize_rounds(window, solver, c_spinor, resolve=resolve, optimize=optimize,
+                              max_iter=max_iter, start_iteration=started_at,
+                              resolved=None if solver.n_states is None else (None, solver),
+                              report=report, level=report_level)
+    solver, orbital = outcome.solver, outcome.orbital
+    if outcome.n_rounds > 1:
+        # One trajectory, reported as one: the per-round counters are of the same run.
+        orbital = replace(
+            orbital, history=list(outcome.history),
+            n_hessian_matvec=sum(r.orbital.n_hessian_matvec for r in outcome.rounds),
+            n_second_order_steps=sum(r.orbital.n_second_order_steps for r in outcome.rounds),
+            n_rejected=sum(r.orbital.n_rejected for r in outcome.rounds),
+            n_solver_failures=sum(r.orbital.n_solver_failures for r in outcome.rounds))
+
+    _finish_states(solver, orbital, factors, h_ao, spaces, e_nuc, active=active,
+                   classifier=classifier, report=report, level=report_level)
+
+    spin_noninvariance = None
+    if spin_ao_2c is not None and solver.last is not None:
+        c_act = orbital.coeff[:, spaces.active]
+        spin_mo = np.stack([c_act.conj().T @ spin_ao_2c[k] @ c_act for k in range(3)])
+        spin_noninvariance = ensemble_spin_noninvariance(solver.last.gamma, spin_mo)
+    boundary_initial = (None if outcome.initial is None else
+                        boundary_report_from_window(outcome.initial, solver.ndet,
+                                                    where="starting orbitals"))
+    boundary = boundary_report_from_window(outcome.final, solver.ndet,
+                                           where="converged orbitals",
+                                           n_states=int(solver.n_states),
+                                           spin_noninvariance=spin_noninvariance)
+    # ⚠ Only the converged one is printed as a report. The starting-orbital verdict was
+    # already printed in full as its own ``[state window]`` block, and a second rendering of
+    # the same gap reads as a second measurement; this one carries what the block does not —
+    # whether the converged ensemble is spin-rotation invariant at all.
+    boundary.report(level=report_level)
+    _report_symmetry_drift(solver, optimizer_kwargs.get("labels"), level=report_level)
+    return CASSCFOutcome(orbital=orbital, ci=solver.last, solver=solver,
+                         active=active or ActiveSpace(spaces=spaces, n_elec=n_elec),
+                         boundary=boundary, boundary_initial=boundary_initial,
+                         window=outcome.final, rounds=list(outcome.rounds))
+
+
+def _round_callback(chain, index: int, solver: FullCISolver):
+    """The optimizer's ``callback``, extended **additively** with the round and the count.
+
+    ``optimize_orbitals``' loop is the validated driver and its info dict is extended, never
+    restructured: a callback that ignores the two new keys is unaffected, and one that wants
+    to know which round it is in — a progress log, a checkpoint writer — reads them.
+    """
+    def hook(info):
+        info["window_round"] = int(index)
+        info["n_states"] = int(solver.n_states)
+        return None if chain is None else chain(info)
+    return hook
 
 
 #: Weight outside its own irrep above which a converged state is reported as having drifted

@@ -587,13 +587,142 @@ def test_casci_takes_an_energy_window_and_resolves_it_to_the_j_manifold(cas_term
     assert np.max(np.abs(term.energies - cas_term.energies)) < KRAMERS_TOL
 
 
-def test_a_window_refuses_weights_and_the_casscf_says_the_rounds_do_not_exist_yet(ref,
-                                                                                  cas_term):
+def test_a_window_refuses_weights_and_the_network_route(ref, cas_term):
     with pytest.raises(ValueError, match="weights= cannot be combined"):
         CASCI(cas_term, n_states=kuiva.EnergyWindow(1000), weights=[0.5, 0.5])
-    with pytest.raises(NotImplementedError, match="not implemented yet"):
+    with pytest.raises(ValueError, match="weights= cannot be combined"):
         CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
-               n_states=kuiva.EnergyWindow(1000))
+               n_states=kuiva.EnergyWindow(1000), weights=[0.5, 0.5])
+    with pytest.raises(NotImplementedError, match="pilot sweep"):
+        CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
+               n_states=kuiva.EnergyWindow(1000), solver="dmrg",
+               solver_options=dict(max_bond=16))
+
+
+def test_a_windowed_casscf_is_the_fixed_count_run_it_resolves_to(ref, cas):
+    """⚠ The statement the whole round design rests on: the count is resolved at fixed
+    orbitals and **held for the whole optimization**, so the optimizer runs unchanged at a
+    fixed count. On boron's 2p^1 the spin-orbit spectrum is a j = 1/2 doublet with the
+    j = 3/2 quartet ~15 cm^-1 above, so a 5 cm^-1 window resolves to 2 at both ends of the
+    trajectory — one round — and reproduces the ``n_states=2`` run **bitwise**: same solver,
+    same warm start, same steps."""
+    window = kuiva.EnergyWindow(5.0, manifold_gap=1.0)
+    stage = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=window,
+                   report=False)
+    assert stage.n_states is None and stage.window is None
+    assert stage.window_request == window
+    stage.run()
+    assert stage.n_states == 2 and stage.energies.size == 2
+    assert len(stage.rounds) == 1 and stage.window.count == 2
+    assert stage.window.complete and not stage.window.ambiguous
+    assert stage.energy == cas.energy                       # bitwise, not to a tolerance
+    assert np.array_equal(stage.coeff, cas.coeff)
+    # the boundary reports are the window's verdicts rather than a second Davidson solve
+    assert stage.boundary.n_states == 2 and stage.boundary.gap_cm > 5.0
+    assert stage.boundary_initial is not None
+    assert stage.boundary_initial.where == "starting orbitals"
+    # ... and every consumer of the count reads a number
+    assert CASCI(stage, n_states=2, report=False).run().energies.size == 2
+
+
+def test_a_windowed_casscf_reaching_past_the_term_averages_the_whole_space(ref, cas_term):
+    """⚠ At the reference's *guess* orbitals boron's 2p shell is split by ~5300 cm^-1 — the
+    ROHF solution is not spherical — and the CASSCF brings that down to the ~33 cm^-1 that is
+    the actual spin-orbit splitting. A cutoff above the guess splitting therefore takes all
+    six roots of the 2p determinant space at both ends: the average spans the space, so there
+    is no witness root, and that is a **pass** rather than a gap of zero."""
+    stage = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
+                   n_states=kuiva.EnergyWindow(10000), report=False).run()
+    assert stage.n_states == 6 and stage.window.verdict.spans_space
+    assert stage.boundary.spans_full_ci and stage.boundary.is_clean
+    assert abs(stage.energy - cas_term.energy) < E_TOL
+
+
+def test_a_count_that_changes_between_rounds_lands_on_the_fixed_count_run(ref):
+    """⚠ The other branch of the round loop, end to end. On CAS(3, 8) the 4000 cm^-1 window
+    resolves to **2** at the guess orbitals (the 2s-2p gap is ~5290 cm^-1 there), the state
+    average over that doublet pulls the next pair down to ~2920 cm^-1, and the re-resolution
+    reads **6** — so a second round runs at 6 and settles. What it converges to is the
+    ``n_states=6`` CASSCF, to the driver's own tolerance: a window resolves to a count, and
+    after that it is that calculation."""
+    stage = CASSCF(ref, character=[("B", "s", 2), ("B", "p", 6)],
+                   n_states=kuiva.EnergyWindow(4000.0), max_iter=60, report=False).run()
+    assert [(r.n_states, r.verdict_count) for r in stage.rounds] == [(2, 6), (6, 6)]
+    assert stage.n_states == 6 and stage.converged and not stage.window.ambiguous
+    fixed = CASSCF(ref, character=[("B", "s", 2), ("B", "p", 6)], n_states=6, max_iter=60,
+                   report=False).run()
+    assert abs(stage.energy - fixed.energy) < 1e-8
+    # the individual states agree to the *driver's* tolerance, not the suite's: two converged
+    # runs of one functional stop wherever |g| first falls under conv_grad, which is not the
+    # same point to the last digit
+    assert np.max(np.abs(stage.energies - fixed.energies)) < 1e-6
+    # ⚠ max_iter is the budget ACROSS rounds: the second round continues the count
+    assert sum(r.n_iterations for r in stage.rounds) == stage.orbital.n_iterations
+
+
+def test_a_windowed_restart_takes_its_count_from_the_file(ref, tmp_path):
+    """⚠ A restart continues the calculation that was interrupted, and that calculation ran
+    at one count: the count comes from the file and the **window** is what is compared. A
+    different cutoff is a different calculation and is refused, exactly as a different count
+    is."""
+    window = kuiva.EnergyWindow(5.0, manifold_gap=1.0)
+    path = tmp_path / "b_window.h5"
+    stopped = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=window,
+                     max_iter=3, checkpoint=path, checkpoint_options=dict(min_interval=0.0),
+                     report=False).run()
+    assert not stopped.converged and path.exists() and stopped.n_states == 2
+
+    from kuiva.io.checkpoint import (STATE_AVERAGE_KEY, read_checkpoint,
+                                     state_average_window)
+    stored = read_checkpoint(path)
+    assert state_average_window(stored.metadata[STATE_AVERAGE_KEY]) == window
+
+    resumed = CASSCF(ref, restart=path, n_states=window, max_iter=60, report=False).run()
+    assert resumed.converged and resumed.n_states == 2
+    # the resolution at the starting orbitals belongs to the run that wrote the file
+    assert resumed.boundary_initial is None and resumed.boundary is not None
+
+    with pytest.raises(ValueError, match="different calculation"):
+        CASSCF(ref, restart=path, n_states=kuiva.EnergyWindow(900.0), report=False).run()
+    with pytest.raises(ValueError, match="records no window"):
+        CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2,
+               max_iter=2, checkpoint=tmp_path / "plain.h5",
+               checkpoint_options=dict(min_interval=0.0), report=False).run() and None
+        CASSCF(ref, restart=tmp_path / "plain.h5", n_states=window, report=False).run()
+
+
+def test_a_windowed_checkpoint_materializes_at_its_recorded_count(ref, tmp_path):
+    """``from_checkpoint`` configures nothing, so the count comes from the file and the
+    window rides along as provenance — there is no trajectory left for a round to move it."""
+    path = tmp_path / "b_window_done.h5"
+    window = kuiva.EnergyWindow(5.0, manifold_gap=1.0)
+    done = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=window,
+                  max_iter=60, checkpoint=path, report=False).run()
+    assert done.converged
+    back = CASSCF.from_checkpoint(path, ref, report=False).run()
+    assert back.n_states == done.n_states == 2
+    assert back.solver.window == window                     # provenance, not a request
+    assert abs(back.energy - done.energy) < E_TOL
+    assert back.boundary_initial is None
+
+
+def test_a_cheap_ci_window_hands_the_casscf_its_first_rung(ref):
+    """⚠ A rung, never a verdict. The cheap CI's spectrum is qualitative, so what the
+    handoff carries is an estimate of how many roots lie inside the cutoff; the rule then
+    runs on the full CI's own spectrum, and the output names where the rung came from."""
+    window = kuiva.EnergyWindow(10000)
+    pre = CheapCI(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=window,
+                  report=False).run()
+    assert pre.n_states == 6 and pre.window is not None
+    assert pre.spectrum_cm.size == 6 and pre.spectrum_cm[0] == 0.0
+
+    stage = CASSCF(pre, n_states=window, report=False)
+    assert stage._window_first_rung() == 6
+    stage.run()
+    assert stage.n_states == 6
+    # a Reference upstream has no spectrum to hand over, and the ladder says so
+    assert CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
+                  n_states=window, report=False)._window_first_rung() is None
 
 
 def test_casci_carries_the_solver_options(cas_term):

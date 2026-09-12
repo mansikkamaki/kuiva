@@ -861,6 +861,12 @@ def _check_restart_state_average(resumed, solver, path) -> None:
     A file written before the state average was recorded carries no entry. That is read as
     "cannot be compared" and warned about — never as "matches", which would be the same
     silent pass this check exists to remove.
+
+    ⚠ A run whose count came from an **energy window** is checked the same way and by the
+    same string: the key records the resolved count *and* the window it was resolved from,
+    and a restart takes the count from the file (:func:`_window_from_checkpoint`) so what is
+    left to compare is the window. A changed cutoff, manifold gap or cap is a different
+    calculation exactly as a changed count is.
     """
     from ..io.checkpoint import STATE_AVERAGE_KEY, state_average_key
 
@@ -881,6 +887,43 @@ def _check_restart_state_average(resumed, solver, path) -> None:
             "starting a NEW state average from these converged orbitals is what you meant, "
             "read the orbitals and pass them as coeff= instead of restarting."
             .format(path, stored.replace(";", ", "), current.replace(";", ", ")))
+
+
+def _window_from_checkpoint(resumed, solver, path):
+    """A windowed restart's solver, built at the **count the file recorded**.
+
+    ⚠ The count is taken from the file and the *window* is what is compared. A restart
+    continues the calculation that was interrupted, and that calculation ran at one count:
+    re-resolving here would start the round loop from a ladder at the restored orbitals and
+    could pick a different one, which is a different energy functional wearing the same
+    request. The window comparison is then :func:`_check_restart_state_average`'s ordinary
+    string check, because the key carries both.
+    """
+    from ..io.checkpoint import (STATE_AVERAGE_KEY, parse_state_average_key,
+                                 state_average_counts, state_average_window)
+
+    key = resumed.metadata.get(STATE_AVERAGE_KEY)
+    stored_window = state_average_window(key)
+    if stored_window is None:
+        raise ValueError(
+            "this call asks for a state count resolved from the energy window {!r}, and the "
+            "checkpoint at {} records no window: it was written by a run whose count was "
+            "stated, or by one predating the record. A restart continues the calculation "
+            "that was interrupted, so state that run's n_states, or start a new windowed "
+            "calculation from these orbitals with coeff=".format(solver.window, path))
+    if stored_window != solver.window:
+        raise ValueError(
+            "the checkpoint at {} was written for the energy window {!r} and this call asks "
+            "for {!r}. A window is the request the count came from, so a different one is a "
+            "different calculation -- the cutoff decides which states are averaged over and "
+            "therefore what is being optimized. Leave n_states out so it comes from the "
+            "file, restate the same window, or start a new one from these orbitals with "
+            "coeff=".format(path, stored_window, solver.window))
+    counts = state_average_counts(key)
+    if counts is not None:
+        return solver.with_n_states(counts)
+    count, _ = parse_state_average_key(key)
+    return solver.with_n_states(int(count))
 
 
 def casci(reference: SpinorReference, *, active=None, character=None,
@@ -1038,6 +1081,19 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
     optimizer, and returns a :class:`~kuiva.mcscf.casci.CASSCFOutcome` carrying both
     the orbitals and the states.
 
+    Selecting the states by an energy cutoff
+    ----------------------------------------
+    ``n_states`` is a count, a per-irrep mapping, or an
+    :class:`~kuiva.util.window.EnergyWindow` — every state within the cutoff of the lowest,
+    extended to the top of any manifold the cutoff falls inside. ⚠ **The count is resolved at
+    fixed orbitals and held for a whole orbital optimization; it may change only between
+    rounds** (:mod:`kuiva.mcscf.rounds`), so the optimizer runs unchanged at a fixed count and
+    ``max_iter`` is the budget across those rounds. The resolution comes back on
+    :attr:`~kuiva.mcscf.casci.CASSCFOutcome.window`. ⚠ ``boundary_check=`` is refused with a
+    window and ``weights=`` with it: the window *is* the boundary measurement and its weights
+    are equal by construction. ⚠ **A restart takes the count from the file and compares the
+    window**, since the interrupted run was optimizing one count.
+
     Checkpointing and restart
     ------------------------------
     ``checkpoint=path`` writes a schema-versioned HDF5 restart point every macro-iteration the
@@ -1163,6 +1219,11 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
     solver = FullCISolver(space.spaces.n_active, space.n_elec, n_states=n_states,
                           weights=weights, **solver_options)
     if resumed is not None:
+        if solver.window is not None and solver.n_states is None:
+            # ⚠ The count comes from the file and the window is what is compared; the round
+            # loop then continues from there, and the resolution at the *starting* orbitals
+            # belongs to the run that wrote the file rather than to this one.
+            solver = _window_from_checkpoint(resumed, solver, restart)
         _check_restart_state_average(resumed, solver, restart)
         solver.set_guess(resumed.ci_vectors)
         # ⚠ The LIVE solver's key, never the file's own. Chart-scoping compares the key
@@ -1226,7 +1287,9 @@ def casscf(reference: SpinorReference, *, active=None, character=None,
         outcome = _casscf(reference.factors, reference.h_one_electron(), orbitals,
                           space.spaces, space.n_elec, n_states=n_states,
                           e_nuc=reference.data.e_nuc, solver=solver, active=space,
-                          callback=hook, classifier=classifier, **optimizer_kwargs)
+                          callback=hook, classifier=classifier,
+                          on_round=None if policy is None else policy.rebind,
+                          **optimizer_kwargs)
     if policy is not None:
         outcome.checkpoint_path = str(policy.path)
         if report:
@@ -1273,7 +1336,10 @@ def casscf_from_checkpoint(reference: SpinorReference, path, *, n_states=None, w
     optimization whose settings the caller restates, and this configures nothing — there is no
     trajectory left to define, so taking the file's word is the only reading that can be right.
     ⚠ A file that predates the recorded state average cannot supply one, and then ``n_states``
-    is required rather than guessed.
+    is required rather than guessed. A file whose count came from an
+    :class:`~kuiva.util.window.EnergyWindow` supplies the **resolved count**, with the window
+    kept as provenance: there is no trajectory left for a round to change a count on, so
+    nothing is re-resolved here and the boundary diagnostic below is the witness beyond it.
 
     ⚠ **The boundary diagnostic that comes back is the converged-orbital one only**
     (:attr:`~kuiva.mcscf.casci.CASSCFOutcome.boundary`); ``boundary_initial`` is ``None``.
@@ -1284,7 +1350,9 @@ def casscf_from_checkpoint(reference: SpinorReference, path, *, n_states=None, w
     iterate rather than a result, and every number built on them inherits that.
     """
     from ..io.checkpoint import (STATE_AVERAGE_KEY, SYSTEM_KEY, check_system,
-                                 parse_state_average_key, read_checkpoint, system_fingerprint)
+                                 parse_state_average_key, read_checkpoint,
+                                 state_average_counts, state_average_window,
+                                 system_fingerprint)
     from ..mcscf.casci import (BOUNDARY_MARGIN, ActiveSpace, CASSCFOutcome, FullCISolver,
                                _boundary_or_warning, casci as _casci)
     from ..mcscf.orbopt import CASSCFResult
@@ -1316,7 +1384,20 @@ def casscf_from_checkpoint(reference: SpinorReference, path, *, n_states=None, w
                     "active space it is a different method rather than the same answer",
                     path, stored.space_key)
 
-    file_states, file_weights = parse_state_average_key(stored.metadata.get(STATE_AVERAGE_KEY))
+    stored_key = stored.metadata.get(STATE_AVERAGE_KEY)
+    file_states, file_weights = parse_state_average_key(stored_key)
+    stored_window = state_average_window(stored_key)
+    if state_average_counts(stored_key) is not None:
+        # ⚠ The same refusal a plain per-irrep file gets, and for the same reason: the
+        # per-sector counts a window resolved to were resolved against labels that belong to
+        # the reference's *guess* spinors, and the converged orbitals in this file are not
+        # those. Summing them would silently select the lowest N instead.
+        raise ValueError(
+            "the checkpoint at {} was written for a per-irrep state selection resolved from "
+            "the energy window {!r}, and the irrep labels it was resolved against belong to "
+            "the reference's guess orbitals rather than to the converged ones in the file. "
+            "Materialize it with an explicit n_states=<count>, which selects the lowest N "
+            "and is a different -- and stated -- request".format(path, stored_window))
     if n_states is None:
         if file_states is None:
             raise ValueError(
@@ -1350,6 +1431,12 @@ def casscf_from_checkpoint(reference: SpinorReference, path, *, n_states=None, w
     options = dict(solver_options or {})
     solver = FullCISolver(space.spaces.n_active, space.n_elec, n_states=n_states,
                           weights=weights, **options)
+    if stored_window is not None and solver.n_states == file_states:
+        # ⚠ Provenance, not a request: the count is the file's and nothing is re-resolved
+        # here. A materialization configures nothing — there is no trajectory left for a
+        # round to change the count on — so the window says where the count came from and
+        # the boundary diagnostic below is the witness that reads the gap beyond it.
+        solver.adopt_window(stored_window)
     # The same refusal a restart gets, and for the same reason: a different state average is a
     # different calculation. Here it can only fire on a restated one -- the defaulted path took
     # its value from this very key.
@@ -1396,6 +1483,10 @@ def casscf_from_checkpoint(reference: SpinorReference, path, *, n_states=None, w
              else "re-solved cold (thinned from the file)"),
             ("boundary at the starting orbitals", "belongs to the run that wrote the file"),
         ])
+        if stored_window is not None:
+            out.entry(log, "state count", solver.n_states, "",
+                      "resolved by the run that wrote the file from {}".format(
+                          stored_window.describe()))
     return outcome
 
 

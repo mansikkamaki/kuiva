@@ -128,11 +128,13 @@ import numpy as np
 
 from ..ci.strings import Determinants, connections, determinant_memory_gb, rdm12
 from ..mcscf.adaptive import Proposal, SolverFailure, array_key
-from ..mcscf.preopt import solve_fixed_space
+from ..mcscf.preopt import (DENSE_SOLVE_MAX_DET, SpaceSpectrumOracle,
+                            solve_fixed_space)
 from ..rdm.rdm import DEFAULT_DEGENERACY_TOL, state_average_weights
 from ..util import resources as res
 from ..util.logging import get_logger
 from ..util.timing import timer
+from ..util.window import EnergyWindow, WindowResolution, is_window_request, resolve_states
 from .ansatz import ReferenceExcitationStrategy, resolve_strategy
 from .backend import BackendProvenance, get_backend, require_primitives
 from .recovery import recover_configurations, subspace_fraction
@@ -171,11 +173,16 @@ class SQDSolver:
     Parameters
     ----------
     n_elec : int — electrons in the active space.
-    n_states : int
+    n_states : int or :class:`~kuiva.util.window.EnergyWindow`
         Roots to solve for and average over. ⚠ With an odd electron count Kramers' theorem
         makes every level at least doubly degenerate, so an odd count splits a pair and is
         refused where the weights are built (:func:`kuiva.rdm.rdm.state_average_weights`),
         exactly as for every other solver in Kuiva.
+
+        An **energy window** resolves the count from the spectrum of the recovered subspace
+        at the first solve and holds it (:attr:`window`, :attr:`window_resolution`). ⚠ The
+        subspace is a *sample*, so the resolved count is a statement about the states the
+        shots reached, and a window here inherits every caveat the sampled energy has.
     backend : str or object
         A registered backend name (``"stub"``, ``"qiskit_aer"``) or a constructed backend.
         ⚠ The pairing is validated **at construction** against
@@ -208,7 +215,7 @@ class SQDSolver:
 
     KEY_PREFIX = "sqd"
 
-    def __init__(self, n_elec: int, *, n_states: int = 1, backend: Any = "stub",
+    def __init__(self, n_elec: int, *, n_states=1, backend: Any = "stub",
                  strategy: Any = None, shots: int = DEFAULT_SHOTS,
                  accumulate: bool = True, max_determinants: Optional[int] = None,
                  recovery: str = "repair", seed: Optional[int] = 0,
@@ -216,7 +223,23 @@ class SQDSolver:
                  degeneracy_tol: float = DEFAULT_DEGENERACY_TOL,
                  on_split: str = "raise", enforce_kramers: bool = True) -> None:
         self.n_elec = int(n_elec)
-        self.n_states = int(n_states)
+        #: The energy window the count is resolved from, or ``None`` for a stated count.
+        #: ⚠ Resolved in the **recovered subspace** at the first solve and held after that,
+        #: which is the cheap CI's rule and for the same reason — and one more here: the
+        #: subspace is a sample, so a count re-read at every point would move with the shots
+        #: as well as with the orbitals.
+        self.window: Optional[EnergyWindow] = None
+        self.window_resolution: Optional[WindowResolution] = None
+        if is_window_request(n_states):
+            if not isinstance(n_states, EnergyWindow):
+                raise ValueError(
+                    "a sampled subspace carries no irrep sectors to select in, so a "
+                    "per-irrep energy window has nothing to resolve against here; state a "
+                    "plain EnergyWindow, or a count")
+            self.window = n_states
+            self.n_states: Optional[int] = None
+        else:
+            self.n_states = int(n_states)
         self.backend = get_backend(backend) if isinstance(backend, str) else backend
         require_primitives(self.backend, REQUIRED_PRIMITIVES, algorithm="sqd")
         if strategy is None:
@@ -324,10 +347,16 @@ class SQDSolver:
         the same trade ``CheapCISolver._install`` makes; a proposal that already paid for it
         hands it over rather than repeating it.
         """
+        # ⚠ Before the count is resolved there is nothing to size against but the window's
+        # own cap, which is what it is for: the plan may over-reserve, and it may not
+        # under-reserve for an allocation the ladder is about to make.
+        planned = self.n_states if self.n_states is not None else self.window.max_states
         res.require("SQD subspace ({} determinants)".format(dets.ndet),
-                    subspace_gb(dets.ndet, dets.n_spinor, self.n_states),
+                    subspace_gb(dets.ndet, dets.n_spinor, planned),
                     note="{} spinors, {} electrons, {} states".format(
-                        dets.n_spinor, dets.n_elec, self.n_states),
+                        dets.n_spinor, dets.n_elec,
+                        planned if self.n_states is not None
+                        else "up to {} (an energy window's cap)".format(planned)),
                     advice=["lower max_determinants",
                             "fewer shots, or a circuit strategy that concentrates more "
                             "(kuiva.qc.ansatz)"])
@@ -358,6 +387,18 @@ class SQDSolver:
         discrepancy visible only when a block is genuinely degenerate — i.e. always in
         production and never in a test on random integrals.
         """
+        if self.n_states is None:
+            # ⚠ The classical half of this solver IS Kuiva's classical half: the ladder, the
+            # rule and the oracle are the ones the cheap CI uses, over the determinant list
+            # the shots recovered. Resolved once, at the first solve, and held.
+            self.window_resolution = resolve_states(
+                SpaceSpectrumOracle(dets, h, eri, conn=conn), self.window,
+                n_elec=self.n_elec, space_size=dets.ndet,
+                first=((dets.ndet, "the dense solve: the whole {}-determinant recovered "
+                                   "subspace in one rung".format(dets.ndet))
+                       if dets.ndet <= DENSE_SOLVE_MAX_DET else None))
+            self.n_states = int(self.window_resolution.count)
+            self.window_resolution.report(log, where="the recovered subspace")
         if self.n_states > dets.ndet:
             raise SolverFailure(
                 "the recovered subspace holds {} determinants but {} states were asked for; "

@@ -15,9 +15,15 @@ Every target here is exact by construction, so nothing needs an external referen
   miss an ``Sz`` sector: the ladder with generic vectors finds the right count and spectrum,
   and the control without them does not, so the guard is shown to be load-bearing;
 * the **unit table**: round trips, the unchanged wavenumber literal, an unknown unit refused;
+* the **round loop** of :mod:`kuiva.mcscf.rounds` over fake closures, one test per branch —
+  a verdict that repeats, one that changes and buys a second round, one that never settles
+  (the last converged result kept, the counts named, nothing silently chosen), a budget spent
+  across rounds, and an unconverged round whose verdict is reported and not adopted;
+* the **cheap CI** resolving a window on the space its selection produced, holding the count
+  for the optimizer's loop, and reading an exhausted space as complete rather than padding it;
 * the **refusals**: weights beside a window, a window on a solver that has not been resolved,
-  two different windows in one per-irrep request, a CASSCF handed a window while the round
-  loop does not exist.
+  two different windows in one per-irrep request, ``boundary_check=`` beside a window, a
+  per-irrep window handed to a solver with no sectors.
 """
 import numpy as np
 import pytest
@@ -25,10 +31,13 @@ import pytest
 import kuiva
 from kuiva.ci.strings import CASSpace, hamiltonian_matrix
 from kuiva.integrals.transform import ThreeIndexAO
-from kuiva.io.checkpoint import parse_state_average_key, state_average_key
+from kuiva.io.checkpoint import (parse_state_average_key, state_average_counts,
+                                 state_average_key, state_average_window)
 from kuiva.mcscf.casci import (BOUNDARY_WARN_CM, FullCISolver, boundary_report_from_window,
                                casci, casscf, state_average_boundary)
 from kuiva.mcscf.orbopt import CASIntegrals, OrbitalSpaces
+from kuiva.mcscf.preopt import CheapCISolver, cheap_ci
+from kuiva.mcscf.rounds import optimize_rounds
 from kuiva.props import multiplet
 from kuiva.rdm.rdm import degenerate_blocks
 from kuiva.symm.assign import OrbitalLabels
@@ -36,9 +45,9 @@ from kuiva.symm.groups import C2Z
 from kuiva.symm.sectors import SectorTable
 from kuiva.util import units
 from kuiva.util.window import (DEFAULT_FIRST_RUNG, DEFAULT_MANIFOLD_GAP_CM, EnergyWindow,
-                               WindowCapReached, chain_blocks, first_rung, next_rung,
-                               resolve_states, resolve_states_per_sector, resolve_window,
-                               shared_window)
+                               WindowCapReached, WindowResolution, chain_blocks, first_rung,
+                               next_rung, resolve_states, resolve_states_per_sector,
+                               resolve_window, shared_window)
 from test_ci_davidson import _open_shell_spin_free_integrals
 from test_ci_strings import random_spinor_integrals
 
@@ -222,6 +231,13 @@ def test_a_state_that_moved_by_more_than_the_gap_releases_the_count():
     v = resolve_window(e, W, n_prev=6)
     assert not v.held and v.count == 4
     e = spectrum_cm(0, 0, 900, 900, 940, 940, 3000)           # 60 cm^-1 below: > g
+    v = resolve_window(e, W, n_prev=4)
+    assert not v.held and v.count == 6
+    # ⚠ And far below it, which is the case a sign error makes invisible: written as
+    # ``mover - delta <= gap`` the entering test is true for *every* state under the cutoff,
+    # so a count that grew would be held at the old one for ever. Here the gap boundary at
+    # n_prev is intact (600 cm^-1 wide), so only the dead band can release this.
+    e = spectrum_cm(0, 0, 200, 200, 800, 800, 3000)
     v = resolve_window(e, W, n_prev=4)
     assert not v.held and v.count == 6
 
@@ -628,10 +644,169 @@ def test_casci_with_a_window_resolves_then_solves_at_the_count(driver_system):
     assert windowed.solver.n_states == position and windowed.solver.window == window
 
 
-def test_a_casscf_handed_a_window_says_the_round_loop_does_not_exist_yet(driver_system):
+def test_a_windowed_casscf_reproduces_the_fixed_count_run_it_resolves_to(driver_system):
+    """⚠ The strongest statement the round design can make: the rounds **wrap** the validated
+    driver rather than modifying it, so a window whose first round resolves to ``n`` and whose
+    verdict does not change reproduces the fixed-count run at ``n`` — same solver, same warm
+    start, same trajectory — **bitwise**. A cutoff past the whole space is the branch where
+    that is guaranteed rather than likely: the count spans the determinant space and cannot
+    move as the orbitals do."""
     factors, h_ao, c0, spaces, n_elec = driver_system
-    with pytest.raises(NotImplementedError, match="not implemented yet"):
-        casscf(factors, h_ao, c0, spaces, n_elec, n_states=W, report=False)
+    options = dict(enforce_kramers=False)
+    fixed = casscf(factors, h_ao, c0, spaces, n_elec, n_states=20, report=False,
+                   solver_options=dict(options), max_iter=6)
+    windowed = casscf(factors, h_ao, c0, spaces, n_elec,
+                      n_states=EnergyWindow(1e12), report=False,
+                      solver_options=dict(options), max_iter=6)
+    assert windowed.window.verdict.spans_space and windowed.solver.n_states == 20
+    assert windowed.n_rounds == 1 and not windowed.window.ambiguous
+    assert windowed.energy == fixed.energy                 # bitwise, not to a tolerance
+    assert np.array_equal(windowed.coeff, fixed.coeff)
+    assert np.array_equal(windowed.state_energies, fixed.state_energies)
+    # the boundary report is the verdict, not a second Davidson solve
+    assert windowed.boundary.spans_full_ci and windowed.boundary_initial is not None
+    assert windowed.boundary_initial.where == "starting orbitals"
+
+
+def test_a_window_refuses_a_second_boundary_margin(driver_system):
+    factors, h_ao, c0, spaces, n_elec = driver_system
+    with pytest.raises(ValueError, match="window IS the boundary measurement"):
+        casscf(factors, h_ao, c0, spaces, n_elec, n_states=EnergyWindow(1e12),
+               boundary_check=4, report=False, solver_options=dict(enforce_kramers=False))
+
+
+# --- the round loop ---------------------------------------------------------------------------
+
+class FakeOrbital:
+    """What ``optimize`` returns: the fields :func:`optimize_rounds` reads, and no more."""
+
+    def __init__(self, n_iterations, *, converged=True, energy=-1.0, grad_norm=1e-6):
+        self.n_iterations = n_iterations
+        self.converged = converged
+        self.energy = energy
+        self.grad_norm = grad_norm
+        self.coeff = np.eye(2)
+        self.history = [energy]
+
+
+class FakeSolver:
+    def __init__(self, n_states):
+        self.n_states = n_states
+
+
+def _resolution(count):
+    """A :class:`WindowResolution` stating ``count``, built through the real rule so the
+    loop is driven by the object it is driven by in production."""
+    window = EnergyWindow(1000.0)
+    energies = spectrum_cm(*([0.0] * count + [4000.0]))
+    verdict = resolve_window(energies, window)
+    assert verdict.count == count
+    return WindowResolution(window=window, count=count, verdict=verdict, rungs=[],
+                            energies=energies)
+
+
+def _rounds(counts, *, iterations=3, converged=True, max_rounds=4, max_iter=100,
+            start=8, start_iteration=0):
+    """Drive :func:`optimize_rounds` over a scripted sequence of verdict counts."""
+    window = EnergyWindow(1000.0, max_rounds=max_rounds)
+    seen = []
+    state = {"i": 0, "spent": start_iteration}
+
+    def resolve(coeff, solver, *, n_prev, where):
+        if n_prev is None:
+            return _resolution(start), FakeSolver(start)
+        count = counts[min(state["i"], len(counts) - 1)]
+        state["i"] += 1
+        return _resolution(count), FakeSolver(count)
+
+    def optimize(coeff, solver, *, round_index, start_iteration, max_iter):
+        seen.append((round_index, solver.n_states, start_iteration, max_iter))
+        state["spent"] = min(start_iteration + iterations, max_iter)
+        return FakeOrbital(state["spent"], converged=converged,
+                           energy=-float(solver.n_states))
+
+    result = optimize_rounds(window, FakeSolver(None), np.eye(2), resolve=resolve,
+                             optimize=optimize, max_iter=max_iter,
+                             start_iteration=start_iteration, report=False)
+    return result, seen
+
+
+def test_a_verdict_that_repeats_ends_the_rounds_after_one():
+    result, seen = _rounds([8])
+    assert result.n_rounds == 1 and seen == [(1, 8, 0, 100)]
+    assert result.n_states == 8 and not result.ambiguous and not result.budget_stopped
+    assert result.initial is not None and result.final.count == 8
+    assert result.history == [-8.0]
+
+
+def test_a_changed_count_buys_another_round_at_the_new_count():
+    result, seen = _rounds([10, 10])
+    assert result.n_rounds == 2
+    assert [(i, n) for i, n, _, _ in seen] == [(1, 8), (2, 10)]
+    # ⚠ the budget is total: the second round continues the macro-iteration count
+    assert [s for _, _, s, _ in seen] == [0, 3]
+    assert result.n_states == 10 and not result.ambiguous
+    assert [r.n_states for r in result.rounds] == [8, 10]
+    assert [r.changed for r in result.rounds] == [True, False]
+
+
+def test_a_verdict_that_never_settles_keeps_the_last_converged_result(kuiva_caplog):
+    """⚠ Never silently the larger count: both are converged fixed points of their own state
+    average, the report names them and the run keeps the one it actually optimized at."""
+    result, seen = _rounds([10, 8, 10, 8], max_rounds=3)
+    assert result.n_rounds == 3 and result.ambiguous
+    assert result.n_states == 8                             # round 3 ran at 8 and converged
+    assert result.final.count == 10 and result.final.ambiguous
+    assert "did not settle in 3 rounds" in kuiva_caplog.text
+    assert "8 -> 10 -> 8 -> 10" in kuiva_caplog.text
+
+
+def test_an_unconverged_round_reports_its_verdict_and_does_not_adopt_it(kuiva_caplog):
+    result, seen = _rounds([12], converged=False)
+    assert result.n_rounds == 1 and result.budget_stopped and not result.ambiguous
+    assert result.n_states == 8                             # the count that was optimized at
+    assert result.final.count == 12                         # the verdict, reported only
+    assert "NOT adopted" in kuiva_caplog.text
+
+
+def test_the_budget_is_spent_across_rounds(kuiva_caplog):
+    """``max_iter`` counts macro-iterations across rounds, and a round that cannot start
+    says so rather than running at zero iterations."""
+    result, seen = _rounds([10, 12, 14], iterations=4, max_iter=4)
+    assert [s for _, _, s, _ in seen] == [0]                # only round 1 ever ran
+    assert result.budget_stopped
+    assert "spent before round 2" in kuiva_caplog.text
+
+
+def test_a_restart_skips_the_resolution_at_the_starting_orbitals():
+    """The count comes from the file, so there is no ladder at the starting orbitals — and no
+    initial verdict either: that measurement belongs to the run that wrote the file."""
+    window = EnergyWindow(1000.0)
+    calls = []
+
+    def resolve(coeff, solver, *, n_prev, where):
+        calls.append(where)
+        return _resolution(6), FakeSolver(6)
+
+    def optimize(coeff, solver, *, round_index, start_iteration, max_iter):
+        return FakeOrbital(start_iteration + 2, energy=-1.0)
+
+    result = optimize_rounds(window, FakeSolver(None), np.eye(2), resolve=resolve,
+                             optimize=optimize, max_iter=50, start_iteration=7,
+                             resolved=(None, FakeSolver(6)), report=False)
+    assert calls == ["converged orbitals"] and result.initial is None
+    assert result.n_rounds == 1 and result.rounds[0].n_iterations == 2
+
+
+def test_the_rounds_table_is_output_grammar_only(kuiva_caplog):
+    import logging
+    result, _ = _rounds([10, 10])
+    with kuiva_caplog.at_level(logging.INFO, logger="kuiva"):
+        result.report()
+    text = kuiva_caplog.text
+    assert "state window: rounds" in text and "count -> 10" in text
+    assert "2 rounds, 6 macro-iterations" in text
+    assert all(ord(c) < 128 for c in text)
 
 
 def test_the_kramers_restricted_mode_resolves_the_same_window_as_the_general_path():
@@ -654,3 +829,120 @@ def test_the_kramers_restricted_mode_resolves_the_same_window_as_the_general_pat
     result = resolved.solve_active(h, eri)
     assert resolved.kramers == "restricted" and result.energies.size == position
     assert np.allclose(result.energies, exact[:position], atol=1e-8)
+
+
+# --- the checkpoint key ------------------------------------------------------------------------
+
+def test_the_key_records_the_window_beside_the_resolved_count(iterative_system):
+    """⚠ The count and the window answer different questions and the key carries both: the
+    count is what the interrupted run was optimizing and a restart must reproduce it, the
+    window is what was *asked* for and is what a restart restates."""
+    n, k, h, eri, _ = iterative_system
+    _, resolved = FullCISolver(n, k, n_states=W, enforce_kramers=False).resolve_window(
+        h, eri, report=False)
+    key = state_average_key(resolved)
+    assert state_average_window(key) == W and state_average_counts(key) is None
+    count, weights = parse_state_average_key(key)
+    assert count == resolved.n_states and weights is None
+    # and a plain count records no window at all, so the two can never be confused
+    assert state_average_window(state_average_key(FullCISolver(n, k, n_states=2))) is None
+
+
+def test_a_per_irrep_window_records_the_counts_it_resolved_to():
+    """⚠ Without this the file would say how many states in total and never which sectors
+    they came from, and one per-irrep selection could restart as another — the exact silent
+    pass the state-average key exists to remove."""
+    labels = [1, 1, 3, 3, 1, 3, 1, 3]
+    h, eri = symmetric_integrals(labels, seed=11)
+    n, k = len(labels), 4
+    orbital_labels = OrbitalLabels(group=C2Z, labels=np.asarray(labels)[:, None])
+    table = SectorTable.build(CASSpace(n, k).occupations(), orbital_labels.labels, C2Z)
+    names = [table.name(t) for t in table.sectors]
+    solver = FullCISolver(n, k, n_states={name: W for name in names},
+                          symmetry=orbital_labels, enforce_kramers=False)
+    resolution, resolved = solver.resolve_window(h, eri, report=False)
+    key = state_average_key(resolved)
+    assert state_average_window(key) == W
+    assert state_average_counts(key) == resolution.counts
+    # a plain count records no counts field at all, so the two can never be confused
+    assert state_average_counts(state_average_key(FullCISolver(n, k, n_states=3))) is None
+
+
+def test_the_boundary_report_can_be_read_at_a_count_the_verdict_did_not_pick():
+    """⚠ The ambiguous case: the kept result is the converged CASSCF at the previous count, so
+    the boundary reported is that count's, read off the resolution's own spectrum."""
+    window = EnergyWindow(1000.0)
+    energies = spectrum_cm(0.0, 0.0, 400.0, 400.0, 1300.0, 1300.0)
+    verdict = resolve_window(energies, window)
+    resolution = WindowResolution(window=window, count=verdict.count, verdict=verdict,
+                                  rungs=[], energies=energies)
+    assert verdict.count == 4
+    at_four = boundary_report_from_window(resolution, 100)
+    at_two = boundary_report_from_window(resolution, 100, n_states=2)
+    assert at_four.n_states == 4 and at_four.gap_cm == pytest.approx(900.0)
+    assert at_two.n_states == 2 and at_two.gap_cm == pytest.approx(400.0)
+
+
+# --- the cheap CI ------------------------------------------------------------------------------
+
+def _cheap_system(n_spinor=8, n_elec=4, seed=5):
+    h, eri = random_spinor_integrals(n_spinor, seed=seed, scale=0.05)
+    return h, eri, n_elec
+
+
+def test_the_cheap_ci_resolves_a_window_on_its_reference_space():
+    """The count comes off the reference space's own spectrum — the first solve — and the
+    result carries the resolution that produced it."""
+    h, eri, n_elec = _cheap_system()
+    reference = cheap_ci(h, eri, n_elec, n_states=20)
+    rel = (reference.energies - reference.energies[0]) * units.HARTREE_TO_CM
+    position = next(i for i in range(2, 20) if rel[i] - rel[i - 1] > 50.0)
+    windowed = cheap_ci(h, eri, n_elec, n_states=EnergyWindow(
+        0.5 * (rel[position - 1] + rel[position])))
+    assert windowed.window is not None and windowed.window.count == position
+    assert windowed.energies.size == position
+    assert windowed.weights.size == position
+    assert np.allclose(windowed.weights, 1.0 / position)
+    assert windowed.relative_cm[0] == 0.0
+
+
+def test_an_exhausted_space_is_complete_and_is_never_padded():
+    """⚠ The cheap CI pads a request larger than its space (duplicated energies, zero
+    vectors). A window must read that as *complete at the space size* and never as more roots
+    to solve — which the ladder does by clamping its rungs to the space."""
+    h, eri, n_elec = _cheap_system(n_spinor=6, n_elec=3)
+    result = cheap_ci(h, eri, n_elec, n_states=EnergyWindow(1e12), max_reference=20,
+                      max_determinants=20)
+    assert result.window.verdict.spans_space
+    assert result.energies.size == result.window.count == result.window.space_size
+    # padding would have produced duplicated energies at the top
+    assert np.all(np.diff(result.energies) > 1e-10)
+
+
+def test_the_cheap_ci_solver_holds_the_count_after_the_first_solve():
+    """⚠ Resolved once and held: a count that moved under the optimizer would change the
+    energy functional under a driver that assumes one surface."""
+    from kuiva.mcscf.orbopt import CASIntegrals
+
+    h, eri, n_elec = _cheap_system()
+    ints = CASIntegrals.__new__(CASIntegrals)
+    ints.h_active_effective = lambda: h                      # noqa: E731
+    ints.active_eri = lambda: eri                            # noqa: E731
+    ints.e_core = 0.0
+    solver = CheapCISolver(n_elec, n_states=EnergyWindow(1e12), max_reference=20,
+                           max_determinants=20)
+    assert solver.n_states is None and solver.window is not None
+    energy, gamma, gamma2 = solver.solve(ints)
+    held = solver.n_states
+    assert held is not None and solver.window_resolution is not None
+    assert solver.last.energies.size == held
+    solver.solve(ints)                                       # the fixed-space path
+    assert solver.n_states == held and solver.last.energies.size == held
+
+
+def test_the_cheap_ci_refuses_a_per_irrep_window_and_state_weights():
+    h, eri, n_elec = _cheap_system()
+    with pytest.raises(ValueError, match="no irrep sectors"):
+        cheap_ci(h, eri, n_elec, n_states={"a": W})
+    with pytest.raises(ValueError, match="state_weights= cannot be combined"):
+        cheap_ci(h, eri, n_elec, n_states=W, state_weights=[0.5, 0.5])

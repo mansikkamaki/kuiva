@@ -762,3 +762,38 @@ def test_sqd_casscf_reproduces_the_exact_casscf_on_a_real_molecule():
     assert capped.n_determinants == 8
     assert relaxed_gap > -1e-9, "a subspace CASSCF cannot go below the exact-CI one"
     assert relaxed_gap < frozen_gap / 5.0, (frozen_gap, relaxed_gap)
+
+
+def test_a_window_resolves_the_count_in_the_recovered_subspace():
+    """⚠ The classical half of this solver **is** Kuiva's classical half, and an energy window
+    is no exception: the ladder, the rule and the space oracle are the cheap CI's, driven over
+    the determinant list the shots recovered. Resolved once, at the first solve, and held —
+    the subspace is a *sample*, so a count re-read at every point would move with the shots as
+    well as with the orbitals."""
+    from kuiva.util.window import EnergyWindow
+
+    n, k = 8, 4
+    h, eri = random_spinor_integrals(n, seed=13)
+    ints = _Integrals(h, eri)
+    exact = _exact_spectrum(n, k, h, eri)
+    rel = (exact - exact[0]) * 219474.6313632
+    position = next(i for i in range(2, 20) if rel[i] - rel[i - 1] > 50.0)
+    window = EnergyWindow(0.5 * (rel[position - 1] + rel[position]))
+    solver = _covering_solver(k, n_states=window, enforce_kramers=False)
+    assert solver.n_states is None and solver.window == window
+    solver.solve(ints)
+    held = solver.n_states
+    assert held is not None and solver.window_resolution is not None
+    assert solver.last.energies.size == held
+    # the sampling covered the whole space here, so the count is the exact spectrum's
+    assert subspace_fraction(solver.n_determinants, n, k) == pytest.approx(1.0)
+    assert held == position
+    solver.solve(ints)                                       # held, not re-resolved
+    assert solver.n_states == held
+
+
+def test_a_per_irrep_window_is_refused_by_the_sampled_subspace():
+    from kuiva.util.window import EnergyWindow
+
+    with pytest.raises(ValueError, match="no irrep sectors"):
+        SQDSolver(2, n_states={"A": EnergyWindow(1000)})

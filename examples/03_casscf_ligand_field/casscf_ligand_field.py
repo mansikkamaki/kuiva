@@ -3,7 +3,7 @@
     source setup.sh          # once per shell
     python casscf_ligand_field.py
 
-Runs in about three minutes on TiCl3 and writes ``output/casscf_ligand_field.out``.
+Runs in about four minutes on TiCl3 and writes ``output/casscf_ligand_field.out``.
 
 WHAT THIS SHOWS
 ---------------
@@ -13,7 +13,7 @@ cheap enough to run while you read the file.
 
     ScalarSCF -> Reference -> CASSCF -> the spin-orbit spectrum
 
-Eight things are worth watching, and each of them is a decision you will have to make in
+Nine things are worth watching, and each of them is a decision you will have to make in
 any real calculation:
 
 1. **The active space is stated as orbital character, not as indices.** "The five lowest
@@ -58,14 +58,24 @@ any real calculation:
    extra, discards them, and reports the gap -- at the starting orbitals as well as the
    converged ones, because the starting one is what says whether the trajectory was safe.
 
-4. **Which CI symmetry mode.** The spectrum is solved twice: once on the general complex
+4. **Choosing the states by an energy cutoff instead of a count.** The whole CASSCF is run
+   a second time as ``n_states=kuiva.EnergyWindow(5000)`` -- "average over everything within
+   5000 cm^-1 of the lowest state" -- which is the honest request when the question is
+   physical and the number of states is exactly what you do not know yet. The cutoff never
+   cuts inside a manifold: a cluster straddling it is taken whole, and a spectrum with no
+   clear gap anywhere is refused rather than rounded. ⚠ The count is resolved at fixed
+   orbitals and **held for a whole orbital optimization** -- it can change only between
+   rounds, the optimizer never sees a window, and a window that resolves to n and stays
+   there reproduces the n-state run *bitwise*, which is what this example asserts.
+
+5. **Which CI symmetry mode.** The spectrum is solved twice: once on the general complex
    path, which is the default and the reference path, and once with the
    time-reversal-adapted (Kramers-restricted) one, which reaches the same ten states from
    five Kramers pairs and half the applications of H. It is an odd-electron-only cost
    option, it is worth nothing below three averaged pairs, and it needs the orbitals to be
    Kramers paired -- all three of which the run states rather than leaves you to discover.
 
-5. **What point-group symmetry buys, and what it does not.** The molecule is run with
+6. **What point-group symmetry buys, and what it does not.** The molecule is run with
    `point_group="auto"`, so every orbital carries an irrep label and the run prints the
    character table of the group it is actually using, with every operation named by its
    lab-frame geometry. Two things follow. States can then be asked for **per irrep**
@@ -82,7 +92,7 @@ any real calculation:
    degenerate manifold, which is exactly why the state-average boundary check of point 3
    stays load-bearing with symmetry on.
 
-6. **What the multiplets actually are.** The abelian labels say the same thing about all
+7. **What the multiplets actually are.** The abelian labels say the same thing about all
    five doublets -- every one of them is "1E1/2 + 2E1/2", because a Kramers pair always
    spans both conjugate sectors of a group this small. The converged states are therefore
    also *classified* by the irreps of the molecule's full double group, D3h, which
@@ -98,14 +108,14 @@ any real calculation:
    the abelian group cannot protect a multiplet -- and why, with the multiplets named, a
    state count that cuts one is refused outright.
 
-7. **Both symmetries at once.** ``kramers="restricted"`` and ``n_states={irrep: n}``
+8. **Both symmetries at once.** ``kramers="restricted"`` and ``n_states={irrep: n}``
    combine, and the combination is stated over **conjugate pairs of irreps**: time reversal
    conjugates a label, so a sector is not time-reversal-closed by itself and only the union
    of a conjugate pair is. Asking for five states of 1E1/2 in the restricted mode therefore
    returns ten -- the five and their time-reversed partners in 2E1/2 -- which is the same
    spectrum again, reached with both symmetries imposed.
 
-8. **Trying to NAME the levels, and being told they have no free-ion name.** ``<S^2>`` is
+9. **Trying to NAME the levels, and being told they have no free-ion name.** ``<S^2>`` is
    0.7511 on every doublet, and the excess over 3/4 is the interesting part: one active
    electron cannot mix spins, so spin-pure orbitals would give 3/4 exactly (boron does, in
    example 2). These orbitals are not spin-pure -- a converged general-complex CASSCF mixes
@@ -195,6 +205,11 @@ KRAMERS_SPLIT_MAX = 1.0e-6
 #: The state average must stop far from a near-degeneracy. Below 50 cm^-1 Kuiva warns; here
 #: the next root is four orders of magnitude away, so the requirement is stated as such.
 BOUNDARY_MIN_CM = 1.0e4
+
+#: Cutoff for the energy-window form of the same CASSCF (section 2b). Chosen well inside the
+#: ligand-field span so the request is the physical one -- "the ground doublet and nothing
+#: else" -- and so the cut lands nowhere near a manifold at either end of the trajectory.
+WINDOW_CM = 5.0e3
 
 
 def planar_mx3(metal: str, ligand: str, r: float) -> List[tuple]:
@@ -386,6 +401,51 @@ def main() -> int:
         ("gap at the converged orbitals", cas.boundary.gap_cm, "cm^-1", "", out.CM_FMT),
         ("boundary unambiguous", cas.boundary.is_clean and cas.boundary_initial.is_clean),
     ])
+
+    # ----------------------------------------------------------------------------------
+    # 2b. The same CASSCF, with the states chosen by an energy cutoff instead of a count.
+    # ----------------------------------------------------------------------------------
+    # n_states=kuiva.EnergyWindow(cutoff) says "average over every state within `cutoff` of
+    # the lowest one" and lets the code find out how many that is. It is the honest request
+    # when the question is physical -- "the ligand-field ground manifold", "everything
+    # thermally accessible" -- rather than arithmetic, and the number of states is exactly
+    # what you do not know before the calculation.
+    #
+    # Two things about it are worth watching, and both are visible in the output above.
+    #
+    # The cutoff never cuts inside a manifold. If it falls between two states closer than
+    # `manifold_gap` (default 50 cm^-1, which is also the threshold that makes a boundary
+    # unambiguous), the whole cluster is taken; the resolved cut is therefore clean by the
+    # boundary check's own standard by construction. A spectrum with no wide gap anywhere
+    # chains to the cap and is REFUSED rather than rounded -- rounding would be exactly the
+    # cut a window exists to forbid.
+    #
+    # ⚠ And the count is resolved at fixed orbitals and HELD for the whole orbital
+    # optimization. It can change only between rounds: the optimizer never sees a window,
+    # every round is an ordinary fixed-count run of the validated driver, and a window whose
+    # first round resolves to n and stays there reproduces the n-state run step for step.
+    # That is asserted here bit for bit rather than to a tolerance, because it is a
+    # statement about the code path and not about the physics. Here the d^1 ligand field
+    # puts the first excited doublet far above the ground one at both ends of the
+    # trajectory, so one round settles it.
+    out.section(log, "The same CASSCF, with the states chosen by an energy cutoff")
+    windowed = kuiva.CASSCF(reference, character=("Ti", "d"), n_active=N_ACTIVE,
+                            n_active_elec=N_ACTIVE_ELEC,
+                            n_states=kuiva.EnergyWindow(WINDOW_CM),
+                            max_iter=MAX_ITER, conv_grad=CONV_GRAD).run()
+    out.entries(log, [
+        ("cutoff asked for", WINDOW_CM, "cm^-1", "above the lowest state", out.CM_FMT),
+        ("states it resolved to", windowed.n_states, "",
+         "against the {} stated by hand above".format(N_STATES_SCF)),
+        ("rounds", len(windowed.rounds), "", "one: the verdict did not change"),
+        ("gap beyond the last state averaged", windowed.window.boundary_gap_cm, "cm^-1",
+         "wider than the manifold gap by construction", out.CM_FMT),
+        ("energy, against the fixed-count run", windowed.energy - cas.energy, "Eh",
+         "bitwise: the rounds wrap the driver, they do not modify it", out.SCI_FMT),
+    ])
+    out.note(log, "the ladder's rungs, the witness it used and the two states either side")
+    out.note(log, "of the cut are in the [state window] block above -- a resolved count is")
+    out.note(log, "reproducible from what it prints, which is the whole point of printing it.")
 
     # ----------------------------------------------------------------------------------
     # 3. The spectrum, as a CASCI at the converged orbitals.
@@ -690,6 +750,16 @@ def main() -> int:
             bool(cas.boundary.is_clean and cas.boundary_initial.is_clean),
         "the boundary gap exceeds {:.0e} cm^-1 at both ends".format(BOUNDARY_MIN_CM):
             min(cas.boundary.gap_cm, cas.boundary_initial.gap_cm) > BOUNDARY_MIN_CM,
+        # The energy window, section 2b. The count is what the cutoff resolves to, and the
+        # trajectory is the fixed-count one -- asserted bitwise, because the claim is about
+        # the code path (the rounds wrap the validated driver) and not about the physics.
+        "the {:.0f} cm^-1 window resolves to the {} states stated by hand".format(
+            WINDOW_CM, N_STATES_SCF): windowed.n_states == N_STATES_SCF,
+        "it settles in one round": len(windowed.rounds) == 1,
+        "and reproduces the fixed-count run bitwise":
+            windowed.energy == cas.energy and np.array_equal(windowed.coeff, cas.coeff),
+        "the resolved cut is clean by the boundary diagnostic's own threshold":
+            bool(windowed.boundary.is_clean and windowed.window.complete),
         "the converged active space really is Ti d": ti_d_fraction > 0.5,
         # Two independent constructions of one active space. Once AVAS is asked for the
         # d shell ALONE, they must agree element for element; if they did not, one of them

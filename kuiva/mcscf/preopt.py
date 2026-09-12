@@ -80,6 +80,9 @@ from ..util import output as out
 from ..util import resources as res
 from ..util.logging import get_logger
 from ..util.timing import timer
+from ..util.units import HARTREE_TO_CM
+from ..util.window import (EnergyWindow, WindowResolution, is_window_request,
+                           resolve_states)
 from .adaptive import Proposal, SolverFailure, array_key
 from .events import DEFAULT_EVENT_INTERVAL, DEFAULT_TAU, optimize_orbitals_events
 from .orbopt import CASIntegrals, OrbitalSpaces, optimize_orbitals
@@ -296,10 +299,22 @@ class CheapCIResult:
     gamma2: Optional[np.ndarray]          # state-averaged 2-RDM
     occupation_correlation: np.ndarray    # <n_p n_q>
     weights: np.ndarray
+    #: With ``n_states`` an :class:`~kuiva.util.window.EnergyWindow`: how the count was
+    #: resolved. ⚠ Read from the **reference** space's spectrum, before the selection grew
+    #: it — the cheap CI's energies are qualitative by construction, so this is a count of
+    #: roots inside a cutoff and not a statement about where the spectrum really ends.
+    window: Optional[WindowResolution] = None
 
     @property
     def n_determinants(self) -> int:
         return self.dets.ndet
+
+    @property
+    def relative_cm(self) -> np.ndarray:
+        """State energies relative to the lowest [cm^-1] — the handoff a later stage's
+        energy window takes its first rung from."""
+        e = np.asarray(self.energies, dtype=float).ravel()
+        return (e - e[0]) * HARTREE_TO_CM if e.size else e
 
     @property
     def leading_weight(self) -> float:
@@ -334,7 +349,52 @@ class CheapCIResult:
                 mutual_information(self.gamma, self.occupation_correlation))
 
 
-def cheap_ci(h_eff: np.ndarray, eri: np.ndarray, n_elec: int, *, n_states: int = 1,
+class SpaceSpectrumOracle:
+    """:class:`~kuiva.util.window.SpectrumOracle` over a **fixed** determinant space.
+
+    What an energy window's ladder drives on every route that diagonalizes a listed set of
+    determinants — the cheap CI's selected space and the sampled subspace of
+    :class:`kuiva.qc.sqd.SQDSolver` — so the two share one oracle rather than two.
+
+    ⚠ **"The space is exhausted" is a complete verdict, not a reason to solve more.** The
+    ladder clamps its rungs to the space size, so :func:`_solve`'s padding path (duplicated
+    energies and zero vectors for roots that do not exist) is never reached here: a request
+    for every determinant returns every eigenvalue, and the rule reads that as the average
+    spanning the space. ``generic`` starting vectors are not a parameter — the eigensolver
+    here is dense or Lanczos on a formed matrix, neither of which is seeded from a biased
+    guess in the first place.
+    """
+
+    def __init__(self, dets: Determinants, h_eff: np.ndarray, eri: np.ndarray, conn=None):
+        self.dets, self.h_eff, self.eri, self.conn = dets, h_eff, eri, conn
+        self.energies: Optional[np.ndarray] = None
+        self.vectors: Optional[np.ndarray] = None
+
+    def spectrum(self, n_roots: int) -> np.ndarray:
+        w, v = _solve(self.dets, self.h_eff, self.eri, int(n_roots), conn=self.conn)
+        self.energies, self.vectors = np.asarray(w, dtype=float), v
+        return self.energies
+
+
+def _resolve_in_space(dets: Determinants, h_eff: np.ndarray, eri: np.ndarray, n_elec: int,
+                      window: EnergyWindow, *, conn=None, report: bool = False,
+                      where: str = "") -> Tuple[WindowResolution, np.ndarray, np.ndarray]:
+    """``(resolution, energies, vectors)``: the ladder of :mod:`kuiva.util.window` in one
+    fixed determinant space, taking the whole spectrum in one rung where it is dense."""
+    oracle = SpaceSpectrumOracle(dets, h_eff, eri, conn=conn)
+    first = None
+    if dets.ndet <= DENSE_SOLVE_MAX_DET:
+        first = (dets.ndet, "the dense solve: the whole {}-determinant space in one rung"
+                            .format(dets.ndet))
+    resolution = resolve_states(oracle, window, n_elec=n_elec, space_size=dets.ndet,
+                                first=first)
+    if report:
+        resolution.report(log, where=where)
+    count = int(resolution.count)
+    return resolution, oracle.energies[:count], oracle.vectors[:, :count]
+
+
+def cheap_ci(h_eff: np.ndarray, eri: np.ndarray, n_elec: int, *, n_states=1,
              max_determinants: int = DEFAULT_MAX_DETERMINANTS,
              max_reference: int = DEFAULT_MAX_REFERENCE,
              max_excitation: int = 2, selection_rounds: int = 2,
@@ -354,13 +414,30 @@ def cheap_ci(h_eff: np.ndarray, eri: np.ndarray, n_elec: int, *, n_states: int =
     objective *is* the state average, and it lowers that average measurably. Turning it off
     recovers the original criterion. ⚠ With ``n_states == 1`` it is bitwise a no-op, by
     construction rather than by luck.
+
+    ``n_states`` may be an :class:`~kuiva.util.window.EnergyWindow`, and then the count is
+    **resolved on the selected space's own spectrum** — after the selection, so the states
+    returned are the ones the rule read. ⚠ The reference CAS resolves a *provisional* count
+    first, because the selection needs one to rank candidates against; that one is capped by
+    the seed (two determinants on a small active space) and is never the verdict. ⚠ And what
+    the verdict is good for is being a *rung*: these energies are qualitative by
+    construction, so the number of roots inside a cutoff is an estimate of the full CI's,
+    never a substitute for resolving the window where the states are actually wanted.
     """
     n_spinor = int(h_eff.shape[0])
-    weights = (np.full(n_states, 1.0 / n_states) if state_weights is None
-               else np.asarray(state_weights, dtype=float) / np.sum(state_weights))
-    if weights.size != n_states:
-        raise ValueError("state_weights has {} entries for {} states".format(
-            weights.size, n_states))
+    window = None
+    if is_window_request(n_states):
+        if not isinstance(n_states, EnergyWindow):
+            raise ValueError(
+                "the cheap CI selects determinants by perturbative weight and has no irrep "
+                "sectors to select in, so a per-irrep energy window has nothing to resolve "
+                "against here; state a plain EnergyWindow, or a count per irrep on the CI "
+                "that does have sectors")
+        if state_weights is not None:
+            raise ValueError("state_weights= cannot be combined with an energy window: a "
+                             "window's weights are equal by construction. Drop "
+                             "state_weights=, or state a count")
+        window = n_states
 
     # The reference CAS can never exceed the total budget: it is the seed, not the space.
     dets = reference_determinants(np.diag(h_eff), n_spinor, n_elec,
@@ -368,7 +445,23 @@ def cheap_ci(h_eff: np.ndarray, eri: np.ndarray, n_elec: int, *, n_states: int =
     # Solve the reference CAS before selecting anything: the perturbative weight needs a
     # meaningful E_ref in its denominator and meaningful coefficients on the generators, and
     # the reference is small enough (a few hundred determinants) that this is free.
-    energies, civecs = _solve(dets, h_eff, eri, n_states)
+    resolution = None
+    if window is not None:
+        # ⚠ **A provisional count only.** The reference CAS is the *seed* of the selection,
+        # not the space — on a small active space it can be two determinants — so a count
+        # resolved here would be capped by the seed rather than by the spectrum. What it is
+        # for is the selection itself, which ranks candidates against the averaged roots and
+        # needs some count to do it with; the verdict is read again below, on the space the
+        # selection actually produced.
+        provisional, energies, civecs = _resolve_in_space(dets, h_eff, eri, n_elec, window)
+        n_states = int(provisional.count)
+    weights = (np.full(n_states, 1.0 / n_states) if state_weights is None
+               else np.asarray(state_weights, dtype=float) / np.sum(state_weights))
+    if weights.size != n_states:
+        raise ValueError("state_weights has {} entries for {} states".format(
+            weights.size, n_states))
+    if window is None:
+        energies, civecs = _solve(dets, h_eff, eri, n_states)
 
     # With one root the ensemble *is* the ground state, so the two criteria are the same
     # quantity — take the single-root path explicitly, so that a one-state calculation is
@@ -385,10 +478,19 @@ def cheap_ci(h_eff: np.ndarray, eri: np.ndarray, n_elec: int, *, n_states: int =
                   rnd + 1, dets.ndet, energies[0])
 
     conn = connections(dets)
+    if window is not None:
+        # The verdict, on the space the selection produced — the states this call returns are
+        # the ones the rule read, so the count and the spectrum belong together.
+        resolution, energies, civecs = _resolve_in_space(
+            dets, h_eff, eri, n_elec, window, conn=conn, report=report,
+            where="the selected space")
+        n_states = int(resolution.count)
+        weights = np.full(n_states, 1.0 / n_states)
     gamma, gamma2 = rdm12(dets, civecs, weights, conn, with_2rdm=with_2rdm)
     nn = occupation_correlations(dets, civecs, weights)
     result = CheapCIResult(energies=energies, civecs=civecs, dets=dets, gamma=gamma,
-                           gamma2=gamma2, occupation_correlation=nn, weights=weights)
+                           gamma2=gamma2, occupation_correlation=nn, weights=weights,
+                           window=resolution)
     if report:
         _report_ci(result, n_elec)
     return result
@@ -557,9 +659,20 @@ class CheapCISolver:
     sets, not two spaces.
     """
 
-    def __init__(self, n_elec: int, *, n_states: int = 1, **ci_kwargs):
+    def __init__(self, n_elec: int, *, n_states=1, **ci_kwargs):
         self.n_elec = int(n_elec)
-        self.n_states = int(n_states)
+        #: The energy window the count came from, or ``None`` for a stated count. ⚠ The count
+        #: is resolved at the **first solve** and held for the whole optimization, exactly as
+        #: it is held for a whole round of a windowed CASSCF and for the same reason: a count
+        #: that moved under the optimizer would move the energy functional under it. The
+        #: pre-optimizer takes one round, because its count is an estimate to begin with.
+        self.window: Optional[EnergyWindow] = None
+        self.window_resolution: Optional[WindowResolution] = None
+        if is_window_request(n_states):
+            self.window = n_states
+            self.n_states: Optional[int] = None
+        else:
+            self.n_states = int(n_states)
         self.ci_kwargs = dict(ci_kwargs)
         self._dets: Optional[Determinants] = None
         self._conn = None
@@ -575,8 +688,10 @@ class CheapCISolver:
     def solve(self, ints: CASIntegrals):
         h_eff, eri = ints.h_active_effective(), ints.active_eri()
         if self._dets is None:
-            ci = cheap_ci(h_eff, eri, self.n_elec, n_states=self.n_states, **self.ci_kwargs)
+            ci = cheap_ci(h_eff, eri, self.n_elec, n_states=self._request(),
+                          **self.ci_kwargs)
             self.n_selections += 1
+            self._adopt_count(ci)
             self._install(ci.dets)
         else:
             ci = solve_fixed_space(self._dets, h_eff, eri, n_states=self.n_states,
@@ -589,8 +704,9 @@ class CheapCISolver:
 
     def propose(self, ints: CASIntegrals) -> Optional[Proposal]:
         h_eff, eri = ints.h_active_effective(), ints.active_eri()
-        ci = cheap_ci(h_eff, eri, self.n_elec, n_states=self.n_states, **self.ci_kwargs)
+        ci = cheap_ci(h_eff, eri, self.n_elec, n_states=self._request(), **self.ci_kwargs)
         self.n_selections += 1
+        self._adopt_count(ci)
         key = array_key(ci.dets.masks)
         if key == self._key:
             return None                    # the selection reproduced the incumbent space
@@ -611,6 +727,19 @@ class CheapCISolver:
         return self._key
 
     # -- internals ----------------------------------------------------------------------
+    def _request(self):
+        """The state request to hand :func:`cheap_ci`: the window until it has resolved, the
+        resolved count for every call after that."""
+        return self.window if self.n_states is None else self.n_states
+
+    def _adopt_count(self, ci: "CheapCIResult") -> None:
+        """Hold the count the first windowed solve resolved. ⚠ Once only: every later call
+        asks for that count, so the determinant space is the only thing that can change and
+        ``E(kappa)`` stays the surface the optimizer assumes."""
+        if self.n_states is None:
+            self.n_states = int(np.asarray(ci.energies).size)
+            self.window_resolution = ci.window
+
     def _install(self, dets: Determinants) -> None:
         """Make ``dets`` the incumbent space. The connection search is the expensive part and
         depends only on the determinants, so it is done once here rather than per solve."""
@@ -723,7 +852,7 @@ SPACE_POLICIES = ("event", "frozen", "adaptive")
 
 def preoptimize(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
                 spaces: OrbitalSpaces, n_active_elec: int, *, e_nuc: float = 0.0,
-                n_states: int = 1, max_iter: int = 20, report: bool = True,
+                n_states=1, max_iter: int = 20, report: bool = True,
                 natural_spinors: bool = True, mode: str = "quasi-newton",
                 conv_grad: float = 1e-3, space_policy: str = "event",
                 freeze_determinants: Optional[bool] = None,
@@ -801,7 +930,9 @@ def preoptimize(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
         out.entries(log, [
             ("active electrons", n_active_elec),
             ("active spinors", spaces.n_active),
-            ("states", n_states),
+            ("states", "resolved from an energy window" if is_window_request(n_states)
+             else n_states, "",
+             n_states.describe() if isinstance(n_states, EnergyWindow) else ""),
             ("determinant budget", ci_kwargs.get("max_determinants",
                                                  DEFAULT_MAX_DETERMINANTS)),
         ])
@@ -822,8 +953,13 @@ def preoptimize(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
     else:
         def callable_solver(ints: CASIntegrals):
             if space_policy == "adaptive":
+                # ⚠ The count is resolved once even here, where the *space* is re-chosen at
+                # every point: a count that moved with the orbitals would change the energy
+                # functional under a driver that assumes one surface, which is a second
+                # discontinuity on top of the one this policy already has.
                 res = cheap_ci(ints.h_active_effective(), ints.active_eri(), n_active_elec,
-                               n_states=n_states, **ci_kwargs)
+                               n_states=solver._request(), **ci_kwargs)
+                solver._adopt_count(res)
                 solver.last = res
                 return (float(np.dot(res.weights, res.energies)) + ints.e_core,
                         res.gamma, res.gamma2)
@@ -847,8 +983,15 @@ def preoptimize(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
     # orbitals nobody receives. One extra solve, seconds, and it makes the returned
     # wavefunction correspond to the returned coefficients by construction.
     ints_final = CASIntegrals.build(factors, h_ao, coeff, spaces, e_nuc=e_nuc)
+    # ⚠ A window is **re-resolved** here rather than held at the count the first solve found.
+    # This solve is the one whose spectrum leaves the stage — it is what a later window takes
+    # its first rung from — and it is at the returned orbitals rather than the starting ones,
+    # so resolving it against the same cutoff is the honest reading. It is one solve, and it
+    # cannot disturb a trajectory: there is none left.
     ci = cheap_ci(ints_final.h_active_effective(), ints_final.active_eri(), n_active_elec,
                   n_states=n_states, **ci_kwargs)
+    if report and ci.window is not None:
+        ci.window.report(log, where="the pre-optimized orbitals")
     occ, _ = ci.natural_spinors()
 
     if report:
@@ -875,7 +1018,8 @@ def preoptimize(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
     return result
 
 
-__all__ = ["CheapCIResult", "CheapCISolver", "PreoptResult", "cheap_ci", "preoptimize",
+__all__ = ["CheapCIResult", "CheapCISolver", "PreoptResult", "SpaceSpectrumOracle",
+           "cheap_ci", "preoptimize",
            "reference_determinants", "solve_fixed_space", "dense_hamiltonian_gb",
            "SPACE_POLICIES",
            "DEFAULT_MAX_DETERMINANTS", "DEFAULT_MAX_REFERENCE", "DEFAULT_OCCUPATION_WINDOW",
