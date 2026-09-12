@@ -111,6 +111,20 @@ with its context. Each entry links to the page that explains the mechanism.
   average converging from the scalar guess into a wrong basin) is invisible to any static
   check. Read [workflows](guide/workflows.md#designing-a-state-average) before setting
   `n_states` on anything harder than a ground doublet.
+- **An energy window resolves a count, and what it guarantees is a clean *cut*, not a
+  meaningful ensemble** ([casscf](methods/casscf.md#resolving-the-count-from-an-energy-cutoff)).
+  The manifold rule cannot split a numerically degenerate block and the resolved boundary gap
+  is wider than the unambiguity threshold by construction — but a window says nothing about
+  whether the ensemble is one the symmetry leaves invariant, and the spin non-invariance
+  report and the four questions of
+  [workflows](guide/workflows.md#designing-a-state-average) apply to a resolved count exactly
+  as they do to a stated one. ⚠ A window whose verdict is still moving when `max_rounds` runs
+  out keeps the last converged round and is reported as **ambiguous**: both counts are
+  self-consistent fixed points, and which side of the straddling state the calculation is
+  about is a question about the request. On the tensor-network route a window can also be
+  refused outright, because the narrowest two-site window of the topology bounds the ensemble
+  and therefore the witness root the verdict needs
+  ([dmrg](methods/dmrg.md#resolving-a-state-count-on-the-network)).
 - **Point-group symmetry is abelian double groups only, opt-in, and does not make a state
   average safe** ([symmetry](methods/symmetry.md#what-abelian-symmetry-cannot-promise)): a
   per-irrep count can split a physically degenerate manifold exactly as a plain count can.

@@ -61,6 +61,40 @@ used in the mathematics is smaller than the molecule's real one, two members of 
 degenerate manifold can carry different labels, and a per-irrep count can split the manifold
 exactly as a plain count can.
 
+### Letting the cutoff choose the count
+
+Sometimes the honest request is physical rather than arithmetic — *the ligand-field ground
+manifold*, *everything thermally accessible at 300 K* — and the number of states is exactly
+what you do not know before the calculation. `n_states=kuiva.EnergyWindow(1000)` says
+"average over every state within 1000 cm⁻¹ of the lowest" and lets the run find out how many
+that is:
+
+```python
+cas = kuiva.CASSCF(ref, character=("Ti", "d"), n_active=10, n_active_elec=1,
+                   n_states=kuiva.EnergyWindow(1000)).run()
+cas.n_states        # the count it resolved to
+cas.window          # the rungs it climbed, the witness gap, the two states either side
+```
+
+The cutoff never cuts inside a manifold: if it falls between two states closer together than
+`manifold_gap` (50 cm⁻¹ by default, which is also the threshold that makes a boundary
+*unambiguous*), the whole cluster is taken. So question 1 above is answered by construction —
+and ⚠ **questions 2, 3 and 4 are not**. A window resolves a clean *cut*; whether the ensemble
+below that cut is one the symmetry leaves invariant is the same question it always was, and
+the same spin-non-invariance line answers it. A window over a whole term is as safe as
+stating that term's count by hand; a window that happens to land on one J level leans exactly
+as much as `n_states=2` would.
+
+Three behaviours to expect in the output. The count is resolved at fixed orbitals and **held
+for a whole orbital optimization** — it can change only between rounds, and the rounds table
+says how many there were; a run that settles in one round is the fixed-count run at that
+count. A spectrum with no clean gap anywhere chains to the cap and is **refused** rather than
+rounded, printing the counts at which a clean cut does exist. And if the verdict is still
+moving when `max_rounds` runs out, the last converged round is kept and the window is reported
+as *ambiguous*, naming the state that crosses the cutoff — at which point the answer is to
+move the cutoff clear of that state or to state a count. Full treatment:
+[CASSCF](../reference/stages/CASSCF.md#choosing-the-states-by-an-energy-cutoff).
+
 ## Active spaces beyond the simple case
 
 `character=(atom, l)` with `n_active=` states the simple case: the lowest Kramers pairs of a
@@ -461,6 +495,17 @@ it. Truncation *growing* as the orbitals move is the signal that `max_bond` is t
 `kuiva.dmrg.bond_series` runs the ascending-bond-dimension series behind an
 `E(w_disc → 0)` extrapolation [[131]](../references.md#r131), reported with the series and
 its fit residual beside it, never alone.
+
+An energy window works on this route too, and costs differently: every rung of its ladder is
+a whole sweep campaign, which the rung table prints in sweeps and CPU seconds. Two things to
+plan for. The witness the verdict is read against is a **converged network root**, so the
+narrowest two-site window of the topology has to hold the count *and* a whole Kramers pair
+above it — for a one-electron active space a tree of one-spinor nodes holds three roots
+whatever `max_bond` is, and a window it cannot witness is refused with a coarser node
+partition named as the fix. And with no `CheapCI` upstream to supply a first rung, the
+network runs a short **pilot** campaign at a small bond dimension for it, once per
+calculation; an upstream cheap CI saves that
+([dmrg](../methods/dmrg.md#resolving-a-state-count-on-the-network)).
 
 ## Non-Kramers ions: when the ground "doublet" is two singlets
 

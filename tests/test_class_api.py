@@ -413,6 +413,33 @@ def test_dmrg_checkpoint_and_restart(ref, cas_dmrg, tmp_path):
     assert abs(resumed.energy - cas_dmrg.energy) < E_TOL
 
 
+def test_a_windowed_dmrg_restart_takes_its_count_from_the_file(ref, tmp_path):
+    """⚠ Same rule as on the conventional-CI route, and it has to be: the count comes from
+    the **file** and the window is what is compared, because the interrupted calculation ran
+    at one count and re-resolving here could pick another. A changed cutoff is a different
+    calculation and is refused."""
+    from kuiva.dmrg import NetworkGraph
+    from kuiva.io.checkpoint import (STATE_AVERAGE_KEY, read_checkpoint,
+                                     state_average_window)
+
+    graph = NetworkGraph(2, [(0, 1)], contents=[(0, 1, 2), (3, 4, 5)])
+    window = kuiva.EnergyWindow(5.0, manifold_gap=1.0)
+    options = dict(solver="dmrg", solver_options=dict(max_bond=16), graph=graph,
+                   report=False)
+    path = tmp_path / "b_dmrg_window.h5"
+    stopped = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
+                     n_states=window, max_iter=2, checkpoint=path,
+                     checkpoint_options=dict(min_interval=0.0), **options).run()
+    assert not stopped.converged and stopped.n_states == 2
+    stored = read_checkpoint(path)
+    assert state_average_window(stored.metadata[STATE_AVERAGE_KEY]) == window
+
+    resumed = CASSCF(ref, restart=path, n_states=window, max_iter=60, **options).run()
+    assert resumed.converged and resumed.n_states == 2
+    with pytest.raises(ValueError, match="different calculation"):
+        CASSCF(ref, restart=path, n_states=kuiva.EnergyWindow(900.0), **options).run()
+
+
 def test_dmrg_restart_with_a_different_state_average_is_refused(ref, tmp_path):
     path = tmp_path / "b_dmrg_sa.h5"
     CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=2,
@@ -587,15 +614,21 @@ def test_casci_takes_an_energy_window_and_resolves_it_to_the_j_manifold(cas_term
     assert np.max(np.abs(term.energies - cas_term.energies)) < KRAMERS_TOL
 
 
-def test_a_window_refuses_weights_and_the_network_route(ref, cas_term):
+def test_a_window_refuses_weights_and_the_per_irrep_form_on_the_network(ref, cas_term):
     with pytest.raises(ValueError, match="weights= cannot be combined"):
         CASCI(cas_term, n_states=kuiva.EnergyWindow(1000), weights=[0.5, 0.5])
     with pytest.raises(ValueError, match="weights= cannot be combined"):
         CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
                n_states=kuiva.EnergyWindow(1000), weights=[0.5, 0.5])
-    with pytest.raises(NotImplementedError, match="pilot sweep"):
+    with pytest.raises(ValueError, match="weights= cannot be combined"):
         CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
-               n_states=kuiva.EnergyWindow(1000), solver="dmrg",
+               n_states=kuiva.EnergyWindow(1000), weights=[0.5, 0.5], solver="dmrg",
+               solver_options=dict(max_bond=16))
+    # a per-irrep window selects states per determinant sector, which a network solve —
+    # targeting one sector — has nothing to do with
+    with pytest.raises(ValueError, match="per-irrep energy window"):
+        CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
+               n_states={"1/2g": kuiva.EnergyWindow(1000)}, solver="dmrg",
                solver_options=dict(max_bond=16))
 
 
@@ -723,6 +756,118 @@ def test_a_cheap_ci_window_hands_the_casscf_its_first_rung(ref):
     # a Reference upstream has no spectrum to hand over, and the ladder says so
     assert CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
                   n_states=window, report=False)._window_first_rung() is None
+
+
+def test_a_windowed_dmrg_casscf_is_the_fixed_count_run_it_resolves_to(ref):
+    """The round design on the network route: the count is resolved at fixed orbitals by a
+    ladder whose every rung is a sweep campaign, then **held** for a whole orbital
+    optimization — so a window that resolves to 2 and stays there reproduces the
+    ``n_states=2`` DMRG-CASSCF bitwise, the same statement the conventional-CI route carries.
+
+    ⚠ Three modes per node, as in ``cas_dmrg_term`` and for a sharper version of the same
+    reason: a window is resolved against a **converged witness root above the count**, so
+    the tour's narrowest two-site window has to hold the count *and* a witness pair. On the
+    default one-mode-per-node path of a one-electron active space it holds three roots
+    whatever the bond dimension is, which the refusal below is about."""
+    from kuiva.dmrg import NetworkGraph
+
+    graph = NetworkGraph(2, [(0, 1)], contents=[(0, 1, 2), (3, 4, 5)])
+    window = kuiva.EnergyWindow(5.0, manifold_gap=1.0)
+    options = dict(character=("B", "p"), n_active=6, n_active_elec=1, solver="dmrg",
+                   solver_options=dict(max_bond=16), graph=graph, report=False)
+    stage = CASSCF(ref, n_states=window, **options)
+    assert stage.n_states is None and stage.window is None
+    stage.run()
+    assert stage.n_states == 2 and stage.energies.size == 2
+    assert len(stage.rounds) == 1 and stage.window.count == 2
+    assert stage.window.complete and not stage.window.ambiguous
+    # the witness is converged network roots, not the sweep's local one-sided gap
+    assert stage.window.witness == "converged network roots"
+    assert stage.boundary_gap_cm == stage.window.boundary_gap_cm > 50.0
+    fixed = CASSCF(ref, n_states=2, **options).run()
+    # ⚠ Not asserted bitwise, unlike the conventional-CI route's version of this test: the
+    # windowed run's first sweep starts from the ladder's own converged ensemble and the fixed
+    # one from a random state, and this layer's reductions are measurably order-sensitive. What
+    # IS asserted is that the trajectory is the same length and ends in the same place — the
+    # statement that the rounds wrapped the driver rather than modifying it.
+    assert stage.orbital.n_iterations == fixed.orbital.n_iterations
+    assert abs(stage.energy - fixed.energy) < E_TOL
+    assert np.max(np.abs(stage.energies - fixed.energies)) < E_TOL
+    assert "state window" in stage.summary()
+
+
+def test_a_network_count_that_changes_between_rounds_lands_on_the_fixed_count_run(ref):
+    """The other branch of the round loop, on the network route: on CAS(3, 8) the 4000 cm^-1
+    window resolves to **2** at the guess orbitals, that average pulls the next pair down
+    inside the cutoff, and the re-resolution reads **6** — so a second round runs at 6, on a
+    sibling solver warm-started from the ladder's own ensemble and with the previous round's
+    curvature discarded (a new count is a new energy functional). What it converges to is the
+    ``n_states=6`` DMRG-CASSCF."""
+    from kuiva.dmrg import NetworkGraph
+
+    graph = NetworkGraph(2, [(0, 1)], contents=[(0, 1, 2, 3), (4, 5, 6, 7)])
+    options = dict(character=[("B", "s", 2), ("B", "p", 6)], solver="dmrg",
+                   solver_options=dict(max_bond=16), graph=graph, max_iter=60,
+                   report=False)
+    stage = CASSCF(ref, n_states=kuiva.EnergyWindow(4000.0), **options).run()
+    assert [(r.n_states, r.verdict_count) for r in stage.rounds] == [(2, 6), (6, 6)]
+    assert stage.n_states == 6 and stage.converged and not stage.window.ambiguous
+    fixed = CASSCF(ref, n_states=6, **options).run()
+    assert abs(stage.energy - fixed.energy) < E_TOL
+    # ⚠ max_iter is the budget ACROSS rounds, here as on the conventional-CI route
+    assert sum(r.n_iterations for r in stage.rounds) == stage.orbital.n_iterations
+
+
+def test_a_windowed_dmrg_runs_on_the_event_gated_driver_too(ref):
+    """A bond-dimension ladder routes the optimization through the event-gated driver, which
+    is a *sibling* of the smooth one and has no ``start_iteration`` — so a window's rounds
+    hand it what is left of the budget and shift its counter back, which is what keeps
+    ``max_iter`` a budget across rounds on both drivers."""
+    from kuiva.dmrg import NetworkGraph
+
+    graph = NetworkGraph(2, [(0, 1)], contents=[(0, 1, 2), (3, 4, 5)])
+    stage = CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
+                   n_states=kuiva.EnergyWindow(5.0, manifold_gap=1.0), solver="dmrg",
+                   solver_options=dict(max_bond=16, bond_steps=[8, 16]), graph=graph,
+                   max_iter=30, report=False).run()
+    assert stage.n_states == 2 and len(stage.rounds) == 1
+    assert stage.orbital.n_iterations <= 30
+    assert abs(stage.energies[1] - stage.energies[0]) < KRAMERS_TOL
+
+
+def test_a_windowed_network_that_cannot_hold_its_witness_is_refused(ref):
+    """⚠ Refused, never truncated to the roots the network happens to be able to hold: that
+    truncation would be a cut the ensemble's dimension chose, which is exactly what a window
+    exists to forbid. The message names the capacity, the sector and the fix."""
+    with pytest.raises(ValueError, match="coarser node partition"):
+        CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
+               n_states=kuiva.EnergyWindow(5.0, manifold_gap=1.0), solver="dmrg",
+               solver_options=dict(max_bond=16), report=False).run()
+
+
+def test_a_cheap_ci_window_hands_the_network_its_first_rung(ref):
+    """The handoff is the same one the conventional-CI route takes, and on this route it is
+    what a pilot campaign costs: with an upstream estimate no pilot runs at all."""
+    from kuiva.dmrg import NetworkGraph
+
+    window = kuiva.EnergyWindow(5.0, manifold_gap=1.0)
+    pre = CheapCI(ref, character=("B", "p"), n_active=6, n_active_elec=1, n_states=window,
+                  report=False).run()
+    assert pre.n_states == 2
+    stage = CASSCF(pre, n_states=window, solver="dmrg",
+                   solver_options=dict(max_bond=16),
+                   graph=NetworkGraph(2, [(0, 1)], contents=[(0, 1, 2), (3, 4, 5)]),
+                   report=False).run()
+    assert stage.n_states == 2
+    assert stage.window.extra.get("pilot") is None          # no pilot anywhere in the run
+    # ⚠ stage.window is the re-resolution at the CONVERGED orbitals, and its first rung comes
+    # from what this calculation already resolved — the handoff is on the resolution at the
+    # STARTING orbitals, which is what window_initial is for
+    assert stage.window_initial.first_rung_source == "the upstream estimate"
+    assert stage.window_initial.rungs[0].n_roots == 2
+    assert stage.window.first_rung_source == ("the previous round's count plus a "
+                                              "witness pair")
+    assert stage.window.rungs[0].n_roots == 4
 
 
 def test_casci_carries_the_solver_options(cas_term):

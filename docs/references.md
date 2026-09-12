@@ -470,3 +470,7 @@ data, under `tests/`, not here.
 <a id="r194"></a>**[194]** M. Crouzeix, B. Philippe, M. Sadkane, *SIAM J. Sci. Comput.* **15**, 62 (1994). DOI: [10.1137/0915004](https://doi.org/10.1137/0915004) — Davidson convergence analysis and the role of the restart subspace.
 
 <a id="r195"></a>**[195]** Å. Björck, *BIT* **7**, 1 (1967). DOI: [10.1007/BF01934122](https://doi.org/10.1007/BF01934122) — re-orthogonalized modified Gram–Schmidt.
+
+<a id="r196"></a>**[196]** B. N. Parlett, *The Symmetric Eigenvalue Problem*, SIAM Classics in Applied Mathematics 20 (1998), ch. 10–11 — the Rayleigh–Ritz interlacing argument behind "a converged subspace with a component on every eigenvector cannot skip a lower eigenvalue", which is why an energy window's witness roots are asked for with generic starting vectors.
+
+<a id="r197"></a>**[197]** E. Tiesinga, P. J. Mohr, D. B. Newell, B. N. Taylor, *Rev. Mod. Phys.* **93**, 025010 (2021). DOI: [10.1103/RevModPhys.93.025010](https://doi.org/10.1103/RevModPhys.93.025010) — CODATA 2018, the conversion table every energy in cm⁻¹, eV, K, meV, kJ/mol or kcal/mol is converted through.

@@ -621,7 +621,8 @@ def first_rung(window: EnergyWindow, *, estimate: Optional[int] = None,
     The user's ``initial`` overrides an ``estimate`` (an upstream cheap CI's resolved count,
     a pilot sweep's), which overrides :data:`DEFAULT_FIRST_RUNG`. With a previous round's
     count the first rung is at least that count plus one witness pair, so the re-resolution can
-    see a verdict at it.
+    see a verdict at it — and where that is what decided the rung, the source says so rather
+    than naming an estimate that did not.
     """
     if window.initial is not None:
         n, source = int(window.initial), "initial="
@@ -629,8 +630,12 @@ def first_rung(window: EnergyWindow, *, estimate: Optional[int] = None,
         n, source = int(estimate), "the upstream estimate"
     else:
         n, source = DEFAULT_FIRST_RUNG, "the default first rung"
-    if n_prev is not None:
-        n = max(n, int(n_prev) + 2)
+    if n_prev is not None and int(n_prev) + 2 > n:
+        # ⚠ And it says so: a later round's first rung is set by the count the previous one
+        # ran at, not by whatever estimate started the calculation, and a source line naming
+        # that estimate would make the handoff unreadable in an output with several rounds.
+        n = int(n_prev) + 2
+        source = "the previous round's count plus a witness pair"
     n = _even_up(n, n_elec)
     return _clamp(n, window, space_size), source
 

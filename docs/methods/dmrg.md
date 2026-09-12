@@ -191,6 +191,49 @@ integrals, adopted only when they lower the energy, with curvature memory cleare
 adoption. RDMs come back in the same objects and conventions as the CI's, through the same
 state-averaging gate, so the orbital optimizer is untouched.
 
+## Resolving a state count on the network
+
+The energy-window form of `n_states` ([casscf](casscf.md#resolving-the-count-from-an-energy-cutoff))
+works here through the same rule and the same round loop; what differs is the cost and the
+kind of evidence a rung can produce, and both are stated in the output rather than assumed.
+
+**A rung is a whole sweep campaign.** The ladder asks the network for the lowest $`n`$ roots,
+which is a state-averaged solve to convergence on a cold state — so the rung table prints the
+sweeps and the CPU seconds each rung took, and an expensive ladder is visible rather than
+inferred. Growth is by a factor of 1.5 rather than the CI's doubling for the same reason, and
+a grown rung starts **cold**: warm-starting across a root-count change by padding the
+incumbent shared basis with random centers is the obvious variant and is an unmeasured one,
+so it stays out until it is measured — what it would buy is time, never correctness.
+
+**The witness roots are converged network roots.** A rung solves the count *plus a whole
+Kramers pair* and reads the gap between the last state inside the window and the first
+outside it. The cheaper alternative — one extra root of a single two-site problem, which is
+what the sweep's own boundary diagnostic measures — bounds the next eigenvalue **from above**,
+so it can prove a window *incomplete* and never that it is complete. ⚠ The resolution
+therefore states which kind of witness it used, every time, and the network's local
+diagnostic is never silently substituted for it.
+
+**The topology decides whether a window can be answered at all.** The two-site space at the
+narrowest bond of the tour bounds the whole ensemble no matter how large `max_bond` is: for
+a one-electron active space a tree of one-spinor nodes holds three roots, two in whole
+Kramers pairs, which leaves no room for a witness above a two-state average. ⚠ A window that
+cannot be given a witness is **refused**, with the capacity, the particle-number sector and
+the fix named — truncating the ensemble to the roots the network happens to be able to hold
+would be exactly the arbitrary cut a window exists to forbid. The fix is a coarser node
+partition (fewer nodes, more spinors each), which is also what raises the capacity fastest.
+That bound is measured from the *full* sector set a freshly canonicalized state carries, so
+a cap tight enough to truncate a bond can put a rung past what that bond actually holds; the
+sweep refuses that too, and the ladder re-raises it saying the roots were a rung's rather
+than a stated count, because the two have different fixes.
+
+**The first rung comes from a pilot** when nothing upstream supplies one: a short campaign
+(four sweeps) at a small bond dimension (8) over a generous root count, whose spectrum the
+rule reads for the first rung only. A pilot is variational from above per root and its
+splittings are rough — which is what a first rung is for, and why the rule is re-run on the
+production spectrum rather than trusted there. A [`CheapCI`](../reference/stages/CheapCI.md)
+upstream supplies the estimate instead and the pilot is not paid for at all; `initial=` on
+the window overrides both. The pilot runs once per calculation, not once per round.
+
 ## Densities and the local-multiplet model
 
 **Ranks 1–2, the production path**: one backward pass computes every node's operator

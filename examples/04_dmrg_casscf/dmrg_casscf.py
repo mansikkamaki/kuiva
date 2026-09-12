@@ -41,6 +41,10 @@ WHAT TO LOOK FOR IN THE OUTPUT
   than a chain, with no sweep, operator or environment code aware of the difference;
 * the two CASSCF energies agreeing to well below the convergence threshold, and the
   largest bond dimension the network actually needed staying far under the cap;
+* the same DMRG-CASSCF once more with the number of states resolved from an energy cutoff
+  instead of stated: the ladder's rungs, what each one cost in sweeps, the kind of witness
+  root the count was read against, and why that witness is what decides the topology the
+  windowed run is given;
 * the two checkpoint files the network route writes: the ordinary trajectory checkpoint
   (which ``restart=`` resumes, exactly as in example 7) and the sibling ``*.network.h5``
   holding the network state itself, written rolling at the end of each completed sweep.
@@ -78,6 +82,7 @@ from typing import List
 import numpy as np
 
 import kuiva
+from kuiva.dmrg import NetworkGraph
 from kuiva.util import output as out
 from kuiva.util import resources as res
 from kuiva.util import timing
@@ -106,6 +111,11 @@ MAX_ITER, CONV_GRAD = 60, 1.0e-4
 #: The two solvers see the same integrals and the same orbitals, so their state-averaged
 #: energies must agree far below the convergence threshold, not merely near it.
 SOLVER_AGREEMENT_EH = 1.0e-8
+
+#: Cutoff for the energy-window form of the same DMRG-CASSCF (section 3b). Well inside the
+#: ligand-field gap above the ground Kramers doublet (~15 000 cm^-1 here), so the cutoff
+#: resolves to the two states section 3 states by hand.
+WINDOW_CM = 2.0e3
 
 
 def planar_mx3(metal: str, ligand: str, r: float) -> List[tuple]:
@@ -220,6 +230,64 @@ def main() -> int:
                            max_iter=MAX_ITER, conv_grad=CONV_GRAD,
                            checkpoint=checkpoint_file).run()
     log.info("%s", network.summary())
+
+    # ----------------------------------------------------------------------------------
+    # 3b. The same network CASSCF, with the states chosen by an energy cutoff.
+    # ----------------------------------------------------------------------------------
+    # n_states=kuiva.EnergyWindow(cutoff) says "average over every state within `cutoff` of
+    # the lowest one" and lets the code find out how many that is. The rule is the one the
+    # conventional CI uses; what the network adds is what a *rung* of the ladder costs --
+    # a whole sweep campaign rather than a Davidson solve -- and that shows in the output:
+    # the [state window] block prints the rungs, the sweeps each one took and the witness
+    # gap the count was read against.
+    #
+    # Two things about this route are worth knowing before using it.
+    #
+    # The witness roots are CONVERGED NETWORK ROOTS. A rung solves the count plus a whole
+    # Kramers pair to convergence and reads the gap between the last state inside the window
+    # and the first outside it. The cheaper alternative -- one extra root of a single
+    # two-site problem, which is what the sweep's own boundary diagnostic measures -- bounds
+    # the next eigenvalue from ABOVE, so it can prove a window incomplete and never that it
+    # is complete. The block says which kind was used, every time.
+    #
+    # ⚠ And that is why the topology below is TWO nodes of five spinors rather than the
+    # mutual-information tree used above. The narrowest two-site window of the tour bounds
+    # the whole ensemble no matter how large max_bond is, and for a one-electron active
+    # space a tree of one-spinor nodes holds three roots -- two, in whole Kramers pairs --
+    # which is the count with no room left for a witness. A window that cannot be given a
+    # witness is REFUSED, with the capacity and the fix named, rather than answered without
+    # one: truncating the ensemble to the roots the network happens to be able to hold would
+    # be exactly the arbitrary cut a window exists to forbid.
+    #
+    # The first rung here comes from the CheapCI stage upstream, whose spectrum is
+    # qualitative and therefore exactly what a first rung is; with no such upstream the
+    # network runs a short PILOT campaign at a small bond dimension for the same purpose.
+    out.section(log, "The same network CASSCF, with the states chosen by an energy cutoff")
+    coarse = NetworkGraph(2, [(0, 1)], contents=(tuple(range(N_ACTIVE // 2)),
+                                                tuple(range(N_ACTIVE // 2, N_ACTIVE))))
+    windowed = kuiva.CASSCF(pre, n_states=kuiva.EnergyWindow(WINDOW_CM), solver="dmrg",
+                            solver_options=dict(max_bond=MAX_BOND), graph=coarse,
+                            mode="quasi-newton", max_iter=MAX_ITER,
+                            conv_grad=CONV_GRAD).run()
+    log.info("%s", windowed.summary())
+    out.entries(log, [
+        ("cutoff asked for", WINDOW_CM, "cm^-1", "above the lowest state", out.CM_FMT),
+        ("states it resolved to", windowed.n_states, "",
+         "against the {} stated by hand above".format(N_STATES)),
+        ("rounds", len(windowed.rounds), "", "one: the verdict did not change"),
+        ("witness", windowed.window.witness),
+        ("gap beyond the last state averaged", windowed.window.boundary_gap_cm, "cm^-1",
+         "wider than the manifold gap by construction", out.CM_FMT),
+        ("first rung", windowed.window_initial.rungs[0].n_roots, "",
+         "from {}".format(windowed.window_initial.first_rung_source)),
+        ("sweeps per rung", ", ".join(str(n) for n in windowed.window.extra["sweeps"]), "",
+         "a rung is a whole sweep campaign on this route"),
+        ("energy, against the stated-count run", windowed.energy - network.energy, "Eh",
+         "two topologies, one calculation", out.SCI_FMT),
+        ("macro-iterations, against the stated-count run",
+         "{} vs {}".format(windowed.orbital.n_iterations, network.orbital.n_iterations), "",
+         "two topologies; resolved here, stated there"),
+    ])
 
     graph = network.graph
     out.subsection(log, "The network")
@@ -351,6 +419,20 @@ def main() -> int:
             abs(float(spin_net.block_s_squared[0]) - 0.75) < 5.0e-3,
         "the series' largest cap reproduces the CASSCF state average":
             abs(float(series.sa_energies[-1]) + ints.e_core - network.energy) < 1.0e-7,
+        # The energy window, section 3b: the cutoff resolves to the count stated by hand,
+        # settles in one round, and is read against a converged network witness rather than
+        # the sweep's one-sided local one.
+        "the {:.0f} cm^-1 window resolves to the {} states stated by hand".format(
+            WINDOW_CM, N_STATES): windowed.n_states == N_STATES,
+        "it settles in one round": len(windowed.rounds) == 1,
+        "its witness is a converged network root":
+            windowed.window.witness == "converged network roots"
+            and windowed.window.complete,
+        "its first rung came from the cheap CI upstream, so no pilot was run":
+            windowed.window_initial.first_rung_source == "the upstream estimate"
+            and windowed.window.extra.get("pilot") is None,
+        "the resolved-count run agrees with the stated-count one":
+            abs(windowed.energy - network.energy) < SOLVER_AGREEMENT_EH,
     }
     failures = report(checks)
 

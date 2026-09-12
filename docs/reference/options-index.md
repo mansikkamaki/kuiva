@@ -61,6 +61,7 @@ Stage names link to the reference page carrying the quick table and elaboration;
 | `mode` | `CASSCF` (optimizer), `CheapCI` | [casscf](../methods/casscf.md#the-step-and-the-three-ways-to-take-it) |
 | `n_active`, `n_active_elec` | `CheapCI`, `CASSCF`, `CASCI`; planning on `ScalarSCF` | [CASSCF](stages/CASSCF.md#quick-reference) |
 | `n_states` | `CheapCI`, `CASSCF`, `CASCI`; planning on `ScalarSCF` | [workflows](../guide/workflows.md#designing-a-state-average), [CASSCF](stages/CASSCF.md#per-irrep-selection) |
+| `n_states=EnergyWindow(...)` | `CheapCI`, `CASSCF`, `CASCI` | [CASSCF](stages/CASSCF.md#choosing-the-states-by-an-energy-cutoff), [casscf](../methods/casscf.md#resolving-the-count-from-an-energy-cutoff), [dmrg](../methods/dmrg.md#resolving-a-state-count-on-the-network) |
 | `nevpt2` (planning flag) | `ScalarSCF` | [ScalarSCF](stages/ScalarSCF.md#quick-reference) |
 | `norm_cutoff`, `degeneracy_tol`, `on_split` | `NEVPT2` (also `solver_options`) | [NEVPT2](stages/NEVPT2.md#quick-reference) |
 | `nuclear_model` | `Molecule` | [x2c](../methods/x2c.md#the-nuclear-charge-model) |
@@ -84,6 +85,20 @@ Stage names link to the reference page carrying the quick table and elaboration;
 | `unit` | `Molecule`, `Environment` | [Molecule](stages/Molecule.md), [notation](../notation.md#units-and-physical-constants) |
 | `weights` | `CASSCF`, `CASCI` | [CASSCF](stages/CASSCF.md#quick-reference) |
 | `with_soc` | `ScalarSCF` | [workflows](../guide/workflows.md#turning-spin-orbit-coupling-off) |
+
+## `EnergyWindow` fields
+
+`kuiva.EnergyWindow(cutoff, unit="cm^-1", *, manifold_gap=50.0, gap_unit=None, initial=None,
+max_states=64, max_rounds=4)` — the third form of `n_states`, all of it documented on
+[CASSCF](stages/CASSCF.md#choosing-the-states-by-an-energy-cutoff).
+
+| field | default | documented |
+|---|---|---|
+| `cutoff`, `unit` | — , `"cm^-1"` | [CASSCF](stages/CASSCF.md#choosing-the-states-by-an-energy-cutoff) |
+| `manifold_gap`, `gap_unit` | `50.0`, `= unit` | [casscf](../methods/casscf.md#resolving-the-count-from-an-energy-cutoff) |
+| `initial` | `None` | [casscf](../methods/casscf.md#resolving-the-count-from-an-energy-cutoff), [dmrg](../methods/dmrg.md#resolving-a-state-count-on-the-network) |
+| `max_states` | `64` | [casscf](../methods/casscf.md#resolving-the-count-from-an-energy-cutoff) |
+| `max_rounds` | `4` | [casscf](../methods/casscf.md#resolving-the-count-from-an-energy-cutoff) |
 
 ## Dict sub-options
 

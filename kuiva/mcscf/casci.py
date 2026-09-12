@@ -2101,6 +2101,11 @@ class CASSCFOutcome:
     #: with the verdict still moving, in which case the count this outcome was optimized at
     #: is :attr:`~kuiva.mcscf.casci.FullCISolver.n_states` and **not** the resolution's.
     window: Optional[WindowResolution] = None
+    #: The resolution at the **starting** orbitals of the first round, the window's
+    #: counterpart of :attr:`boundary_initial` — ⚠ the one that says whether the *trajectory*
+    #: was safe, and ``None`` on a restart, where the trajectory belongs to the run that
+    #: wrote the file.
+    window_initial: Optional[WindowResolution] = None
     #: The rounds a windowed run took (:class:`kuiva.mcscf.rounds.Round`); empty otherwise.
     rounds: List[Any] = field(default_factory=list)
 
@@ -2398,7 +2403,8 @@ def _casscf_windowed(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: Or
     return CASSCFOutcome(orbital=orbital, ci=solver.last, solver=solver,
                          active=active or ActiveSpace(spaces=spaces, n_elec=n_elec),
                          boundary=boundary, boundary_initial=boundary_initial,
-                         window=outcome.final, rounds=list(outcome.rounds))
+                         window=outcome.final, window_initial=outcome.initial,
+                         rounds=list(outcome.rounds))
 
 
 def _round_callback(chain, index: int, solver: FullCISolver):

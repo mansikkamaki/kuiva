@@ -8,9 +8,12 @@ underneath. Docstrings are the authority for full signatures; this page is the m
 
 ## The top level
 
-`kuiva` itself stays thin on purpose. Besides `Molecule`, `Environment`, `CustomBasis` and
-the stage classes it carries only the **read counterparts** of what the stages write —
-because reading a stored product back is how two calculations get compared at all:
+`kuiva` itself stays thin on purpose. Besides `Molecule`, `Environment`, `CustomBasis`, the
+stage classes and `EnergyWindow` — the one non-stage name, because it is typed in the input of
+every calculation that chooses its states by a cutoff
+([CASSCF](stages/CASSCF.md#choosing-the-states-by-an-energy-cutoff)) — it carries only the
+**read counterparts** of what the stages write, because reading a stored product back is how
+two calculations get compared at all:
 
 | name | what it reads |
 |---|---|

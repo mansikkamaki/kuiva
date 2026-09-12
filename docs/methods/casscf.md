@@ -203,6 +203,78 @@ what the gate does ([symmetry](symmetry.md)); a degenerate block spanning two se
 one block to the gate — which it must be, or a per-irrep request would be a way to walk
 past the refusal.
 
+### Resolving the count from an energy cutoff
+
+`n_states=kuiva.EnergyWindow(1000)` states the question the physical way — *every state
+within 1000 cm⁻¹ of the lowest* — and lets the calculation find out how many states that is.
+The rule is one piece of arithmetic on an ascending spectrum $`E_0 \le E_1 \le \dots`$,
+shared by every CI route: the count is the smallest $`k \ge 1`$ with
+
+```math
+E_k - E_0 \gt \Delta \qquad\text{and}\qquad E_k - E_{k-1} \gt g ,
+```
+
+the cutoff $`\Delta`$ and the manifold gap $`g`$ (default 50 cm⁻¹) converted to hartree once,
+from the CODATA 2018 table [[197]](../references.md#r197). The second condition is what keeps
+the cutoff from cutting *inside* a manifold: a state above the cutoff whose predecessor lies
+within $`g`$ of it belongs to that predecessor's cluster and is taken too, and so on until a
+gap wider than $`g`$ — consecutive-gap chaining, the way every other grouping in Kuiva
+defines a group. The amount by which the rule reached past the cutoff to finish a manifold is
+reported as the *spill*.
+
+Two consequences are worth stating plainly. Because $`g`$ is the same 50 cm⁻¹ that makes a
+boundary *unambiguous*, a resolved count passes the boundary diagnostic by construction — the
+two numbers are one number on purpose, and the window's own witness gap **is** the boundary
+report, rather than a second measurement beside it. And ⚠ a spectrum with no gap wider than
+$`g`$ anywhere chains all the way to the cap (`max_states`, default 64) and is then
+**refused, never rounded**: rounding would be precisely the cut inside a manifold the request
+exists to forbid, and the refusal prints the relative spectrum and the counts at which a
+clean cut *does* occur.
+
+The count is found by a **ladder**. A solver is asked for the lowest $`n`$ roots, the rule
+reads its verdict, and while every solved root is still inside the window the count is grown
+(doubling on the CI routes) and the solver asked again, warm-started from the previous rung.
+⚠ **Every rung asks the eigensolver for generic starting vectors in front of that warm
+start**: a rung supplies fewer converged vectors than the roots it wants, and a Krylov method
+cannot leave the invariant subspaces its starting vectors lie in, so the new roots would
+otherwise be seeded from a biased set alone — the Rayleigh–Ritz argument that makes the
+witness trustworthy is an argument about a subspace with a component on *every* eigenvector
+[[196]](../references.md#r196)[[192]](../references.md#r192). The first rung comes from
+`initial=` if given, otherwise from an upstream [`CheapCI`](../reference/stages/CheapCI.md)'s
+own spectrum — a rung, never a verdict, because that spectrum is qualitative by construction
+— otherwise from a default of 8 (on the tensor-network route, from a pilot campaign:
+[dmrg](dmrg.md#resolving-a-state-count-on-the-network)). The rungs, what each one cost and the
+two states either side of the cut are printed, so a resolved count is reproducible from the
+output.
+
+⚠ **The count is resolved at fixed orbitals and held for a whole orbital optimization; it
+may change only between rounds.** The optimizer never sees a window. A round resolves at the
+orbitals it starts from, runs the *unchanged* driver at that fixed count, and re-resolves at
+the converged orbitals; if the verdict has not moved the run is over, and a window that
+resolves to $`n`$ on its first round and stays there reproduces the `n_states=n` run step for
+step. Re-resolving *inside* the optimizer was rejected for a structural reason rather than a
+practical one: a count change is not a variational adoption — a larger average is higher by
+construction — so the adaptive-solver machinery above cannot govern it, and the quadratic
+model, the accept/reject test, the curvature memory and the convergence test would all be
+trusted across a change of energy functional. Between rounds, curvature is discarded for the
+same reason an adoption discards it.
+
+Three edges, none of which silently picks a number. `max_iter` is the budget **across**
+rounds, and a run that stops on it mid-round keeps that round's result and *reports* the
+verdict at the orbitals it stopped on rather than adopting it. A state sitting within one
+manifold gap of the cutoff is held at the previous round's count by a dead band, so a count
+changes between rounds only for a reason the output can name. And ⚠ if the verdict is still
+moving when `max_rounds` (default 4) runs out, the last converged round is kept and the
+result is marked **ambiguous**, naming the counts seen and the state that crosses the cutoff:
+both counts are self-consistent fixed points of their own state average, and which side of
+that state the calculation is about is the one thing nothing here can decide.
+
+`weights=` and `boundary_check=` are both refused beside a window — a window's weights are
+equal by construction, and the window *is* the boundary measurement. A checkpoint records the
+resolved count **and** the cutoff it came from; a restart takes the count from the file and
+compares the *window*, since a different cutoff is a different calculation exactly as a
+different count is ([clusters](../guide/clusters.md#restarting)).
+
 ## Adaptive solvers: the optimizer owns the space
 
 A solver that re-chooses its internal space per set of integrals — a selected CI

@@ -29,7 +29,7 @@ identity).
 
 | option | default | meaning |
 |---|---|---|
-| `n_states` | `1` | states in the cheap average |
+| `n_states` | `1` | states in the cheap average; also an `EnergyWindow` ([CASSCF](CASSCF.md#choosing-the-states-by-an-energy-cutoff)), resolved once on the *selected* space at the first solve and then **held** for this stage's own orbital loop — the pre-optimization is qualitative and its count is an estimate. `.n_states` is the resolved count afterwards, `.window` the resolution and `.spectrum_cm` the relative spectrum a downstream windowed stage takes its first rung from |
 | `max_iter` | `20` | macro-iteration budget |
 | `mode` | `"quasi-newton"` | the orbital step engine |
 | `conv_grad` | `1e-3` | gradient convergence — deliberately loose; occupations are what must converge |
@@ -65,6 +65,12 @@ pre.dmrg_ordering()           # Fiedler ordering for a path network
   near-degeneracy. The concrete case: it will **never** suggest a double shell — the
   correlating shell is empty at this level of treatment (~1e-4 occupations) — so a double
   shell has to be asked for (`avas=dict(..., n_shells=2)`).
+- `.spectrum_cm` is the **handoff**: a downstream `CASSCF` given the same window takes its
+  ladder's first rung from this spectrum, re-resolved against that window. ⚠ A rung, never a
+  verdict — a truncated CI in a truncated space is qualitative, which is exactly what a first
+  rung is for, and the rule is then run on the full solver's own spectrum. On the
+  tensor-network route it is what saves the pilot campaign
+  ([dmrg](../../methods/dmrg.md#resolving-a-state-count-on-the-network)).
 - `dmrg_ordering()` is the Fiedler ordering [[111]](../../references.md#r111)
   [[112]](../../references.md#r112) of the active spinors by mutual information;
   `graph="mutual-information"` / `"fiedler"` on a downstream `CASSCF(solver="dmrg")` builds

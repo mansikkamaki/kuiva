@@ -31,9 +31,9 @@ because an active space is a physical statement (elaboration:
 
 | option | default | meaning |
 |---|---|---|
-| `n_states` | `1` | a count, or — with point-group labels present — a per-irrep mapping `{irrep: n}` |
-| `weights` | equal | state-average weights; ⚠ equalized inside a degenerate block by the gate, and a count that splits a Kramers pair is refused |
-| `boundary_check` | `8` | extra roots solved (and discarded) to measure the state-average boundary gap, at the starting **and** converged orbitals; `0` switches the diagnostic off. Advisory — it never kills a run |
+| `n_states` | `1` | a count; an `EnergyWindow` (below); or — with point-group labels present — a per-irrep mapping `{irrep: n}`, which may hold one window beside fixed counts |
+| `weights` | equal | state-average weights; ⚠ equalized inside a degenerate block by the gate, and a count that splits a Kramers pair is refused. Refused beside a window |
+| `boundary_check` | `8` | extra roots solved (and discarded) to measure the state-average boundary gap, at the starting **and** converged orbitals; `0` switches the diagnostic off. Advisory — it never kills a run. Refused beside a window, which *is* the boundary measurement |
 | `preserve_symmetry` | `False` | mask inter-irrep orbital rotations, so the labels stay exact at convergence. ⚠ A constraint: converges to the lowest *symmetric* solution |
 | `classify` | `True` | the non-abelian classification of converged degenerate blocks (where active) |
 
@@ -50,7 +50,7 @@ because an active space is a physical statement (elaboration:
 | option | default | meaning |
 |---|---|---|
 | `mode` | `"auto"` | `"quasi-newton"` (L-BFGS [[104]](../../references.md#r104)[[105]](../../references.md#r105)), `"second-order"` (augmented Hessian [[96]](../../references.md#r96)[[97]](../../references.md#r97)[[98]](../../references.md#r98)), or `"auto"` — the robust default, escalating on the **gradient** trajectory |
-| `max_iter` | `50` | total macro-iterations (counted **across** a restart) |
+| `max_iter` | `50` | total macro-iterations (counted **across** a restart, and across the rounds of an energy window) |
 | `conv_grad` | `1e-4` | orbital gradient convergence |
 | `conv_energy` | `1e-8` | energy-change convergence (both must be met) |
 | `max_step` | `0.20` | trust-region step bound [[102]](../../references.md#r102) |
@@ -144,18 +144,61 @@ state. The environment cache pages its coldest entries to scratch when a reserva
 otherwise refuse (default on; `environment_resident_gb` on the sweep caps the resident set)
 — bitwise-inert, and reverting to the honest memory refusal where scratch is unconfigured.
 
+## Choosing the states by an energy cutoff
+
+```python
+cas = kuiva.CASSCF(ref, character=("Ti", "d"), n_active=10, n_active_elec=1,
+                   n_states=kuiva.EnergyWindow(2000)).run()
+cas.n_states          # the count the cutoff resolved to
+cas.window            # the resolution: rungs, witness gap, spill, the two edge states
+cas.window_initial    # the resolution at the STARTING orbitals — where the first rung came from
+cas.rounds            # one entry per resolve-optimize-re-resolve round
+```
+
+`kuiva.EnergyWindow(cutoff, unit="cm^-1", *, manifold_gap=50.0, gap_unit=None, initial=None,
+max_states=64, max_rounds=4)` is the third form of `n_states`: average over every state
+within `cutoff` of the lowest, extended to the top of any manifold the cutoff falls inside.
+It is the one non-stage name re-exported at the top level, because it is typed in the input
+of every windowed calculation. `unit` accepts `"cm^-1"`, `"eV"`, `"meV"`, `"K"`, `"Eh"`,
+`"kJ/mol"`, `"kcal/mol"` and the usual spellings of each; `gap_unit` defaults to `unit`.
+
+| option | default | meaning |
+|---|---|---|
+| `cutoff`, `unit` | — , `"cm^-1"` | the window above the lowest state |
+| `manifold_gap`, `gap_unit` | `50.0`, `= unit` | consecutive gaps narrower than this chain into one manifold, which is taken whole. The same number that makes a boundary unambiguous, so a resolved cut is clean by construction |
+| `initial` | `None` | the ladder's first rung, overriding every estimate |
+| `max_states` | `64` | the cap. ⚠ Chaining to it is **refused, never rounded** |
+| `max_rounds` | `4` | rounds allowed before the verdict is reported as ambiguous |
+
+Before `.run()` the stage's `.n_states` is `None` and `.window_request` holds the request;
+after it, `.n_states` is a number like any other, so every downstream stage is unaffected.
+⚠ **The count is resolved at fixed orbitals and held for a whole orbital optimization** — it
+may change only between rounds, `max_iter` is the budget across rounds, and a window that
+resolves to `n` and stays there reproduces the `n_states=n` run step for step (on the network
+route, the same trajectory started from a different warm state — same length, same answer,
+not the same last bit). The rule, the
+ladder, the dead band and the ambiguous-window report are in
+[casscf](../../methods/casscf.md#resolving-the-count-from-an-energy-cutoff); the network
+route's pilot, its converged witness roots and the topology capacity that can refuse a
+window outright are in [dmrg](../../methods/dmrg.md#resolving-a-state-count-on-the-network).
+
 ## Restart, materialization, and the state average
 
 `restart=` resumes a *running* optimization: the file's system fingerprint must match, the
 active space may be omitted (it comes from the file) but a restated one that disagrees is
 refused, and ⚠ **a different `n_states`/`weights` is refused** — a different state average
 is a different calculation, not a different chart of this one. Starting a *new* average from
-converged orbitals is `coeff=`, not `restart=`.
+converged orbitals is `coeff=`, not `restart=`. A run whose count came from a window is
+checked the same way: the file records the resolved count **and** the cutoff, the restart
+takes the count from the file — the interrupted calculation ran at one count — and what is
+compared is the window.
 
 `CASSCF.from_checkpoint(path, reference, *, n_states=None, weights=None, solver_options=None,
 boundary_check=None, require_converged=True)` materializes a **finished** run — no
 macro-iterations; the states are re-solved at the stored orbitals, seeded by the stored CI
-vectors; `n_states`/`weights` default **from** the file. The result is an ordinary `CASSCF`,
+vectors; `n_states`/`weights` default **from** the file (an `EnergyWindow` is refused here:
+a materialization configures nothing and resolves nothing — the count comes from the file and
+the window rides along as provenance). The result is an ordinary `CASSCF`,
 so every downstream stage takes it unchanged. ⚠ Only the converged-orbital boundary
 diagnostic comes back — the starting-orbital one belongs to the run that wrote the file.
 Details: [clusters](../../guide/clusters.md#restarting).

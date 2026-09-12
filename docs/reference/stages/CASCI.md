@@ -24,8 +24,8 @@ more), `.energies`, `.coeff`, `.active`, the full result as `.result`, and
 | option | default | meaning |
 |---|---|---|
 | `active`, `character`, `avas`, `n_active`, `n_active_elec`, `threshold` | inherited | the active space — but see the inheritance rules below; on a `CheapCI`/`CASSCF` upstream only `active=` may restate it |
-| `n_states` | `1` | a count, or a per-irrep mapping wherever `CASSCF` accepts one |
-| `weights` | equal | the averaging weights (for the RDM gate; equalized inside degenerate blocks, splits refused) |
+| `n_states` | `1` | a count; an `EnergyWindow` ([CASSCF](CASSCF.md#choosing-the-states-by-an-energy-cutoff)) resolved here at these fixed orbitals, in one ladder and no rounds — `.n_states` is `None` until `.run()` and the resolved count after it, with the resolution on `.window`; or a per-irrep mapping wherever `CASSCF` accepts one |
+| `weights` | equal | the averaging weights (for the RDM gate; equalized inside degenerate blocks, splits refused). Refused beside a window |
 | `coeff` | `None` | orbitals from elsewhere (a checkpoint, another program) — `Reference` upstream only, with `active=` |
 | `solver_options` | `{}` | the full-CI solver's options, as on `CASSCF` (`kramers="restricted"`, `conv_tol`, `enforce_kramers`, `degeneracy_tol`, …) |
 | `classify` | `True` | non-abelian classification of converged blocks |
@@ -53,7 +53,9 @@ orbitals it was made against.**
 ## What runs and what does not
 
 The state-averaging gate applies exactly as on a CASSCF: weights are equalized inside a
-degenerate block and a count that splits one is refused. What does **not** run is the
+degenerate block and a count that splits one is refused. An energy window resolves in one
+ladder here — there is no orbital optimization to re-resolve after, so there are no rounds
+and the verdict is a statement about this one spectrum. What does **not** run is the
 state-average boundary *diagnostic* — that is a statement about an orbital trajectory, and
 there is none here. ⚠ A CASCI energy is variational at those orbitals and nothing more: over
 a state average the upstream CASSCF did not optimize, the orbitals are not stationary, and

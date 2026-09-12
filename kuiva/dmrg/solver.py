@@ -49,6 +49,7 @@ Everything here is orchestration.
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from typing import Dict, Hashable, List, Optional, Sequence, Tuple
 
@@ -105,7 +106,12 @@ class DMRGSolver:
         charge-sector-maximal bond dimensions (measured).
     n_roots, weights : the state average; weights are re-equalized inside degenerate
         blocks at every solve and a count that splits a Kramers pair is refused
-        (``on_split``), exactly as in :class:`FullCISolver`.
+        (``on_split``), exactly as in :class:`FullCISolver`. ``n_roots`` may instead be an
+        :class:`~kuiva.util.window.EnergyWindow`, and the count is then resolved from an
+        energy cutoff by :meth:`resolve_window` at the integrals the states are chosen at —
+        :attr:`n_roots` is ``None`` until that call, which returns a sibling built at the
+        resolved count (:mod:`kuiva.dmrg.window` for the ladder, the pilot and the witness).
+        ``weights=`` is refused beside a window.
     graph : optional seed topology (default: a path over the modes in label order —
         the cheap-CI seeding hands a better one when available).
     initial_state : optional seeded :class:`TTNState` (e.g.
@@ -168,7 +174,7 @@ class DMRGSolver:
 
     KEY_PREFIX = "dmrg"
 
-    def __init__(self, n_elec: int, *, max_bond: int, n_roots: int = 1,
+    def __init__(self, n_elec: int, *, max_bond: int, n_roots=1,
                  weights: Optional[Sequence[float]] = None,
                  graph: Optional[NetworkGraph] = None,
                  initial_state: Optional[TTNState] = None,
@@ -187,6 +193,19 @@ class DMRGSolver:
                  expansion: float = 0.0, expansion_sweeps: int = 6,
                  environment_resident_gb: Optional[float] = None,
                  batch: Optional[int] = None) -> None:
+        #: Every constructor argument that is not the chart itself, kept verbatim so
+        #: :meth:`with_n_states` can build a sibling at another root count without a second
+        #: description of what a DMRGSolver is. The topology, the incumbent state and the
+        #: restart file are supplied by that method instead, because they are what differs.
+        self._config = dict(
+            n_elec=n_elec, max_bond=max_bond, weights=weights, adaptive=adaptive,
+            policy=policy, propose_sweeps=propose_sweeps, max_sweeps=max_sweeps,
+            conv_tol=conv_tol, davidson_tol=davidson_tol, trunc_tol=trunc_tol,
+            boundary_check=boundary_check, on_split=on_split,
+            enforce_kramers=enforce_kramers, rdms=rdms, symmetry=symmetry, sector=sector,
+            seed=seed, checkpoint=checkpoint, expansion=expansion,
+            expansion_sweeps=expansion_sweeps,
+            environment_resident_gb=environment_resident_gb, batch=batch)
         self.n_elec = int(n_elec)
         self.max_bond = int(max_bond)
         #: Cap on the resident environment set of every solve, passed through to
@@ -231,7 +250,34 @@ class DMRGSolver:
                 "the first solve's cap is {}; the two must agree — the ramp is an "
                 "iteration strategy inside one manifold, never a way to exceed it"
                 .format(self.bond_schedule[-1], self._cap))
-        self.n_roots = int(n_roots)
+        from ..util.window import EnergyWindow, is_window_request
+        #: The energy window this solver's root count is (to be) resolved from, or ``None``
+        #: for a stated count. ⚠ Held as **provenance** on the sibling
+        #: :meth:`resolve_window` builds at the resolved count, which is what puts the
+        #: cutoff beside the count in the checkpoint's state-average key.
+        self.window: Optional[EnergyWindow] = None
+        #: What was asked for: a count, or the window it is to be resolved from.
+        self.requested_states = n_roots
+        if is_window_request(n_roots):
+            if not isinstance(n_roots, EnergyWindow):
+                raise ValueError(
+                    "a per-irrep energy window selects states per determinant sector, which "
+                    "is a conventional-CI request; a network solve targets one sector "
+                    "(sector=) and takes a plain n_roots=kuiva.EnergyWindow(...)")
+            if weights is not None:
+                raise ValueError("weights= cannot be combined with an energy window: a "
+                                 "window's weights are equal by construction and the "
+                                 "state-averaging gate equalizes them inside degenerate "
+                                 "blocks. Drop weights=, or state a count")
+            if initial_state is not None:
+                raise ValueError("initial_state= carries a root count and an energy window "
+                                 "resolves one; resolve the window first (resolve_window) "
+                                 "and seed the sibling it returns")
+            self.window = n_roots
+            #: ``None`` until :meth:`resolve_window`; the resolved count on the sibling.
+            self.n_roots: Optional[int] = None
+        else:
+            self.n_roots = int(n_roots)
         self.requested_weights = None if weights is None \
             else np.asarray(weights, dtype=float)
         self.adaptive = bool(adaptive)
@@ -300,7 +346,16 @@ class DMRGSolver:
                     "restart continues at the cap the interrupted run had reached, and "
                     "re-ramping from below it would truncate the restored state — "
                     "destroying the warm start the file exists to provide")
-            self._restart_state(restart)
+        #: A restart path an **unresolved** solver cannot use yet: the warm start is matched
+        #: against a root count, and this solver has a window instead of one.
+        #: :meth:`with_n_states` hands it to the sibling built at the resolved count, which
+        #: is where the file's ensemble is either matched or (warning, cold) discarded.
+        self._restart_path = None
+        if restart is not None:
+            if self.n_roots is None:
+                self._restart_path = restart
+            else:
+                self._restart_state(restart)
         self._templates: Dict[NetworkGraph, TTNOTemplate] = {}
         self._candidate: Optional[Tuple[Hashable, NetworkGraph, TTNState]] = None
         #: The most recent converged solve (energies exclude ``e_core``), for callers
@@ -309,6 +364,65 @@ class DMRGSolver:
         self.n_solves = 0
         self.n_proposals = 0
         self.n_adoptions = 0
+        #: A first-rung estimate for the energy window's ladder, carried across siblings so
+        #: the pilot campaign is paid for once per calculation and not once per round.
+        self._estimate: Optional[int] = None
+        self._planned_roots = 0
+        #: The pilot campaign that gave the window's ladder its first rung, if one was run.
+        self._pilot = None
+
+    @property
+    def n_states(self) -> Optional[int]:
+        """:attr:`n_roots` under the name every other solver and the round loop use.
+
+        One spelling for one quantity: :mod:`kuiva.mcscf.rounds` and
+        :func:`kuiva.io.checkpoint.state_average_key` ask a solver how many states it
+        averages over, and they must not have to know which layer answers.
+        """
+        return self.n_roots
+
+    def _require_resolved(self, what: str) -> None:
+        if self.n_roots is None:
+            raise RuntimeError(
+                "this solver was built with an energy window ({!r}) and its root count has "
+                "not been resolved yet, so it cannot {}. Call resolve_window() at the "
+                "integrals the states are to be chosen at and use the sibling it returns, "
+                "built at the resolved count".format(self.window, what))
+
+    def with_n_states(self, n_states: int, *,
+                      initial_state: Optional[TTNState] = None) -> "DMRGSolver":
+        """A sibling of this solver averaging over ``n_states`` roots.
+
+        The root count is part of the chart (``space_key`` carries it), and the sweep's
+        workspace, the ensemble and the memory plan are all sized by it — so a new count is a
+        new solver rather than a mutated one, exactly as it is on the conventional-CI route.
+        The sibling keeps :attr:`window` as provenance, so the checkpoint key records the
+        resolved count beside the cutoff it came from.
+
+        ⚠ A carried ``initial_state`` is a **warm start**, so the sibling does not re-ramp
+        the cap or re-perturb the truncation on its first solve: ``bond_schedule`` and the
+        subspace expansion exist to get a *cold* state moving, and running them over a
+        converged ensemble would destroy exactly what was handed over.
+        """
+        config = dict(self._config)
+        if self.bond_steps is not None:
+            # Continue the ladder from the incumbent rung rather than starting it again:
+            # the rungs already adopted are chart changes this calculation has made.
+            config["bond_steps"] = [self._cap] + list(self._pending_caps)
+        restart = None
+        if initial_state is None:
+            restart = self._restart_path
+            config["bond_schedule"] = self.bond_schedule
+        sibling = DMRGSolver(n_roots=int(n_states), graph=self._graph,
+                             initial_state=initial_state, restart=restart, **config)
+        sibling.window = self.window
+        sibling.requested_states = self.requested_states
+        sibling._estimate = self._estimate
+        sibling._planned_roots = self._planned_roots
+        sibling._pilot = self._pilot
+        if initial_state is not None:
+            sibling._first_solve_done = True
+        return sibling
 
     def _restart_state(self, path) -> None:
         """Adopt a checkpointed network state as the warm start (module rules in
@@ -413,6 +527,7 @@ class DMRGSolver:
         inside :func:`solve_ttn` — they are the same block-tensor kernels, and this method
         is the outermost point at which the network layer owns the process.
         """
+        self._require_resolved("solve")
         h, eri, e_core = self._active(ints)
         n = h.shape[0]
         self._ensure_chart(n)
@@ -544,6 +659,91 @@ class DMRGSolver:
         self.n_adoptions += 1
         log.debug("adopted network chart %s", self._key_for(graph))
 
+    # -- the energy window ----------------------------------------------------------------
+    def resolve_window(self, ints, *, estimate: Optional[int] = None,
+                       n_prev: Optional[int] = None, where: str = "",
+                       report: bool = True, level: int = logging.INFO):
+        """Resolve this solver's energy window at these integrals.
+
+        Returns ``(resolution, sibling)``: the
+        :class:`~kuiva.util.window.WindowResolution` and a :meth:`with_n_states` sibling
+        built at its count, warm-started from the ladder's own converged ensemble truncated
+        to that count. The mechanism — the pilot, the converged network witness, cold growth,
+        the two-site capacity ceiling — is :mod:`kuiva.dmrg.window`. No RDMs are built and
+        neither the incumbent state nor the chart is touched; what *is* kept on this solver is
+        what the calculation learned and every later round inherits — the resolved count as
+        the next first-rung estimate, the pilot record, and the largest root count whose
+        memory plan has been printed.
+
+        ⚠ **A rung is a whole sweep campaign**, not a Davidson solve: the rung table's cost
+        column and the sweeps-per-rung line are what say whether a windowed run on this route
+        is affordable, and they are printed every time.
+        """
+        from .window import resolve_network_window
+
+        if self.window is None:
+            raise ValueError("this solver was built with a root count, not an energy "
+                             "window; there is nothing to resolve")
+        h, eri, e_core = self._active(ints)
+        n = h.shape[0]
+        self._ensure_chart(n)
+        template = self._template(self._graph)
+        ttno = template.fill(h, eri)
+        try:
+            resolved = resolve_network_window(
+                ttno, self.n_elec, self.window, max_bond=self._cap, e_core=e_core,
+                estimate=self._estimate if estimate is None else int(estimate),
+                n_prev=n_prev, rng=self._rng,
+                charge=None if self._bases is None else self._charge(),
+                max_sweeps=self.max_sweeps, solve_kwargs=self._rung_kwargs(),
+                pilot=self._estimate is None and estimate is None,
+                planned=self._planned_roots,
+                estimate_source=("the upstream estimate" if estimate is not None
+                                 else "this calculation's own earlier resolution"),
+                where=where, report=report, level=level)
+        except res.MemoryLimitError as exc:
+            raise res.MemoryLimitError(
+                "{}\n   This allocation is a rung of the energy window {}, not the "
+                "calculation's own: the ladder grew the root count until the sweep could no "
+                "longer be held. Lower the cutoff, lower max_states, lower max_bond, or "
+                "raise the memory limit".format(exc, repr(self.window))) from exc
+        # ⚠ The first rung of every later resolution starts from what the first one learned,
+        # so the pilot campaign is paid for once per calculation rather than once per round.
+        self._estimate = int(resolved.resolution.count)
+        # The memory plan of a rung is printed for a root count larger than any already
+        # planned and not again: the table is the refusal's evidence, and one per round per
+        # rung would be noise in a file that IS the output.
+        self._planned_roots = int(resolved.planned)
+        if resolved.pilot is not None:
+            self._pilot = resolved.pilot
+        elif self._pilot is not None:
+            # The pilot belongs to the calculation, not to the round that paid for it, so
+            # every later resolution reports it too rather than looking as if none was run.
+            resolved.resolution.extra.setdefault("pilot", self._pilot_record())
+        sibling = self.with_n_states(resolved.resolution.count,
+                                     initial_state=resolved.state)
+        return resolved.resolution, sibling
+
+    def _pilot_record(self) -> Dict[str, object]:
+        p = self._pilot
+        return {"roots": p.n_roots, "cap": p.cap, "sweeps": p.n_sweeps,
+                "cpu_seconds": round(p.cpu_seconds, 3), "count": p.count}
+
+    def _rung_kwargs(self) -> Dict[str, object]:
+        """What a rung's :func:`~kuiva.dmrg.sweep.solve_ttn` inherits from this solver.
+
+        The manifold parameters and the iteration controls, never the checkpoint (a rung is
+        not the incumbent calculation) and never the boundary sweep (the window's own
+        witness roots replace it).
+        """
+        kwargs: Dict[str, object] = {
+            "conv_tol": self.conv_tol, "trunc_tol": self.trunc_tol,
+            "davidson_tol": self.davidson_tol, "on_split": self.on_split,
+            "environment_resident_gb": self.environment_resident_gb}
+        if self.batch is not None:
+            kwargs["batch"] = self.batch
+        return kwargs
+
     # -- the analysis contract (props duck-types these; it never imports this layer) -------
 
     def _analysis_state(self) -> Tuple[TTNOTemplate, TTNState]:
@@ -633,6 +833,7 @@ class DMRGSolver:
         return transition_rdm1s(template.ttno, state)
 
     def space_key(self) -> str:
+        self._require_resolved("name its chart")
         return self._key_for(self._graph) if self._graph is not None \
             else "{}:unset".format(self.KEY_PREFIX)
 
@@ -655,9 +856,11 @@ class DMRGSolver:
         self._state = None
 
     def __repr__(self) -> str:
+        roots = (self.n_roots if self.n_roots is not None
+                 else "unresolved {!r}".format(self.window))
         return ("DMRGSolver(n_elec={}, roots={}, max_bond={}, adaptive={}, {} solves, "
                 "{} proposals, {} adoptions)").format(
-            self.n_elec, self.n_roots, self.max_bond, self.adaptive, self.n_solves,
+            self.n_elec, roots, self.max_bond, self.adaptive, self.n_solves,
             self.n_proposals, self.n_adoptions)
 
 

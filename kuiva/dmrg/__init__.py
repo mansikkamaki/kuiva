@@ -15,9 +15,12 @@ for uncapped structure discovery and ``weight`` for any capped run, every CASSCF
 
 (b) **Global topology search**, deferred behind (a).
 
-(c) **Energy-window and J-manifold multiplet rules**, and **non-uniform ensemble
-re-weighting**. The pluggable slot exists (``manifold``); ``dimension``/``weight``/``gap`` are
-realised.
+(c) **Energy-window and J-manifold rules for the SITE MULTIPLET cut**, and **non-uniform
+ensemble re-weighting**. The pluggable slot exists (``manifold``);
+``dimension``/``weight``/``gap`` are realised. ⚠ Not to be confused with the energy window
+that resolves a **root count** (``window``, ``kuiva.util.window``), which is implemented: that
+one chooses how many states the network averages over, this one chooses how many states of a
+*site's* ensemble RDM enter the local model space.
 
 (d) **A Kramers-restricted network** — the analogue of the second CI mode of the conventional-CI layer,
 to be validated against the general one.
@@ -37,8 +40,8 @@ from .ttno import (FERMION_MODE, ModeBasis, ProductTerm, TermTable, TTNO, TTNOTe
                    compile_ttno, consolidate, fermion_term,
                    hamiltonian_product_terms, one_electron_product_terms,
                    ttno_from_cas_integrals)
-from .sweep import (SweepResult, TTNState, random_state, solve_ttn, state_gb,
-                    state_to_dense, BOUNDARY_GAP_WARN_CM)
+from .sweep import (SweepResult, TTNState, TwoSiteCapacityError, random_state, solve_ttn,
+                    state_gb, state_to_dense, BOUNDARY_GAP_WARN_CM)
 from .guess import (TopologyGuess, expansion_to_ttn, topology_from_mutual_information,
                     DEFAULT_SITE_SPLIT)
 from .reconnect import (AdaptiveResult, BondReport, Move, ReconnectionPolicy,
@@ -55,6 +58,10 @@ from .checkpoint import (NETWORK_SCHEMA_VERSION, NetworkCheckpointError,
                          NetworkCheckpointPolicy, network_checkpoint_gb,
                          network_state_path, read_network_state, write_network_state)
 from .solver import DMRGSolver, NetworkProposal
+from .plan import network_memory_plan, two_site_capacity, two_site_peak
+from .window import (NetworkResolution, NetworkSpectrumOracle, PilotEstimate,
+                     pilot_estimate, resolve_network_window, truncate_roots,
+                     PILOT_CAP, PILOT_ROOTS, PILOT_SWEEPS, WITNESS_ROOTS)
 
 __all__ = ["QuantumNumber", "Space", "BlockTensor", "FuseRecord", "TruncationInfo",
            "fuse", "split", "qr", "svd", "NetworkGraph",
@@ -63,7 +70,8 @@ __all__ = ["QuantumNumber", "Space", "BlockTensor", "FuseRecord", "TruncationInf
            "ModeBasis", "FERMION_MODE", "ProductTerm", "TermTable", "TTNO", "fermion_term",
            "consolidate", "hamiltonian_product_terms", "one_electron_product_terms",
            "compile_ttno", "ttno_from_cas_integrals",
-           "TTNState", "SweepResult", "random_state", "solve_ttn", "state_gb",
+           "TTNState", "SweepResult", "TwoSiteCapacityError", "random_state",
+           "solve_ttn", "state_gb",
            "state_to_dense", "BOUNDARY_GAP_WARN_CM",
            "TopologyGuess", "expansion_to_ttn", "topology_from_mutual_information",
            "DEFAULT_SITE_SPLIT",
@@ -77,4 +85,8 @@ __all__ = ["QuantumNumber", "Space", "BlockTensor", "FuseRecord", "TruncationInf
            "node_environments", "slot_values", "DMRGSolver", "NetworkProposal",
            "NETWORK_SCHEMA_VERSION", "NetworkCheckpointError", "NetworkCheckpointPolicy",
            "network_checkpoint_gb", "network_state_path", "read_network_state",
-           "write_network_state", "BondSeriesResult", "bond_series"]
+           "write_network_state", "BondSeriesResult", "bond_series",
+           "network_memory_plan", "two_site_capacity", "two_site_peak",
+           "NetworkResolution", "NetworkSpectrumOracle", "PilotEstimate",
+           "pilot_estimate", "resolve_network_window", "truncate_roots",
+           "PILOT_CAP", "PILOT_ROOTS", "PILOT_SWEEPS", "WITNESS_ROOTS"]

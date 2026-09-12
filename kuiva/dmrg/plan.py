@@ -106,6 +106,32 @@ def two_site_peak(ttno: TTNO, state: TTNState, *, n_roots: int,
     return best
 
 
+def two_site_capacity(ttno: TTNO, state: TTNState) -> int:
+    """The largest root count every two-site window of the tour can hold.
+
+    The minimum over the sweep schedule of the two-site problem's dimension, run over
+    structure exactly as :func:`two_site_peak` is. ⚠ It is a property of the **topology and
+    the charge sectors**, not of the bond-dimension cap: a bond that separates very few
+    spinors from the rest carries a two-site space smaller than the root count no matter how
+    large ``max_bond`` is, and :func:`kuiva.dmrg.sweep._solve_local` refuses an ensemble it
+    cannot represent rather than truncating it. Asking here is what lets a caller that
+    *chooses* a root count — an energy window's ladder — stop below that refusal instead of
+    walking into it.
+
+    ⚠ An upper bound on the state count of a freshly canonicalized state, for the reason
+    :func:`two_site_peak` gives: every bond carries the full allowed sector set at its
+    centring, which a truncated state may not have kept.
+    """
+    from .sweep import _LocalProblem                      # local: _LocalProblem is private
+
+    best: Optional[int] = None
+    for u, v in state.graph.sweep_schedule(state.center):
+        shapes = _recentred(ttno, state, u)
+        problem = _LocalProblem(ttno, shapes, ShapeEnvironments(ttno, shapes), u, v)
+        best = problem.dim if best is None else min(best, problem.dim)
+    return 0 if best is None else int(best)
+
+
 def network_memory_plan(ttno: TTNO, state: TTNState, *, n_roots: int,
                         extra_roots: int = 0, max_bond: Optional[int] = None,
                         rdm: bool = True) -> List[res.PhaseEstimate]:
@@ -180,4 +206,4 @@ def network_memory_plan(ttno: TTNO, state: TTNState, *, n_roots: int,
     return phases
 
 
-__all__ = ["network_memory_plan", "two_site_peak"]
+__all__ = ["network_memory_plan", "two_site_capacity", "two_site_peak"]

@@ -393,12 +393,13 @@ def random_state(ttno: TTNO, n_elec: int, max_bond: int, n_roots: int = 1,
     # maximal bond dimensions of a many-node tree reach hundreds, and the un-reserved
     # random tensors were multi-GB before the first truncation could trim them.
     per_node = [block_tensor_gb(sp, sg, ch) for sp, sg, ch in layouts]
-    res.reserve("DMRG random state ({} nodes, {} roots)".format(graph.n_nodes, n_roots),
-                sum(per_node) + (n_roots - 1) * per_node[center],
-                note="bond dims {}".format(sorted(
-                    sp.total_dim for sp in bond_spaces.values())[-3:]),
-                advice=["set max_bond deliberately: an uncapped random tree state "
-                        "allocates charge-sector-maximal bond dimensions"])
+    alloc = res.reserve(
+        "DMRG random state ({} nodes, {} roots)".format(graph.n_nodes, n_roots),
+        sum(per_node) + (n_roots - 1) * per_node[center],
+        note="bond dims {}".format(sorted(
+            sp.total_dim for sp in bond_spaces.values())[-3:]),
+        advice=["set max_bond deliberately: an uncapped random tree state "
+                "allocates charge-sector-maximal bond dimensions"])
     tensors: List[Optional[BlockTensor]] = [None] * graph.n_nodes
     for u, (spaces, signs, ch) in enumerate(layouts):
         tensors[u] = BlockTensor.random(spaces, signs, ch, rng=rng)
@@ -423,8 +424,16 @@ def random_state(ttno: TTNO, n_elec: int, max_bond: int, n_roots: int = 1,
     tensors[center] = None
     centers = [_normalized(BlockTensor.random(seed.spaces, seed.signs, seed.charge,
                                               rng=rng)) for _ in range(n_roots)]
-    return TTNState(graph=graph, center=center, tensors=tensors, centers=centers,
-                    charge=charge)
+    state = TTNState(graph=graph, center=center, tensors=tensors, centers=centers,
+                     charge=charge)
+    # ⚠ The reservation belongs to the STATE, not to the process: a driver that rebuilds a
+    # random state inside a loop — the manifold layer's root growth, an energy window's
+    # ladder, the structural probe that measures a topology's two-site capacity — would
+    # otherwise leave one entry per throwaway state on the ledger, and a ledger that
+    # over-reports produces false refusals late in a run. The refusal above still happens
+    # before anything is allocated; what changes is only when the entry goes away.
+    res.owned_by(state, alloc)
+    return state
 
 
 def _normalized(t: BlockTensor) -> BlockTensor:
@@ -1454,6 +1463,23 @@ def _w_diag(w: _Lab, cap_bytes: Optional[int] = None) -> Optional[_DenseLab]:
 
 # --- the sweep ----------------------------------------------------------------------------
 
+class TwoSiteCapacityError(ValueError):
+    """An ensemble the tour's narrowest two-site window cannot represent.
+
+    A ``ValueError`` about the *request*, as it always was — and a named one, because a
+    caller that **chooses** its own root count (an energy window's ladder) has to tell the
+    difference between this and any other bad argument: the answer to it is a coarser node
+    partition or fewer roots, never a truncated ensemble.
+
+    ⚠ Deliberately **not** a
+    :class:`~kuiva.util.errors.SolverFailure`. That class means "no usable answer *at this
+    point*", which an orbital optimizer turns into a rejected step; a two-site space too small
+    for the ensemble is a property of the topology, the cap and the count, so it is the same
+    at every point — and a run that rejected its way to a trust radius of nothing would print
+    no reason for it.
+    """
+
+
 @dataclass(eq=False)
 class SweepResult(object):
     """What a DMRG run produced. Energies exclude ``e_core`` (module docstring)."""
@@ -1736,10 +1762,10 @@ def _solve_local(ttno, state, cache, u, v, requested, davidson_tol, extra_roots=
         # matter what the cap is, because the charge sectors reachable there simply do not
         # hold that many states. Refusing is right — an ensemble that cannot be represented
         # must not be silently truncated to one that can.
-        raise ValueError("the two-site space on bond ({}, {}) has dimension {}, below the {} "
-                         "roots being averaged; ask for fewer roots, raise max_bond, or give "
-                         "the network a topology whose bonds separate more orbitals"
-                         .format(u, v, prob.dim, n_roots))
+        raise TwoSiteCapacityError(
+            "the two-site space on bond ({}, {}) has dimension {}, below the {} roots being "
+            "averaged; ask for fewer roots, raise max_bond, or give the network a topology "
+            "whose bonds separate more orbitals".format(u, v, prob.dim, n_roots))
     n_solve = min(n_roots + int(extra_roots), prob.dim)
     # ⚠ The whole of what this solve holds, and the second term is the one that was missing
     # for the layer's entire history: the effective-Hamiltonian application's intermediate
@@ -2010,6 +2036,7 @@ def _boundary_sweep(ttno, state, cache, requested, n_elec, trunc_tol, max_bond,
     return gap_cm
 
 
-__all__ = ["TTNState", "EnvironmentCache", "SweepResult", "random_state", "solve_ttn",
+__all__ = ["TTNState", "EnvironmentCache", "SweepResult", "TwoSiteCapacityError",
+           "random_state", "solve_ttn",
            "state_gb", "state_to_dense", "BOUNDARY_GAP_WARN_CM", "DEFAULT_BATCH_WIDTH",
            "DENSE_LOCAL_MAX_DIM"]

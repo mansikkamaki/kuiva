@@ -53,6 +53,7 @@ The three shapes this module was designed on (each about a dozen lines)::
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -683,15 +684,21 @@ class CASSCF(_Stage):
     (:class:`~kuiva.util.window.EnergyWindow`; ``{irrep: EnergyWindow}`` beside fixed counts
     is its per-irrep form). :attr:`n_states` is then ``None`` until :meth:`run` and the
     resolved count after it, :attr:`window` carries the
-    :class:`~kuiva.util.window.WindowResolution` and :attr:`rounds` the rounds it took.
+    :class:`~kuiva.util.window.WindowResolution` and :attr:`rounds` the rounds it took;
+    :attr:`window_initial` is the resolution at the *starting* orbitals, where the ladder's
+    first rung says where it came from.
 
     ⚠ **The count is resolved at fixed orbitals and held for a whole orbital optimization;
     it may change only between rounds** — the optimizer never sees a window, and a run whose
     first round resolves to ``n`` and stays there is the fixed-count run at ``n``. ``max_iter``
     is therefore the budget **across** rounds, and a window that never settles keeps the last
     converged result and says so rather than picking a side (:mod:`kuiva.mcscf.rounds`).
-    ⚠ ``weights=`` is refused with a window, and so is ``solver="dmrg"`` for now. A
-    :class:`CheapCI` upstream supplies the ladder's first rung from its own spectrum.
+    ⚠ ``weights=`` is refused with a window. A :class:`CheapCI` upstream supplies the
+    ladder's first rung from its own spectrum; on the network route, where a rung is a whole
+    sweep campaign, a short **pilot** at a small bond dimension supplies it instead when
+    there is no upstream estimate, and the witness roots the verdict is read against are
+    converged network roots (:mod:`kuiva.dmrg.window`). The per-irrep form of a window is a
+    conventional-CI request and is refused with ``solver="dmrg"``.
 
     With point-group symmetry on (``point_group=`` at the front end), ``n_states`` may be a
     mapping ``{irrep: n}`` instead of a count — each irrep is then solved in its own sector of
@@ -739,19 +746,22 @@ class CASSCF(_Stage):
         #: The :class:`~kuiva.util.window.WindowResolution` at the converged orbitals after
         #: :meth:`run`; ``None`` before it and for a stated count.
         self.window = None
+        #: The resolution at the **starting** orbitals — the window's counterpart of
+        #: :attr:`boundary_initial`, and ``None`` for a stated count or a restart.
+        self.window_initial = None
+        #: The rounds a windowed run took; empty for a stated count.
+        self.rounds: List[Any] = []
         #: ``n_states`` is a count, a per-irrep mapping ``{irrep: n}`` with point-group
         #: labels present, or an energy window. The three are forms of one argument; a
         #: mapping's total and a window's resolved count are what :attr:`n_states` reports,
         #: so every consumer of the count still works.
         self.state_request = dict(n_states) if isinstance(n_states, dict) else None
         if is_window_request(n_states):
-            if solver != "ci":
-                raise NotImplementedError(
-                    "a tensor-network CASSCF driven by an energy window is not implemented "
-                    "yet: a rung of the ladder is a whole sweep campaign and the network's "
-                    "own first-rung estimate (a pilot sweep) does not exist yet. "
-                    "solver='ci' takes n_states=kuiva.EnergyWindow(...) as it stands; here, "
-                    "state a count")
+            if solver != "ci" and not isinstance(n_states, EnergyWindow):
+                raise ValueError(
+                    "a per-irrep energy window selects states per determinant sector, which "
+                    "is a conventional-CI request; a network solve targets one sector and "
+                    "takes a plain n_states=kuiva.EnergyWindow(...)")
             if weights is not None:
                 raise ValueError("weights= cannot be combined with an energy window: a "
                                  "window's weights are equal by construction and the "
@@ -1113,6 +1123,11 @@ class CASSCF(_Stage):
         #: at run time and the stage then reports that count exactly as a stated one, so
         #: every consumer of :attr:`n_states` reads a number.
         self.window = outcome.window
+        #: The resolution at the **starting** orbitals (``None`` for a stated count, and on
+        #: a materialized or restarted stage): the window's counterpart of
+        #: :attr:`boundary_initial`, and where the ladder's first rung says where it came
+        #: from — the handoff from an upstream :class:`CheapCI`, or the network's pilot.
+        self.window_initial = outcome.window_initial
         self.rounds = outcome.rounds
         self.checkpoint_path = outcome.checkpoint_path
         self._energies = np.asarray(outcome.ci.total_energies, dtype=float)
@@ -1179,14 +1194,22 @@ class CASSCF(_Stage):
                             "restart resumes the orbital trajectory and the first solve "
                             "rebuilds the network from scratch (time, not correctness)",
                             network_file)
-        solver = DMRGSolver(self.space.n_elec, n_roots=self.n_states,
+        solver = DMRGSolver(self.space.n_elec,
+                            n_roots=(self.window_request if self.window_request is not None
+                                     else self.n_states),
                             weights=self.weights, graph=self._resolve_graph(), **options)
         # Resolve the default topology now, so the solver's space_key names a real chart:
         # a restart compared against "dmrg:unset" would clear curvature that belongs to
         # exactly this surface.
         solver._ensure_chart(self.space.n_active)
         if resumed is not None:
-            from .api import _check_restart_state_average
+            from .api import _check_restart_state_average, _window_from_checkpoint
+            if self.window_request is not None:
+                # ⚠ The count comes from the FILE and the window is what is compared: a
+                # restart continues the calculation that was interrupted, and that
+                # calculation ran at one count. Re-resolving here would start the round loop
+                # from a ladder at the restored orbitals and could pick another one.
+                solver = _window_from_checkpoint(resumed, solver, self.restart)
             _check_restart_state_average(resumed, solver, self.restart)
             # ⚠ The LIVE solver's key, never the file's own (see api.casscf): handing the
             # checkpoint its own key back would compare the file with itself and restore
@@ -1231,6 +1254,23 @@ class CASSCF(_Stage):
             # ⚠ The granularity is a macro-iteration, and on this route one of those holds a
             # whole DMRG solve: neither stop cause can interrupt one, only refuse the next.
             self.deadline.assert_room("this DMRG-CASSCF")
+        # The ladder's first rung from an upstream CheapCI's own spectrum, when there is
+        # one: a rung, never a verdict (see :meth:`_window_first_rung`). Without it the
+        # network's own pilot campaign supplies the estimate.
+        estimate = (self._window_first_rung() if self.window_request is not None else None)
+
+        def _round_hook(chain, index, current):
+            """The optimizer's ``callback``, extended **additively** with the round and the
+            count: a callback that ignores the two new keys is unaffected."""
+            if self.window_request is None:
+                return chain
+
+            def hook(info):
+                info["window_round"] = int(index)
+                info["n_states"] = int(current.n_roots)
+                return None if chain is None else chain(info)
+            return hook
+
         # ⚠ The truncation weight is the tensor network's primary quality number, and without
         # this it appeared nowhere at INFO: the sweep table is at DEBUG (one table per sweep
         # times many macro-iterations is noise in a file that IS the output), so a production
@@ -1238,30 +1278,119 @@ class CASSCF(_Stage):
         # optimizer's additive extra_columns keyword, so the shared driver stays ignorant of
         # what a bond dimension is. The trend matters as much as the final value -- truncation
         # growing as the orbitals move is the signal that max_bond is too small.
+        # ⚠ It reads the *current* solver, because a windowed run optimizes each round on a
+        # sibling built at that round's count: a column bound to the solver this line was
+        # written beside would report the first round's truncation for ever.
+        live = [solver]
         w_disc = ((out.col_sci("w_disc"),
-                   lambda: (float("nan") if solver.last is None
-                            else float(solver.last.max_discarded))),)
+                   lambda: (float("nan") if live[0].last is None
+                            else float(live[0].last.max_discarded))),)
+
+        # ⚠ The event-gated driver has no ``start_iteration``: it is the sibling of the
+        # smooth one, not a mode of it, and its signature says so. A window's rounds still
+        # need ``max_iter`` to be a budget ACROSS rounds, so where the keyword is absent the
+        # budget is handed over as what is left and the result's counter is shifted back —
+        # the rounds loop reads ``n_iterations`` as a running total either way.
+        counts_from_start = "start_iteration" in inspect.signature(driver).parameters
+
+        def _optimize(coeff, current, *, round_index=1, start_iteration=None,
+                      max_iter=None):
+            # ⚠ ``start_iteration=None`` means "whatever the options already say" — a restart
+            # brings its own, and a fixed-count run must not have it reset to zero here. Only
+            # the round loop states one, because only it knows how much of the budget the
+            # rounds before it spent.
+            kwargs = dict(optimizer_options)
+            spent = int(kwargs.get("start_iteration", 0) or 0) if start_iteration is None \
+                else int(start_iteration)
+            if max_iter is not None:
+                kwargs["max_iter"] = (int(max_iter) if counts_from_start
+                                      else max(1, int(max_iter) - spent))
+            if counts_from_start and start_iteration is not None:
+                kwargs["start_iteration"] = int(start_iteration)
+            if round_index > 1:
+                # ⚠ Curvature is chart-scoped: a new count is a new energy functional, so
+                # the previous round's L-BFGS pairs are a memory of another surface.
+                kwargs.pop("optimizer_state", None)
+                kwargs.pop("history", None)
+            live[0] = current
+            if policy is not None:
+                # The checkpoint reads its state average off the solver, and each round runs
+                # a sibling; without this the file would record a solver that never solved.
+                policy.rebind(current)
+            kwargs["callback"] = _round_hook(hook, round_index, current)
+            out_ = driver(ref.factors, h_ao, np.ascontiguousarray(coeff),
+                          self.space.spaces, current, e_nuc=ref.data.e_nuc,
+                          report=self.report, n_active_elec=self.space.n_elec,
+                          extra_columns=w_disc, **kwargs)
+            if not counts_from_start and spent:
+                out_ = replace(out_, n_iterations=int(out_.n_iterations) + spent)
+            return out_
+
+        def _resolve(coeff, current, *, n_prev, where):
+            ints_at = CASIntegrals.build(ref.factors, h_ao, np.ascontiguousarray(coeff),
+                                         self.space.spaces, e_nuc=ref.data.e_nuc)
+            return current.resolve_window(ints_at, estimate=estimate, n_prev=n_prev,
+                                          where=where, report=self.report)
+
         # ⚠ The handlers live exactly as long as the optimization; the previous dispositions
         # come back afterwards, exception or not.
+        rounds = None
         with stop_context(self.signals):
-            result = driver(ref.factors, h_ao, orbitals, self.space.spaces, solver,
-                            e_nuc=ref.data.e_nuc, callback=hook, report=self.report,
-                            n_active_elec=self.space.n_elec,
-                            extra_columns=w_disc, **optimizer_options)
+            if self.window_request is None:
+                result = _optimize(orbitals, solver)
+            else:
+                from ..mcscf.rounds import optimize_rounds
+                rounds = optimize_rounds(
+                    self.window_request, solver, orbitals, resolve=_resolve,
+                    optimize=_optimize,
+                    max_iter=int(optimizer_options.get(
+                        "max_iter",
+                        inspect.signature(driver).parameters["max_iter"].default)),
+                    start_iteration=int(optimizer_options.get("start_iteration", 0) or 0),
+                    resolved=None if solver.n_roots is None else (None, solver),
+                    report=self.report)
+                solver, result = rounds.solver, rounds.orbital
+                if rounds.n_rounds > 1:
+                    # One trajectory, reported as one: the per-round counters are of the
+                    # same run, exactly as on the conventional-CI route.
+                    result = replace(
+                        result, history=list(rounds.history),
+                        n_hessian_matvec=sum(r.orbital.n_hessian_matvec
+                                             for r in rounds.rounds),
+                        n_second_order_steps=sum(r.orbital.n_second_order_steps
+                                                 for r in rounds.rounds),
+                        n_rejected=sum(r.orbital.n_rejected for r in rounds.rounds),
+                        n_solver_failures=sum(r.orbital.n_solver_failures
+                                              for r in rounds.rounds))
 
         # The optimizer's last solve may sit at a rejected trial step; the states this stage
         # reports must belong to the returned orbitals. One warm solve pins them there and
         # carries the state-average boundary diagnostic the in-loop solves skip.
         ints = CASIntegrals.build(ref.factors, h_ao, result.coeff, self.space.spaces,
                                   e_nuc=ref.data.e_nuc)
-        solver.boundary_check = BOUNDARY_MARGIN
+        # ⚠ With a window the ladder has already solved the roots the average does not use
+        # and read the gap to the first of them, so the resolution REPLACES this diagnostic
+        # rather than being added to it — a second boundary sweep would be a second
+        # definition of the witness, and on this route it costs a whole extra sweep.
+        solver.boundary_check = 0 if self.window_request is not None else BOUNDARY_MARGIN
         solver.solve(ints)
 
         self.active = self.space
         self.solver = solver
         self.orbital = result
         self.events = getattr(result, "events", [])
-        self.boundary_gap_cm = solver.last.boundary_gap_cm
+        #: The rounds a windowed run took (:class:`kuiva.mcscf.rounds.Round`); empty for a
+        #: stated count, so every consumer asks one question of either route.
+        self.rounds = [] if rounds is None else list(rounds.rounds)
+        self.window_initial = None if rounds is None else rounds.initial
+        if rounds is not None:
+            self.window = rounds.final
+            self.n_states = int(solver.n_roots)
+        # ⚠ With a window this is the ladder's own witness gap, which is what the resolution
+        # measured; without one it is the boundary sweep's local, one-sided gap. The
+        # resolution's ``witness`` field is what says which, and it is printed with it.
+        self.boundary_gap_cm = (self.window.boundary_gap_cm if rounds is not None
+                                else solver.last.boundary_gap_cm)
         self.graph = solver.graph
         self._energies = np.asarray(solver.last.energies, dtype=float) + ints.e_core
         self.max_discarded = float(solver.last.max_discarded)
