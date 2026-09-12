@@ -564,6 +564,38 @@ def test_casci_inherits_from_a_cheap_ci(pre):
     assert abs(ci.energies[1] - ci.energies[0]) < KRAMERS_TOL
 
 
+def test_casci_takes_an_energy_window_and_resolves_it_to_the_j_manifold(cas_term):
+    """The third form of ``n_states``: on boron's 2p^1 term the spin-orbit spectrum is a
+    j = 1/2 doublet and a j = 3/2 quartet about 15 cm^-1 above it. A window that cuts between
+    the two resolves to 2, and one that reaches past the quartet resolves to 6 — the whole
+    space, so no witness is needed. Before ``run()`` the stage's count is ``None``; after it,
+    it is the resolved count, which is what every downstream stage reads."""
+    doublet = CASCI(cas_term, n_states=kuiva.EnergyWindow(5.0, manifold_gap=1.0),
+                    report=False)
+    assert doublet.n_states is None and doublet.window is None
+    assert doublet.window_request == kuiva.EnergyWindow(5.0, manifold_gap=1.0)
+    doublet.run()
+    assert doublet.n_states == 2 and doublet.energies.size == 2
+    assert doublet.window.complete and doublet.window.count == 2
+    assert doublet.window.boundary_gap_cm > 5.0
+    fixed = CASCI(cas_term, n_states=2, report=False).run()
+    assert np.max(np.abs(doublet.energies - fixed.energies)) < KRAMERS_TOL
+    assert "state window" in doublet.summary()
+
+    term = CASCI(cas_term, n_states=kuiva.EnergyWindow(1000), report=False).run()
+    assert term.n_states == 6 and term.window.verdict.spans_space
+    assert np.max(np.abs(term.energies - cas_term.energies)) < KRAMERS_TOL
+
+
+def test_a_window_refuses_weights_and_the_casscf_says_the_rounds_do_not_exist_yet(ref,
+                                                                                  cas_term):
+    with pytest.raises(ValueError, match="weights= cannot be combined"):
+        CASCI(cas_term, n_states=kuiva.EnergyWindow(1000), weights=[0.5, 0.5])
+    with pytest.raises(NotImplementedError, match="not implemented yet"):
+        CASSCF(ref, character=("B", "p"), n_active=6, n_active_elec=1,
+               n_states=kuiva.EnergyWindow(1000))
+
+
 def test_casci_carries_the_solver_options(cas_term):
     """``solver_options`` reach the CI solver, and the Kramers-restricted mode is what it
     claims to be — the same six states from three time-reversal pairs."""

@@ -90,14 +90,15 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 from ..util.logging import get_logger
+#: Hartree -> wavenumber conversion (CODATA 2018). ⚠ Re-exported from the one unit table,
+#: :mod:`kuiva.util.units`, bitwise the literal that has always lived here; every layer that
+#: converts through it imports either name and gets the same number.
+from ..util.units import HARTREE_TO_CM
 
 log = get_logger(__name__)
 
 #: Free-electron g factor (CODATA 2018). Used in mu = -(L + g_e S) mu_B.
 G_ELECTRON = 2.00231930436256
-
-#: Hartree -> wavenumber conversion (CODATA 2018).
-HARTREE_TO_CM = 219474.6313632
 
 #: ⚠ **Advisory only, and not a physical tolerance.** Two singlets closer than this warn that
 #: they *may* be a tunnelling-split non-Kramers pseudo-doublet (module docstring). It states

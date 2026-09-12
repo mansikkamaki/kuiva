@@ -75,6 +75,7 @@ References
 """
 from __future__ import annotations
 
+import copy
 import itertools
 import logging
 from dataclasses import dataclass
@@ -83,12 +84,11 @@ from typing import Any, Dict, Hashable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from ..ci import kernels
-from ..ci.davidson import (DEFAULT_CONV_TOL, DEFAULT_MAX_ITER, DavidsonResult, davidson,
-                           davidson_kramers, davidson_kramers_sector,
-                           davidson_sector)
+from ..ci.davidson import (DEFAULT_CONV_TOL, DEFAULT_MAX_ITER, DENSE_SOLVE_MAX_DET,
+                           DavidsonResult, davidson, davidson_kramers,
+                           davidson_kramers_sector, davidson_sector)
 from ..ci.sigma import SigmaOperator, assert_time_reversal, gather_block_size
 from ..ci.strings import CASSpace, _check_array, _check_output, diagonal_energies
-from ..props.multiplet import HARTREE_TO_CM
 from ..rdm.rdm import DEFAULT_DEGENERACY_TOL, RDMBuilder, state_average_weights
 from ..symm.sectors import SectorTable, assert_sector_symmetry, resolve_state_request
 from ..util import output as out
@@ -96,6 +96,10 @@ from ..util import resources as res
 from ..util.errors import SolverFailure
 from ..util.logging import get_logger
 from ..util.timing import timer
+from ..util.units import HARTREE_TO_CM
+from ..util.window import (DEFAULT_MANIFOLD_GAP_CM, EnergyWindow, WindowResolution,
+                           is_window_request, resolve_states, resolve_states_per_sector,
+                           shared_window)
 from .orbopt import CASIntegrals, CASSCFResult, OrbitalSpaces, optimize_orbitals
 
 log = get_logger(__name__)
@@ -595,6 +599,10 @@ class CASCIResult:
     #: The full :class:`kuiva.symm.classify.Classification`, for a caller that wants the
     #: per-block residuals and traces rather than the names.
     classification: Optional[object] = None
+    #: How the state count was resolved from an energy window
+    #: (:class:`~kuiva.util.window.WindowResolution`), when the states were requested as one
+    #: rather than as a count; ``None`` for a plain count.
+    window: Optional[WindowResolution] = None
 
     @property
     def total_energies(self) -> np.ndarray:
@@ -653,10 +661,21 @@ class FullCISolver:
     Parameters
     ----------
     n_spinor, n_elec : int — the active space, ``C(n_spinor, n_elec)`` determinants.
-    n_states : int
+    n_states : int, ``{irrep: n}``, or :class:`~kuiva.util.window.EnergyWindow`
         Roots to solve for and average over. ⚠ With an odd electron count Kramers' theorem
         makes every level at least doubly degenerate, so an odd ``n_states`` splits a pair and
         is **refused where the RDMs are built** (:mod:`kuiva.rdm.rdm`), not here.
+
+        An **energy window** (or a per-irrep mapping holding one beside fixed counts) is the
+        third form of the same argument: the count is *resolved* from the spectrum at fixed
+        integrals by :meth:`resolve_window`, which returns a sibling solver built at the
+        resolved count. ⚠ **The count is fixed at construction**: the Davidson stacks and the
+        state average are sized by it, so a solver built with a window has ``n_states =
+        None`` and refuses to solve until it has been resolved — every solve after that is
+        exactly today's fixed-count solve, and the state-averaging gate, the boundary
+        diagnostic and every downstream consumer see a count. ``weights=`` is refused with a
+        window: a window's weights are equal by construction and the gate equalizes them
+        inside blocks.
     weights : sequence, optional — state-averaging weights; uniform by default. They are
         equalized inside a degenerate block whatever is asked for.
     conv_tol : float
@@ -711,23 +730,6 @@ class FullCISolver:
         self.n_spinor = int(n_spinor)
         self.n_elec = int(n_elec)
         self.symmetry = symmetry
-        self.state_request = None
-        if isinstance(n_states, dict):
-            if symmetry is None:
-                raise ValueError(
-                    "n_states={irrep: n} needs irrep labels for the active spinors, and this "
-                    "solver was given none. Run the front end with point_group= so the "
-                    "orbitals carry labels, or ask for a plain lowest-n state count")
-            self.n_states = int(sum(int(v) for v in n_states.values()))
-        else:
-            self.n_states = int(n_states)
-        #: The state selection **as it was asked for** — a count, or the ``{irrep: n}``
-        #: mapping. ⚠ Kept beside :attr:`n_states` because the two are not the same statement:
-        #: the count is what the mapping resolves to, and two different per-irrep requests can
-        #: resolve to the same total while selecting different states. A checkpoint that
-        #: recorded only the total would let one restart as the other
-        #: (:func:`kuiva.io.checkpoint.state_average_key`).
-        self.requested_states = dict(n_states) if isinstance(n_states, dict) else int(n_states)
         self.requested_weights = None if weights is None else np.asarray(weights, float)
         self.conv_tol = float(conv_tol)
         self.max_iter = int(max_iter)
@@ -747,9 +749,6 @@ class FullCISolver:
                              .format(", ".join(map(repr, self.KRAMERS_MODES)), kramers))
 
         self.space = CASSpace(self.n_spinor, self.n_elec, backend=backend)
-        if self.n_states > self.space.ndet:
-            raise ValueError("asked for {} states of a {}-determinant space"
-                             .format(self.n_states, self.space.ndet))
         self._sectors = None
         if symmetry is not None:
             if len(symmetry) != self.n_spinor:
@@ -759,21 +758,24 @@ class FullCISolver:
                     .format(len(symmetry), self.n_spinor))
             self._sectors = SectorTable.build(self.space.occupations(), symmetry.labels,
                                               symmetry.group)
-            if isinstance(n_states, dict):
-                self.state_request = resolve_state_request(n_states, self._sectors)
-                for label, count in self.state_request:
-                    size = self._sectors.size(label)
-                    if count > size:
-                        raise ValueError(
-                            "asked for {} states of {}, which holds {} determinants"
-                            .format(count, self._sectors.name(label), size))
-                out.entry(log, "state selection", "per irrep", "",
-                          ", ".join("{}: {}".format(self._sectors.name(t), n)
-                                    for t, n in self.state_request))
+        #: The energy window this solver's count is (to be) resolved from, or ``None`` for a
+        #: plain count. ⚠ Set on the unresolved solver **and** on the sibling
+        #: :meth:`resolve_window` builds at the resolved count — on the sibling it is
+        #: provenance, and :func:`kuiva.io.checkpoint.state_average_key` records it beside
+        #: the count. ``n_states is None`` is what says "not resolved yet".
+        self.window: Optional[EnergyWindow] = None
+        self._window_request = None
+        self.state_request = None
+        #: The state selection **as it was asked for** — a count, the ``{irrep: n}``
+        #: mapping, or the energy window. ⚠ Kept beside :attr:`n_states` because the two are
+        #: not the same statement: the count is what the request resolves to, and two
+        #: different per-irrep requests can resolve to the same total while selecting
+        #: different states. A checkpoint that recorded only the total would let one restart
+        #: as the other (:func:`kuiva.io.checkpoint.state_average_key`).
+        self.requested_states: Any = None
         self._conjugate_units = None
-        if self.kramers == "restricted" and self.state_request is not None:
-            self._conjugate_units = self._resolve_conjugate_units()
-            self.n_states = int(sum(2 * pairs for _, _, pairs in self._conjugate_units))
+        self.n_states: Optional[int] = None
+        self._set_states(n_states)
         self.kramers = self._validate_kramers(self.kramers)
         self._kramers_map = self.space.kramers() if self.kramers == "restricted" else None
         if self._kramers_map is not None:
@@ -781,9 +783,12 @@ class FullCISolver:
             # does not: a non-default symmetry mode that announces itself is the same
             # discipline the cheap-end Hamiltonians follow.
             out.entry(log, "CI symmetry mode", "Kramers-restricted", "",
-                      "time-reversal-closed Davidson subspace; {} pairs solved for {} "
-                      "states, energies and RDMs in the general convention"
-                      .format(self.n_states // 2, self.n_states))
+                      "time-reversal-closed Davidson subspace; {}, energies and RDMs in the "
+                      "general convention".format(
+                          "{} pairs solved for {} states".format(self.n_states // 2,
+                                                                 self.n_states)
+                          if self.n_states is not None else
+                          "pair count resolved from {!r}".format(self.window)))
         self._block = block
         self._sigma: Optional[SigmaOperator] = None
         self._rdms: Optional[RDMBuilder] = None
@@ -792,6 +797,116 @@ class FullCISolver:
         #: optimizer asked for — the spectrum, the CI vectors, the transition densities.
         self.last: Optional[CASCIResult] = None
         self.n_solves = 0
+
+    def _set_states(self, n_states) -> None:
+        """Install a state request: a count, ``{irrep: n}``, or an energy window.
+
+        The one place the three forms are told apart, used by ``__init__`` and by
+        :meth:`with_n_states`. A window leaves :attr:`n_states` ``None`` (unresolved); the
+        other two fix the count and, per irrep, the sector requests.
+        """
+        self.state_request = None
+        self._window_request = None
+        self._conjugate_units = None
+        if is_window_request(n_states):
+            if self.requested_weights is not None:
+                raise ValueError(
+                    "weights= cannot be combined with an energy window: a window's weights "
+                    "are equal by construction, and the state-averaging gate equalizes them "
+                    "inside degenerate blocks. Drop weights=, or state a count")
+            if isinstance(n_states, EnergyWindow):
+                self.window = n_states
+                self.requested_states = n_states
+            else:
+                if self._sectors is None:
+                    raise ValueError(
+                        "n_states={irrep: ...} needs irrep labels for the active spinors, and "
+                        "this solver was given none. Run the front end with point_group= so "
+                        "the orbitals carry labels, or state a plain energy window")
+                self.window = shared_window(n_states)
+                self.requested_states = dict(n_states)
+                table = self._sectors
+                request = []
+                for key, value in n_states.items():
+                    label = table.group.label_of(key)
+                    table.index(label)                # refuses, naming the available sectors
+                    if not isinstance(value, EnergyWindow):
+                        if int(value) <= 0:
+                            raise ValueError("asked for {} states of {}; a sector is either "
+                                             "requested or left out"
+                                             .format(value, table.name(label)))
+                        if int(value) > table.size(label):
+                            raise ValueError("asked for {} states of {}, which holds {} "
+                                             "determinants".format(value, table.name(label),
+                                                                   table.size(label)))
+                    if any(label == other for other, _ in request):
+                        raise ValueError("{} is requested twice".format(table.name(label)))
+                    request.append((label, value))
+                order = {t: k for k, t in enumerate(table.group.labels())}
+                self._window_request = sorted(request, key=lambda kv: order[kv[0]])
+            self.n_states = None
+            return
+        if isinstance(n_states, dict):
+            if self._sectors is None:
+                raise ValueError(
+                    "n_states={irrep: n} needs irrep labels for the active spinors, and this "
+                    "solver was given none. Run the front end with point_group= so the "
+                    "orbitals carry labels, or ask for a plain lowest-n state count")
+            self.n_states = int(sum(int(v) for v in n_states.values()))
+            self.requested_states = dict(n_states)
+            self.state_request = resolve_state_request(n_states, self._sectors)
+            for label, count in self.state_request:
+                size = self._sectors.size(label)
+                if count > size:
+                    raise ValueError(
+                        "asked for {} states of {}, which holds {} determinants"
+                        .format(count, self._sectors.name(label), size))
+            out.entry(log, "state selection", "per irrep", "",
+                      ", ".join("{}: {}".format(self._sectors.name(t), n)
+                                for t, n in self.state_request))
+        else:
+            self.n_states = int(n_states)
+            self.requested_states = int(n_states)
+        if self.n_states > self.space.ndet:
+            raise ValueError("asked for {} states of a {}-determinant space"
+                             .format(self.n_states, self.space.ndet))
+        if self.kramers == "restricted" and self.state_request is not None:
+            self._conjugate_units = self._resolve_conjugate_units()
+            self.n_states = int(sum(2 * pairs for _, _, pairs in self._conjugate_units))
+
+    def _require_resolved(self, what: str) -> None:
+        if self.n_states is None:
+            raise RuntimeError(
+                "this solver was built with an energy window ({!r}) and its state count has "
+                "not been resolved yet, so it cannot {}. Call resolve_window() at the "
+                "integrals first; it returns the resolution and a solver built at the "
+                "resolved count".format(self.window, what))
+
+    def with_n_states(self, n_states, *, warm_start: Optional[np.ndarray] = None
+                      ) -> "FullCISolver":
+        """A sibling solver at another state count, sharing the expensive objects.
+
+        The determinant space, the sector table, the sigma operator's ``F``/``G`` workspace and
+        the RDM accumulator are **shared** (they are the large residency and are used
+        sequentially, never at once), so a new count costs nothing but the Davidson stacks of
+        its own solves. ``warm_start`` seeds the sibling's first solve — the ladder's vectors,
+        truncated to the resolved count.
+
+        The sibling keeps :attr:`window` and :attr:`requested_states` as provenance when this
+        solver carries a window, so the checkpoint key records ``n_states=<resolved>`` beside
+        the window it was resolved from. :attr:`last` and the solve count start fresh.
+        """
+        clone = copy.copy(self)
+        clone._set_states(n_states)
+        if self.window is not None:
+            clone.window = self.window
+            clone.requested_states = self.requested_states
+        clone.kramers = clone._validate_kramers(clone.kramers)
+        clone._guess = (None if warm_start is None else
+                        np.atleast_2d(np.ascontiguousarray(warm_start, dtype=np.complex128)))
+        clone.last = None
+        clone.n_solves = 0
+        return clone
 
     def _resolve_conjugate_units(self, requests=None, *, strict: bool = True):
         """``[(label, mask, n_pairs)]`` for a per-irrep request under Kramers restriction.
@@ -876,7 +991,7 @@ class FullCISolver:
                 "pair states into and no halved subspace to win — what an even count offers "
                 "instead is a basis in which H is real, which is a different construction and "
                 "is not implemented. Use kramers='general'".format(self.n_elec))
-        if self.n_states % 2 != 0:
+        if self.n_states is not None and self.n_states % 2 != 0:
             raise ValueError(
                 "kramers='restricted' solves whole Kramers pairs, so n_states must be even; "
                 "got {}. An odd count would split a pair, which is refused where the "
@@ -993,7 +1108,8 @@ class FullCISolver:
         against a Davidson solve — and it is the only thing standing between a broken pairing
         and a converged, exactly degenerate, wrong spectrum.
         """
-        if self._sectors is not None and self.state_request is not None:
+        if self._sectors is not None and (self.state_request is not None
+                                          or self._window_request is not None):
             # Same discipline, same reason: a per-irrep spectrum solved on orbitals that have
             # drifted out of the symmetry is converged, degenerate-looking and wrong, and the
             # check costs one pass over the active n^4 against a Davidson solve. It runs only
@@ -1061,6 +1177,7 @@ class FullCISolver:
         Hamiltonian already. ``e_core`` is added to every state energy and is what makes the
         result comparable across macro-iterations.
         """
+        self._require_resolved("solve")
         self._check_integrals(h, eri)
         sigma = self._operator(h, eri)
         with timer("full CI: diagonal"):
@@ -1137,6 +1254,7 @@ class FullCISolver:
         *next* solve is genuinely at these integrals; a stale guess is not wrong but it is not
         free either.
         """
+        self._require_resolved("measure a boundary")
         n_states = int(n_states)
         if not 1 <= n_states <= self.space.ndet:
             raise ValueError("asked for {} states of a {}-determinant space"
@@ -1164,6 +1282,7 @@ class FullCISolver:
         breaks the average exactly as a plain count does, and only a per-sector spectrum can
         see it. No RDMs, nothing stored, and the warm start is left alone.
         """
+        self._require_resolved("measure a boundary")
         if self.state_request is None:
             raise RuntimeError("this solver does not select per irrep, so it has no "
                                "per-sector spectra; use spectrum()")
@@ -1185,6 +1304,81 @@ class FullCISolver:
                 energies = energies[::2]
             spectra[label] = energies + float(e_core)
         return spectra
+
+    # -- the energy window ------------------------------------------------------------------
+    def resolve_window(self, h: np.ndarray, eri: np.ndarray, *, e_core: float = 0.0,
+                       estimate: Optional[int] = None, n_prev: Optional[int] = None,
+                       where: str = "", report: bool = True,
+                       level: int = logging.INFO) -> Tuple[WindowResolution, "FullCISolver"]:
+        """Resolve this solver's energy window at these integrals.
+
+        Runs the ladder of :func:`kuiva.util.window.resolve_states` over this solver's own
+        eigensolver — the same solve :meth:`spectrum` makes for the boundary diagnostic, with
+        the count read off the spectrum instead of checked against it — and returns
+        ``(resolution, sibling)``, the sibling being :meth:`with_n_states` at the resolved
+        count with the ladder's vectors as its warm start. No RDMs are built, nothing is
+        stored on this solver, and the sigma operator's workspace is reused, so the cost is
+        the rungs' Davidson solves and no new residency.
+
+        ⚠ **Every rung asks the eigensolver for generic starting vectors** in front of the
+        previous rung's converged ones (``generic=True``): a rung supplies fewer vectors than
+        the roots it asks for, and the new roots would otherwise be seeded from the biased
+        padding alone — the "converged is not lowest" failure with a window making the roots
+        load-bearing rather than advisory. Where the space is small enough for the dense
+        solve, the first rung asks for the whole space and the ladder is one rung.
+
+        ``estimate`` is a first-rung estimate from upstream (a cheap CI's resolved count);
+        ``n_prev`` the previous round's count, which engages the rule's dead band. A memory
+        refusal at a rung is re-raised naming the window and the two knobs that move it, so
+        it is not read as a machine that is too small for the calculation.
+        """
+        if self.window is None:
+            raise ValueError("this solver was built with a state count, not an energy "
+                             "window; there is nothing to resolve")
+        self._check_integrals(h, eri)
+        sigma = self._operator(h, eri)
+        with timer("full CI: diagonal"):
+            diagonal = diagonal_energies(self.space, h, eri)
+        guess = self._guess if self.warm_start else None
+        ndet = self.space.ndet
+        try:
+            if self._window_request is None:
+                oracle = _CIOracle(self, sigma, diagonal, e_core, guess=guess)
+                first = None
+                if ndet <= DENSE_SOLVE_MAX_DET:
+                    first = (ndet, "the dense solve: the whole {}-determinant space in one "
+                                   "rung".format(ndet))
+                resolution = resolve_states(oracle, self.window, n_elec=self.n_elec,
+                                            space_size=ndet, estimate=estimate, n_prev=n_prev,
+                                            first=first)
+                new_states: Any = resolution.count
+                vectors = oracle.vectors[:resolution.count]
+            else:
+                table = self._sectors
+                oracles = {label: _CIOracle(self, sigma, diagonal, e_core, guess=guess,
+                                            sector=label)
+                           for label, _ in self._window_request}
+                resolution = resolve_states_per_sector(
+                    oracles, dict(self._window_request),
+                    sizes={label: table.size(label) for label, _ in self._window_request},
+                    names={label: table.name(label) for label, _ in self._window_request},
+                    n_elec=self.n_elec, estimate=estimate, n_prev=n_prev)
+                new_states = dict(resolution.counts)
+                vectors = np.concatenate([
+                    oracles[label].vectors[:2 * resolution.counts[table.name(label)]
+                                           if self._kramers_map is not None
+                                           else resolution.counts[table.name(label)]]
+                    for label, _ in self._window_request
+                    if table.name(label) in resolution.counts], axis=0)
+        except res.MemoryLimitError as exc:
+            raise res.MemoryLimitError(
+                "{}\n   This allocation is a rung of the energy window {}, not the "
+                "calculation's own: the ladder grew the root count until it could not be "
+                "held. Lower the cutoff, lower max_states, or raise the memory limit"
+                .format(exc, repr(self.window))) from exc
+        if report:
+            resolution.report(log, level=level, where=where)
+        return resolution, self.with_n_states(new_states, warm_start=vectors)
 
     def _boundary_requests(self, extra: int):
         """Per-sector counts for the boundary diagnostic: ``margin`` extra roots in **each**
@@ -1357,9 +1551,52 @@ class FullCISolver:
                        np.atleast_2d(np.ascontiguousarray(vectors, dtype=np.complex128)))
 
     def __repr__(self) -> str:
-        return "FullCISolver(CAS({}, {}), {} determinants, {} states, {} solves, {})".format(
-            self.n_elec, self.n_spinor, self.ndet, self.n_states, self.n_solves,
-            self.kramers)
+        states = ("{} states".format(self.n_states) if self.n_states is not None
+                  else "unresolved {!r}".format(self.window))
+        return "FullCISolver(CAS({}, {}), {} determinants, {}, {} solves, {})".format(
+            self.n_elec, self.n_spinor, self.ndet, states, self.n_solves, self.kramers)
+
+
+class _CIOracle:
+    """:class:`~kuiva.util.window.SpectrumOracle` over one :class:`FullCISolver` at fixed
+    integrals — the whole space, or one irrep's sector.
+
+    Keeps the previous rung's vectors as the next rung's warm start and asks the eigensolver
+    for its generic vectors in front of them at every call (see
+    :meth:`FullCISolver.resolve_window`). ``n_apply`` accumulates the applications of ``H``
+    for the rung table. Under Kramers restriction a non-self-conjugate sector's solve returns
+    every root twice (once in each sector of the conjugate pair); one of each is this
+    sector's, exactly as :meth:`FullCISolver.sector_spectra` reads it.
+    """
+
+    def __init__(self, solver: FullCISolver, sigma: SigmaOperator, diagonal: np.ndarray,
+                 e_core: float, *, guess: Optional[np.ndarray] = None,
+                 sector=None) -> None:
+        self.solver, self.sigma, self.diagonal = solver, sigma, diagonal
+        self.e_core = float(e_core)
+        self.sector = sector
+        self.vectors = guess
+        self.n_apply = 0
+
+    def spectrum(self, n_roots: int) -> np.ndarray:
+        n_roots = int(n_roots)
+        solver = self.solver
+        if self.sector is None:
+            result = solver._davidson(self.sigma, self.diagonal, n_roots, guess=self.vectors,
+                                      label="CAS window", generic=True)
+            energies = np.asarray(result.energies[:n_roots], dtype=float)
+        else:
+            result = solver._davidson_sectors(self.sigma, self.diagonal,
+                                              [(self.sector, n_roots)], guess=self.vectors,
+                                              label="CAS window", generic=True)
+            energies = np.asarray(result.energies, dtype=float)
+            if solver._kramers_map is not None \
+                    and solver._sectors.group.conjugate(self.sector) != self.sector:
+                energies = energies[::2]
+            energies = energies[:n_roots]
+        self.vectors = result.vectors
+        self.n_apply += int(result.n_apply)
+        return energies + self.e_core
 
 
 # --- Drivers --------------------------------------------------------------------------------
@@ -1375,6 +1612,12 @@ def casci(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: OrbitalSpaces
     on its own (a CASCI on optimized orbitals from elsewhere) and as the reference a CASSCF is
     checked against — the CASSCF energy must be lower, and at a full active space over *all*
     spinors both must equal the SCF energy.
+
+    With ``n_states`` an :class:`~kuiva.util.window.EnergyWindow` (or a per-irrep mapping
+    holding one) the count is **resolved first, at these orbitals**
+    (:meth:`FullCISolver.resolve_window`, which prints the ``[state window]`` block) and the
+    solve is then exactly the fixed-count one at the resolved count; the resolution is
+    returned on :attr:`CASCIResult.window`.
     """
     c_spinor = np.ascontiguousarray(c_spinor)
     ints = CASIntegrals.build(factors, h_ao, c_spinor, spaces, e_nuc=e_nuc)
@@ -1385,12 +1628,22 @@ def casci(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: OrbitalSpaces
         out.entries(log, [
             ("active space", "CAS({}, {})".format(n_elec, spaces.n_active)),
             ("determinants", solver.ndet),
-            ("states", solver.n_states, "",
-             "" if solver.state_request is None else ", ".join(
-                 "{}: {}".format(solver._sectors.name(t), n)
-                 for t, n in solver.state_request)),
         ])
+    resolution = None
+    if solver.window is not None and solver.n_states is None:
+        resolution, solver = solver.resolve_window(
+            np.ascontiguousarray(ints.h_active_effective()), ints.active_eri(),
+            e_core=ints.e_core, where="fixed orbitals", report=report,
+            level=logging.INFO if report else logging.DEBUG)
+    if report:
+        out.entry(log, "states", solver.n_states, "",
+                  ", ".join("{}: {}".format(solver._sectors.name(t), n)
+                            for t, n in solver.state_request)
+                  if solver.state_request is not None else
+                  ("resolved from {!r}".format(solver.window) if solver.window is not None
+                   else ""))
     result = solver.casci(ints, level=logging.INFO if report else None)
+    result.window = resolution
     result.coeff, result.spaces = c_spinor, spaces
     classify_multiplets(result, classifier, on_split=solver.on_split, report=report,
                         level=logging.INFO if report else logging.DEBUG)
@@ -1541,7 +1794,11 @@ def ensemble_spin_noninvariance(gamma: np.ndarray, spin_mo: np.ndarray) -> float
 #: the last averaged root and the first one left out are close enough that the selection can
 #: reorder across them while the orbitals move, which is the self-reinforcing broken-average mechanism.
 #: Measured there: 3.9 cm^-1 at the count that broke, 2058 at the count that works.
-BOUNDARY_WARN_CM = 50.0
+#: ⚠ **The same number as the energy window's default manifold gap, by construction and not
+#: by coincidence** (:data:`kuiva.util.window.DEFAULT_MANIFOLD_GAP_CM`): a count a window
+#: resolves ends at a gap wider than the manifold gap, so it is clean by this diagnostic's
+#: own standard. Change one and the other moves with it.
+BOUNDARY_WARN_CM = DEFAULT_MANIFOLD_GAP_CM
 
 
 @dataclass
@@ -1637,6 +1894,26 @@ class BoundaryReport:
                 "complete.",
                 self.where, self.gap_cm, self.warn_cm, self.n_states, mechanism,
                 ", ".join("{:.2f}".format(x) for x in self.next_cm))
+
+
+def boundary_report_from_window(resolution: WindowResolution, ndet: int, *,
+                                where: str = "fixed orbitals",
+                                spin_noninvariance: Optional[float] = None
+                                ) -> BoundaryReport:
+    """The :class:`BoundaryReport` a window resolution *is*.
+
+    A resolution solves the roots the average does not use and reads the gap to the first of
+    them — the boundary measurement turned from a diagnostic into a decision — so the report
+    object the CASSCF outcome carries is built from the verdict rather than measured a second
+    time. A resolution that spans the whole space reports no gap (a pass, not a zero), exactly
+    as :func:`state_average_boundary` does.
+    """
+    verdict = resolution.verdict
+    return BoundaryReport(n_states=int(resolution.count), ndet=int(ndet),
+                          margin=max(0, int(verdict.n_solved) - int(resolution.count)),
+                          gap_cm=verdict.witness_gap_cm,
+                          next_cm=tuple(verdict.relative_cm), where=where,
+                          sector=resolution.sector, spin_noninvariance=spin_noninvariance)
 
 
 def state_average_boundary(solver: FullCISolver, ints: CASIntegrals, *,
@@ -1838,6 +2115,12 @@ def casscf(factors, h_ao: np.ndarray, c_spinor: np.ndarray, spaces: OrbitalSpace
     """
     solver = solver or FullCISolver(spaces.n_active, n_elec, n_states=n_states,
                                     weights=weights, **(solver_options or {}))
+    if solver.window is not None and solver.n_states is None:
+        raise NotImplementedError(
+            "a CASSCF driven by an energy window ({!r}) is not implemented yet: the count "
+            "is resolved between rounds of the orbital optimization and that round loop does "
+            "not exist yet. A CASCI takes the window as it stands; for the CASSCF state a "
+            "count for now".format(solver.window))
     report_level = (logging.INFO if optimizer_kwargs.get("report", True) else logging.DEBUG)
 
     # ⚠ **The boundary is checked BEFORE the optimization as well, and that is the check that
@@ -1954,8 +2237,8 @@ def _report_symmetry_drift(solver: FullCISolver, labels, *, level: int) -> None:
 
 __all__ = ["FullCISolver", "CASCIResult", "CASSCFOutcome", "ActiveSpace", "BoundaryReport",
            "active_space", "active_space_by_character", "casci", "casscf",
-           "state_average_boundary", "ensemble_spin_noninvariance",
-           "transition_density_numpy",
+           "state_average_boundary", "boundary_report_from_window",
+           "ensemble_spin_noninvariance", "transition_density_numpy",
            "BOUNDARY_MARGIN", "BOUNDARY_WARN_CM", "SPIN_LEANING_THRESHOLD",
            "SYMMETRY_DRIFT_TOL",
            "DEFAULT_CHARACTER_THRESHOLD"]

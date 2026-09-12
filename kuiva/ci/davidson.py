@@ -208,10 +208,16 @@ N_GENERIC_GUESS = 4
 #: optimizer that reads solver noise as a surface change is the failure that section exists to
 #: prevent. Do not make this a caller option without saying what breaks.
 #:
-#: ⚠ They are added on a **cold** start only. A supplied ``guess`` is a converged set from a
-#: nearby Hamiltonian and already spans what its own cold solve reached, so the bias being
-#: corrected is the fallback's, not the caller's — and ``dmrg/sweep.py`` supplies a guess at
-#: every bond of every sweep, where an extra application of ``H_eff`` is the expensive object.
+#: ⚠ They are added on a **cold** start only, by default. A supplied ``guess`` is a converged
+#: set from a nearby Hamiltonian and already spans what its own cold solve reached, so the
+#: bias being corrected is the fallback's, not the caller's — and ``dmrg/sweep.py`` supplies
+#: a guess at every bond of every sweep, where an extra application of ``H_eff`` is the
+#: expensive object. ⚠ **The exception is a warm start with FEWER vectors than roots**: the
+#: new roots are then seeded from the biased padding alone, and a converged warm set says
+#: nothing about the sectors *it* never reached. That is the situation of every rung of the
+#: energy-window ladder (a rung supplies the previous rung's vectors and asks for more roots),
+#: which therefore passes ``generic=True`` explicitly. The default ``generic=None`` keeps
+#: every existing caller bitwise unchanged.
 GUESS_SEED = 20260808
 #: Floor on ``|theta - H_II|`` in the preconditioner. Without it a determinant whose diagonal
 #: sits on the Ritz value produces an infinite correction: the classic Davidson blow-up.
@@ -295,9 +301,17 @@ def _orthonormalize(vec: np.ndarray, basis: np.ndarray,
     return work
 
 
+def _wants_generic(generic: Optional[bool], guess: Optional[np.ndarray]) -> bool:
+    """Whether the generic vectors are added: ``None`` = on a cold start only (the default,
+    bitwise the historical behaviour), ``True`` always, ``False`` never."""
+    if generic is None:
+        return guess is None
+    return bool(generic)
+
+
 def _initial_subspace(diagonal: np.ndarray, n_roots: int, n_guess: int,
                       guess: Optional[np.ndarray], space: np.ndarray,
-                      space_conj: np.ndarray) -> int:
+                      space_conj: np.ndarray, generic: Optional[bool] = None) -> int:
     """Fill the preallocated buffers with orthonormal starting vectors; return how many.
 
     ⚠ On a **cold** start, :data:`N_GENERIC_GUESS` generic vectors go first — see that constant,
@@ -309,12 +323,16 @@ def _initial_subspace(diagonal: np.ndarray, n_roots: int, n_guess: int,
     dropped — appending them measured as a null result and looked like evidence the remedy did
     not work.
 
-    ⚠ **A supplied ``guess`` suppresses them, deliberately.** A warm start is a converged set
-    from a nearby Hamiltonian, so it already spans the sectors its own cold solve reached, and
-    the bias being corrected is the *fallback* below. The cost matters: ``dmrg/sweep.py`` calls
-    this once per bond of every sweep with the current tensors as the guess, where one
-    application of ``H_eff`` is the expensive object, and padding there would buy nothing. It is
-    also what keeps every warm-started result bitwise unchanged.
+    ⚠ **A supplied ``guess`` suppresses them by default, deliberately.** A warm start is a
+    converged set from a nearby Hamiltonian, so it already spans the sectors its own cold solve
+    reached, and the bias being corrected is the *fallback* below. The cost matters:
+    ``dmrg/sweep.py`` calls this once per bond of every sweep with the current tensors as the
+    guess, where one application of ``H_eff`` is the expensive object, and padding there would
+    buy nothing. It is also what keeps every warm-started result bitwise unchanged.
+    ``generic=True`` overrides it for a warm start that carries *fewer* vectors than roots (a
+    rung of the energy-window ladder), where the new roots would otherwise be seeded from the
+    biased padding alone; ``generic=False`` suppresses them even cold, which exists so a test
+    can reproduce the biased behaviour it guards against.
 
     Then the supplied guess, padded with unit vectors on the **lowest diagonal elements** — for
     a CI Hamiltonian, the lowest-energy determinants. Twice the root count by default, because a
@@ -332,7 +350,7 @@ def _initial_subspace(diagonal: np.ndarray, n_roots: int, n_guess: int,
             space_conj[size] = np.conj(direction)
             size += 1
 
-    if guess is None:
+    if _wants_generic(generic, guess):
         rng = np.random.default_rng(GUESS_SEED)
         for _ in range(min(N_GENERIC_GUESS, target)):
             accept(rng.standard_normal(ndet) + 1j * rng.standard_normal(ndet))
@@ -400,8 +418,8 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
              max_subspace: Optional[int] = None, n_guess: Optional[int] = None,
              dense_max_det: int = DENSE_SOLVE_MAX_DET, label: str = "CI",
              level: int = logging.DEBUG,
-             apply_block: Optional[Callable[[np.ndarray], np.ndarray]] = None
-             ) -> DavidsonResult:
+             apply_block: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+             generic: Optional[bool] = None) -> DavidsonResult:
     """Lowest ``n_roots`` eigenpairs of a complex-Hermitian matrix, matrix-free.
 
     Parameters
@@ -440,6 +458,14 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
     level : int
         Logging level of the iteration table. Davidson iterations are *micro*-iterations, so
         the default is DEBUG; a standalone CASCI driver may raise it to INFO.
+    generic : bool, optional
+        Whether the :data:`N_GENERIC_GUESS` generic starting vectors are added. ``None`` (the
+        default) adds them on a **cold** start only — bitwise the behaviour every existing
+        caller has. ``True`` adds them in front of a supplied ``guess`` as well, which a
+        warm start carrying *fewer* vectors than ``n_roots`` needs (the energy-window ladder:
+        the new roots would otherwise be seeded from the biased padding alone). ``False``
+        never adds them, so a test can reproduce the biased behaviour the vectors exist to
+        remove.
 
     Returns
     -------
@@ -488,7 +514,8 @@ def davidson(apply_h: Callable[[np.ndarray], np.ndarray], diagonal: np.ndarray,
     res.owned_by(space, alloc)
     space_conj = np.zeros((cap, ndet), dtype=np.complex128)
     images = np.zeros((cap, ndet), dtype=np.complex128)
-    size = _initial_subspace(diagonal, n_roots, n_guess, guess, space, space_conj)
+    size = _initial_subspace(diagonal, n_roots, n_guess, guess, space, space_conj,
+                             generic=generic)
     n_apply = 0
     with timer("Davidson: initial sigma vectors"):
         images[:size] = apply_rows(space[:size])
@@ -926,7 +953,8 @@ def _self_dual_matrix(a_block: np.ndarray, b_block: np.ndarray) -> np.ndarray:
 
 def _initial_subspace_kramers(diagonal: np.ndarray, n_pairs: int, n_guess: int,
                               guess: Optional[np.ndarray], space: np.ndarray,
-                              space_conj: np.ndarray, time_reverse) -> int:
+                              space_conj: np.ndarray, time_reverse,
+                              generic: Optional[bool] = None) -> int:
     """:func:`_initial_subspace` against a self-dual basis; returns the pair count accepted.
 
     ⚠ :data:`N_GENERIC_GUESS`'s argument survives unchanged and is if anything sharper here:
@@ -934,7 +962,8 @@ def _initial_subspace_kramers(diagonal: np.ndarray, n_pairs: int, n_guess: int,
     not the only symmetry a CI Hamiltonian can have. The unit vectors below are still the
     biased fallback they always were — what the Kramers structure removes is one *particular*
     way of missing a sector (a guess whose partner sector is unreachable), not the general
-    failure. A supplied guess suppresses them for the same reason as in the general path.
+    failure. A supplied guess suppresses them for the same reason as in the general path, and
+    ``generic`` overrides that exactly as in :func:`_initial_subspace`.
 
     A supplied guess may be the **pair-expanded** vectors of a previous solve: a partner
     dissolves against the direction it partners and is dropped, at the cost of one
@@ -953,11 +982,11 @@ def _initial_subspace_kramers(diagonal: np.ndarray, n_pairs: int, n_guess: int,
             space_conj[size] = np.conj(direction)
             size += 1
 
-    if guess is None:
+    if _wants_generic(generic, guess):
         rng = np.random.default_rng(GUESS_SEED)
         for _ in range(min(N_GENERIC_GUESS, target)):
             accept(rng.standard_normal(ndet) + 1j * rng.standard_normal(ndet))
-    else:
+    if guess is not None:
         supplied = np.atleast_2d(np.asarray(guess, dtype=np.complex128))
         if supplied.shape[1] != ndet:
             raise ValueError("guess vectors have length {}, expected {}"
@@ -985,7 +1014,8 @@ def davidson_kramers(apply_h: Callable[[np.ndarray], np.ndarray], kramers,
                      conv_tol: float = DEFAULT_CONV_TOL, max_iter: int = DEFAULT_MAX_ITER,
                      max_subspace: Optional[int] = None, n_guess: Optional[int] = None,
                      dense_max_det: int = DENSE_SOLVE_MAX_DET, label: str = "CI",
-                     level: int = logging.DEBUG) -> DavidsonResult:
+                     level: int = logging.DEBUG,
+                     generic: Optional[bool] = None) -> DavidsonResult:
     """Lowest ``n_pairs`` **Kramers pairs** of a time-reversal-symmetric complex-Hermitian
     matrix, matrix-free.
 
@@ -1015,6 +1045,9 @@ def davidson_kramers(apply_h: Callable[[np.ndarray], np.ndarray], kramers,
         Warm start. May be the **pair-expanded** vectors of a previous solve: each partner
         dissolves against the direction it partners and is dropped, so a caller does not have
         to know which half to hand over.
+    generic : bool, optional
+        As in :func:`davidson`: ``None`` adds the generic vectors on a cold start only,
+        ``True`` also in front of a warm start, ``False`` never.
 
     Returns
     -------
@@ -1061,7 +1094,7 @@ def davidson_kramers(apply_h: Callable[[np.ndarray], np.ndarray], kramers,
     space_conj = np.zeros((cap, ndet), dtype=np.complex128)
     images = np.zeros((cap, ndet), dtype=np.complex128)
     size = _initial_subspace_kramers(diagonal, n_pairs, n_guess, guess, space, space_conj,
-                                     time_reverse)
+                                     time_reverse, generic=generic)
     n_apply = 0
     with timer("Kramers Davidson: initial sigma vectors"):
         for i in range(size):

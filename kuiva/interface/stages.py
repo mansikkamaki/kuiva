@@ -683,6 +683,13 @@ class CASSCF(_Stage):
         if solver not in ("ci", "dmrg"):
             raise ValueError("solver must be 'ci' or 'dmrg'; got {!r}".format(solver))
         self.solver_kind = solver
+        from ..util.window import is_window_request
+        if is_window_request(n_states):
+            raise NotImplementedError(
+                "a CASSCF driven by an energy window is not implemented yet: the count is "
+                "resolved between rounds of the orbital optimization and that round loop does "
+                "not exist yet. kuiva.CASCI takes n_states=kuiva.EnergyWindow(...) as it "
+                "stands; for the CASSCF state a count for now")
         #: ``n_states`` is either a count or, with point-group labels present, a per-irrep
         #: mapping ``{irrep: n}``. The two are forms of one argument; the mapping's total is
         #: what :attr:`n_states` reports so every consumer of the count still works.
@@ -1391,11 +1398,17 @@ class CASCI(_Stage):
       Elsewhere the chain already answers "which orbitals", and two answers to that is how
       a state set and an orbital set stop matching.
 
-    ``n_states`` is a count, or a per-irrep mapping ``{irrep: n}`` wherever :class:`CASSCF`
-    accepts one. ``solver_options`` are :class:`~kuiva.mcscf.casci.FullCISolver`'s —
-    ``kramers="restricted"``, ``conv_tol``, ``enforce_kramers``, ``degeneracy_tol``, ... —
-    and ``classify=False`` switches off the full-double-group labelling of the converged
-    blocks.
+    ``n_states`` is a count, a per-irrep mapping ``{irrep: n}`` wherever :class:`CASSCF`
+    accepts one, or an **energy window** — ``n_states=kuiva.EnergyWindow(1000)`` selects
+    every state within 1000 cm^-1 of the lowest, extended to the top of any manifold the
+    cutoff falls inside (:class:`~kuiva.util.window.EnergyWindow`; ``{irrep: EnergyWindow}``
+    with fixed counts beside it is its per-irrep form). With a window :attr:`n_states` is
+    ``None`` until :meth:`run` and the resolved count after it, and :attr:`window` carries
+    the :class:`~kuiva.util.window.WindowResolution` — the rungs it took, the witness gap
+    and the edge. ``weights=`` is refused with a window. ``solver_options`` are
+    :class:`~kuiva.mcscf.casci.FullCISolver`'s — ``kramers="restricted"``, ``conv_tol``,
+    ``enforce_kramers``, ``degeneracy_tol``, ... — and ``classify=False`` switches off the
+    full-double-group labelling of the converged blocks.
 
     ⚠ **The state-averaging gate applies here exactly as it does to a CASSCF**: the weights
     are equalized inside a degenerate block and a count that splits one is refused. What
@@ -1436,9 +1449,27 @@ class CASCI(_Stage):
         #: that a consumer of either stage asks one question. A fixed-orbital CI is the
         #: conventional-CI route by construction.
         self.solver_kind = "ci"
-        self.state_request = dict(n_states) if isinstance(n_states, dict) else None
-        self.n_states = (sum(int(v) for v in n_states.values())
-                         if self.state_request is not None else int(n_states))
+        from ..util.window import EnergyWindow, is_window_request, shared_window
+        #: The energy window the count is resolved from, or ``None`` for a stated count.
+        self.window_request: Optional[EnergyWindow] = None
+        #: The :class:`~kuiva.util.window.WindowResolution` after :meth:`run`; ``None``
+        #: before it and for a stated count.
+        self.window = None
+        self._n_states_arg = n_states
+        if is_window_request(n_states):
+            if weights is not None:
+                raise ValueError("weights= cannot be combined with an energy window: a "
+                                 "window's weights are equal by construction and the "
+                                 "state-averaging gate equalizes them inside degenerate "
+                                 "blocks. Drop weights=, or state a count")
+            self.window_request = (n_states if isinstance(n_states, EnergyWindow)
+                                   else shared_window(n_states))
+            self.state_request = dict(n_states) if isinstance(n_states, dict) else None
+            self.n_states: Optional[int] = None
+        else:
+            self.state_request = dict(n_states) if isinstance(n_states, dict) else None
+            self.n_states = (sum(int(v) for v in n_states.values())
+                             if self.state_request is not None else int(n_states))
         self.weights = weights
         self.classify, self.report = bool(classify), bool(report)
         self.solver_options = dict(solver_options or {})
@@ -1518,9 +1549,7 @@ class CASCI(_Stage):
         if self.avas is not None and self.report:
             self.avas.report(log)
         self.result = _api_casci(
-            self.reference_stage.reference, active=self.space,
-            n_states=(self.state_request if self.state_request is not None
-                      else self.n_states),
+            self.reference_stage.reference, active=self.space, n_states=self._n_states_arg,
             weights=self.weights, coeff=self._orbitals, report=self.report,
             classify=self.classify, **self.solver_options)
         #: The same object under the two names the rest of the layer knows it by: `ci` is
@@ -1529,6 +1558,11 @@ class CASCI(_Stage):
         self.active = self.space
         self.solver = self.result.solver
         self._energies = np.asarray(self.result.total_energies, dtype=float)
+        # A window resolves to a count at run time; the stage then reports that count exactly
+        # as a stated one, so every consumer of `n_states` reads a number.
+        self.window = self.result.window
+        if self.window_request is not None:
+            self.n_states = int(self._energies.size)
 
     # -- results ------------------------------------------------------------------------------
 
@@ -1576,7 +1610,7 @@ class CASCI(_Stage):
             orbitals = "given as coeff="
         else:
             orbitals = "the reference's guess spinors"
-        return [
+        rows = [
             ("active space", "CAS({}, {})  {}".format(self.active.n_elec,
                                                       self.active.n_active,
                                                       self.active.description)),
@@ -1584,9 +1618,17 @@ class CASCI(_Stage):
             ("<E> [Eh]", out.E_FMT.format(self.energy)),
             ("E(state 0) [Eh]", out.E_FMT.format(float(self._energies[0]))),
             ("states", str(self._energies.size)),
+        ]
+        if self.window is not None:
+            gap = self.window.boundary_gap_cm
+            rows.append(("state window", "{}; {} rung(s), witness gap {}".format(
+                self.window.window.describe(), len(self.window.rungs),
+                "none (whole space)" if gap is None else "{:.2f} cm^-1".format(gap))))
+        rows += [
             ("determinants", str(self.solver.ndet)),
             ("applications of H", str(self.result.n_apply)),
         ]
+        return rows
 
 
 # --- 6. SC-NEVPT2 ---------------------------------------------------------------------------

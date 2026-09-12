@@ -696,9 +696,16 @@ def state_average_key(solver) -> Optional[str]:
     requested = getattr(solver, "requested_states", None)
     request = ""
     if isinstance(requested, dict):
-        request = ";request={}".format(json.dumps({str(k): int(v)
+        # A per-irrep request may hold an energy window beside fixed counts; the window is
+        # rendered by its own stable JSON so the request stays one string.
+        def _render(v):
+            return v.to_json() if hasattr(v, "to_json") else int(v)
+        request = ";request={}".format(json.dumps({str(k): _render(v)
                                                    for k, v in requested.items()},
                                                   sort_keys=True))
+    window = getattr(solver, "window", None)
+    if window is not None and hasattr(window, "to_json"):
+        request += ";window={}".format(window.to_json())
     return "n_states={}{};weights={}".format(int(n_states), request, rendered)
 
 
@@ -718,7 +725,13 @@ def parse_state_average_key(key: Optional[str]):
         name, _, value = chunk.partition("=")
         fields[name.strip()] = value.strip()
     if "request" in fields:
-        n_states: Any = {str(k): int(v) for k, v in json.loads(fields["request"]).items()}
+        # A per-irrep request that held an energy window records the window's JSON where a
+        # count would be; the count that request resolved to is the `n_states` field.
+        parsed = json.loads(fields["request"])
+        if all(isinstance(v, int) for v in parsed.values()):
+            n_states: Any = {str(k): int(v) for k, v in parsed.items()}
+        else:
+            n_states = int(fields["n_states"])
     elif "n_states" in fields:
         n_states = int(fields["n_states"])
     else:

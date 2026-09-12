@@ -23,7 +23,7 @@ the module drivers) is public and unchanged; ``README.md`` is the manual.
 #: ``[tool.setuptools.dynamic]``, the run banner prints it, every stored product records it,
 #: and the documents quoting it are held in step by test. Keep it a plain literal: setuptools parses this file
 #: statically and a computed version would not be readable without importing the package.
-__version__ = "0.45.1"
+__version__ = "0.46.0"
 
 #: The class API (kuiva/interface/stages.py) and the Molecule container, re-exported at the
 #: top level so a user script reads ``kuiva.CASSCF(...)``. Resolved lazily (PEP 562): the
@@ -43,10 +43,17 @@ __version__ = "0.45.1"
 #: part of the same statement a user writes on one line, so requiring a module path for them
 #: would put half of one sentence in the namespace and half outside it. Nothing that can be
 #: used on its own qualifies under this.
+#:
+#: ⚠ **``EnergyWindow`` is the one granted exception to all three arguments (user decision,
+#: 2026-09-11).** It is neither a stage nor a read counterpart nor a ``Molecule`` argument: it
+#: is the third form of ``n_states`` — ``n_states=kuiva.EnergyWindow(1000)`` selects every
+#: state within the cutoff of the lowest one — and a user types it in every windowed input,
+#: on the same line as the stage that takes it. Nothing else joins it on that argument.
 _TOP_LEVEL = {
     "Molecule": "kuiva.interface.api",
     "Environment": "kuiva.interface.environment",
     "CustomBasis": "kuiva.basis.custom",
+    "EnergyWindow": "kuiva.util.window",
     "ScalarSCF": "kuiva.interface.stages",
     "Reference": "kuiva.interface.stages",
     "CheapCI": "kuiva.interface.stages",

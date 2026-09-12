@@ -179,15 +179,15 @@ def rdm_accumulate_numpy(f: np.ndarray, c: np.ndarray, weight: float, block: int
 def degenerate_blocks(energies: Sequence[float],
                       tol: float = DEFAULT_DEGENERACY_TOL) -> List[Tuple[int, int]]:
     """Group ascending ``energies`` into ``(start, stop)`` blocks, split where a gap exceeds
-    ``tol``."""
-    values = np.asarray(energies, dtype=float)
-    if values.size == 0:
-        return []
-    if np.any(np.diff(values) < -tol):
-        raise ValueError("state energies must be given in ascending order")
-    edges = np.nonzero(np.diff(values) > tol)[0] + 1
-    bounds = [0] + edges.tolist() + [values.size]
-    return [(int(a), int(b)) for a, b in zip(bounds[:-1], bounds[1:])]
+    ``tol``.
+
+    One chaining implementation for the project: this is
+    :func:`kuiva.util.window.chain_blocks` at the degeneracy tolerance, and the energy
+    window's manifold rule is the same function at its (much wider) manifold gap — so a
+    window can never split a block this gate would refuse on.
+    """
+    from ..util.window import chain_blocks
+    return chain_blocks(energies, tol)
 
 
 def state_average_weights(energies: Sequence[float], n_elec: int,

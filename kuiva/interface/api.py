@@ -885,7 +885,7 @@ def _check_restart_state_average(resumed, solver, path) -> None:
 
 def casci(reference: SpinorReference, *, active=None, character=None,
           n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
-          n_states: int = 1, weights=None, coeff: Optional[np.ndarray] = None,
+          n_states=1, weights=None, coeff: Optional[np.ndarray] = None,
           report: bool = True, classify: bool = True, **solver_kwargs):
     """A full CI at fixed orbitals over the chosen active space.
 
@@ -894,8 +894,10 @@ def casci(reference: SpinorReference, *, active=None, character=None,
     mixing step (unlike a RASSI-style two-step treatment). See
     :class:`~kuiva.mcscf.casci.CASCIResult`.
 
-    ``coeff`` runs the CASCI on an orbital set other than the reference's guess — converged
-    CASSCF orbitals, or a set read from a checkpoint.
+    ``n_states`` is a count, a per-irrep mapping, or an :class:`~kuiva.util.window.EnergyWindow`
+    (every state within the cutoff of the lowest, resolved at these orbitals — the resolution
+    comes back on the result's ``window``). ``coeff`` runs the CASCI on an orbital set other
+    than the reference's guess — converged CASSCF orbitals, or a set read from a checkpoint.
     """
     from ..mcscf.casci import casci as _casci
 

@@ -365,3 +365,64 @@ def test_the_subspace_reservation_is_refused_when_it_cannot_fit(monkeypatch):
                         res.ResourceLimits(memory_gb=1e-7, source="test"))
     with pytest.raises(res.MemoryLimitError, match="Davidson subspace"):
         davidson(operator, diagonal, 2, dense_max_det=0)
+
+
+# --- the generic keyword: a warm start with fewer vectors than roots -----------------------
+
+def test_the_default_generic_setting_is_bitwise_the_old_behaviour():
+    """``generic=None`` is the historical rule (cold start only), so every existing caller is
+    unchanged bit for bit — asserted on a cold solve and on a warm one."""
+    h, eri = _open_shell_spin_free_integrals(4, seed=6)
+    space = CASSpace(8, 4)
+    operator = SigmaOperator(space, h, eri)
+    diagonal = diagonal_energies(space, h, eri)
+    cold = davidson(operator, diagonal, 5, dense_max_det=0)
+    again = davidson(operator, diagonal, 5, dense_max_det=0, generic=None)
+    assert np.array_equal(cold.energies, again.energies) and cold.n_apply == again.n_apply
+    warm = davidson(operator, diagonal, 5, guess=cold.vectors[:3], dense_max_det=0)
+    warm_again = davidson(operator, diagonal, 5, guess=cold.vectors[:3], dense_max_det=0,
+                          generic=None)
+    assert np.array_equal(warm.energies, warm_again.energies)
+    assert warm.n_apply == warm_again.n_apply
+
+
+def test_generic_true_rescues_a_warm_start_that_is_shorter_than_the_root_count():
+    """⚠ The energy-window ladder's situation: a rung hands over the previous rung's converged
+    vectors and asks for more roots. Those vectors span only the sectors the previous rung
+    reached, and the padding is the biased set — so without the generic vectors the new roots
+    are wrong, and with them they are the lowest. Both halves asserted, on the same system
+    the biased-guess test above uses."""
+    n_spatial, n_elec = 6, 5
+    h, eri = _open_shell_spin_free_integrals(n_spatial, seed=1)
+    space = CASSpace(2 * n_spatial, n_elec)
+    operator = SigmaOperator(space, h, eri)
+    diagonal = diagonal_energies(space, h, eri)
+    exact = np.linalg.eigvalsh(np.asarray(hamiltonian_matrix(space, h, eri).todense()))
+
+    # a "previous rung": the biased, wrong 8-root solve
+    biased_order = np.argsort(diagonal)[:16]
+    biased = np.zeros((16, space.ndet), dtype=np.complex128)
+    biased[np.arange(16), biased_order] = 1.0
+    previous = davidson(operator, diagonal, 8, guess=biased, dense_max_det=0)
+    assert not np.allclose(previous.energies, exact[:8], atol=1e-8)
+
+    blind = davidson(operator, diagonal, 16, guess=previous.vectors, dense_max_det=0)
+    rescued = davidson(operator, diagonal, 16, guess=previous.vectors, dense_max_det=0,
+                       generic=True)
+    assert np.allclose(rescued.energies, exact[:16], atol=1e-8)
+    assert not np.allclose(blind.energies, exact[:16], atol=1e-8), \
+        "this system no longer exercises the failure; pick another seed"
+
+
+def test_generic_false_reproduces_the_biased_cold_start():
+    """The switch that lets a test reproduce the failure it guards against: a cold solve with
+    ``generic=False`` is the pre-fix solver and gets the trap system wrong."""
+    n_spatial, n_elec, n_roots = 6, 5, 8
+    h, eri = _open_shell_spin_free_integrals(n_spatial, seed=1)
+    space = CASSpace(2 * n_spatial, n_elec)
+    operator = SigmaOperator(space, h, eri)
+    diagonal = diagonal_energies(space, h, eri)
+    exact = np.linalg.eigvalsh(np.asarray(hamiltonian_matrix(space, h, eri).todense()))
+    blind = davidson(operator, diagonal, n_roots, dense_max_det=0, generic=False)
+    assert not np.allclose(blind.energies, exact[:n_roots], atol=1e-8)
+    assert blind.energies[-1] > exact[n_roots - 1] + 1e-6
