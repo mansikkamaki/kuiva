@@ -232,6 +232,71 @@ def test_the_double_shell_request_projects_onto_two_shells(water):
     assert "2 shell(s)" in two.reference
 
 
+# --- the count-stated mode ------------------------------------------------------------------
+
+def test_the_count_mode_reproduces_the_threshold_modes_selection(water):
+    """⚠ The two rules must agree wherever they are both right, or they are two definitions
+    of the shell rather than two ways of stating one.
+
+    Water's O 2p projections are 0.995, 0.941, 0.878 and then 0.122, so "everything above
+    0.2" and "the three of largest projection" are the same three pairs -- and the rotated
+    orbitals must come out bitwise identical, because the rotation happens before either
+    rule is applied.
+    """
+    by_threshold = run_avas(water, atom="O", l="p", threshold=0.2)
+    by_count = run_avas(water, atom="O", l="p", n_pairs=3)
+    assert list(by_count.selected) == list(by_threshold.selected)
+    assert by_count.gap == by_threshold.gap
+    assert np.array_equal(by_count.coeff, by_threshold.coeff)
+    assert list(by_count.space.spaces.active) == list(by_threshold.space.spaces.active)
+
+
+def test_the_count_mode_records_which_rule_chose_the_space(water):
+    """⚠ A stored product has to say how its active space was chosen: "seven pairs because
+    that is the shell" and "seven pairs because they cleared 0.2" are different statements
+    and only one of them is reproducible in another basis."""
+    by_count = run_avas(water, atom="O", l="p", n_pairs=3)
+    assert (by_count.mode, by_count.cut) == ("count", 3.0)
+    assert "count stated" in by_count.space.description
+    by_threshold = run_avas(water, atom="O", l="p", threshold=0.2)
+    assert (by_threshold.mode, by_threshold.cut) == ("threshold", 0.2)
+    assert "threshold" in by_threshold.space.description
+
+
+def test_a_count_and_a_threshold_together_are_refused(water):
+    """Two statements of what the active space *is*; a run that silently preferred one would
+    not be reproducible from its description."""
+    with pytest.raises(ValueError, match="not both"):
+        run_avas(water, atom="O", l="p", threshold=0.2, n_pairs=3)
+    with pytest.raises(ValueError, match="max_pairs"):
+        run_avas(water, atom="O", l="p", n_pairs=3, max_pairs=5)
+
+
+def test_a_count_larger_than_the_orbital_set_is_refused(water):
+    with pytest.raises(ValueError, match="more Kramers pairs than"):
+        run_avas(water, atom="O", l="p", n_pairs=999)
+    with pytest.raises(ValueError, match="must be positive"):
+        run_avas(water, atom="O", l="p", n_pairs=0)
+
+
+def test_the_projection_without_a_space_is_the_same_projection(water):
+    """``avas_projection`` exists for the caller that must own the electron count -- a shell
+    empty in the reference has no aufbau one. It may differ from ``avas`` in nothing else."""
+    from kuiva.mcscf.avas import avas_projection
+
+    r = water.reference
+    projection = avas_projection(r.spinors_in_ao(), r.data.s_ao, r.ao_layout,
+                                 r.data.atomic_reference, atom="O", l="p",
+                                 occupation=r.spinors.occ, n_pairs=3)
+    full = run_avas(water, atom="O", l="p", n_pairs=3)
+    assert projection.space is None and full.space is not None
+    assert np.array_equal(projection.coeff, full.coeff)
+    assert np.array_equal(projection.eigenvalues, full.eigenvalues)
+    assert list(projection.selected) == list(full.selected)
+    assert projection.reference_statement == full.space.description
+    projection.report()                     # must not need a space to report itself
+
+
 # --- the stage surface ----------------------------------------------------------------------
 
 def test_the_stage_refuses_avas_together_with_another_selection(water):

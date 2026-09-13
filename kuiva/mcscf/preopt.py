@@ -831,6 +831,34 @@ class PreoptResult:
         return fiedler_order(self.mutual_information)
 
 
+def repair_kramers_pairing(coeff_ao: np.ndarray, x_orth: np.ndarray, s_ao: np.ndarray,
+                           spaces: OrbitalSpaces) -> Tuple[np.ndarray, float]:
+    """Restore exact Kramers pairing on pre-optimized orbitals; ``(coeff_ao, deviation)``.
+
+    ⚠ **The repair :func:`preoptimize`'s own docstring says a consumer must perform, in one
+    place so that there is one of it.** A truncated CI in a truncated determinant space is not
+    closed under time reversal, so the orbitals it optimizes drift off the pairing convention
+    -- legitimately, it is a *cheap* stage -- while every consumer of them assumes that
+    convention exactly: the state-averaging gate, an active space stated as a contiguous
+    spinor range, and the AVAS fold of a later selection.
+
+    The repair happens in the **orthonormal working basis**, where "nearest paired set" is a
+    unitary question, and is applied **per orbital space** so no pair crosses a space
+    boundary. ``deviation`` is the worst partner deviation *before* the repair -- the number a
+    caller logs to say how far the cheap stage had drifted.
+    """
+    from ..spinor.expand import nearest_kramers_paired, spin_block_diagonal, time_reverse
+
+    x2 = spin_block_diagonal(np.asarray(x_orth))
+    c_work = x2.conj().T @ spin_block_diagonal(np.asarray(s_ao)) @ np.asarray(coeff_ao)
+    deviation = float(np.max(np.abs(
+        1.0 - np.abs(np.sum(np.conj(c_work[:, 1::2]) * time_reverse(c_work[:, ::2]),
+                            axis=0)))))
+    c_work = nearest_kramers_paired(c_work,
+                                    (spaces.inactive, spaces.active, spaces.virtual))
+    return np.ascontiguousarray(x2 @ c_work), deviation
+
+
 #: How the determinant space is allowed to move during the orbital optimization. One axis,
 #: three values, because "who owns the space" is a single question:
 #:
@@ -1019,7 +1047,7 @@ def preoptimize(factors: ThreeIndexAO, h_ao: np.ndarray, c_spinor: np.ndarray,
 
 
 __all__ = ["CheapCIResult", "CheapCISolver", "PreoptResult", "SpaceSpectrumOracle",
-           "cheap_ci", "preoptimize",
+           "cheap_ci", "preoptimize", "repair_kramers_pairing",
            "reference_determinants", "solve_fixed_space", "dense_hamiltonian_gb",
            "SPACE_POLICIES",
            "DEFAULT_MAX_DETERMINANTS", "DEFAULT_MAX_REFERENCE", "DEFAULT_OCCUPATION_WINDOW",

@@ -291,6 +291,8 @@ data, under `tests/`, not here.
 
 <a id="r114"></a>**[114]** K. Boguslawski, P. Tecmer, *Int. J. Quantum Chem.* **115**, 1289 (2015). DOI: [10.1002/qua.24832](https://doi.org/10.1002/qua.24832) — review of entanglement measures and conventions.
 
+<a id="r198"></a>**[198]** C. J. Stein, M. Reiher, *Chimia* **71**, 170 (2017). DOI: [10.2533/chimia.2017.170](https://doi.org/10.2533/chimia.2017.170) — the automated-selection protocol and its threshold conventions. ⚠ Kuiva uses the relative single-orbital-entropy criterion to **prune** the candidates of one feature class and never to decide whether the class stays: an entanglement measure is blind to a correlating shell and ranks a low-dimensional bridge below every metal orbital in absolute terms, so what decides a class here is the probe's own state spectrum.
+
 ## Fragment localization
 
 <a id="r115"></a>**[115]** D. Claudino, N. J. Mayhall, *J. Chem. Theory Comput.* **15**, 1053–1064 (2019). DOI: [10.1021/acs.jctc.8b01112](https://doi.org/10.1021/acs.jctc.8b01112) — SPADE: orbital partition by singular value decomposition. Published for one fragment and its environment; Kuiva applies it **sequentially** so that several sites partition one active space.
@@ -428,6 +430,12 @@ data, under `tests/`, not here.
 <a id="r177"></a>**[177]** G. Schaftenaar, E. Vlieg, G. Vriend, *J. Comput.-Aided Mol. Design* **31**, 789 (2017). DOI: [10.1007/s10822-017-0042-5](https://doi.org/10.1007/s10822-017-0042-5) — molden 2.0: AO ordering and normalization conventions.
 
 <a id="r178"></a>**[178]** H. B. Schlegel, M. J. Frisch, *Int. J. Quantum Chem.* **54**, 83 (1995). DOI: [10.1002/qua.560540202](https://doi.org/10.1002/qua.560540202) — real solid-harmonic Gaussian conventions.
+
+## Automatic active-space selection
+
+<a id="r199"></a>**[199]** F. Hund, *Z. Phys.* **33**, 345 (1925). DOI: [10.1007/BF01328319](https://doi.org/10.1007/BF01328319) — Hund's rules: maximum `S`, then maximum `L`, and `J = |L - S|` below half filling / `L + S` above it. The ground-manifold dimension an automatically proposed state count may not fall below is read from them.
+
+<a id="r200"></a>**[200]** B. Cordero, V. Gómez, A. E. Platero-Prats, M. Revés, J. Echeverría, E. Cremades, F. Barragán, S. Alvarez, *Dalton Trans.* 2832 (2008). DOI: [10.1039/b801115j](https://doi.org/10.1039/b801115j) — covalent radii, used for one purpose only: deciding which atoms *touch* both metal centres when the bridging atoms of a superexchange target are not named. The table stops at Cm and an element beyond it is refused rather than given a guessed radius.
 
 ## Multiplets, magnetic moments, and pseudospin
 

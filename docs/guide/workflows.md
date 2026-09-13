@@ -103,6 +103,24 @@ populations are pooled — the right form for equivalent centres whose canonical
 delocalize. There is no default active space: it is a physical statement. Three harder cases
 follow.
 
+**Or let the program state it.** [`AutoCAS`](../reference/stages/AutoCAS.md) turns the same
+kinds of statement — "the valence shells of the open d/f centres", "the bridge between these
+two", "this shell's bonding partners" — into orbitals, decides each feature class by probing
+the cheap CI, and proposes a state count with it:
+
+```python
+scf  = kuiva.ScalarSCF(molecule, atomic_reference=True).run()   # required by AutoCAS
+ref  = kuiva.Reference(scf).run()
+auto = kuiva.AutoCAS(ref).run()                                 # the detected d/f shells
+cas  = kuiva.CASSCF(auto).run()                                 # space, orbitals AND count
+```
+
+It prints every keep and drop with the number it was decided on, and what it hands over is
+the same kind of object the forms below produce — a stated space and a stated count — so
+nothing downstream changes. ⚠ The count it proposes is read off a *qualitative* probe, so
+what makes it a state count is still the state-average machinery described at the top of this
+page.
+
 ### Two shells in one active space
 
 The union form takes a list of fragments, each `(atom, l, n_spinors)` in whole Kramers

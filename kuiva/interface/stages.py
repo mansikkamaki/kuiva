@@ -64,13 +64,14 @@ from ..util.logging import get_logger
 from .pyscf_bridge import ScalarX2CData, validate_scf_controls
 from ..util.signals import raise_if_pending, stop_context
 from .api import (Molecule, SpinorReference as _SpinorData, active_space_for,
+                  localize_active_space,
                   project_to_basis as _project_to_basis, projected_active_space,
                   property_matrices as _property_matrices, scalar_x2c_reference,
                   spinor_reference)
 
 log = get_logger(__name__)
 
-__all__ = ["ScalarSCF", "Reference", "CheapCI", "CASSCF", "CASCI", "NEVPT2",
+__all__ = ["ScalarSCF", "Reference", "AutoCAS", "CheapCI", "CASSCF", "CASCI", "NEVPT2",
            "PropertyDump", "PseudospinExport"]
 
 
@@ -427,14 +428,24 @@ class CheapCI(_Stage):
     _EXCLUDE = ("factors", "h_ao", "c_spinor", "spaces", "n_active_elec", "e_nuc",
                 "h_eff", "eri", "n_elec")
 
-    def __init__(self, reference: Reference, *, active=None, character=None,
+    def __init__(self, reference, *, active=None, character=None,
                  n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
                  threshold: Optional[float] = None, avas=None, n_states=1,
                  **options) -> None:
         super().__init__()
         from ..mcscf.preopt import cheap_ci, preoptimize
         from ..util.window import EnergyWindow, is_window_request
-        self.reference_stage = self._finished(reference, Reference, "CheapCI")
+        self._finished(reference, (Reference, AutoCAS), "CheapCI")
+        self.upstream = reference
+        self.reference_stage = (reference if isinstance(reference, Reference)
+                                else reference.reference_stage)
+        if isinstance(reference, AutoCAS) and character is not None:
+            raise ValueError(
+                "character= selects against the orbitals the reference's own SCF produced, "
+                "and this cheap CI starts from the AutoCAS's instead: the AVAS projection "
+                "rotated them, so the selection could legitimately return a different set. "
+                "The space is inherited from the AutoCAS (leave it out), or stated as "
+                "active=[spinor indices]")
         _check_options(options, _allowed_options(preoptimize, cheap_ci,
                                                  exclude=self._EXCLUDE + ("n_states",)),
                        "CheapCI")
@@ -454,18 +465,25 @@ class CheapCI(_Stage):
             if n_active_elec is not None:
                 avas = dict(avas, n_active_elec=n_active_elec)
             self.avas, self._orbitals = _resolve_avas(
-                reference, reference, avas, active=active, character=character,
+                self.reference_stage, reference, avas, active=active, character=character,
                 n_active=n_active, threshold=threshold, what="CheapCI")
             self.space = self.avas.space
+        elif isinstance(reference, AutoCAS) and active is None:
+            # The space and the orbitals travel together, exactly as they do from a CheapCI
+            # into a CASSCF: what the upstream selected is a statement about the orbitals it
+            # is handing over.
+            self.space, self._orbitals = reference.space, reference.orbitals
         else:
-            self.space = _resolve_space(reference, active=active, character=character,
-                                        n_active=n_active, n_active_elec=n_active_elec,
-                                        threshold=threshold, what="CheapCI")
+            self.space = _resolve_space(self.reference_stage, active=active,
+                                        character=character, n_active=n_active,
+                                        n_active_elec=n_active_elec, threshold=threshold,
+                                        what="CheapCI")
+            if isinstance(reference, AutoCAS):
+                self._orbitals = reference.orbitals
         self.options = dict(options)
 
     def _execute(self) -> None:
-        from ..mcscf.preopt import preoptimize
-        from ..spinor.expand import nearest_kramers_paired, spin_block_diagonal, time_reverse
+        from ..mcscf.preopt import preoptimize, repair_kramers_pairing
         ref = self.reference_stage.reference
         start = self._orbitals if self._orbitals is not None else ref.spinors_in_ao()
         if self.avas is not None:
@@ -478,18 +496,12 @@ class CheapCI(_Stage):
         # The cheap CI's truncated determinant space is not closed under time reversal, so
         # the orbitals it optimizes drift off pairing — legitimately, it is a *cheap* stage —
         # while every consumer of this stage (the state-averaging gate, a contiguous-pair
-        # active space) assumes the pairing convention exactly.
-        x2 = spin_block_diagonal(ref.orth.x)
-        c_work = x2.conj().T @ spin_block_diagonal(ref.data.s_ao) @ self.result.coeff
-        deviation = float(np.max(np.abs(
-            1.0 - np.abs(np.sum(np.conj(c_work[:, 1::2]) * time_reverse(c_work[:, ::2]),
-                                axis=0)))))
-        spaces = self.space.spaces
-        c_work = nearest_kramers_paired(c_work,
-                                        (spaces.inactive, spaces.active, spaces.virtual))
+        # active space) assumes the pairing convention exactly. One implementation, in
+        # kuiva.mcscf.preopt beside the warning that says a consumer must do it.
+        self.orbitals, deviation = repair_kramers_pairing(
+            self.result.coeff, ref.orth.x, ref.data.s_ao, self.space.spaces)
         log.debug("Kramers pairing restored on the pre-optimized orbitals (worst partner "
                   "deviation before repair: %.2e)", deviation)
-        self.orbitals = np.ascontiguousarray(x2 @ c_work)
         self.occupations = self.result.orbital_occupation
         self.natural_occupation = self.result.natural_occupation
         self.entropy = self.result.entropy
@@ -529,7 +541,275 @@ class CheapCI(_Stage):
         return entries
 
 
-# --- 4. the CASSCF ---------------------------------------------------------------------------
+
+class _Unstated:
+    """The value of ``n_states`` when the caller did not state one.
+
+    ⚠ It exists so that "unstated" and "one state" stay different things. The proposal of an
+    :class:`AutoCAS` upstream is taken **only** where nothing was said -- an explicit
+    ``n_states=1`` is a request for one state and stays one -- and a plain default of ``1``
+    could not tell the two apart.
+    """
+
+    def __repr__(self) -> str:                              # pragma: no cover - debugging
+        return "<unstated>"
+
+
+_UNSTATED = _Unstated()
+
+
+def _states_from_upstream(upstream, n_states, *, what: str):
+    """``(n_states, source)``: the proposal of an :class:`AutoCAS` upstream, or the default.
+
+    ⚠ **This is the one place a stage default changes on its upstream's account, and it is
+    announced** in the stage's own output. The count is taken where the proposal has one; a
+    proposal whose boundary lies above the cap has *no* count -- proposing a capped one would
+    be proposing a cut inside a manifold -- so there the window is taken instead, which
+    refuses rather than rounds.
+    """
+    if n_states is not _UNSTATED:
+        return n_states, ""
+    if not isinstance(upstream, AutoCAS):
+        return 1, ""
+    if upstream.n_states is not None:
+        return upstream.n_states, "proposed by AutoCAS"
+    return upstream.window, ("proposed by AutoCAS as a window: its manifold boundary is "
+                             "above the state cap, so there is no count to propose")
+
+
+# --- 4. the automatic active space -----------------------------------------------------------
+
+class AutoCAS(_Stage):
+    """Choose the active space automatically from **stated targets**, and propose a count.
+
+    A stage between :class:`Reference` and the production one
+    (:class:`CASSCF` / :class:`CASCI` / :class:`CheapCI`), which accept it wherever they
+    accept a :class:`CheapCI`. It assembles an active space from *physical statements* of what
+    the calculation has to describe, decides each feature class by probing the cheap CI, and
+    hands on what a :class:`CheapCI` hands on -- orbitals, a stated space, a spectrum and an
+    ordering -- plus a proposed number of states::
+
+        auto = kuiva.AutoCAS(ref).run()                       # the detected d/f shells
+        cas  = kuiva.CASSCF(auto).run()                        # space, orbitals and count
+
+    ``targets`` is one statement or a list of them; ``None`` means "the valence shell of every
+    open d/f centre the reference shows", which is the level-0 default::
+
+        "shells"                                  every detected centre's valence shell
+        ("shell", "Dy")                           that element's centres
+        ("shell", ("Ti1", "Ti2"), "d")            these atoms, this shell
+        ("frontier", ("N1", "N2"))                a radical fragment's singly occupied pairs
+        ("frontier", ("N1", "N2"), 1, 1)          ... plus one occupied and one empty pair
+        ("bridge", ("Dy1", "Dy2"))                ligand orbitals between the two sites
+        ("bridge", ("Dy1", "Dy2"), ("O5",), 2)    ... on named atoms, at most two pairs
+        ("bonding", "Fe")                         the shell's metal-ligand bonding partners
+        ("double", "Ce")                          the correlating shell
+
+    Atoms are addressed as everywhere else (an element symbol, a label ``"Dy2"``, a 1-based
+    atom number, or a sequence of those for a fragment), and an element symbol **pools** every
+    atom of that element.
+
+    How a class is decided
+    ----------------------
+    ⚠ **The cheap CI probes, the spectrum decides, and entropy only prunes.** The shells are
+    the core; each further class is offered in a fixed priority order, its candidates pruned
+    by relative single-orbital entropy, and the class kept only if the probe's *target
+    manifold* -- the ground manifold's relative energies and the gap above it -- moved by more
+    than ``max(spectrum_tol x the manifold width, spectrum_tol_cm)``. A change under the
+    tolerance but above the probe's measured noise floor is **"inconclusive, kept"**: a larger
+    space is the safe error, and the budget is what bounds it. Every verdict is printed with
+    the number it was taken on.
+
+    ⚠ **A target shell is never pruned and never cut.** Its empty members *are* the
+    ligand-field spectrum, and a shell with pairs missing is a different physical statement
+    wearing the shell's name -- so over budget whole classes are dropped, lowest priority
+    first, and the core alone over budget **refuses** with the two ways out named.
+
+    ⚠ **The proposal is a proposal.** The count is read off a qualitative probe as the first
+    manifold boundary at or above the Hund ground-manifold floor; what makes it a state count
+    is the production stage's own machinery -- the state-averaging gate, the boundary
+    diagnostic at both ends, the window's ladder. :attr:`window` is the equivalent
+    :class:`~kuiva.util.window.EnergyWindow`, whose cutoff sits in the middle of the gap the
+    count was read at, so a production ladder re-resolves the same boundary against its own
+    spectrum.
+
+    Requirements and limits
+    -----------------------
+    ⚠ Needs ``atomic_reference=True`` on the :class:`ScalarSCF` (every shell is an AVAS
+    projection onto the free-atom orbitals) and a restricted or ROHF reference; both are
+    refused at construction, naming the knob. ⚠ Its space carries **no symmetry labels**, as
+    any AVAS space does -- the labels belong to the guess spinors and the projection has
+    rotated them -- so a per-irrep ``n_states`` is unavailable downstream. ⚠ Shells of two
+    different ``l`` (a heteronuclear 3d/4f pair) are refused rather than composed: a second
+    AVAS projector re-mixes the pairs the first one selected.
+
+    ``max_spinors`` / ``max_determinants`` bound the size; unstated, the budget is resolved
+    from the configured memory limit at the floor root count for ``solver="ci"`` and is a
+    provisional default for ``solver="dmrg"``. ``require=`` and ``exclude=`` pin or ban
+    orbitals by a character statement -- ``("character", atom, l, n_spinors[, skip_pairs])``
+    -- for what the probe cannot see.
+
+    ⚠ **This is several pre-optimizations and the cost is printed per round.** One probe per
+    round, plus one for every prune that removed something.
+
+    After :meth:`run`: :attr:`space`, :attr:`orbitals`, :attr:`n_states`, :attr:`window`,
+    :attr:`floor`, :attr:`product_floor`, :attr:`spectrum_cm`, :attr:`rounds`,
+    :attr:`mutual_information`, :attr:`entropy`, :attr:`occupations`, :attr:`sites`,
+    :attr:`assembly` (the whole :class:`~kuiva.autocas.protocol.Assembly`), :attr:`result`
+    (the final :class:`~kuiva.mcscf.preopt.PreoptResult`), :meth:`dmrg_ordering`,
+    :meth:`fiedler_ordering`.
+    """
+
+    def __init__(self, reference: Reference, targets=None, *, solver: str = "ci",
+                 max_spinors: Optional[int] = None,
+                 max_determinants: Optional[int] = None,
+                 max_states: Optional[int] = None,
+                 spectrum_tol: Optional[float] = None,
+                 spectrum_tol_cm: Optional[float] = None,
+                 probe_noise_cm: Optional[float] = None,
+                 prune_rel: Optional[float] = None,
+                 manifold_gap_cm: Optional[float] = None,
+                 require=(), exclude=(), probe: Optional[Dict[str, Any]] = None,
+                 localize: bool = True, report: bool = True) -> None:
+        super().__init__()
+        from ..autocas import centres as _centres
+        from ..autocas import protocol as _protocol
+        from ..autocas.probe import ProbeBudget
+        from ..autocas.targets import parse_targets
+
+        self.reference_stage = self._finished(reference, Reference, "AutoCAS")
+        # Eager, and in this order: the two prerequisites of the method, then the statement
+        # itself. A misspelled target must fail here and not after the first probe.
+        _centres.check_reference(reference.reference)
+        self.targets = parse_targets(targets)
+        if solver not in ("ci", "dmrg"):
+            raise ValueError("solver must be 'ci' or 'dmrg'; got {!r}".format(solver))
+        self.solver_kind = solver
+        _check_options(dict(probe or {}),
+                       _allowed_options(ProbeBudget.__init__, exclude=("self",)),
+                       "AutoCAS probe")
+        self.probe_budget = ProbeBudget(**dict(probe or {}))
+        self.localize = bool(localize)
+        self.report = bool(report)
+        #: Everything that is not a target, forwarded to
+        #: :func:`kuiva.autocas.protocol.assemble` with the module's own defaults where
+        #: nothing was stated -- so the defaults live in one place and this stage never
+        #: restates a number.
+        self.options = {name: value for name, value in (
+            ("solver", solver), ("max_spinors", max_spinors),
+            ("max_determinants", max_determinants), ("max_states", max_states),
+            ("spectrum_tol", spectrum_tol), ("spectrum_tol_cm", spectrum_tol_cm),
+            ("probe_noise_cm", probe_noise_cm), ("prune_rel", prune_rel),
+            ("manifold_gap_cm", manifold_gap_cm)) if value is not None}
+        self.options["require"] = tuple(require)
+        self.options["exclude"] = tuple(exclude)
+        # A stated size is validated now, against nothing expensive: two statements of one
+        # size, or a determinant bound on a route that has no determinants.
+        _protocol.resolve_budget(solver=solver, n_elec=2, n_roots=2, max_spinors=max_spinors,
+                                 max_determinants=max_determinants, available_gb=1.0e9)
+
+    def _execute(self) -> None:
+        from ..autocas.protocol import assemble
+
+        reference = self.reference_stage.reference
+        self.assembly = assemble(reference, self.targets, probe_budget=self.probe_budget,
+                                 report=self.report, **self.options)
+        #: The assembled :class:`~kuiva.mcscf.casci.ActiveSpace`; its description is the
+        #: physical statement, never an index list.
+        self.space = self.assembly.space
+        #: ``(2*nao, n)`` AO-basis spinors the space's columns index -- the final probe's
+        #: pre-optimized, Kramers-repaired set.
+        self.orbitals = self.assembly.coeff
+        self.result = self.assembly.probe.result
+        self.entropy = self.assembly.probe.entropy
+        self.mutual_information = self.assembly.probe.mutual_information
+        self.occupations = self.assembly.probe.occupations
+        #: The final probe's relative state energies [cm^-1]. ⚠ Qualitative, exactly as a
+        #: :class:`CheapCI`'s is: a downstream energy window takes its ladder's first *rung*
+        #: from it and never a verdict.
+        self.spectrum_cm = self.assembly.probe.spectrum_cm
+        self.proposal = self.assembly.proposal
+        #: The proposed count, or ``None`` where the boundary is above the cap -- there the
+        #: window is the proposal and a count would be a cut inside the manifold.
+        self.n_states = self.proposal.n_states
+        #: The equivalent :class:`~kuiva.util.window.EnergyWindow`.
+        self.window = self.proposal.window
+        self.floor = self.assembly.floor
+        self.product_floor = self.assembly.product_floor
+        self.rounds = self.assembly.rounds
+        self.budget = self.assembly.budget
+        self.sites = None
+        self._localize()
+
+    def _localize(self) -> None:
+        """Localize the shells per centre, so the space has sites as well as orbitals.
+
+        ⚠ **A warning here, not the refusal the localizer raises.** A localization that did
+        not reach its population floor means the site *labels* are not trustworthy; the active
+        space is exactly as valid as it was, and what falls back is the tensor-network
+        ordering. It goes through :func:`kuiva.interface.api.localize_active_space` -- the
+        project's one site partition -- rather than a second implementation of "which centre
+        is this orbital on".
+        """
+        if not self.localize or len(self.assembly.site_atoms) < 2:
+            return
+        from ..autocas.protocol import shell_columns_after_probe
+
+        reference = self.reference_stage.reference
+        columns, note = shell_columns_after_probe(reference, self.assembly)
+        if columns is None:
+            log.warning("%s", note)
+            return
+        sites = [list(atoms) for atoms in self.assembly.site_atoms]
+        per_site = int(columns.size // len(sites))
+        try:
+            localization = localize_active_space(
+                reference, self.space, sites, coeff=self.orbitals, columns=columns,
+                counts=[per_site] * len(sites), report=self.report)
+        except ValueError as exc:
+            log.warning("the shells did not localize onto the individual centres, so no site "
+                        "partition is claimed and a tensor-network ordering falls back to the "
+                        "Fiedler order: %s", exc)
+            return
+        self.orbitals = localization.coeff
+        self.sites = tuple(tuple(int(c) for c in localization.site_columns(i))
+                           for i in range(localization.n_sites))
+        self.assembly.sites = self.sites
+
+    def dmrg_ordering(self) -> np.ndarray:
+        """Mode order for a tensor network: **site-blocked** where the sites are known.
+
+        ⚠ Unlike :meth:`CheapCI.dmrg_ordering`, which is always the Fiedler order of the
+        mutual information, this prefers the site partition -- because the topology of a
+        polynuclear space comes from which centre an orbital is on and never from
+        entanglement: a bridging orbital shares at most ``ln 2`` with either ion, so an
+        entanglement-ordered chain puts the pathway wherever the noise of a qualitative probe
+        happens to rank it. :meth:`fiedler_ordering` is the other one, by name.
+        """
+        self._check_ran()
+        return self.assembly.dmrg_ordering()
+
+    def fiedler_ordering(self) -> np.ndarray:
+        """The Fiedler order of the probe's mutual information -- what ``graph="fiedler"``
+        asks for, named so that it cannot be confused with the site-blocked one."""
+        self._check_ran()
+        return self.result.dmrg_ordering()
+
+    def summary(self) -> str:
+        text = super().summary()
+        rows = ["  rounds:"]
+        for record in self.rounds:
+            rows.append("    {:>2}  {:<9} {:<22} {:>3} spinors".format(
+                record.index, record.cls, record.verdict, record.n_spinors))
+        return "\n".join([text] + rows)
+
+    def _summary_entries(self):
+        entries = list(self.assembly.summary_entries())
+        entries.append(("orbitals", "pre-optimized, Kramers repaired"
+                        + (", shells localized per site" if self.sites else "")))
+        return entries
+
+# --- 5. the CASSCF ---------------------------------------------------------------------------
 
 class CASSCF(_Stage):
     """State-averaged two-component CASSCF — the calculation this program exists for.
@@ -719,11 +999,12 @@ class CASSCF(_Stage):
     invariants that say whether the projection was worth using.
     """
 
-    _GRAPH_CHOICES = ("mutual-information", "fiedler")
+    _GRAPH_CHOICES = ("mutual-information", "fiedler", "site-blocked")
 
     def __init__(self, upstream, *, active=None, character=None,
                  n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
-                 threshold: Optional[float] = None, avas=None, n_states=1, weights=None,
+                 threshold: Optional[float] = None, avas=None, n_states=_UNSTATED,
+                 weights=None,
                  solver: str = "ci", solver_options: Optional[Dict[str, Any]] = None,
                  graph=None, checkpoint=None, restart=None,
                  checkpoint_options: Optional[Dict[str, Any]] = None,
@@ -733,10 +1014,26 @@ class CASSCF(_Stage):
                  projection: Optional[Dict[str, Any]] = None,
                  report: bool = True, **optimizer_options) -> None:
         super().__init__()
-        self._finished(upstream, (Reference, CheapCI), "CASSCF")
+        self._finished(upstream, (Reference, CheapCI, AutoCAS), "CASSCF")
         self.upstream = upstream
         self.reference_stage = (upstream if isinstance(upstream, Reference)
                                 else upstream.reference_stage)
+        #: Where ``n_states`` came from when the caller did not state it, for the output.
+        n_states, self.n_states_source = _states_from_upstream(upstream, n_states,
+                                                               what="CASSCF")
+        if not isinstance(upstream, Reference) and character is not None:
+            # ⚠ A selection is resolved against the orbitals it was stated on, and this run
+            # starts from the upstream's instead. Re-resolving here would read populations off
+            # the reference's own SCF orbitals and then run at different ones -- the same
+            # refusal CASCI and project_from= make, for the same reason.
+            raise ValueError(
+                "character= selects against the orbitals the reference's own SCF produced, "
+                "and this CASSCF starts from the {0}'s instead: those have moved (the {0} "
+                "rotated them), so the selection could legitimately return a different set "
+                "and the calculation would not be the one the statement describes. The space "
+                "is inherited from the {0} (leave it out), or state it as active=[spinor "
+                "indices], which is a statement about the orbitals at hand"
+                .format(type(upstream).__name__))
         if solver not in ("ci", "dmrg"):
             raise ValueError("solver must be 'ci' or 'dmrg'; got {!r}".format(solver))
         self.solver_kind = solver
@@ -838,13 +1135,14 @@ class CASSCF(_Stage):
                                          what="CASSCF")
                           if requested else None)
             if self.space is None and restart is None:
-                if isinstance(upstream, CheapCI):
+                if isinstance(upstream, (CheapCI, AutoCAS)):
                     self.space = upstream.space
                 else:
                     _resolve_space(self.reference_stage, active=None, character=None,
                                    n_active=None, n_active_elec=None, threshold=None,
                                    what="CASSCF")            # raises with the guidance
-            self._orbitals = upstream.orbitals if isinstance(upstream, CheapCI) else None
+            self._orbitals = (upstream.orbitals
+                              if isinstance(upstream, (CheapCI, AutoCAS)) else None)
         else:
             self._orbitals = None                            # built by run(), from the plan
 
@@ -910,10 +1208,24 @@ class CASSCF(_Stage):
                 if graph not in self._GRAPH_CHOICES:
                     raise ValueError("graph= must be a NetworkGraph or one of {}; got {!r}"
                                      .format(self._GRAPH_CHOICES, graph))
-                if not isinstance(upstream, CheapCI):
+                if graph == "site-blocked":
+                    # ⚠ Refused rather than degraded: a site-blocked ordering is a statement
+                    # about which centre each orbital is on, and a stage with no site
+                    # partition has no such statement to make. Silently handing back an
+                    # entanglement order would answer a different question -- and for a
+                    # polynuclear space that is the wrong answer, since a bridging orbital
+                    # shares at most ln 2 with either ion.
+                    if not isinstance(upstream, AutoCAS) or upstream.sites is None:
+                        raise ValueError(
+                            "graph='site-blocked' orders the modes by which centre each "
+                            "orbital sits on, which needs an AutoCAS upstream whose shells "
+                            "localized onto their centres (one centre, or a localization "
+                            "that did not reach its population floor, leaves no partition to "
+                            "order by). Use graph='mutual-information' or 'fiedler'")
+                elif not isinstance(upstream, (CheapCI, AutoCAS)):
                     raise ValueError("graph={!r} builds the topology from the cheap CI's "
-                                     "entanglement, so it needs a CheapCI upstream"
-                                     .format(graph))
+                                     "entanglement, so it needs a CheapCI or AutoCAS "
+                                     "upstream".format(graph))
             self.graph_request = graph
 
     # -- starting from another basis ----------------------------------------------------
@@ -931,7 +1243,8 @@ class CASSCF(_Stage):
         """
         from ..orth.project import plan_columns
 
-        self._finished(self.project_from, (Reference, CheapCI, CASSCF), "CASSCF project_from")
+        self._finished(self.project_from, (Reference, CheapCI, AutoCAS, CASSCF),
+                       "CASSCF project_from")
         if restart is not None:
             raise ValueError(
                 "project_from= and restart= are two different ways to supply the starting "
@@ -1001,12 +1314,24 @@ class CASSCF(_Stage):
     def _execute(self) -> None:
         if self.avas is not None and self.report:
             self.avas.report(log)
+        self._announce_states()
         if self.project_from is not None:
             self._run_projection()
         if self.solver_kind == "ci":
             self._execute_ci()
         else:
             self._execute_dmrg()
+
+    def _announce_states(self) -> None:
+        """Say so when the state count came from the upstream rather than from the caller.
+
+        ⚠ A default that changes on the upstream's account has to appear in the output file,
+        or a reader cannot tell a proposed average from a requested one -- and the two are
+        different calculations.
+        """
+        if self.report and self.n_states_source:
+            out.entry(log, "n_states", self.n_states if self.n_states is not None
+                      else repr(self.window_request), "", self.n_states_source)
 
     @classmethod
     def from_checkpoint(cls, path, reference, *, n_states=None, weights=None,
@@ -1431,7 +1756,13 @@ class CASSCF(_Stage):
         info = self.upstream.mutual_information
         if request == "mutual-information":
             return topology_from_mutual_information(info).graph
-        order = self.upstream.dmrg_ordering()
+        # ⚠ Each name asks for exactly one ordering and gets it. An AutoCAS prefers its site
+        # partition in `dmrg_ordering()`, so "fiedler" goes to the entanglement order by name
+        # -- otherwise a user asking for one ordering would silently receive the other.
+        if request == "fiedler" and hasattr(self.upstream, "fiedler_ordering"):
+            order = self.upstream.fiedler_ordering()
+        else:
+            order = self.upstream.dmrg_ordering()
         n = int(order.size)
         return NetworkGraph(n, [(i, i + 1) for i in range(n - 1)],
                             contents=[(int(m),) for m in order])
@@ -1681,16 +2012,20 @@ class CASCI(_Stage):
 
     def __init__(self, upstream, *, active=None, character=None,
                  n_active: Optional[int] = None, n_active_elec: Optional[int] = None,
-                 threshold: Optional[float] = None, avas=None, n_states=1, weights=None,
+                 threshold: Optional[float] = None, avas=None, n_states=_UNSTATED,
+                 weights=None,
                  coeff: Optional[np.ndarray] = None,
                  solver_options: Optional[Dict[str, Any]] = None,
                  classify: bool = True, report: bool = True) -> None:
         super().__init__()
         from ..mcscf.casci import FullCISolver
-        self._finished(upstream, (Reference, CheapCI, CASSCF), "CASCI")
+        self._finished(upstream, (Reference, CheapCI, AutoCAS, CASSCF), "CASCI")
         self.upstream = upstream
         self.reference_stage = (upstream if isinstance(upstream, Reference)
                                 else upstream.reference_stage)
+        #: Where ``n_states`` came from when the caller did not state it, for the output.
+        n_states, self.n_states_source = _states_from_upstream(upstream, n_states,
+                                                               what="CASCI")
         #: The CI method behind this stage, in the vocabulary :class:`CASSCF` uses for it, so
         #: that a consumer of either stage asks one question. A fixed-orbital CI is the
         #: conventional-CI route by construction.
@@ -1772,7 +2107,7 @@ class CASCI(_Stage):
             self._orbitals = np.ascontiguousarray(coeff)
         elif isinstance(upstream, CASSCF):
             self._orbitals = upstream.coeff
-        elif isinstance(upstream, CheapCI):
+        elif isinstance(upstream, (CheapCI, AutoCAS)):
             self._orbitals = upstream.orbitals
         else:
             self._orbitals = None                # the reference's own guess spinors
@@ -1794,6 +2129,9 @@ class CASCI(_Stage):
         raise_if_pending("this CASCI")
         if self.avas is not None and self.report:
             self.avas.report(log)
+        if self.report and self.n_states_source:
+            out.entry(log, "n_states", self.n_states if self.n_states is not None
+                      else repr(self.window_request), "", self.n_states_source)
         self.result = _api_casci(
             self.reference_stage.reference, active=self.space, n_states=self._n_states_arg,
             weights=self.weights, coeff=self._orbitals, report=self.report,
@@ -1850,6 +2188,8 @@ class CASCI(_Stage):
             orbitals = "the AVAS-rotated reference orbitals"
         elif isinstance(self.upstream, CASSCF):
             orbitals = "the converged CASSCF orbitals"
+        elif isinstance(self.upstream, AutoCAS):
+            orbitals = "the automatically selected, pre-optimized orbitals"
         elif isinstance(self.upstream, CheapCI):
             orbitals = "the pre-optimized orbitals"
         elif self._orbitals is not None:

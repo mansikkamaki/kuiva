@@ -10,9 +10,10 @@ pipeline starts from.
 | [Molecule](Molecule.md) | `Molecule`, `Environment`, `CustomBasis` | — | the input objects: geometry, basis assignment, point charges, custom basis sets, ghost atoms |
 | [ScalarSCF](ScalarSCF.md) | `ScalarSCF` | a `Molecule` | scalar-relativistic X2C SCF, integral ingestion, the two-component spin–orbit Hamiltonian |
 | [Reference](Reference.md) | `Reference` | `ScalarSCF` | orthonormal working basis, Kramers-paired spinor guess, factorized two-electron integrals |
-| [CheapCI](CheapCI.md) | `CheapCI` *(optional)* | `Reference` | cheap selected-CI pre-optimization: physical active orbitals, entanglement data |
-| [CASSCF](CASSCF.md) | `CASSCF` | `Reference` or `CheapCI` | state-averaged two-component CASSCF, `solver="ci"` or `"dmrg"` |
-| [CASCI](CASCI.md) | `CASCI` *(optional)* | `Reference`, `CheapCI` or `CASSCF` | a full CI at **fixed** orbitals — the scan primitive |
+| [AutoCAS](AutoCAS.md) | `AutoCAS` *(optional)* | `Reference` | the active space chosen from stated targets, and a proposed state count |
+| [CheapCI](CheapCI.md) | `CheapCI` *(optional)* | `Reference` or `AutoCAS` | cheap selected-CI pre-optimization: physical active orbitals, entanglement data |
+| [CASSCF](CASSCF.md) | `CASSCF` | `Reference`, `AutoCAS` or `CheapCI` | state-averaged two-component CASSCF, `solver="ci"` or `"dmrg"` |
+| [CASCI](CASCI.md) | `CASCI` *(optional)* | `Reference`, `AutoCAS`, `CheapCI` or `CASSCF` | a full CI at **fixed** orbitals — the scan primitive |
 | [NEVPT2](NEVPT2.md) | `NEVPT2` *(optional)* | `CASSCF` or `CASCI` | SC-NEVPT2, per state, by excitation class |
 | [PropertyDump](PropertyDump.md) | `PropertyDump` | `CASSCF`, `CASCI` or `NEVPT2` | the property-matrix file: `H`, `mu_x/y/z`, `d_x/y/z` |
 | [PseudospinExport](PseudospinExport.md) | `PseudospinExport` | `CASSCF` | local multiplets, `H_eff` and moments on a pseudospin product basis |

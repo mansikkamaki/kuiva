@@ -470,6 +470,7 @@ def spinor_reference(molecule_or_data, *, threshold: float = DEFAULT_THRESHOLD,
 
 def localize_active_space(reference: SpinorReference, space, sites, *,
                           coeff: Optional[np.ndarray] = None,
+                          columns: Optional[Sequence[int]] = None,
                           counts: Optional[Sequence[int]] = None,
                           min_population: Optional[float] = None,
                           repair_pairing: bool = True, report: bool = True):
@@ -499,6 +500,12 @@ def localize_active_space(reference: SpinorReference, space, sites, *,
         Localize *these* orbitals (AO basis) rather than the reference's guess — a converged
         ``CASSCFOutcome.coeff`` is the case this exists for, since the orbitals a multi-site
         export or a tensor network is handed are the optimized ones.
+    columns : sequence of int, optional
+        Localize only **these** active columns, rather than the whole active space. ⚠ The
+        case this exists for is a space that is a shell *plus* something else: a bridge or
+        bonding orbital belongs to no site, and a partition that gave it one would be
+        stating something false. The columns must be active in ``space`` -- a rotation across
+        a space boundary is not the energy-invariant one this claims to be.
     counts : sequence of int, optional
         Orbitals per site; the default equal split is refused when it does not divide.
     min_population : float, optional
@@ -521,7 +528,14 @@ def localize_active_space(reference: SpinorReference, space, sites, *,
     from ..mcscf.localize import DEFAULT_SITE_POPULATION_MIN, fragment_populations, localize
     from ..spinor.expand import nearest_kramers_paired
 
-    active = np.asarray(space.spaces.active, dtype=int)
+    active = (np.asarray(space.spaces.active, dtype=int) if columns is None
+              else np.unique(np.asarray(columns, dtype=int).ravel()))
+    stray = np.setdiff1d(active, np.asarray(space.spaces.active, dtype=int))
+    if stray.size:
+        raise ValueError("columns= names spinor(s) {} that are not active in this space: a "
+                         "localization rotates inside the active space, where it changes no "
+                         "energy; a rotation across a space boundary would"
+                         .format(stray.tolist()))
     floor = (DEFAULT_SITE_POPULATION_MIN if min_population is None else float(min_population))
     c_ao = (reference.spinors_in_ao() if coeff is None
             else np.ascontiguousarray(coeff, dtype=np.complex128))

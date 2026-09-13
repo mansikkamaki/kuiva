@@ -53,7 +53,7 @@ they land.
 | [soc](methods/soc.md) | the spinor basis, Kramers pairs, two-electron spin–orbit coupling by atomic mean field (X2CAMF), the molecular mean field |
 | [scf-reference](methods/scf-reference.md) | the scalar-relativistic SCF: RHF/ROHF/UHF, broken symmetry, warm starts, average of configuration |
 | [integrals](methods/integrals.md) | the orthonormal working basis, linear-dependence removal, Cholesky decomposition and density fitting, basis projection |
-| [active-spaces](methods/active-spaces.md) | selection by orbital character, ordinal windows, AVAS, the cheap CI, fragment localization |
+| [active-spaces](methods/active-spaces.md) | selection by orbital character, ordinal windows, AVAS, the cheap CI, fragment localization, automatic selection |
 | [ci](methods/ci.md) | complex determinant CI, the sigma vector, the Davidson solver, the Kramers-restricted mode |
 | [casscf](methods/casscf.md) | the state-averaged orbital optimization, the gradient, state selection and its diagnostics, adaptive solvers |
 | [dmrg](methods/dmrg.md) | the tree tensor network solver: TTNO, sweeps, truncation, densities, local multiplets |
@@ -65,7 +65,7 @@ they land.
 
 | page | contents |
 |---|---|
-| [stages](reference/stages/README.md) | the shared stage contract, plus one page per class: [Molecule](reference/stages/Molecule.md) (and `Environment`, `CustomBasis`), [ScalarSCF](reference/stages/ScalarSCF.md), [Reference](reference/stages/Reference.md), [CheapCI](reference/stages/CheapCI.md), [CASSCF](reference/stages/CASSCF.md), [CASCI](reference/stages/CASCI.md), [NEVPT2](reference/stages/NEVPT2.md), [PropertyDump](reference/stages/PropertyDump.md), [PseudospinExport](reference/stages/PseudospinExport.md) |
+| [stages](reference/stages/README.md) | the shared stage contract, plus one page per class: [Molecule](reference/stages/Molecule.md) (and `Environment`, `CustomBasis`), [ScalarSCF](reference/stages/ScalarSCF.md), [Reference](reference/stages/Reference.md), [AutoCAS](reference/stages/AutoCAS.md), [CheapCI](reference/stages/CheapCI.md), [CASSCF](reference/stages/CASSCF.md), [CASCI](reference/stages/CASCI.md), [NEVPT2](reference/stages/NEVPT2.md), [PropertyDump](reference/stages/PropertyDump.md), [PseudospinExport](reference/stages/PseudospinExport.md) |
 | [api](reference/api.md) | the function layer beneath the stage classes, the top-level readers, and the extras |
 | [files](reference/files.md) | the stored products as contracts: the checkpoint files, the property dump, the pseudospin export, molden files, the Slater-Condon file |
 | [options index](reference/options-index.md) | one flat table from every option name to where it is documented |

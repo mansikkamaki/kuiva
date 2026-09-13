@@ -6,8 +6,12 @@ level; conventional complex CI or in-house DMRG; SC-NEVPT2 for dynamic correlati
 A calculation is a short script of stage objects, re-exported here and documented in
 ``kuiva.interface.stages``::
 
-    ScalarSCF -> Reference -> (CheapCI) -> CASSCF -> (NEVPT2) -> PropertyDump
-                                                             \\-> PseudospinExport
+    ScalarSCF -> Reference -> (AutoCAS) -> (CheapCI) -> CASSCF -> (NEVPT2) -> PropertyDump
+                                                                           \\-> PseudospinExport
+
+``AutoCAS`` chooses the active space from stated targets — the valence shells of the open
+d/f centres by default — and proposes how many states to average over; the stages after it
+take it wherever they take a ``CheapCI``.
 
 ``CASCI`` is the fixed-orbital sibling of ``CASSCF`` — a spectrum, a symmetry mode or an
 active space varied at one converged orbital set — and feeds the same stages after it.
@@ -23,7 +27,7 @@ the module drivers) is public and unchanged; ``README.md`` is the manual.
 #: ``[tool.setuptools.dynamic]``, the run banner prints it, every stored product records it,
 #: and the documents quoting it are held in step by test. Keep it a plain literal: setuptools parses this file
 #: statically and a computed version would not be readable without importing the package.
-__version__ = "0.49.0"
+__version__ = "0.50.0"
 
 #: The class API (kuiva/interface/stages.py) and the Molecule container, re-exported at the
 #: top level so a user script reads ``kuiva.CASSCF(...)``. Resolved lazily (PEP 562): the
@@ -56,6 +60,7 @@ _TOP_LEVEL = {
     "EnergyWindow": "kuiva.util.window",
     "ScalarSCF": "kuiva.interface.stages",
     "Reference": "kuiva.interface.stages",
+    "AutoCAS": "kuiva.interface.stages",
     "CheapCI": "kuiva.interface.stages",
     "CASSCF": "kuiva.interface.stages",
     "CASCI": "kuiva.interface.stages",

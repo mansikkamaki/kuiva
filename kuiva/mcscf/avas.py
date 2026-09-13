@@ -52,17 +52,35 @@ and rotated within each group -- two groups for a closed shell, three for an ROH
 Every group is offered to the threshold, so a singly occupied orbital of the right character
 is selected on its merits rather than by a rule about open shells.
 
+⚠ Two selection rules, because a shell has a count and not a threshold
+----------------------------------------------------------------------
+``threshold=`` is the published rule: every pair above a projection cut. ``n_pairs=`` is the
+**count-stated** rule: exactly the ``k`` pairs of largest projection, which is what a
+*shell* is — a Dy 4f shell is seven pairs whatever the eighth pair's projection is, and the
+default threshold has been measured taking two ligand sigma pairs *more* than a 3d shell on
+TiCl3. The two are exclusive, both report the eigenvalue **gap at the cut**, and both warn
+when it is small: a count that lands inside a tight group of projections chose the space by
+its count rather than by the electronic structure, exactly as a threshold in the same place
+would have. Which rule ran is recorded on the result (:attr:`AVASResult.mode`) and written
+into the active space's description, because the two are different physical statements and a
+reader of a stored product has to be able to tell them apart.
+
+The count-stated rule is a **departure from the published method**, which states a
+threshold; it is what lets the automatic shell construction say "the valence shell" without
+a knob in front of it.
+
 References
 ----------
 * E. R. Sayfutyarova, Q. Sun, G. K.-L. Chan, G. Knizia, "Automated Construction of Molecular
   Active Spaces from Atomic Valence Orbitals", J. Chem. Theory Comput. 13, 4063 (2017),
   doi:10.1021/acs.jctc.7b00128. The projection, the occupied/virtual separation and the
-  eigenvalue threshold follow this work; the reference set does not (above).
+  eigenvalue threshold follow this work; the reference set and the count-stated rule above do
+  not.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -101,8 +119,10 @@ class AVASResult:
     coeff : ndarray ``(2*nao, nspinor)``
         The rotated spinors, Kramers paired. ⚠ These are what a CASSCF must start from — the
         selection indexes *these* columns, not the ones handed in.
-    space : :class:`kuiva.mcscf.casci.ActiveSpace`
-        The active space, in the rotated set's numbering.
+    space : :class:`kuiva.mcscf.casci.ActiveSpace` or None
+        The active space, in the rotated set's numbering. ``None`` from
+        :func:`avas_projection`, which is the projection **without** a space: see that
+        function for the one case where the electron count cannot be derived here.
     eigenvalues : ndarray ``(npair,)``
         Projection eigenvalue of every Kramers pair of the rotated set, in column order.
     selected : ndarray
@@ -118,6 +138,15 @@ class AVASResult:
     reference : str
         What was projected onto, as a sentence — this is the active space's *description*
         and it is what reaches the property dump's header.
+    mode : str
+        Which rule produced :attr:`selected`: ``"threshold"`` (a projection cut) or
+        ``"count"`` (the ``n_pairs`` form). The two are different physical statements —
+        a *shell* has a count whatever the next pair's projection is — and a report that
+        prints one for the other misstates how the space was chosen.
+    cut : float
+        The number the rule was stated with: the threshold, or the requested pair count.
+    reference_statement : str
+        The selection as one sentence -- what the active space's ``description`` is set to.
     """
 
     coeff: np.ndarray
@@ -128,6 +157,9 @@ class AVASResult:
     gap: float = float("nan")
     fold_residual: float = 0.0
     reference: str = ""
+    mode: str = "threshold"
+    cut: float = float("nan")
+    reference_statement: str = ""
 
     @property
     def n_pairs(self) -> int:
@@ -137,11 +169,15 @@ class AVASResult:
         """The INFO summary: the selected pairs and the eigenvalues either side of the cut."""
         logger = logger or log
         out.subsection(logger, "AVAS active-space construction")
+        rule = ("count stated: {:.0f} pair(s)".format(self.cut) if self.mode == "count"
+                else "projection threshold {:.3f}".format(self.cut))
         out.entries(logger, [
             ("reference orbitals", self.reference),
+            ("selection rule", rule),
             ("Kramers pairs selected", self.n_pairs),
-            ("eigenvalue gap at the cut", self.gap, "", "small = the threshold chose, not "
-             "the physics", "{:.3f}"),
+            ("eigenvalue gap at the cut", self.gap, "", "small = the {} chose, not "
+             "the physics".format("count" if self.mode == "count" else "threshold"),
+             "{:.3f}"),
             ("Kramers-pair fold residual", self.fold_residual, "", "", "{:.2e}"),
         ])
         chosen = set(int(x) for x in np.asarray(self.selected).ravel())
@@ -155,10 +191,12 @@ class AVASResult:
             table.row(i, float(self.occupations[i]), float(self.eigenvalues[i]),
                       "yes" if i in chosen else "no")
         table.end("{} pair(s) shown of {}".format(len(shown), np.size(self.eigenvalues)))
-        self.space.report(logger)
+        if self.space is not None:
+            self.space.report(logger)
 
     def __repr__(self) -> str:
-        return "AVASResult(pairs={}, gap={:.3f})".format(self.n_pairs, self.gap)
+        return "AVASResult(pairs={}, {}, gap={:.3f})".format(self.n_pairs, self.mode,
+                                                             self.gap)
 
 
 def _reference_columns(layout, reference, atoms: Sequence[int], ell: int,
@@ -194,14 +232,7 @@ def _reference_columns(layout, reference, atoms: Sequence[int], ell: int,
         if not np.any(local_l == ell):
             raise ValueError("{} has no l = {} functions in this basis"
                              .format(layout.atom_label(ia), ell))
-        # Mulliken weight of each atomic orbital on the target l, in the atom's own metric.
-        # The atomic block of the molecular overlap is the free atom's overlap: same basis,
-        # same ordering (that is what makes the block placement below exact).
-        pure = np.zeros(entry.c.shape[1])
-        s_atom = _atom_overlap(entry)
-        for j in range(entry.c.shape[1]):
-            w = np.real(entry.c[:, j] * (s_atom @ entry.c[:, j]))
-            pure[j] = float(w[local_l == ell].sum() / max(w.sum(), 1e-30))
+        pure = reference_channel_weights(entry, local_l)[:, ell]
         want = n_shells * (2 * ell + 1)
         # Occupied shells first, then the atomic virtuals, each group in its own order --
         # the same two-tier ordering the atomic-reference charges use, and for the same
@@ -223,6 +254,37 @@ def _reference_columns(layout, reference, atoms: Sequence[int], ell: int,
     return np.concatenate(columns, axis=1), "; ".join(labels)
 
 
+def reference_channel_weights(entry, local_l) -> np.ndarray:
+    """``(n_orb, max_l+1)`` Mulliken weight of each free-atom reference orbital per ``l``.
+
+    The atomic SCF behind an :class:`~kuiva.basis.reference.AtomicReferenceEntry` is
+    constrained spherical, so every atomic orbital has support on **one** angular momentum
+    and these weights come out as ones and zeros to rounding; they are computed rather than
+    assumed because that is what makes "the 3d of titanium" a measurement on the atomic
+    solution instead of a claim about the basis ordering.
+
+    ``local_l`` is the ``ao_l`` column of the atom's own AO block. The metric is the free
+    atom's overlap, recovered from the orbitals themselves (:func:`_atom_overlap`).
+
+    Two consumers, deliberately one implementation: :func:`_reference_columns` picks the
+    columns of a target ``l`` here, and :mod:`kuiva.autocas.centres` reads the reference
+    state's **electron count per channel** off the same weights — an atom is a magnetic
+    centre only if its own reference has an open shell of the target ``l``, and that is a
+    statement about this solution, not about the label it was given.
+    """
+    c = np.real(np.asarray(entry.c))
+    local_l = np.asarray(local_l, dtype=int)
+    s_atom = _atom_overlap(entry)
+    n_orb = c.shape[1]
+    weights = np.zeros((n_orb, int(local_l.max()) + 1))
+    for j in range(n_orb):
+        w = c[:, j] * (s_atom @ c[:, j])
+        total = max(float(w.sum()), 1e-30)
+        for l in range(weights.shape[1]):
+            weights[j, l] = float(w[local_l == l].sum() / total)
+    return weights
+
+
 def _atom_overlap(entry) -> np.ndarray:
     """``S`` over one atom's AO block, recovered from its orthonormal reference orbitals.
 
@@ -234,49 +296,19 @@ def _atom_overlap(entry) -> np.ndarray:
     return np.linalg.inv(c @ c.T)
 
 
-def avas(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, n_elec_total: int, *,
-         atom, l, occupation: np.ndarray, n_shells: int = 1,
-         threshold: float = DEFAULT_AVAS_THRESHOLD,
-         n_active_elec: Optional[int] = None,
-         max_pairs: Optional[int] = None):
-    """Rotate ``coeff_ao`` onto atomic valence orbitals and select an active space.
+def projection_pair_matrix(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, *,
+                           atom, l, n_shells: int = 1) -> Tuple[np.ndarray, float, str]:
+    """``(M, fold residual, reference label)``: the AVAS projector folded onto Kramers pairs.
 
-    Parameters
-    ----------
-    coeff_ao : ``(2*nao, nspinor)`` complex — Kramers-paired spinors in the AO basis.
-    s_ao : ``(nao, nao)`` — the scalar AO overlap.
-    layout : :class:`kuiva.basis.layout.AOLayout`.
-    reference : :class:`kuiva.basis.reference.AtomicReferenceSet` — the front end's
-        ``atomic_reference=True`` product. Without one this cannot run, and the message says
-        which knob to set.
-    n_elec_total : int — electrons in the molecule.
-    atom, l : the target character, addressed exactly as
-        :func:`kuiva.mcscf.casci.active_space_by_character` addresses it (an index, a unique
-        element symbol, or a sequence of either whose reference orbitals are pooled).
-    occupation : ``(nspinor,)`` — spinor occupations of ``coeff_ao``. The rotation happens
-        within groups of equal occupation, never across them.
-    n_shells : int
-        Shells of the target ``l`` to project onto. ``2`` is the **double shell**: the target
-        shell plus its correlating partner, which is what a Ln/An calculation needs and what
-        no character threshold finds (the correlating shell is diffuse and covalent).
-    threshold : float — projection eigenvalue above which a pair enters the active space.
-    max_pairs : int, optional
-        Refuse rather than return more than this many pairs. ⚠ Worth setting: an AVAS whose
-        threshold is slightly too low returns a perfectly plausible active space one or two
-        pairs too large, and the cost of that is discovered only when the CI runs.
+    ``M[p, q] = <p|P|q>`` over the Kramers pairs of ``coeff_ao``, with ``P`` the metric-aware
+    projector onto the free-atom reference span of ``(atom, l)`` (``n_shells`` shells of it).
+    **The one construction of that projector**: :func:`avas_projection` diagonalizes it, and a
+    caller that needs the projection of an *already rotated* set onto a different number of
+    reference shells reads its diagonal instead -- which rotates nothing, so it cannot re-mix
+    a selection the way a second :func:`avas_projection` call would.
     """
-    # ⚠ The atom and angular-momentum resolution is **imported, not re-derived**: `avas` and
-    # `active_space_by_character` are two routes to one object and must accept the same
-    # `(atom, l)` spellings, with the same refusals (an ambiguous element symbol, a principal
-    # quantum number). Two resolvers would pass every numerical test and still be two APIs.
-    from .casci import _angular_momentum, _atom_indices, active_space
+    from .casci import _angular_momentum, _atom_indices
 
-    if reference is None:
-        raise ValueError(
-            "AVAS projects onto the free-atom reference orbitals, which only the front end "
-            "can compute: re-run the scalar SCF with atomic_reference=True (they are cached "
-            "per element, so the cost is one small atomic SCF per unique element, once per "
-            "process).")
     c = np.ascontiguousarray(coeff_ao, dtype=np.complex128)
     nao = int(np.shape(s_ao)[0])
     if c.shape[0] != 2 * nao:
@@ -286,6 +318,12 @@ def avas(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, n_elec_total
     if nspinor % 2:
         raise ValueError("a Kramers-paired spinor set has an even number of columns; got {}"
                          .format(nspinor))
+    if reference is None:
+        raise ValueError(
+            "AVAS projects onto the free-atom reference orbitals, which only the front end "
+            "can compute: re-run the scalar SCF with atomic_reference=True (they are cached "
+            "per element, so the cost is one small atomic SCF per unique element, once per "
+            "process).")
     ell = _angular_momentum(l)
     atoms = _atom_indices(layout, atom)
     ref, ref_label = _reference_columns(layout, reference, atoms, ell, int(n_shells))
@@ -318,6 +356,57 @@ def avas(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, n_elec_total
             "spinors 2p and 2p+1 are then the p-th alpha and p-th beta orbital and need not "
             "describe the same thing. Use a restricted or ROHF reference, or select the "
             "active space explicitly by spinor index".format(residual))
+    return m_pair, float(residual), ref_label
+
+
+def avas_projection(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, *,
+                    atom, l, occupation: np.ndarray, n_shells: int = 1,
+                    threshold: Optional[float] = None,
+                    n_pairs: Optional[int] = None,
+                    max_pairs: Optional[int] = None):
+    """The AVAS rotation and selection **without** an active space: ``space`` is ``None``.
+
+    Everything :func:`avas` does except the last step, and it exists for the one caller that
+    cannot let this function derive the electron count: ⚠ **a shell that is entirely empty in
+    the reference has no aufbau count**, and deriving one here refuses (an odd inactive
+    count) or asserts a CAS with no electrons in it. Measured live: CeCl3's scalar ROHF puts
+    its single valence electron in a Ce **5d** orbital, so every Ce 4f pair is empty and the
+    f-shell selection is a perfectly correct set of seven empty pairs -- whose electron count
+    is 1 and comes from the ion, not from the orbitals. Which electron count an empty shell
+    gets is a physical decision (:mod:`kuiva.autocas.candidates`), not an arithmetic one, and
+    this is the seam that lets the decision live where it is made.
+
+    Every other caller wants :func:`avas`, whose parameters and traps are documented there.
+    """
+    # ⚠ The atom and angular-momentum resolution is **imported, not re-derived**: `avas` and
+    # `active_space_by_character` are two routes to one object and must accept the same
+    # `(atom, l)` spellings, with the same refusals (an ambiguous element symbol, a principal
+    # quantum number). Two resolvers would pass every numerical test and still be two APIs.
+    # (Both are resolved inside `projection_pair_matrix`, the one construction of P.)
+    if n_pairs is not None:
+        if threshold is not None:
+            raise ValueError(
+                "give either threshold= or n_pairs=, not both: a projection cut and a pair "
+                "count are two different statements of what the active space IS (a "
+                "threshold says 'everything this d-like', a count says 'the shell'), and a "
+                "run that silently preferred one would not be reproducible from its "
+                "description")
+        if max_pairs is not None:
+            raise ValueError("max_pairs bounds the threshold mode's selection; with n_pairs "
+                             "the size is already stated exactly")
+        if int(n_pairs) < 1:
+            raise ValueError("n_pairs is a number of Kramers pairs and must be positive; "
+                             "got {!r}".format(n_pairs))
+    if reference is None:
+        raise ValueError(
+            "AVAS projects onto the free-atom reference orbitals, which only the front end "
+            "can compute: re-run the scalar SCF with atomic_reference=True (they are cached "
+            "per element, so the cost is one small atomic SCF per unique element, once per "
+            "process).")
+    c = np.ascontiguousarray(coeff_ao, dtype=np.complex128)
+    nspinor = c.shape[1]
+    m_pair, residual, ref_label = projection_pair_matrix(c, s_ao, layout, reference,
+                                                         atom=atom, l=l, n_shells=n_shells)
 
     occ = np.asarray(occupation, dtype=float).ravel()
     if occ.size != nspinor:
@@ -346,19 +435,35 @@ def avas(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, n_elec_total
         eigenvalues[group] = w[order]
         rotation[np.ix_(group, group)] = v[:, order]
 
-    keep = np.nonzero(eigenvalues >= float(threshold))[0]
-    if keep.size == 0:
-        best = np.sort(eigenvalues)[::-1][:5]
-        raise ValueError(
-            "no orbital carries {:.2f} of the {} character: the largest projections are {}. "
-            "Lower `threshold`, or check that the reference shell is the one meant"
-            .format(threshold, ref_label, np.round(best, 4).tolist()))
-    if max_pairs is not None and keep.size > int(max_pairs):
-        raise ValueError(
-            "AVAS selected {} Kramers pairs at threshold {:.2f}, above the max_pairs = {} "
-            "asked for; the projections at the cut are {}. Raise the threshold or the limit"
-            .format(keep.size, threshold, max_pairs,
-                    np.round(np.sort(eigenvalues)[::-1][:keep.size + 2], 4).tolist()))
+    if n_pairs is not None:
+        # The count-stated cut. ⚠ Ordered by projection and then by **column index**, so the
+        # selection is deterministic when two pairs project equally — which is not a corner
+        # case but the symmetric one: the partners of an `e` or `t2` set project identically
+        # to machine precision, and an unstable sort would return a different two of them per
+        # run. A count that lands inside such a group still warns through the gap below.
+        want = int(n_pairs)
+        if want > npair:
+            raise ValueError("n_pairs = {} asks for more Kramers pairs than the orbital set "
+                             "has ({})".format(want, npair))
+        keep = np.sort(np.argsort(-eigenvalues, kind="stable")[:want])
+        mode, cut = "count", float(want)
+    else:
+        cut_value = DEFAULT_AVAS_THRESHOLD if threshold is None else float(threshold)
+        keep = np.nonzero(eigenvalues >= cut_value)[0]
+        mode, cut = "threshold", cut_value
+        if keep.size == 0:
+            best = np.sort(eigenvalues)[::-1][:5]
+            raise ValueError(
+                "no orbital carries {:.2f} of the {} character: the largest projections are "
+                "{}. Lower `threshold`, or check that the reference shell is the one meant"
+                .format(cut_value, ref_label, np.round(best, 4).tolist()))
+        if max_pairs is not None and keep.size > int(max_pairs):
+            raise ValueError(
+                "AVAS selected {} Kramers pairs at threshold {:.2f}, above the max_pairs = "
+                "{} asked for; the projections at the cut are {}. Raise the threshold or the "
+                "limit".format(keep.size, cut_value, max_pairs,
+                               np.round(np.sort(eigenvalues)[::-1][:keep.size + 2],
+                                        4).tolist()))
     if int(keep.max() - keep.min()) != keep.size - 1:
         # Not reachable through the ordering above; asserted because a non-contiguous active
         # block is exactly the symptom of that ordering having been changed, and it is the
@@ -372,23 +477,94 @@ def avas(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, n_elec_total
            if dropped.size else float("nan"))
     if np.isfinite(gap) and gap < 0.05:
         log.warning("the AVAS eigenvalue gap at the cut is only %.3f (kept %.4f, dropped "
-                    "%.4f): the threshold and not the electronic structure is what chose "
+                    "%.4f): the %s and not the electronic structure is what chose "
                     "this active space, and a small change to either would choose a "
                     "different one. Look at the spectrum before trusting the selection",
-                    gap, float(eigenvalues[keep].min()), float(eigenvalues[dropped].max()))
+                    gap, float(eigenvalues[keep].min()), float(eigenvalues[dropped].max()),
+                    "requested count" if mode == "count" else "threshold")
 
     rotated = rotate_kramers_pairs(c, rotation, np.arange(nspinor))
-    columns = np.concatenate([[2 * int(g), 2 * int(g) + 1] for g in keep])
-    description = "AVAS: {} pairs projected onto {} at threshold {:.2f}".format(
-        keep.size, ref_label, threshold)
-    space = active_space(columns, nspinor, n_elec_total, n_active_elec=n_active_elec,
-                         description=description)
+    description = ("AVAS: the {} pairs of largest projection onto {} (count stated; gap at "
+                   "the cut {:.3f})".format(keep.size, ref_label, gap) if mode == "count"
+                   else "AVAS: {} pairs projected onto {} at threshold {:.2f}".format(
+                       keep.size, ref_label, cut))
     log.debug("AVAS: eigenvalues %s, kept pairs %s",
               np.round(np.sort(eigenvalues)[::-1][:keep.size + 3], 4).tolist(),
               keep.tolist())
-    return AVASResult(coeff=rotated, space=space, eigenvalues=eigenvalues, selected=keep,
+    return AVASResult(coeff=rotated, space=None, eigenvalues=eigenvalues, selected=keep,
                       occupations=pair_occ, gap=gap, fold_residual=residual,
-                      reference=ref_label)
+                      reference=ref_label, mode=mode, cut=cut,
+                      reference_statement=description)
 
 
-__all__ = ["AVASResult", "DEFAULT_AVAS_THRESHOLD", "PAIR_FOLD_TOL", "avas"]
+def avas(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, n_elec_total: int, *,
+         atom, l, occupation: np.ndarray, n_shells: int = 1,
+         threshold: Optional[float] = None,
+         n_pairs: Optional[int] = None,
+         n_active_elec: Optional[int] = None,
+         max_pairs: Optional[int] = None):
+    """Rotate ``coeff_ao`` onto atomic valence orbitals and select an active space.
+
+    Parameters
+    ----------
+    coeff_ao : ``(2*nao, nspinor)`` complex — Kramers-paired spinors in the AO basis.
+    s_ao : ``(nao, nao)`` — the scalar AO overlap.
+    layout : :class:`kuiva.basis.layout.AOLayout`.
+    reference : :class:`kuiva.basis.reference.AtomicReferenceSet` — the front end's
+        ``atomic_reference=True`` product. Without one this cannot run, and the message says
+        which knob to set.
+    n_elec_total : int — electrons in the molecule.
+    atom, l : the target character, addressed exactly as
+        :func:`kuiva.mcscf.casci.active_space_by_character` addresses it (an index, a unique
+        element symbol, or a sequence of either whose reference orbitals are pooled).
+    occupation : ``(nspinor,)`` — spinor occupations of ``coeff_ao``. The rotation happens
+        within groups of equal occupation, never across them.
+    n_shells : int
+        Shells of the target ``l`` to project onto. ``2`` is the **double shell**: the target
+        shell plus its correlating partner, which is what a Ln/An calculation needs and what
+        no character threshold finds (the correlating shell is diffuse and covalent).
+    threshold : float, optional
+        Projection eigenvalue above which a pair enters the active space; defaults to
+        :data:`DEFAULT_AVAS_THRESHOLD`. Exclusive with ``n_pairs``.
+    n_pairs : int, optional
+        **The count-stated mode**: take exactly this many Kramers pairs, the ones of largest
+        projection, instead of everything above a threshold. ⚠ It exists because a *shell*
+        has a count and not a threshold — a Dy 4f shell is seven pairs whatever the eighth
+        pair's projection is, and :data:`DEFAULT_AVAS_THRESHOLD` is a selection knob that has
+        been measured taking two ligand sigma pairs *more* than a 3d shell. The eigenvalue
+        **gap at the cut is still the honesty check** and still warns when it is small: a
+        count cut inside a tight group of projections chose the space by the count and not by
+        the electronic structure, exactly as a threshold cut in the same place would have.
+        Exclusive with ``threshold`` and with ``max_pairs`` (both are second statements of
+        the size).
+
+        ⚠ **The count is global and reaches across the occupied/empty gap**, which is what a
+        shell needs and is measured to be the right rule on both ends of the range it has to
+        cover: on a free Dy(3+) ion the seven-pair cut takes the seven occupied 4f pairs
+        (projections 1.000) and the fourteen-pair cut of the double shell splits 7 + 7
+        exactly, while on CeCl3 -- whose scalar ROHF puts its valence electron in a Ce 5d
+        orbital, leaving every 4f pair empty -- it correctly takes seven empty pairs. ⚠ The
+        second case is also why an **empty** selection is not an error here: which electron
+        count such a shell gets is a physical decision for the caller, which is what
+        :func:`avas_projection` exists for.
+    max_pairs : int, optional
+        Refuse rather than return more than this many pairs. ⚠ Worth setting: an AVAS whose
+        threshold is slightly too low returns a perfectly plausible active space one or two
+        pairs too large, and the cost of that is discovered only when the CI runs.
+    """
+    from dataclasses import replace
+
+    from .casci import active_space
+
+    result = avas_projection(coeff_ao, s_ao, layout, reference, atom=atom, l=l,
+                             occupation=occupation, n_shells=n_shells,
+                             threshold=threshold, n_pairs=n_pairs, max_pairs=max_pairs)
+    columns = np.concatenate([[2 * int(g), 2 * int(g) + 1]
+                              for g in np.asarray(result.selected, dtype=int)])
+    space = active_space(columns, int(np.shape(result.coeff)[1]), n_elec_total,
+                         n_active_elec=n_active_elec, description=result.reference_statement)
+    return replace(result, space=space)
+
+
+__all__ = ["AVASResult", "DEFAULT_AVAS_THRESHOLD", "PAIR_FOLD_TOL", "avas",
+           "avas_projection", "reference_channel_weights"]

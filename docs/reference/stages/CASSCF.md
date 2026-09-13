@@ -2,9 +2,13 @@
 
 State-averaged two-component CASSCF [[93]](../../references.md#r93)[[106]](../../references.md#r106)[[107]](../../references.md#r107)
 — the calculation this program exists for. `upstream` is a finished
-[`Reference`](Reference.md) or [`CheapCI`](CheapCI.md); built on a `CheapCI`, the stage
-starts from its rotated orbitals and — when no space is requested here — inherits its active
-space unchanged. Its CI roots *are* the spin–orbit eigenstates; there is no separate
+[`Reference`](Reference.md), [`CheapCI`](CheapCI.md) or [`AutoCAS`](AutoCAS.md); built on
+either of the latter two, the stage starts from its rotated orbitals and — when no space is
+requested here — inherits its active space unchanged. On an `AutoCAS` an unstated
+`n_states` additionally takes that stage's **proposed** count, announced in the output; a
+restated `character=` is refused there, because a character selection reads its populations
+off the reference's own SCF orbitals and these have moved (`active=` is the form that is a
+statement about the orbitals at hand). Its CI roots *are* the spin–orbit eigenstates; there is no separate
 spin–orbit mixing step afterwards.
 
 **After `.run()`:** `.energy` (state-averaged, Eh), `.energies` (total state energies,
@@ -43,7 +47,7 @@ because an active space is a physical statement (elaboration:
 |---|---|---|
 | `solver` | `"ci"` | `"ci"` (conventional complex determinant CI) or `"dmrg"` (the tree tensor network [[117]](../../references.md#r117)[[125]](../../references.md#r125)) |
 | `solver_options` | `{}` | per-solver, two tables below |
-| `graph` | `None` | `"dmrg"` only: a `NetworkGraph`, or `"mutual-information"` / `"fiedler"` to build one from a `CheapCI` upstream |
+| `graph` | `None` | `"dmrg"` only: a `NetworkGraph`, or `"mutual-information"` / `"fiedler"` to build one from a `CheapCI` or [`AutoCAS`](AutoCAS.md) upstream, or `"site-blocked"` to order the modes by centre — which needs an `AutoCAS` upstream carrying a site partition and is refused rather than degraded without one |
 
 **The orbital optimizer** (remaining keywords pass through to it)
 

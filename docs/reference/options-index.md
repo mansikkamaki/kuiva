@@ -44,7 +44,7 @@ Stage names link to the reference page carrying the quick table and elaboration;
 | `fock` | `NEVPT2` | [nevpt2](../methods/nevpt2.md#the-zeroth-order-hamiltonian) |
 | `g_electron` | `PseudospinExport` | [PseudospinExport](stages/PseudospinExport.md#quick-reference) |
 | `gauge_origin` | `ScalarSCF` | [ScalarSCF](stages/ScalarSCF.md#the-gauge-origin) |
-| `graph` | `CASSCF` (`solver="dmrg"`) | [CASSCF](stages/CASSCF.md#solverdmrg-the-tree-tensor-network) |
+| `graph` | `CASSCF` (`solver="dmrg"`) | [CASSCF](stages/CASSCF.md#solverdmrg-the-tree-tensor-network); `"site-blocked"` needs an `AutoCAS` upstream with a site partition, [AutoCAS](stages/AutoCAS.md#what-comes-out) |
 | `guess_from` | `ScalarSCF` | [workflows](../guide/workflows.md#an-scf-from-another-scf-guess_from) |
 | `imaginary_shift`, `shift` | `NEVPT2` | [NEVPT2](stages/NEVPT2.md#quick-reference) |
 | `include_dipole`, `include_l_s` | `PropertyDump` | [PropertyDump](stages/PropertyDump.md#quick-reference) |
@@ -52,9 +52,14 @@ Stage names link to the reference page carrying the quick table and elaboration;
 | `init_guess` | `ScalarSCF` | [ScalarSCF](stages/ScalarSCF.md#when-the-scf-will-not-converge) |
 | `kramers_rotation` | `CASSCF` (optimizer) | [casscf](../methods/casscf.md#keeping-the-orbitals-kramers-paired) |
 | `kramers_stability` | `CASSCF` (optimizer) | [casscf](../methods/casscf.md#releasing-the-constraint-is-the-symmetric-solution-a-minimum) |
+| `localize` | `AutoCAS` | [AutoCAS](stages/AutoCAS.md#quick-reference) |
+| `manifold_gap_cm` | `AutoCAS` | [AutoCAS](stages/AutoCAS.md#the-proposal) |
 | `manifold_options` | `PseudospinExport` | [PseudospinExport](stages/PseudospinExport.md#quick-reference) |
 | `max_bond` | `PseudospinExport` (and `solver_options`) | [CASSCF](stages/CASSCF.md#solverdmrg-the-tree-tensor-network) |
+| `max_determinants` | `AutoCAS`, `CheapCI` (CI) | [AutoCAS](stages/AutoCAS.md#the-size-budget), [CheapCI](stages/CheapCI.md#quick-reference) |
 | `max_iter` | `CASSCF` (optimizer), `CheapCI` | [CASSCF](stages/CASSCF.md#quick-reference) |
+| `max_spinors` | `AutoCAS` | [AutoCAS](stages/AutoCAS.md#the-size-budget) |
+| `max_states` | `AutoCAS`, `EnergyWindow` | [AutoCAS](stages/AutoCAS.md#the-proposal), [CASSCF](stages/CASSCF.md#choosing-the-states-by-an-energy-cutoff) |
 | `max_step`, `memory`, `active_active` | `CASSCF` (optimizer) | [CASSCF](stages/CASSCF.md#quick-reference) |
 | `memory_gb` | `ScalarSCF` | [configuration](../guide/configuration.md#the-memory-limit) |
 | `method` | `ScalarSCF` | [ScalarSCF](stages/ScalarSCF.md#the-hamiltonian-by-name) |
@@ -68,10 +73,14 @@ Stage names link to the reference page carrying the quick table and elaboration;
 | `orbit_pivots`, `one_centre` | `ScalarSCF`, `Reference` | [integrals](../methods/integrals.md#one-centre-pivoting-symmetry-enforced-structurally) |
 | `point_group` | `Molecule`, `ScalarSCF` | [symmetry](../methods/symmetry.md) |
 | `preserve_symmetry` | `CASSCF` | [CASSCF](stages/CASSCF.md#per-irrep-selection) |
+| `probe` | `AutoCAS` | [AutoCAS](stages/AutoCAS.md#quick-reference) |
+| `probe_noise_cm` | `AutoCAS` | [AutoCAS](stages/AutoCAS.md#how-a-class-is-decided) |
 | `project_from`, `projection` | `CASSCF` | [workflows](../guide/workflows.md#a-casscf-from-a-different-basis-set-project_from) |
 | `property_picture_change` | `ScalarSCF` | [limitations](../limitations.md#property-operators), [properties](../methods/properties.md#the-operator-matrices) |
+| `prune_rel` | `AutoCAS` | [AutoCAS](stages/AutoCAS.md#how-a-class-is-decided), [active-spaces](../methods/active-spaces.md#what-decides-whether-a-class-stays) |
 | `reference` | `ScalarSCF` | [ScalarSCF](stages/ScalarSCF.md#quick-reference) |
 | `report` | most stages | the standard output blocks; `False` silences them |
+| `require`, `exclude` | `AutoCAS` | [AutoCAS](stages/AutoCAS.md#quick-reference) |
 | `rotate_frame` | `PseudospinExport` | [PseudospinExport](stages/PseudospinExport.md#quick-reference) |
 | `scheme`, `threshold` (orthogonalization) | `Reference` | [Reference](stages/Reference.md#quick-reference) |
 | `screening`, `screening_options` | `ScalarSCF` | [soc](../methods/soc.md), [ScalarSCF](stages/ScalarSCF.md#the-hamiltonian-by-name) |
@@ -79,7 +88,9 @@ Stage names link to the reference page carrying the quick table and elaboration;
 | `seed` | `PseudospinExport` (and `solver_options`) | [PseudospinExport](stages/PseudospinExport.md#quick-reference) |
 | `signals` | `CASSCF`, `NEVPT2` | [clusters](../guide/clusters.md#the-kill-nobody-announced-signals) |
 | `solver`, `solver_options` | `CASSCF` (`solver_options` also `CASCI`) | [CASSCF](stages/CASSCF.md#quick-reference) |
+| `spectrum_tol`, `spectrum_tol_cm` | `AutoCAS` | [AutoCAS](stages/AutoCAS.md#how-a-class-is-decided) |
 | `spin` | `Molecule` | [Molecule](stages/Molecule.md) |
+| `targets` | `AutoCAS` | [AutoCAS](stages/AutoCAS.md#the-target-vocabulary), [active-spaces](../methods/active-spaces.md#automatic-selection-targets-a-probe-and-a-proposal) |
 | `threshold` (character selection) | `CheapCI`, `CASSCF`, `CASCI` | [active-spaces](../methods/active-spaces.md#selection-by-orbital-character) |
 | `title` | `PropertyDump`, `PseudospinExport` | [PropertyDump](stages/PropertyDump.md#quick-reference) |
 | `unit` | `Molecule`, `Environment` | [Molecule](stages/Molecule.md), [notation](../notation.md#units-and-physical-constants) |

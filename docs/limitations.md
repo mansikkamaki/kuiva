@@ -154,6 +154,26 @@ with its context. Each entry links to the page that explains the mechanism.
   not add up (the normal outcome for crystal-field levels). Do not quote a label without
   the residual next to it. `<S²>` is a measurement and trustworthy — per degenerate block
   only.
+- ⚠ **An automatically chosen active space is a proposal made by a *qualitative* probe**
+  ([AutoCAS](reference/stages/AutoCAS.md)), and three of its limits bite in practice. The
+  keep/drop verdict is taken on a cheap CI's state spectrum, whose budget-to-budget spread
+  is hundreds of cm⁻¹ on every system measured — comparable only between two probes at the
+  same budget, which is what the protocol does, and never with a CASSCF's. A class whose
+  effect is below what the probe resolves comes back **"inconclusive, kept"** rather than
+  decided: that is the normal outcome for lanthanide exchange, where the manifold is split
+  by a few cm⁻¹, and it means the bridge orbitals are in the space because they were asked
+  for. ⚠ The noise floor that verdict uses was measured for adding **one or two** pairs;
+  adding four to seven pairs that do not matter moves the probe's spectrum by 60–100 cm⁻¹,
+  above the tolerance, so a "kept" on a **double shell** or on a bridge of four candidates is
+  not by itself evidence that the class matters (the Ce(3+) double shell is kept although a
+  one-electron shell has no correlation for it to describe). And the proposed state count is
+  a boundary read off that same spectrum — what makes it a count is the state-averaging gate,
+  the boundary diagnostic and the window's ladder downstream, none of which this stage
+  replaces.
+- ⚠ **Shells of two different `l` are refused rather than composed** by the automatic
+  selection: one AVAS projector per `l`, and a second projector's rotation re-mixes the
+  pairs the first one selected (they are degenerate at zero projection in it). A
+  heteronuclear 3d/4f active space is stated by hand.
 - ⚠ **Löwdin atomic charges are withdrawn from every printed report** (measured sign-wrong
   on three of five characterized systems, unrescued by basis); the supported charge is the
   atomic-reference partition

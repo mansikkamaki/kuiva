@@ -126,3 +126,100 @@ literature default.
 - The localized set is not Kramers paired (like any active–active rotation), but each
   site's span is time-reversal closed, so the pairs are rebuilt per site before the set is
   handed on.
+
+## Automatic selection: targets, a probe, and a proposal
+
+The [`AutoCAS`](../reference/stages/AutoCAS.md) stage assembles a space out of the three
+constructions above and defines none of its own. What it adds is a **vocabulary of targets**,
+a way of deciding which of them are worth their size, and a proposed number of states.
+
+A *target* is a physical statement — "the valence 4f shells of the two dysprosiums", "the
+radical HOMO of the bridge", "the correlating shell of the cerium" — resolved against the
+reference and its free-atom orbitals into a bounded set of candidate Kramers pairs carrying
+a description another program could reproduce. Five classes, in a fixed priority order:
+the **shell** of each centre (the core, and the default target set), a fragment's **frontier**
+orbitals, the **bridge** between two centres, the metal–ligand **bonding** partners, and the
+**double shell**.
+
+**Centres are measured, never inferred from an element symbol.** An atom is a centre for
+$`l`$ when some frontier Kramers pair carries more than half its Löwdin population on
+$`(\text{atom}, l)`$ **and** the atom's own free-atom reference has an *open* shell of that
+$`l`$. Both conditions are load-bearing and both failures are on real systems: a Zn(2+)'s
+filled 3d occupies five frontier pairs at population 1.000 and is the most convincing centre
+in any population table, while a CeCl₃ cerium clears the threshold on its **5d** (0.765) as
+convincingly as on its 4f (0.919) — only the reference state's twenty d electrons say which
+shell the physics is in. Equivalent centres whose canonical orbitals delocalize over both
+(0.456 each, 0.913 pooled on a Ti₂Cl₆ dimer) are **pooled** into one centre; separating them
+is a localization, later.
+
+**Every shell-like candidate is an AVAS projection**, in a *count-stated* mode: a shell is
+$`2l+1`$ pairs per centre whatever the next pair's projection is, so the count states the
+size and the eigenvalue gap at the cut stays the honesty check. The threshold mode and the
+count mode select the same pairs wherever a real gap exists — on TiCl₃ the Ti 3d projections
+run 0.912, 0.906, 0.906, 0.735, 0.735 and then 0.265, so "everything above 0.4" and "the five
+pairs of the shell" are one set — which is what makes the count a restatement of AVAS rather
+than a second construction of the shell. Character selection is deliberately **not** offered
+as a fallback here: the same character statement has been measured selecting a 1s core pair
+in one basis and not in another, while the AVAS selection was basis-stable, and two
+constructions of "the shell" would be two definitions of it.
+
+⚠ **A ligand class may never select a pair out of the projection's null space.** The pairs
+AVAS did not select are degenerate at *zero* projection, so their basis is whatever the
+diagonalization returned — and measured on a Ti₂Cl₆ dimer, runs of the same script selected
+three different "bridge" pairs. An active space that changes between identical runs is not an
+active space. The two classes that could reach there each take the one route that gives a
+unique answer: the **bridge** ranks by the projection onto the shell above a floor (a
+non-degenerate eigenvector is unique, and a ligand pair orthogonal to the metal shell mediates
+no superexchange anyway), and the **frontier** rotates the unclaimed pairs onto its own
+fragment (the *span* of what AVAS did not select is unique even when its basis is not, so
+diagonalizing the fragment's population operator on it fixes the answer).
+
+⚠ **And a ligand class ordered by fragment population selects core orbitals.** The most
+localized orbital on a fragment is its most *core* one: ranked by population, a Ti₂Cl₆ bridge
+came back as deep chlorine pairs with 0.72 and 0.66 on the bridging atoms and no part in any
+exchange pathway. Population **filters**; proximity to the gap, or the projection onto the
+shell, **orders**.
+
+### What decides whether a class stays
+
+The cheap CI is the **probe**: one bounded pre-optimization per round, at a budget held
+constant across the whole protocol, whose relative state energies inside the ground manifold
+— plus the gap above it — are the *target spectrum*. A class is kept when it moves one of
+those numbers by more than a percentage of the manifold's width with an absolute floor under
+it, the same shape as every ligand-field band in this project.
+
+⚠ **The spectrum decides; entropy only prunes.** The relative single-orbital-entropy criterion
+[[113]](../references.md#r113)[[198]](../references.md#r198) ranks the candidates *inside one
+class*, where they all answer the same question, and is never asked whether the class matters:
+it is structurally blind to a correlating shell and to the empty members of a d manifold, and
+a bridging orbital or a radical shares at most $`\ln 2`$ nats with either ion, so in absolute
+terms it ranks below every metal orbital.
+
+A change under the tolerance but above the probe's measured noise floor is reported
+**"inconclusive, kept"** rather than resolved: a larger space is the safe error and the size
+budget bounds it. That is the honest outcome for lanthanide exchange, where 256 states split
+by a few cm⁻¹ is below what any cheap CI resolves.
+
+Over budget, **whole classes are dropped in reverse priority**, each with the size it cost;
+the shells are never pruned and never cut, and the core alone over budget refuses with the two
+ways out named. Dropping is by class and never by entropy across classes: the priority is a
+statement about physics, an entropy is a number from a qualitative probe.
+
+### The state count it proposes
+
+A count is the first manifold boundary of the probe's spectrum at or **above** a theoretical
+floor: the dimension of the Hund [[199]](../references.md#r199) ground manifold of each
+centre's shell — the level $`2J+1`$ on the f block, where spin–orbit coupling dominates the
+ligand field, and the spin multiplicity $`2S+1`$ on the d block, where the orbital part is the
+field's to decide and only the probe can see it. The floor is extended *outward* to the
+boundary and never truncated inward, because a count that ends inside a near-degenerate
+manifold makes the averaged density non-invariant and the resulting error is
+self-reinforcing ([casscf](casscf.md)); the product over centres — the dimension of the
+exchange manifold — is printed beside it even where no cap can reach it.
+
+⚠ It is a **proposal**, read off a qualitative probe. Everything that makes it a state count
+runs downstream unchanged: the state-averaging gate's refusal to split a degenerate block,
+the boundary diagnostic at both ends of the optimization, and the energy window's ladder with
+its converged witness roots. Two outcomes are stated rather than rounded: a boundary above the
+cap proposes **no count at all** (a capped count would be a cut inside the manifold), and a
+spectrum that never gapped proposes the floor marked as a lower bound.

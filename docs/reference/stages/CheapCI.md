@@ -8,6 +8,10 @@ the [`CASSCF`](CASSCF.md), and the entanglement data
 topology. A `CASSCF` built on this stage inherits both, plus the active space stated here,
 unless told otherwise.
 
+`reference` is a [`Reference`](Reference.md) or an [`AutoCAS`](AutoCAS.md); on the latter the
+space and the orbitals are inherited and a restated `character=` is refused, exactly as on
+the stages after it.
+
 ⚠ **The pre-optimizer's total energy means nothing** and is deliberately not an attribute.
 What it claims — and what is asserted — is that the *occupations* converge long before the
 energy does, which is what makes it useful for selecting orbitals.

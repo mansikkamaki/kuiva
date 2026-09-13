@@ -3,8 +3,9 @@
 A full CI at orbitals that are **not** re-optimized — the scan primitive of this API.
 `upstream` is any finished stage that carries orbitals: a [`CASSCF`](CASSCF.md) (the usual
 one — spend one converged orbital set on a second spectrum without paying for a second
-optimization), a [`CheapCI`](CheapCI.md), or a plain [`Reference`](Reference.md) (the CI at
-the SCF guess). The orbitals come from that stage and so does the active space; what varies
+optimization), a [`CheapCI`](CheapCI.md), an [`AutoCAS`](AutoCAS.md) (whose proposed state
+count an unstated `n_states` takes, announced in the output), or a plain
+[`Reference`](Reference.md) (the CI at the SCF guess). The orbitals come from that stage and so does the active space; what varies
 here is everything else.
 
 ```python
