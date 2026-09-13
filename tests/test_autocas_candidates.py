@@ -242,16 +242,67 @@ def test_the_rotated_orbitals_and_not_the_inputs_are_what_the_columns_index(ticl
     assert np.abs(before - after).max() < 1e-10
 
 
-def test_shells_of_two_different_l_are_refused_rather_than_composed(ticl3):
-    """⚠ Two projectors mean two rotations, and the second re-mixes the pairs the first
-    selected -- they are degenerate at zero projection in it, so their basis is whatever the
-    diagonalization returns. The refusal names what lifting it would take."""
-    centre = ctr.detect_centres(ticl3, report=False).centres[0]
+def _chloride_p_centre(ticl3):
+    """A second centre of a DIFFERENT ``l`` on the fast system: Cl2's 3p shell.
+
+    Not a magnetic centre -- the detection would never offer one -- but the construction does
+    not ask why a centre is a centre, and this is the only committed default-suite molecule
+    with a second shell to compose. Its channels say "closed p", so the shell's six electrons
+    are measured rather than refused.
+    """
     from dataclasses import replace
 
-    other = replace(centre, l=3)
-    with pytest.raises(ValueError, match="more than one angular momentum"):
-        cand.shell_candidates(ticl3, [centre, other], report=False)
+    titanium = ctr.detect_centres(ticl3, report=False).centres[0]
+    return titanium, replace(titanium, atoms=(1,), l=1, labels=("2 Cl",),
+                             reference_state="Cl neutral ground",
+                             reference_channels=(6.0, 12.0), stated=False,
+                             trusted_state=False)
+
+
+def test_shells_of_two_different_l_are_one_projection_with_every_pair_attributed(ticl3):
+    """⚠ The union construction on a real molecule, asserted through what it is used for.
+
+    Five Ti 3d pairs and three Cl 3p pairs from ONE projection, each pair attributed to the
+    centre it projects onto most, the per-centre electrons following the attribution -- and
+    the titanium's share is the same space the Ti shell alone is. That last check is what
+    fails if the union re-mixed the shells the way two projections in sequence do."""
+    titanium, chlorine = _chloride_p_centre(ticl3)
+    alone = cand.shell_candidates(ticl3, [titanium], report=False)
+    union = cand.shell_candidates(ticl3, [titanium, chlorine], report=False)
+    shell = union.shell
+    assert shell.n_pairs == 8 and _whole_pairs(shell.columns) and shell.fixed
+    assert [len(f) // 2 for f in shell.fragments] == [5, 3]
+    assert shell.centre_electrons == (1.0, 6.0) and shell.electrons == 7.0
+    overlaps = _principal_overlaps(ticl3, union.coeff, shell.fragments[0],
+                                   alone.coeff, alone.shell.columns)
+    assert np.abs(overlaps - 1.0).max() < 1e-8, overlaps
+    assert "union of the d shell of 1 Ti and p shell of 2 Cl" in shell.description
+    assert "5 + 3" in shell.description and "[" not in shell.description
+    occ = np.asarray(ticl3.spinors.occ)
+    start = ticl3.spinors_in_ao()
+    moved = (start * occ) @ start.conj().T - (union.coeff * occ) @ union.coeff.conj().T
+    assert np.abs(moved).max() < 1e-10
+
+    swapped = cand.shell_candidates(ticl3, [chlorine, titanium], report=False)
+    assert [len(f) // 2 for f in swapped.shell.fragments] == [3, 5]
+    overlaps = _principal_overlaps(ticl3, union.coeff, shell.columns,
+                                   swapped.coeff, swapped.shell.columns)
+    assert np.abs(overlaps - 1.0).max() < 1e-10
+
+
+def test_the_correlating_shells_of_a_union_do_not_change_its_valence_shells(ticl3):
+    """The double-shell rule carries over unchanged: the second rotation is confined to the
+    empty pairs the union left at zero projection, so the valence shells are bitwise the
+    one-shell construction's and the correlating shells are empty and attributed too."""
+    titanium, chlorine = _chloride_p_centre(ticl3)
+    union = cand.shell_candidates(ticl3, [titanium, chlorine], report=False)
+    both = cand.shell_candidates(ticl3, [titanium, chlorine], double=True, report=False)
+    cols = np.asarray(union.shell.columns, dtype=int)
+    assert np.array_equal(both.shell.columns, cols)
+    assert np.allclose(both.coeff[:, cols], union.coeff[:, cols], atol=1e-12, rtol=0.0)
+    assert both.double.n_pairs == 8 and both.double.electrons == 0.0
+    assert sum(len(f) // 2 for f in both.double.fragments) == 8
+    cand.check_disjoint(both.sets)
 
 
 def test_no_centres_is_a_refusal_and_not_an_empty_space(ticl3):
@@ -314,6 +365,27 @@ def test_a_full_shell_is_the_same_decision_in_the_other_direction():
     count, _ = cand._shell_electrons([_centre(stated=True, trusted=True)],
                                      np.full(5, 2.0))
     assert count == 1.0, "the stated d1 reference against a shell measured as filled"
+
+
+def test_the_empty_shell_decision_is_taken_per_centre_in_a_union(kuiva_caplog):
+    """⚠ The heterometallic case the per-centre decision exists for. A scalar ROHF of a
+    Ti(3+)/Ce(3+) pair puts the cerium electron in a 5d orbital, so the Ce 4f pairs are empty
+    while the Ti 3d pair beside them holds its electron. The union as a whole is neither empty
+    nor full, so a whole-shell test measures one electron and loses the ion; per centre, the
+    f-block reference state supplies it -- loudly."""
+    ti = _centre(stated=False, trusted=False)
+    ce = ctr.Centre(atoms=(1,), l=3, labels=("2 Ce",), population=0.9, pooled=False,
+                    reference_state="Ce(3+) [Xe]4f1", reference_channels=(10.0, 24.0, 20.0, 1.0),
+                    stated=False, trusted_state=True)
+    pair_occ = np.zeros(20)
+    pair_occ[3] = 1.0                                      # the Ti 3d singly occupied pair
+    ti_pairs, ce_pairs = np.arange(0, 5), np.arange(5, 12)
+    groups = (tuple(cand._pair_columns(ti_pairs)), tuple(cand._pair_columns(ce_pairs)))
+    whole, _ = cand._shell_electrons([ti, ce], pair_occ[np.arange(12)])
+    assert whole is None, "the whole-shell test sees nothing wrong with CAS(1, 24)"
+    total, note, per_centre = cand._attributed_electrons([ti, ce], groups, pair_occ)
+    assert per_centre == (1.0, 1.0) and total == 2.0
+    assert "reference state instead" in note
 
 
 # --- the tie rule (the mechanism) -------------------------------------------------------------
@@ -570,6 +642,40 @@ def test_the_cerium_f_shell_is_empty_in_the_reference_and_still_holds_one_electr
     assert double.n_pairs == 7 and double.fixed and double.electrons == 0.0
     assert float(double.ranking.max()) <= float(shell.ranking.min()) + 1e-12
     cand.check_disjoint(construction.sets)
+
+
+@pytest.mark.slow
+def test_a_d_and_an_f_ion_are_one_union_with_each_shell_whole_and_its_own_count():
+    """⚠ The committed system that needs the union: a Ti(3+) 3d and a Ce(3+) 4f, 25 A apart.
+
+    Four things, each a way the union construction can be wrong on a real two-element
+    reference: every selected pair is PURELY one shell (the union is degenerate across the
+    two, and an unseparated block came back as 96/4, 14/86 and 85/15 per cent mixtures); each
+    shell's share is exactly the space that shell alone selects; the per-centre empty-shell
+    decision supplies one electron to EACH ion (the ROHF left both shells empty); and the
+    floor is a product over the two blocks in their own regimes -- a d-block spin doublet and
+    the six-fold 2F5/2."""
+    from kuiva.autocas import protocol as proto
+
+    reference = reference_for("tice_far")
+    centres = (ctr.shell_centre(reference, "Ti", "d"), ctr.shell_centre(reference, "Ce", "f"))
+    construction = cand.shell_candidates(reference, centres, report=False)
+    shell = construction.shell
+    assert shell.n_pairs == 12 and _whole_pairs(shell.columns)
+    assert [len(f) // 2 for f in shell.fragments] == [5, 7]
+    pairs = np.asarray(shell.columns, dtype=int)[0::2] // 2
+    parts = construction.avas.component_projections[:, pairs]
+    assert np.allclose(np.sort(parts, axis=0), [[0.0] * 12, [1.0] * 12], atol=1e-8), parts
+    for centre, fragment in zip(centres, shell.fragments):
+        alone = cand.shell_candidates(reference, [centre], report=False)
+        overlaps = _principal_overlaps(reference, construction.coeff, fragment,
+                                       alone.coeff, alone.shell.columns)
+        assert np.abs(overlaps - 1.0).max() < 1e-8, (centre, overlaps)
+    assert shell.centre_electrons == (1.0, 1.0) and shell.electrons == 2.0
+    assert sum("reference state instead" in n for n in shell.notes[1].split("; ")) == 2
+    assert proto._floors(centres, shell)[:2] == (6, 12)
+    assert proto._hund_product(centres, shell)[0] == 140
+    assert proto._site_counts(centres, proto._centre_atoms(centres)) == (10, 14)
 
 
 @pytest.mark.slow

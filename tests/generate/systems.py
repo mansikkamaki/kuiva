@@ -182,6 +182,16 @@ def _ti3_far(sep: float = 25.0) -> List[Atom]:
             ("Ti", (2.0 * sep, 0.0, 0.0))]
 
 
+def _tice_far(sep: float = 25.0) -> List[Atom]:
+    """A bare Ti(3+) and a bare Ce(3+) ``sep`` Angstrom apart along x -- a d shell and an f shell.
+
+    The cheapest committed system whose active space is two shells of DIFFERENT angular
+    momentum, which a single (atom, l) statement cannot state. A chloride-bridged TiCeCl6
+    (280 AOs) did not finish its ROHF triplet inside the ten-minute rule; the two ions are 154.
+    """
+    return [("Ti", (0.0, 0.0, 0.0)), ("Ce", (sep, 0.0, 0.0))]
+
+
 def _ti3f9_far(sep: float = 25.0) -> List[Atom]:
     """Three TiF3 monomers at ``sep`` Angstrom along x — the d^1 TRIMER, far limit.
 
@@ -292,6 +302,10 @@ class System:
     slow: bool = False
     geom_note: str = ""
     physics_note: str = ""
+    #: Front-end statements the system cannot be run without, passed to the scalar SCF as
+    #: they are (``configuration=``, SCF convergence controls). Empty for every system whose
+    #: defaults suffice.
+    scf_options: Dict[str, object] = field(default_factory=dict)
 
     @property
     def elements(self) -> Tuple[str, ...]:
@@ -563,6 +577,26 @@ SYSTEMS: Tuple[System, ...] = (
                      "record (tier1=False): its scalar counterpart is the tif3 monomer "
                      "by additivity, and a direct record would be a ~375-root scalar "
                      "SA-CASSCF — the half-day-reference trap",
+    ),
+    System(
+        key="tice_far", label="Ti(3+) + Ce(3+) (25 A)", atoms=_tice_far(25.0), charge=6,
+        spin=2, basis="x2c-SVPall-2c", basis_matched="ano-rcc-vdzp",
+        ncas=12, nelecas=2, active_l="",
+        nroots={3: 35, 1: 35}, tier1=False, slow=True,
+        scf_options=dict(configuration={"Ti": "+3", "Ce": "+3"}, second_order=True,
+                         max_cycle=80),
+        geom_note="a bare Ti(3+) and a bare Ce(3+) 25 A apart along x",
+        physics_note="TWO SHELLS OF DIFFERENT l: the Ti 3d and the Ce 4f, CAS(2, 24). No "
+                     "(atom, l) character statement states it (active_l is empty), so it has "
+                     "no Tier-1 record; it exists for the automatic selection's union "
+                     "projection. ⚠ Three front-end facts it cannot be run without: the "
+                     "first-order ROHF triplet does not converge in 300 cycles with or "
+                     "without a level shift (second_order=True converges in ~20 s); the "
+                     "converged ROHF leaves BOTH shells empty, so each ion's electron count "
+                     "comes from its reference state; and the neutral-Ti default reference "
+                     "is refused for that, so configuration= states both ions. The ground "
+                     "manifold is the 24-fold product of Ti 2D3/2 and Ce 2F5/2, split by a "
+                     "few cm^-1 by each ion's charge acting on the other",
     ),
     System(
         key="ti2cl6_far", label="Ti2Cl6 (25 A)", atoms=_ti2cl6_far(25.0), charge=0, spin=0,

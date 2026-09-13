@@ -770,11 +770,14 @@ class AutoCAS(_Stage):
             log.warning("%s", note)
             return
         sites = [list(atoms) for atoms in self.assembly.site_atoms]
-        per_site = int(columns.size // len(sites))
+        # Shell spinors per site from the centres, never an equal split: a 3d centre beside a
+        # 4f one is ten spinors and fourteen.
+        counts = (list(self.assembly.site_counts)
+                  or [int(columns.size // len(sites))] * len(sites))
         try:
             localization = localize_active_space(
                 reference, self.space, sites, coeff=self.orbitals, columns=columns,
-                counts=[per_site] * len(sites), report=self.report)
+                counts=counts, report=self.report)
         except ValueError as exc:
             log.warning("the shells did not localize onto the individual centres, so no site "
                         "partition is claimed and a tensor-network ordering falls back to the "

@@ -17,14 +17,23 @@ and the double shell is built *after* it, by a second rotation confined to the e
 shell left over at (near) zero projection -- so asking for it changes neither the shell nor
 the spectrum the other classes read. :func:`shell_candidates` is where all three come from.
 
-⚠ **One rotation per orbital set, and a second one is refused rather than composed.** Two
-shells of *different* ``l`` (a heteronuclear 3d/4f pair) need two AVAS calls with two
-projectors, and the second call's rotation mixes the pairs the first call selected: within an
-occupation group the pairs outside the second projector's span are degenerate at eigenvalue
-zero, so their basis is whatever the diagonalization returns. The refusal names the case and
-what to do about it; what it would take to lift is one call whose reference span is the
-*union* of the two shells, with each selected pair attributed to the centre it projects onto
--- a change inside :func:`kuiva.mcscf.avas.avas` (a per-atom ``l``), not here.
+⚠ **One rotation per orbital set, never two composed -- and shells of different ``l`` are
+one projection onto the union.** A heterometallic 3d/4f pair (or a 4f shell with a 5d partner)
+is not two AVAS calls: the second call's rotation mixes the pairs the first call selected,
+because within an occupation group the pairs outside the second projector's span are
+degenerate at eigenvalue zero and their basis is whatever the diagonalization returns
+(measured: a sequential O 2p / H 1s pair of calls on water lost part of the first selection,
+by a different amount on two identical runs, and a Ti 3d / Ce 4f pair lost all of it). It is one count-stated projection
+onto the **union** of the centres' reference spans (``shells=`` of
+:func:`kuiva.mcscf.avas.avas_projection`), with each selected pair attributed to the centre
+whose shell it projects onto most -- a diagonal read in the rotated orbitals, not a rotation.
+Everything a shell carries per centre (its pairs, its electron count, its floor) follows that
+attribution, and a count that does not come out as ``2l+1`` per atom **warns**.
+
+⚠ **Shells of one ``l`` keep the single projection they always had**, bitwise, and their
+per-centre attribution by Loewdin population: the union form is taken only where the centres
+have more than one ``l``. Two equivalent centres of one ``l`` have no shell-by-shell
+projection to tell them apart anyway -- only a localization can, later.
 
 ⚠ **No ligand class may select a pair out of the projection's null space, and that is a
 correctness rule rather than a preference.** The pairs of an occupation group that AVAS did
@@ -177,6 +186,12 @@ class CandidateSet:
     #: What the selection did beyond the plain rule: a degenerate group it had to round out
     #: to, a gap at the cut, an empty class's reason. Printed, never silent.
     notes: Tuple[str, ...] = ()
+    #: Electrons per centre, in the order of the centres the shell was built for; set on a
+    #: shell only. ⚠ What the floors and the Hund product are computed from: with centres of
+    #: one ``l`` the shell's electrons divided over its atoms, with centres of different ``l``
+    #: the count of the pairs attributed to each (a Ti d^1 beside a Ce f^1 is not two
+    #: "one-electron atoms" of one kind).
+    centre_electrons: Tuple[float, ...] = ()
 
     @property
     def priority(self) -> int:
@@ -493,8 +508,10 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
         A finished spinor reference (duck-typed: ``data``, ``ao_layout``, ``spinors``,
         ``spinors_in_ao()``), with ``atomic_reference=True`` on its scalar SCF.
     centres
-        :class:`~kuiva.autocas.centres.Centre` objects, **all of one** ``l`` -- see the module
-        docstring for why a second angular momentum is refused rather than composed.
+        :class:`~kuiva.autocas.centres.Centre` objects. Of one ``l`` they are one AVAS
+        projection as always; of several, one projection onto the **union** of their
+        reference spans with every selected pair attributed to a centre -- see the module
+        docstring for why that and not two projections.
     coeff, occupation
         The orbital set to rotate, defaulting to the reference's own guess spinors.
     double
@@ -517,17 +534,18 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
     if not centres:
         raise ValueError("no centres: there is no shell to construct")
     ells = sorted({int(c.l) for c in centres})
-    if len(ells) > 1:
-        raise ValueError(
-            "the shells asked for span more than one angular momentum ({}), which needs one "
-            "AVAS projection each -- and a second projection's rotation re-mixes the pairs "
-            "the first one selected, because they are degenerate at zero projection in it. "
-            "Run one shell at a time, or state the active space explicitly. (Lifting this "
-            "means one projection onto the union of the reference spans, with each selected "
-            "pair attributed to the centre it projects onto.)"
-            .format(", ".join(tg.angular_momentum_letter(e) for e in ells)))
+    mixed = len(ells) > 1
     ell = ells[0]
     atoms = tuple(sorted({int(a) for c in centres for a in c.atoms}))
+    # ⚠ The one statement of what is projected onto, shared by every call below: the single
+    # (atoms, l) form where the centres share an l -- bitwise what it always was -- and one
+    # union entry per centre where they do not, so the attribution has a row per centre.
+    if mixed:
+        def target(n_shells):
+            return dict(shells=[(list(c.atoms), int(c.l), int(n_shells)) for c in centres])
+    else:
+        def target(n_shells):
+            return dict(atom=list(atoms), l=ell, n_shells=int(n_shells))
     if coeff is None:
         coeff = reference.spinors_in_ao()
         if occupation is None:
@@ -542,8 +560,8 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
     # this function's decision, because a shell that is empty in the reference has no aufbau
     # count and `active_space` can only refuse one (see `_shell_electrons`).
     result = avas_projection(coeff, reference.data.s_ao, reference.ao_layout,
-                             reference.data.atomic_reference, atom=list(atoms), l=ell,
-                             occupation=occupation, n_shells=1, n_pairs=n_shell_pairs)
+                             reference.data.atomic_reference, occupation=occupation,
+                             n_pairs=n_shell_pairs, **target(1))
     if report:
         result.report(log)
     values = np.asarray(result.eigenvalues, dtype=float)
@@ -577,7 +595,7 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
                          and values[p] < DEFAULT_BONDING_FLOOR], dtype=int)
         m_two, _, _ = projection_pair_matrix(
             result.coeff, reference.data.s_ao, reference.ao_layout,
-            reference.data.atomic_reference, atom=list(atoms), l=ell, n_shells=2)
+            reference.data.atomic_reference, **target(2))
         w, v = np.linalg.eigh(m_two[np.ix_(pool, pool)])
         order = np.argsort(-w, kind="stable")
         w, v = w[order], v[:, order]
@@ -588,7 +606,7 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
         # pool's eigenvalue range, so none can cross the floor the other classes read.
         m_one, _, _ = projection_pair_matrix(
             rotated, reference.data.s_ao, reference.ao_layout,
-            reference.data.atomic_reference, atom=list(atoms), l=ell, n_shells=1)
+            reference.data.atomic_reference, **target(1))
         values = values.copy()
         values[pool] = np.real(np.diag(m_one))[pool]
         result = _replace(result, coeff=rotated, eigenvalues=values)
@@ -598,32 +616,47 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
         double_values = w[:take][np.argsort(pool[:take])]
         if take < n_shell_pairs:
             raise ValueError(
-                "the basis leaves only {} empty Kramers pairs outside the {} shell of {} for a "
-                "correlating shell of {}".format(pool.size, tg.angular_momentum_letter(ell),
-                                                 " and ".join(c.where for c in centres),
-                                                 n_shell_pairs))
+                "the basis leaves only {} empty Kramers pairs outside the {} for a correlating "
+                "shell of {}".format(pool.size, _shells_phrase(centres), n_shell_pairs))
         if float(double_values.min()) < DEFAULT_BONDING_FLOOR:
-            log.warning("the correlating shell of %s reaches down to empty pairs carrying "
-                        "only %.3f of the two-shell projection: the basis does not hold a "
-                        "second %s shell for them to be, so the class is weakly defined",
-                        " and ".join(c.where for c in centres),
-                        float(double_values.min()), tg.angular_momentum_letter(ell))
+            log.warning("the correlating shell of the %s reaches down to empty pairs "
+                        "carrying only %.3f of the two-shell projection: the basis does not "
+                        "hold a second shell for them to be, so the class is weakly defined",
+                        _shells_phrase(centres), float(double_values.min()))
 
     where = " and ".join(c.where for c in centres)
     state = centres[0].reference_state
     shell_note = ("gap at the cut {:.3f}".format(result.gap) if np.isfinite(result.gap)
                   else "no pair was dropped, so there is no gap to report")
-    description = (
-        "the {} Kramers pairs of largest {} projection on {} (count-stated AVAS on the "
-        "free-atom reference, {}; {})".format(
-            shell_pairs.size, tg.angular_momentum_letter(ell), where, state, shell_note))
-    electrons, electron_note = _shell_electrons(centres, pair_occ[shell_pairs])
+    if mixed:
+        shell_fragments = _attribute_by_projection(reference, result.coeff, centres,
+                                                   shell_pairs, n_shells=1)
+        description = (
+            "the {} Kramers pairs of largest projection onto the union of the {} (one "
+            "count-stated AVAS on the free-atom reference, {}; each pair attributed to the "
+            "shell it projects onto most, {}; {})".format(
+                shell_pairs.size, _shells_phrase(centres),
+                ", ".join("{}: {}".format(c.where, c.reference_state) for c in centres),
+                " + ".join(str(len(g) // 2) for g in shell_fragments), shell_note))
+        electrons, electron_note, per_centre = _attributed_electrons(
+            centres, shell_fragments, pair_occ)
+    else:
+        shell_fragments = _attribute(reference, result.coeff, centres, shell_pairs)
+        description = (
+            "the {} Kramers pairs of largest {} projection on {} (count-stated AVAS on the "
+            "free-atom reference, {}; {})".format(
+                shell_pairs.size, tg.angular_momentum_letter(ell), where, state, shell_note))
+        electrons, electron_note = _shell_electrons(centres, pair_occ[shell_pairs])
+        total = float(electrons if electrons is not None else np.sum(pair_occ[shell_pairs]))
+        n_atoms = sum(len(c.atoms) for c in centres)
+        per_centre = tuple(total * len(c.atoms) / n_atoms for c in centres)
     shell = CandidateSet(
         cls="shell", columns=_pair_columns(shell_pairs), description=description,
         occupations=pair_occ[shell_pairs], ranking=ranking[shell_pairs],
         ranking_name=ranking_name, fixed=True, stated_electrons=electrons,
-        fragments=_attribute(reference, result.coeff, centres, shell_pairs),
-        notes=(shell_note,) + ((electron_note,) if electron_note else ()))
+        fragments=shell_fragments,
+        notes=(shell_note,) + ((electron_note,) if electron_note else ()),
+        centre_electrons=per_centre)
 
     _cross_check(centres, shell)
 
@@ -631,7 +664,14 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
     if double:
         double_set = CandidateSet(
             cls="double", columns=_pair_columns(double_pairs),
-            description=("the {} empty Kramers pairs of largest two-shell {} projection on {} "
+            description=("the {} empty Kramers pairs of largest two-shell projection onto "
+                         "the {} outside the valence shells -- the correlating shells "
+                         "(projections {:.3f}..{:.3f}, {})"
+                         .format(double_pairs.size, _shells_phrase(centres),
+                                 float(double_values.max()), float(double_values.min()),
+                                 ", ".join(c.reference_state for c in centres))
+                         if mixed else
+                         "the {} empty Kramers pairs of largest two-shell {} projection on {} "
                          "outside the valence shell -- the correlating shell (projections "
                          "{:.3f}..{:.3f}, {})"
                          .format(double_pairs.size, tg.angular_momentum_letter(ell), where,
@@ -640,7 +680,10 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
             occupations=pair_occ[double_pairs], ranking=double_values,
             ranking_name="AVAS projection onto two shells, outside the valence shell",
             fixed=True,
-            fragments=_attribute(reference, result.coeff, centres, double_pairs),
+            fragments=(_attribute_by_projection(reference, result.coeff, centres,
+                                                double_pairs, n_shells=2)
+                       if mixed else
+                       _attribute(reference, result.coeff, centres, double_pairs)),
             notes=("taken whole or not at all: at this level a correlating shell is empty "
                    "whatever it is worth, so only the spectrum can decide it",))
     bonding_set = None
@@ -700,6 +743,74 @@ def _shell_electrons(centres, occupations) -> Tuple[Optional[float], str]:
     return expected, note
 
 
+def _shells_phrase(centres) -> str:
+    """``"d shell of Ti1 and f shell of Ce2"`` -- the shells as a statement, one per centre."""
+    return " and ".join("{} shell of {}".format(tg.angular_momentum_letter(c.l), c.where)
+                        for c in centres)
+
+
+def _attribute_by_projection(reference, coeff, centres, pairs, *,
+                             n_shells: int) -> Tuple[Tuple[int, ...], ...]:
+    """Which centre each pair belongs to, by its projection onto each centre's shell alone.
+
+    The attribution for centres of **different** ``l``, where a Loewdin population cannot do
+    it: a 4f and a 5d on one lanthanide sit on the same atom. Each pair goes to the centre
+    whose reference span it projects onto most (:func:`kuiva.mcscf.avas.component_projections`,
+    a diagonal read that rotates nothing), and a count that does not come out as ``2l+1`` per
+    atom **warns** -- for the valence shells (``n_shells=1``) that means the union's pairs do
+    not separate into the shells the statement names, which is a fact about the molecule and
+    not an error; the space is still the union that was asked for.
+    """
+    from ..mcscf.avas import component_projections
+
+    pairs = np.asarray(pairs, dtype=int)
+    parts, _ = component_projections(
+        coeff, reference.data.s_ao, reference.ao_layout, reference.data.atomic_reference,
+        shells=[(list(c.atoms), int(c.l), int(n_shells)) for c in centres])
+    owner = np.argmax(parts[:, pairs], axis=0) if pairs.size else np.zeros(0, dtype=int)
+    groups = []
+    for i, centre in enumerate(centres):
+        mine = pairs[owner == i]
+        if mine.size != centre.n_pairs:
+            log.warning("%d of the %d pairs selected by the union projection project most onto "
+                        "the %s shell of %s, which is %d pairs: the union's orbitals do not "
+                        "separate into the shells the statement names. The space is still the "
+                        "union that was asked for; what is not reliable is the per-centre "
+                        "attribution, and with it the per-centre electron count and floor",
+                        mine.size, pairs.size, tg.angular_momentum_letter(centre.l),
+                        centre.where, centre.n_pairs)
+        groups.append(tuple(int(c) for c in _pair_columns(mine)))
+    return tuple(groups)
+
+
+def _attributed_electrons(centres, groups, pair_occ) -> Tuple[Optional[float], str,
+                                                               Tuple[float, ...]]:
+    """``(stated total or None, note, per-centre electrons)`` for a union shell.
+
+    :func:`_shell_electrons` applied **per centre**, to the pairs attributed to it -- the
+    empty-shell decision is a statement about one ion and has to be taken where that ion's
+    pairs are. ⚠ The case it exists for is the ordinary one for a heterometallic lanthanide
+    complex: the scalar ROHF puts the Ce(3+) electron in a 5d orbital, so the Ce 4f pairs are
+    empty while the Ti 3d pair beside them holds its electron, and the union as a whole is
+    neither empty nor full -- a whole-shell test would measure CAS(1, 24) and lose the ion.
+    """
+    pair_occ = np.asarray(pair_occ, dtype=float)
+    per_centre: List[float] = []
+    notes: List[str] = []
+    stated = False
+    for centre, group in zip(centres, groups):
+        pairs = np.asarray(group, dtype=int)[0::2] // 2
+        electrons, note = _shell_electrons([centre], pair_occ[pairs])
+        if electrons is None:
+            per_centre.append(float(np.sum(pair_occ[pairs])))
+        else:
+            stated = True
+            per_centre.append(float(electrons))
+            notes.append(note)
+    total = float(sum(per_centre))
+    return (total if stated else None), "; ".join(notes), tuple(per_centre)
+
+
 def _attribute(reference, coeff, centres, pairs) -> Tuple[Tuple[int, ...], ...]:
     """Which centre each selected pair belongs to -- the ``fragments`` of the active space.
 
@@ -734,12 +845,12 @@ def _cross_check(centres, shell: CandidateSet) -> None:
     ⚠ The count that *defines* the space is this measured one; the configuration statement is
     only allowed to disagree with it (:func:`kuiva.autocas.centres.check_configuration`).
     """
-    electrons_of_pair = {int(c): float(o)
+    electrons_of_pair = {int(c) // 2: float(o)
                          for c, o in zip(np.asarray(shell.columns, dtype=int)[0::2],
                                          np.asarray(shell.occupations, dtype=float))}
     groups = shell.fragments or ((tuple(int(c) for c in shell.columns),),)
     for centre, group in zip(centres, groups):
-        electrons = sum(electrons_of_pair.get(int(c), 0.0)
+        electrons = sum(electrons_of_pair.get(int(c) // 2, 0.0)
                         for c in np.asarray(group, dtype=int)[0::2])
         ctr.check_configuration(centre, electrons / max(len(centre.atoms), 1))
 

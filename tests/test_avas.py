@@ -297,6 +297,120 @@ def test_the_projection_without_a_space_is_the_same_projection(water):
     projection.report()                     # must not need a space to report itself
 
 
+# --- several shells: one projection onto the union ----------------------------------------------
+
+def _span(result, coeff=None, pairs=None):
+    coeff = result.coeff if coeff is None else coeff
+    pairs = result.selected if pairs is None else pairs
+    return coeff[:, np.concatenate([[2 * int(p), 2 * int(p) + 1] for p in pairs])]
+
+
+def _principal(reference, a, b):
+    s2 = spin_block_diagonal(np.asarray(reference.reference.data.s_ao))
+    return np.linalg.svd(a.conj().T @ s2 @ b, compute_uv=False)
+
+
+def test_one_listed_shell_is_bitwise_the_single_shell_form(water):
+    """``shells=[(atom, l)]`` may not be a second construction of the one-shell projector:
+    every committed single-shell space goes through the same code, so they must agree to
+    the bit."""
+    single = run_avas(water, atom="O", l="p", n_pairs=3)
+    listed = run_avas(water, shells=[("O", "p")], n_pairs=3)
+    assert np.array_equal(single.coeff, listed.coeff)
+    assert np.array_equal(single.eigenvalues, listed.eigenvalues)
+    assert listed.component_projections is None and listed.components == ()
+
+
+def test_the_union_is_one_projector_whatever_order_its_shells_are_listed_in(water):
+    """The union's trace is the number of reference orbitals of all its shells, and its
+    selection is a span of eigenvectors of one projector -- so listing the shells in the
+    other order may change the labels and nothing else."""
+    ab = run_avas(water, shells=[("O", "s"), ("O", "p")], n_pairs=4)
+    ba = run_avas(water, shells=[("O", "p"), ("O", "s")], n_pairs=4)
+    assert float(ab.eigenvalues.sum()) == pytest.approx(4.0, abs=1e-10)
+    assert ab.gap > 0.5
+    overlaps = _principal(water, _span(ab), _span(ba))
+    assert np.abs(overlaps - 1.0).max() < 1e-10
+    assert ab.space.n_active == 8
+
+
+def test_two_projections_in_sequence_lose_the_first_selection(water):
+    """⚠ **The mechanism the union exists for, and the test that it can fail.** A second
+    AVAS call rotates inside the occupation groups, where the first call's selected pairs lie
+    outside its projector's span -- degenerate at zero there, so they come back as whatever
+    basis the diagonalization returns. The first selection is then not held by the columns
+    the two calls name (on this system a column is even claimed twice), by an amount that
+    differed between two identical runs."""
+    from kuiva.mcscf.avas import avas_projection
+
+    r = water.reference
+    first = avas_projection(r.spinors_in_ao(), r.data.s_ao, r.ao_layout,
+                            r.data.atomic_reference, atom="O", l="p",
+                            occupation=r.spinors.occ, n_pairs=3)
+    second = avas_projection(first.coeff, r.data.s_ao, r.ao_layout, r.data.atomic_reference,
+                             atom=[1, 2], l="s", occupation=r.spinors.occ, n_pairs=2)
+    named = sorted(set(first.selected.tolist()) | set(second.selected.tolist()))
+    kept = _principal(water, _span(first), _span(first, second.coeff, named))
+    assert float(kept.min()) < 0.99, kept
+    union = run_avas(water, shells=[("O", "p"), ([1, 2], "s")], n_pairs=5)
+    assert union.n_pairs == 5 and len(set(union.selected.tolist())) == 5
+
+
+def test_a_union_degenerate_across_its_shells_is_separated_shell_by_shell():
+    """⚠ The mechanism behind the far Ti(3+)/Ce(3+) pair. Where two shells do not overlap the
+    union projects at eigenvalue 1 on both, the diagonalization returns ANY basis of that block
+    (it returned pairs 96/4, 14/86 and 85/15 per cent Ti/Ce there), and an attribution by
+    argmax is then the diagonalization's choice. The second diagonalization inside the block
+    must hand back pure shell vectors, and must leave a non-degenerate eigenvector and the
+    null space exactly where they were."""
+    rng = np.random.default_rng(3)
+    n = 7
+    basis = np.linalg.qr(rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n)))[0]
+    p_a = basis[:, :2] @ basis[:, :2].conj().T                      # shell A: 2 pairs
+    p_b = basis[:, 2:5] @ basis[:, 2:5].conj().T                    # shell B: 3 pairs
+    union = p_a + p_b
+    w, v = np.linalg.eigh(union)
+    order = np.argsort(-w)
+    w, v = w[order], v[:, order]
+    mixed = v[:, :5] @ np.linalg.qr(rng.normal(size=(5, 5)) + 1j * rng.normal(size=(5, 5)))[0]
+    v = np.concatenate([mixed, v[:, 5:]], axis=1)                   # an arbitrary block basis
+    out = avas_mod._separate_degenerate_shells(w, v, 1.0 * p_a + 2.0 * p_b)
+    on_a = np.real(np.einsum("ip,ij,jp->p", out.conj(), p_a, out))
+    on_b = np.real(np.einsum("ip,ij,jp->p", out.conj(), p_b, out))
+    assert np.allclose(on_b[:3], 1.0, atol=1e-10) and np.allclose(on_a[3:5], 1.0, atol=1e-10)
+    assert np.allclose(out.conj().T @ out, np.eye(n), atol=1e-12)
+    assert np.allclose(out.conj().T @ union @ out, np.diag(w), atol=1e-10)
+    assert np.array_equal(out[:, 5:], v[:, 5:]), "the null space is not the block's to move"
+    before = np.real(np.einsum("ip,ij,jp->p", v.conj(), p_a, v))[:5]
+    assert np.max(np.minimum(before, 1.0 - before)) > 1e-3, "the test's block must start mixed"
+
+
+def test_each_pair_of_a_union_is_attributed_to_the_shell_it_projects_onto_most(water):
+    """A diagonal read in the rotated orbitals, reported per shell in the statement -- never
+    a second rotation, which would be the sequential defect again."""
+    result = run_avas(water, shells=[("O", "s"), ("O", "p")], n_pairs=4)
+    assert result.components and len(result.components) == 2
+    assert result.component_projections.shape == (2, result.eigenvalues.size)
+    owners = result.owners()
+    assert sorted(np.bincount(owners, minlength=2).tolist()) == [1, 3]
+    assert int(np.count_nonzero(owners == 0)) == 1, "one O 2s pair, three O 2p pairs"
+    assert "union of" in result.space.description
+    assert "per shell 1 + 3" in result.space.description
+    result.report()                            # the per-shell column must print
+
+
+def test_a_single_shell_and_a_union_together_are_refused(water):
+    with pytest.raises(ValueError, match="not both"):
+        run_avas(water, atom="O", l="p", shells=[("O", "s")], n_pairs=3)
+    with pytest.raises(ValueError, match="more than one entry"):
+        run_avas(water, shells=[("O", "p"), (0, "p")], n_pairs=3)
+    with pytest.raises(ValueError, match="atom= and l="):
+        run_avas(water, n_pairs=3)
+    single = run_avas(water, atom="O", l="p", n_pairs=3)
+    with pytest.raises(ValueError, match="no components"):
+        single.owners()
+
+
 # --- the stage surface ----------------------------------------------------------------------
 
 def test_the_stage_refuses_avas_together_with_another_selection(water):

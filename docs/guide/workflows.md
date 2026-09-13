@@ -206,6 +206,11 @@ of answering one question, and exactly one may be given.
 - `max_pairs=` refuses rather than returning more than you expected — worth setting, since a
   threshold slightly too low gives a perfectly plausible space one or two pairs too large,
   discovered only when the CI runs.
+- `shells=[("Ti", "d"), ("Ce", "f")]` in place of `atom=`/`l=` projects onto several shells
+  **at once**, which is how a heterometallic 3d–4f space is built (with `n_pairs=12` to take
+  exactly both shells). ⚠ Do not build one with two AVAS runs in sequence: the second rotation
+  scrambles the orbitals the first one selected. The report's `shell` column says which listed
+  shell each pair was attributed to.
 
 ⚠ Three things to know. Kuiva projects onto the free-atom reference orbitals that
 `atomic_reference=True` computed, at the same per-element reference state the atomic mean

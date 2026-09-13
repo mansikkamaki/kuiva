@@ -1668,7 +1668,7 @@ def assign_states(reference: SpinorReference, source, *, matrices=None,
     return result
 
 
-def avas_active_space(reference: SpinorReference, *, atom, l, coeff=None,
+def avas_active_space(reference: SpinorReference, *, atom=None, l=None, coeff=None,
                       occupation=None, report: bool = True, **kwargs):
     """An active space (and the rotated orbitals) from an AVAS projection.
 
@@ -1676,7 +1676,10 @@ def avas_active_space(reference: SpinorReference, *, atom, l, coeff=None,
     canonical orbital carries enough ``(atom, l)`` character to be selected by
     :func:`active_space_for`. Projects onto the free-atom orbitals the front end computed
     with ``atomic_reference=True`` and rotates *within* the occupied and virtual spaces, so
-    the reference density does not move. ``n_shells=2`` asks for the **double shell**.
+    the reference density does not move. ``n_shells=2`` asks for the **double shell**, and
+    ``shells=[(atom, l), ...]`` in place of ``atom``/``l`` projects onto the **union** of
+    several reference shells at once (a 3d and a 4f centre), which is the only correct way to
+    get such a space: two AVAS calls in sequence re-mix each other's selection.
 
     Defaults to the reference's own guess spinors and occupations; pass ``coeff`` (AO basis)
     with ``occupation=`` to project an already-optimized set. Returns a

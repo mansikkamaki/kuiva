@@ -174,10 +174,17 @@ with its context. Each entry links to the page that explains the mechanism.
   count is a boundary read off a pre-optimized probe's spectrum — what makes it a count is
   the state-averaging gate, the boundary diagnostic and the window's ladder downstream, none
   of which this stage replaces.
-- ⚠ **Shells of two different `l` are refused rather than composed** by the automatic
-  selection: one AVAS projector per `l`, and a second projector's rotation re-mixes the
-  pairs the first one selected (they are degenerate at zero projection in it). A
-  heteronuclear 3d/4f active space is stated by hand.
+- ⚠ **Shells of two different `l` (a 3d and a 4f centre) are one AVAS projection onto the
+  union of their reference shells**, with each selected pair attributed to the shell it
+  projects onto most. The attribution is a comparison of projections, not a rotation, so
+  where two shells' orbitals genuinely mix it can come out other than `2l+1` pairs per
+  centre; that **warns**, and the per-centre electron counts and floors built on it are then
+  not reliable, although the space is still the union asked for. `require=` still takes
+  character statements only. ⚠ On a **free or near-spherical d ion** the proposed state
+  count can cut a degenerate manifold: the d-block floor is the spin multiplicity, the probe
+  averages too few roots of the free-ion level and its pre-optimization splits them — measured
+  on a bare Ti(3+)/Ce(3+) pair, where 8 states were proposed out of a 24-fold ground manifold.
+  State the count there.
 - ⚠ **Löwdin atomic charges are withdrawn from every printed report** (measured sign-wrong
   on three of five characterized systems, unrescued by basis); the supported charge is the
   atomic-reference partition

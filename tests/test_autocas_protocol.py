@@ -412,6 +412,58 @@ def test_a_probe_budget_below_the_sites_hund_configurations_is_refused():
                               [SimpleNamespace(l=2, atoms=(0,))], SimpleNamespace(electrons=1.0))
 
 
+def _centre_of(l, atoms, where):
+    from kuiva.autocas import centres as ctr
+
+    return ctr.Centre(atoms=tuple(atoms), l=l, labels=(where,), population=0.9, pooled=False,
+                      reference_state="", reference_channels=(), stated=False)
+
+
+def test_the_floors_of_centres_of_different_l_are_their_own_and_the_product_is_over_blocks():
+    """⚠ The mechanism: a floor is computed from each centre's OWN electron count. Dividing
+    the shell's total over the atoms -- right for equivalent centres -- turns a Cu(2+) d^9
+    beside a Ce(3+) f^1 into two "d^5/f^5 atoms" and states a 6 x 6 manifold where the
+    physics is a doublet times the 2F5/2 sextet."""
+    from types import SimpleNamespace
+
+    centres = [_centre_of(2, (0,), "1 Cu"), _centre_of(3, (1,), "2 Ce")]
+    shell = SimpleNamespace(electrons=10.0, centre_electrons=(9.0, 1.0))
+    floor, product, terms = proto._floors(centres, shell)
+    assert (floor, product) == (6, 12), terms
+    assert "2F5/2" in terms
+    dimension, _ = proto._hund_product(centres, shell)
+    assert dimension == 10 * 14
+    averaged = SimpleNamespace(electrons=10.0)          # no per-centre counts: the old rule
+    assert proto._floors(centres, averaged)[:2] != (6, 12)
+
+
+def test_an_atom_with_two_shells_is_one_site_holding_both():
+    """A 4f and a 5d on one cerium are two centres and ONE site; the site's spinor count is
+    both shells, and a localization handed an equal split would put f orbitals on the
+    titanium."""
+    centres = [_centre_of(3, (0,), "1 Ce"), _centre_of(2, (0,), "1 Ce"),
+               _centre_of(2, (1,), "2 Ti")]
+    sites = proto._centre_atoms(centres)
+    assert sites == ((0,), (1,))
+    assert proto._site_counts(centres, sites) == (24, 10)
+    assert proto._centre_atoms(centres[:2]) == ()
+
+
+def test_targets_naming_shells_of_two_l_resolve_instead_of_refusing(monkeypatch):
+    """The refusal is lifted where the targets are resolved; the composition itself is the
+    candidate construction's (one projection onto the union)."""
+    from types import SimpleNamespace
+
+    from kuiva.autocas import centres as ctr
+
+    made = {("Ti",): _centre_of(2, (0,), "1 Ti"), ("Ce",): _centre_of(3, (1,), "2 Ce")}
+    monkeypatch.setattr(ctr, "shell_centre", lambda reference, atoms, l: made[tuple(atoms)])
+    targets = [SimpleNamespace(detected=False, atoms=("Ce",), l="f"),
+               SimpleNamespace(detected=False, atoms=("Ti",), l="d")]
+    centres = proto._resolve_centres(None, targets, report=False)
+    assert [c.l for c in centres] == [2, 3]
+
+
 def test_embedded_determinants_carry_the_added_pairs_reference_occupations():
     """The nesting a trial measurement starts from: the accepted determinants over the larger
     space, a doubly occupied added pair filled, an empty one left empty, and a singly
@@ -759,6 +811,32 @@ def test_cecl3_proposes_the_whole_ground_level_of_the_f_shell():
     assert auto.floor == 6
     assert auto.proposal.boundary.found and auto.n_states == 6
     assert auto.proposal.boundary.gap_cm > DEFAULT_MANIFOLD_GAP_CM
+
+
+@pytest.mark.slow
+def test_a_d_and_an_f_ion_assemble_into_one_space_whose_ground_manifold_is_their_product():
+    """The protocol end to end on the committed d+f system. At the construction orbitals the
+    lowest states have to be the 24-fold product of Ti 2D3/2 and Ce 2F5/2, split only by each
+    ion's charge acting on the other (measured 5.4 cm^-1 over the lowest twenty) -- the check
+    that one union projection handed the CI both ions' shells and not a mixture of them.
+
+    ⚠ The proposal is deliberately NOT asserted. The d-block floor is a spin doublet, so the
+    probe averages 12 + 8 = 20 roots of a 24-fold manifold, the pre-optimization splits it
+    (to 288 cm^-1) and the count read off that is 8. That is the floor's regime meeting a
+    free ion, not the union; a complex's ligand field removes the orbital degeneracy the
+    doublet floor assumes gone.
+    """
+    from kuiva.autocas.probe import ProbeBudget
+    from test_autocas_centres import reference_for
+
+    reference = reference_for("tice_far")
+    assembly = proto.assemble(reference, targets=[("shell", "Ti", "d"), ("shell", "Ce", "f")],
+                              probe_budget=ProbeBudget(max_iter=4), report=False)
+    assert (assembly.space.n_elec, assembly.n_active) == (2, 24)
+    assert (assembly.floor, assembly.product_floor) == (6, 12)
+    assert assembly.site_atoms == ((0,), (1,)) and assembly.site_counts == (10, 14)
+    decided = np.asarray(assembly.decided.spectrum_cm)
+    assert decided.size == 20 and float(decided.max()) < 10.0, decided
 
 
 @pytest.mark.slow

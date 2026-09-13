@@ -69,6 +69,26 @@ The count-stated rule is a **departure from the published method**, which states
 threshold; it is what lets the automatic shell construction say "the valence shell" without
 a knob in front of it.
 
+⚠ Several shells are ONE projection onto the union, never two projections in sequence
+-----------------------------------------------------------------------------------------
+``shells=[(atom, l), ...]`` projects onto the span of every listed reference shell at once —
+a 3d on one centre and a 4f on another, or a 4f with its own 5d. Two calls in sequence are
+**not** the same thing and are not a supported way to get it: within an occupation group the
+pairs outside the second projector's span are degenerate at eigenvalue zero in it, so the
+second rotation returns an arbitrary basis of them and re-mixes the pairs the first call
+selected. One projector, one diagonalization per occupation group, and the selection is the
+invariant span of the largest eigenvalues whatever order the shells were listed in. A union
+reference set is the published method's own form (Sayfutyarova et al. project onto any list of
+atomic valence orbitals, a metal 3d together with ligand 2p among their examples); what is
+added here is the count over the union and the per-shell attribution below.
+
+What the union does not say by itself is which shell a selected pair belongs to, and that is
+answered by a diagonal read, not a rotation: :attr:`AVASResult.component_projections` holds
+every rotated pair's projection onto each listed shell *separately*, so a caller attributes a
+pair to the shell it projects onto most without rotating anything a second time. ⚠ The
+separate projections need not sum to the union's where two shells' spans overlap (neighbouring
+atoms); the attribution is an ``argmax`` and says nothing more than that.
+
 References
 ----------
 * E. R. Sayfutyarova, Q. Sun, G. K.-L. Chan, G. Knizia, "Automated Construction of Molecular
@@ -147,6 +167,13 @@ class AVASResult:
         The number the rule was stated with: the threshold, or the requested pair count.
     reference_statement : str
         The selection as one sentence -- what the active space's ``description`` is set to.
+    components : tuple of str
+        One label per shell of a ``shells=`` projection, in the order they were listed; empty
+        for the single ``(atom, l)`` form.
+    component_projections : ndarray ``(n_components, npair)`` or None
+        Projection of every Kramers pair of the **rotated** set onto each listed shell on its
+        own -- the diagonal read that attributes a selected pair to a shell. ``None`` for the
+        single form, where there is nothing to attribute.
     """
 
     coeff: np.ndarray
@@ -160,10 +187,27 @@ class AVASResult:
     mode: str = "threshold"
     cut: float = float("nan")
     reference_statement: str = ""
+    components: Tuple[str, ...] = ()
+    component_projections: Optional[np.ndarray] = None
 
     @property
     def n_pairs(self) -> int:
         return int(np.size(self.selected))
+
+    def owners(self, pairs=None) -> np.ndarray:
+        """Index into :attr:`components` of the shell each pair projects onto most.
+
+        ``pairs`` defaults to :attr:`selected`. ⚠ Ties go to the **first-listed** shell, so the
+        attribution is deterministic; a caller that needs a count per shell checks it, because
+        an ``argmax`` that does not come out as the shells' sizes means the orbitals do not
+        separate the way the statement says.
+        """
+        if self.component_projections is None:
+            raise ValueError("a single-shell projection has no components to attribute to; "
+                             "project with shells=[...] for per-shell attribution")
+        pairs = self.selected if pairs is None else pairs
+        pairs = np.asarray(pairs, dtype=int).ravel()
+        return np.argmax(np.asarray(self.component_projections)[:, pairs], axis=0)
 
     def report(self, logger=None, *, context: int = 3) -> None:
         """The INFO summary: the selected pairs and the eigenvalues either side of the cut."""
@@ -183,14 +227,21 @@ class AVASResult:
         chosen = set(int(x) for x in np.asarray(self.selected).ravel())
         order = np.argsort(-np.asarray(self.eigenvalues))
         shown = [int(i) for i in order[:len(chosen) + context]]
-        table = out.Table(logger, [out.col_count("pair", 7),
-                                   out.Column("occupation", "{:.3f}", 12),
-                                   out.Column("projection", "{:.6f}", 12),
-                                   out.Column("active", "{:s}", 8)]).start()
+        columns = [out.col_count("pair", 7), out.Column("occupation", "{:.3f}", 12),
+                   out.Column("projection", "{:.6f}", 12), out.Column("active", "{:s}", 8)]
+        attributed = self.component_projections is not None
+        if attributed:
+            columns.append(out.col_count("shell", 7))
+        table = out.Table(logger, columns).start()
         for i in shown:
-            table.row(i, float(self.occupations[i]), float(self.eigenvalues[i]),
-                      "yes" if i in chosen else "no")
+            row = [i, float(self.occupations[i]), float(self.eigenvalues[i]),
+                   "yes" if i in chosen else "no"]
+            if attributed:
+                row.append(int(self.owners([i])[0]) + 1)
+            table.row(*row)
         table.end("{} pair(s) shown of {}".format(len(shown), np.size(self.eigenvalues)))
+        for k, label in enumerate(self.components):
+            out.note(logger, "shell {}: {}".format(k + 1, label))
         if self.space is not None:
             self.space.report(logger)
 
@@ -296,19 +347,70 @@ def _atom_overlap(entry) -> np.ndarray:
     return np.linalg.inv(c @ c.T)
 
 
+def _shell_list(atom, l, n_shells: int, shells) -> List[Tuple[object, object, int]]:
+    """The projection's reference shells as ``[(atom, l, n_shells), ...]``, one form or the other.
+
+    ``atom=``/``l=`` is the single-shell form and ``shells=`` the union form; giving both is
+    refused, because a union that silently dropped the single statement (or the reverse) would
+    not be the space its description names. An entry of ``shells`` is ``(atom, l)`` or
+    ``(atom, l, n_shells)``, the two-element form taking the ``n_shells`` argument.
+    """
+    if shells is None:
+        if atom is None or l is None:
+            raise ValueError("give atom= and l= (one reference shell), or shells=[(atom, l), "
+                             "...] (the union of several)")
+        return [(atom, l, int(n_shells))]
+    if atom is not None or l is not None:
+        raise ValueError("give either atom=/l= or shells=, not both: a single shell and a "
+                         "union of shells are two statements of what is projected onto")
+    listed: List[Tuple[object, object, int]] = []
+    for entry in shells:
+        if not isinstance(entry, (tuple, list)) or len(entry) not in (2, 3):
+            raise ValueError("a shells= entry is (atom, l) or (atom, l, n_shells); got {!r}"
+                             .format(entry))
+        listed.append((entry[0], entry[1],
+                       int(entry[2]) if len(entry) == 3 else int(n_shells)))
+    if not listed:
+        raise ValueError("shells= is empty: there is nothing to project onto")
+    return listed
+
+
+def _resolved_shells(layout, shells) -> List[Tuple[List[int], int, int]]:
+    """``[(atoms, ell, n_shells)]`` with the project's one ``(atom, l)`` resolver, and a refusal
+    for an atom named twice at one ``l``: its reference orbitals would enter the union twice,
+    which the pseudo-inverse would hide and the attribution could not."""
+    from .casci import _angular_momentum, _atom_indices
+
+    resolved: List[Tuple[List[int], int, int]] = []
+    seen = set()
+    for atom, l, n in shells:
+        ell = _angular_momentum(l)
+        atoms = [int(a) for a in _atom_indices(layout, atom)]
+        for a in atoms:
+            if (a, ell) in seen:
+                raise ValueError(
+                    "{} l = {} is named by more than one entry of shells=: a reference shell "
+                    "enters the union once, and a pair cannot be attributed to two copies of "
+                    "it".format(layout.atom_label(a), ell))
+            seen.add((a, ell))
+        resolved.append((atoms, ell, int(n)))
+    return resolved
+
+
 def projection_pair_matrix(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, *,
-                           atom, l, n_shells: int = 1) -> Tuple[np.ndarray, float, str]:
+                           atom=None, l=None, n_shells: int = 1,
+                           shells=None) -> Tuple[np.ndarray, float, str]:
     """``(M, fold residual, reference label)``: the AVAS projector folded onto Kramers pairs.
 
     ``M[p, q] = <p|P|q>`` over the Kramers pairs of ``coeff_ao``, with ``P`` the metric-aware
-    projector onto the free-atom reference span of ``(atom, l)`` (``n_shells`` shells of it).
-    **The one construction of that projector**: :func:`avas_projection` diagonalizes it, and a
-    caller that needs the projection of an *already rotated* set onto a different number of
-    reference shells reads its diagonal instead -- which rotates nothing, so it cannot re-mix
-    a selection the way a second :func:`avas_projection` call would.
+    projector onto the free-atom reference span of ``(atom, l)`` (``n_shells`` shells of it)
+    -- or, with ``shells=``, onto the **union** of the listed spans (see the module
+    docstring). **The one construction of that projector**: :func:`avas_projection`
+    diagonalizes it, and a caller that needs the projection of an *already rotated* set onto a
+    different number of reference shells reads its diagonal instead -- which rotates nothing,
+    so it cannot re-mix a selection the way a second :func:`avas_projection` call would.
     """
-    from .casci import _angular_momentum, _atom_indices
-
+    listed = _shell_list(atom, l, n_shells, shells)
     c = np.ascontiguousarray(coeff_ao, dtype=np.complex128)
     nao = int(np.shape(s_ao)[0])
     if c.shape[0] != 2 * nao:
@@ -324,9 +426,14 @@ def projection_pair_matrix(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, refer
             "can compute: re-run the scalar SCF with atomic_reference=True (they are cached "
             "per element, so the cost is one small atomic SCF per unique element, once per "
             "process).")
-    ell = _angular_momentum(l)
-    atoms = _atom_indices(layout, atom)
-    ref, ref_label = _reference_columns(layout, reference, atoms, ell, int(n_shells))
+    blocks, labels = [], []
+    for atoms, ell, n in _resolved_shells(layout, listed):
+        block, label = _reference_columns(layout, reference, atoms, ell, n)
+        blocks.append(block)
+        labels.append(label)
+    # One shell is the concatenation of one block: bitwise the single-shell construction.
+    ref = blocks[0] if len(blocks) == 1 else np.concatenate(blocks, axis=1)
+    ref_label = "; ".join(labels)
 
     # The metric-aware projector onto the reference span, in the AO basis:
     #   P = S A (A^T S A)^-1 A^T S,   so that <p|P|q> = C_p^T P C_q.
@@ -359,11 +466,58 @@ def projection_pair_matrix(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, refer
     return m_pair, float(residual), ref_label
 
 
+def component_projections(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, *,
+                          shells, n_shells: int = 1) -> Tuple[np.ndarray, Tuple[str, ...]]:
+    """``((n_shells_listed, npair), labels)``: every pair's projection onto each shell alone.
+
+    The diagonal of :func:`projection_pair_matrix` for one entry of ``shells`` at a time --
+    a read of the orbitals as they are, which is what attributes the pairs of a union
+    selection to their shells without a second rotation.
+    """
+    listed = _shell_list(None, None, n_shells, shells)
+    rows, labels = [], []
+    for entry in listed:
+        m, _, label = projection_pair_matrix(coeff_ao, s_ao, layout, reference,
+                                             shells=[entry])
+        rows.append(np.real(np.diag(m)))
+        labels.append(label)
+    return np.asarray(rows), tuple(labels)
+
+
+def _separate_degenerate_shells(w: np.ndarray, v: np.ndarray, weighted: np.ndarray, *,
+                                rtol: Optional[float] = None) -> np.ndarray:
+    """``v`` with each degenerate run of ``w`` re-diagonalized on the weighted shell projector.
+
+    ``w``/``v`` are one occupation group's union eigenpairs in selection order, ``weighted``
+    that group's block of ``sum_k (k+1) P_k`` in the same pair frame the eigenvectors are
+    expressed in. A run is consecutive values within the project's relative-gap tolerance
+    (:mod:`kuiva.util.degeneracy`), so the (near-)zero null space -- whose relative gaps are
+    large -- is left alone. Inside a run the new vectors are ordered by descending weight,
+    i.e. by the shells' listing order reversed, which is deterministic.
+    """
+    from ..util.degeneracy import DEFAULT_GROUP_RTOL, relative_gap
+
+    rtol = DEFAULT_GROUP_RTOL if rtol is None else float(rtol)
+    v = np.array(v, copy=True)
+    start = 0
+    while start < w.size:
+        stop = start + 1
+        while stop < w.size and abs(relative_gap(w[stop - 1], w[stop])) <= rtol:
+            stop += 1
+        if stop - start > 1 and abs(float(w[start])) > rtol:
+            block = v[:, start:stop]
+            u_w, u = np.linalg.eigh(block.conj().T @ weighted @ block)
+            v[:, start:stop] = block @ u[:, np.argsort(-u_w, kind="stable")]
+        start = stop
+    return v
+
+
 def avas_projection(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, *,
-                    atom, l, occupation: np.ndarray, n_shells: int = 1,
+                    atom=None, l=None, occupation: np.ndarray, n_shells: int = 1,
                     threshold: Optional[float] = None,
                     n_pairs: Optional[int] = None,
-                    max_pairs: Optional[int] = None):
+                    max_pairs: Optional[int] = None,
+                    shells=None):
     """The AVAS rotation and selection **without** an active space: ``space`` is ``None``.
 
     Everything :func:`avas` does except the last step, and it exists for the one caller that
@@ -406,7 +560,8 @@ def avas_projection(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, *
     c = np.ascontiguousarray(coeff_ao, dtype=np.complex128)
     nspinor = c.shape[1]
     m_pair, residual, ref_label = projection_pair_matrix(c, s_ao, layout, reference,
-                                                         atom=atom, l=l, n_shells=n_shells)
+                                                         atom=atom, l=l, n_shells=n_shells,
+                                                         shells=shells)
 
     occ = np.asarray(occupation, dtype=float).ravel()
     if occ.size != nspinor:
@@ -428,12 +583,32 @@ def avas_projection(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, *
     # on paper, with an orbital ordering nothing downstream expects and no reader can read.
     eigenvalues = np.zeros(npair)
     rotation = np.zeros((npair, npair), dtype=np.complex128)
+    #
+    # ⚠ **A union is degenerate across its shells wherever they do not overlap**, and then the
+    # eigenvectors are an arbitrary basis of the block. Two ions 25 A apart project at
+    # eigenvalue 1 on BOTH shells, and the diagonalization returned pairs 96/4, 14/86 and
+    # 85/15 per cent Ti/Ce: an attribution by argmax on such pairs is the diagonalization's
+    # choice, not the molecule's. Inside every degenerate block of the union's eigenvalues the
+    # basis is therefore fixed by a second diagonalization, of the shells' projectors weighted
+    # by their listing position -- a rotation inside a block of equal eigenvalue and equal
+    # occupation, so no union eigenvalue and no density moves, and it separates exactly the
+    # shells whose spans the union could not tell apart.
+    weighted = None
+    if shells is not None and len(_shell_list(None, None, n_shells, shells)) > 1:
+        listed = _shell_list(None, None, n_shells, shells)
+        weighted = np.zeros_like(m_pair)
+        for k, entry in enumerate(listed):
+            m_k, _, _ = projection_pair_matrix(c, s_ao, layout, reference, shells=[entry])
+            weighted += float(k + 1) * m_k
     for value in sorted(set(np.round(pair_occ, 8).tolist()), reverse=True):
         group = np.nonzero(np.round(pair_occ, 8) == value)[0]
         w, v = np.linalg.eigh(m_pair[np.ix_(group, group)])
         order = np.argsort(w) if value > 0.0 else np.argsort(-w)
-        eigenvalues[group] = w[order]
-        rotation[np.ix_(group, group)] = v[:, order]
+        w, v = w[order], v[:, order]
+        if weighted is not None:
+            v = _separate_degenerate_shells(w, v, weighted[np.ix_(group, group)])
+        eigenvalues[group] = w
+        rotation[np.ix_(group, group)] = v
 
     if n_pairs is not None:
         # The count-stated cut. ⚠ Ordered by projection and then by **column index**, so the
@@ -484,25 +659,37 @@ def avas_projection(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, *
                     "requested count" if mode == "count" else "threshold")
 
     rotated = rotate_kramers_pairs(c, rotation, np.arange(nspinor))
+    union = shells is not None and len(_shell_list(None, None, n_shells, shells)) > 1
+    parts, labels = None, ()
+    if union:
+        parts, labels = component_projections(rotated, s_ao, layout, reference, shells=shells,
+                                              n_shells=n_shells)
+    onto = "the union of {}".format(ref_label) if union else ref_label
     description = ("AVAS: the {} pairs of largest projection onto {} (count stated; gap at "
-                   "the cut {:.3f})".format(keep.size, ref_label, gap) if mode == "count"
+                   "the cut {:.3f})".format(keep.size, onto, gap) if mode == "count"
                    else "AVAS: {} pairs projected onto {} at threshold {:.2f}".format(
-                       keep.size, ref_label, cut))
+                       keep.size, onto, cut))
+    if union:
+        owner = np.argmax(parts[:, keep], axis=0)
+        description += " -- per shell {}".format(
+            " + ".join(str(int(np.count_nonzero(owner == k))) for k in range(len(labels))))
     log.debug("AVAS: eigenvalues %s, kept pairs %s",
               np.round(np.sort(eigenvalues)[::-1][:keep.size + 3], 4).tolist(),
               keep.tolist())
     return AVASResult(coeff=rotated, space=None, eigenvalues=eigenvalues, selected=keep,
                       occupations=pair_occ, gap=gap, fold_residual=residual,
                       reference=ref_label, mode=mode, cut=cut,
-                      reference_statement=description)
+                      reference_statement=description, components=labels,
+                      component_projections=parts)
 
 
 def avas(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, n_elec_total: int, *,
-         atom, l, occupation: np.ndarray, n_shells: int = 1,
+         atom=None, l=None, occupation: np.ndarray, n_shells: int = 1,
          threshold: Optional[float] = None,
          n_pairs: Optional[int] = None,
          n_active_elec: Optional[int] = None,
-         max_pairs: Optional[int] = None):
+         max_pairs: Optional[int] = None,
+         shells=None):
     """Rotate ``coeff_ao`` onto atomic valence orbitals and select an active space.
 
     Parameters
@@ -517,6 +704,13 @@ def avas(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, n_elec_total
     atom, l : the target character, addressed exactly as
         :func:`kuiva.mcscf.casci.active_space_by_character` addresses it (an index, a unique
         element symbol, or a sequence of either whose reference orbitals are pooled).
+    shells : sequence of ``(atom, l)`` or ``(atom, l, n_shells)``, optional
+        **The union form**, exclusive with ``atom``/``l``: one projection onto the span of
+        every listed reference shell -- a 3d centre and a 4f centre, or a 4f shell and its
+        5d. ⚠ Not two calls in sequence, which re-mix each other's selection (module
+        docstring). The result's :attr:`AVASResult.component_projections` attributes each
+        pair to the shell it projects onto most; the count and the threshold apply to the
+        union.
     occupation : ``(nspinor,)`` — spinor occupations of ``coeff_ao``. The rotation happens
         within groups of equal occupation, never across them.
     n_shells : int
@@ -558,7 +752,8 @@ def avas(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, n_elec_total
 
     result = avas_projection(coeff_ao, s_ao, layout, reference, atom=atom, l=l,
                              occupation=occupation, n_shells=n_shells,
-                             threshold=threshold, n_pairs=n_pairs, max_pairs=max_pairs)
+                             threshold=threshold, n_pairs=n_pairs, max_pairs=max_pairs,
+                             shells=shells)
     columns = np.concatenate([[2 * int(g), 2 * int(g) + 1]
                               for g in np.asarray(result.selected, dtype=int)])
     space = active_space(columns, int(np.shape(result.coeff)[1]), n_elec_total,
@@ -567,4 +762,4 @@ def avas(coeff_ao: np.ndarray, s_ao: np.ndarray, layout, reference, n_elec_total
 
 
 __all__ = ["AVASResult", "DEFAULT_AVAS_THRESHOLD", "PAIR_FOLD_TOL", "avas",
-           "avas_projection", "reference_channel_weights"]
+           "avas_projection", "component_projections", "reference_channel_weights"]

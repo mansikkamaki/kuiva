@@ -77,6 +77,17 @@ shell, the case a character threshold cannot find at all. ⚠ An AVAS space carr
 symmetry labels: they belong to the guess spinors and AVAS has rotated them
 ([symmetry](symmetry.md)).
 
+⚠ **Several shells are one projection onto their union, never two projections in turn.**
+`shells=[(atom, l), ...]` projects onto the span of every listed reference shell at once — a
+Ti 3d and a Ce 4f, or a 4f and its 5d. Two AVAS calls in sequence are not the same thing: the
+second rotates inside the occupation groups, where the pairs the first call selected lie
+outside its projector and are degenerate at zero projection, so it returns an arbitrary basis
+of them and loses part of the first selection — measured on water, by a different amount on
+two identical runs. The union is one projector with one eigenvalue problem per occupation
+group, so its selection does not depend on the order the shells are listed in. Which shell a
+selected pair belongs to is then read off its projection onto each shell *alone*, in the
+rotated orbitals — a comparison, never a second rotation.
+
 ## The cheap-CI pre-optimization
 
 `CheapCI` runs a **selected multireference CISD** in the candidate space — CIPSI-style
@@ -240,6 +251,16 @@ boundary and never truncated inward, because a count that ends inside a near-deg
 manifold makes the averaged density non-invariant and the resulting error is
 self-reinforcing ([casscf](casscf.md)); the product over centres — the dimension of the
 exchange manifold — is printed beside it even where no cap can reach it.
+
+Centres of **different** `l` each keep their own regime and their own electron count — the
+pairs attributed to that centre's shell — so a Ti(3+) d¹ beside a Ce(3+) f¹ is a spin doublet
+times the six-fold ²F₅/₂, twelve states. Dividing the shells' total electrons over the atoms
+instead, which is exactly right for equivalent centres, would turn a Cu(2+) d⁹ beside a
+Ce(3+) f¹ into two five-electron shells. ⚠ The decision that an **empty** shell takes its
+electron count from the ion's reference state is also taken per centre: a scalar ROHF puts
+the Ce(3+) electron in a 5d orbital, leaving the 4f pairs empty beside a Ti 3d pair that holds
+its electron, and a test on the union as a whole would see a shell that is neither empty nor
+full and lose the cerium electron.
 
 ⚠ It is a **proposal**, read off a qualitative probe. Everything that makes it a state count
 runs downstream unchanged: the state-averaging gate's refusal to split a degenerate block,

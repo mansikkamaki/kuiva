@@ -51,7 +51,7 @@ def reference_for(key):
     molecule = api.Molecule(atoms=system.atoms, basis=system.basis, charge=system.charge,
                             spin=system.spin)
     data = api.scalar_x2c_reference(molecule, screening="none", memory_gb=8.0,
-                                    atomic_reference=True)
+                                    atomic_reference=True, **system.scf_options)
     return api.spinor_reference(data, memory_gb=8.0)
 
 

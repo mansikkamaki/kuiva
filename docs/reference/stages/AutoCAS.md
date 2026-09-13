@@ -49,7 +49,7 @@ that element.
 
 | spelling | what it selects | count | priority |
 |---|---|---|---|
-| `"shells"`, `("shell", "Dy")`, `("shell", ("Ti1","Ti2"), "d")` | the whole valence `l` shell of the centre(s), by count-stated AVAS | fixed: `2l+1` pairs per centre; **never pruned, never cut** | 1 |
+| `"shells"`, `("shell", "Dy")`, `("shell", ("Ti1","Ti2"), "d")` | the whole valence `l` shell of the centre(s), by count-stated AVAS. Centres of different `l` (`[("shell", "Cu", "d"), ("shell", "Tb", "f")]`) are **one** projection onto the union of their shells, each pair attributed to the shell it projects onto most | fixed: `2l+1` pairs per centre; **never pruned, never cut** | 1 |
 | `("frontier", atoms)`, `("frontier", atoms, n_occ, n_vir)` | a fragment's singly occupied pairs — the radical HOMO — plus neighbours of largest population there | stated | 2 |
 | `("bridge", (site_a, site_b))`, `("bridge", (site_a, site_b), atoms, n_pairs)` | ligand pairs on the bridging atoms (named, or detected: every **ligand** — a fragment connected by covalent contact [[200]](../../references.md#r200), other centres not conducting — that touches both sites, so a μ-carboxylate is found as well as a μ-oxo) that **mix with the shell**. A site may be a sublattice, `((1, 3), (2,))` | bounded, pruned | 3 |
 | `("bonding", atoms)`, `("bonding", atoms, n_pairs)` | the metal–ligand bonding combinations just below the shell's projection cut | bounded, pruned | 4 |

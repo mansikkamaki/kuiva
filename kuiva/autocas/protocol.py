@@ -310,6 +310,10 @@ class Assembly:
     #: pooled over equivalent ones). What a site partition is computed *from*; empty for a
     #: single-atom centre, where there is no partition to make.
     site_atoms: Tuple[Tuple[int, ...], ...] = ()
+    #: Shell spinors per entry of :attr:`site_atoms`: ``2(2l+1)`` for each shell the atom
+    #: carries. ⚠ Not an equal split -- a Ti 3d beside a Ce 4f is ten spinors and fourteen,
+    #: and a localization handed the average would put two f orbitals on the titanium.
+    site_counts: Tuple[int, ...] = ()
     #: Per-site active spinor columns, once the shells have been localized. ⚠ Filled in by
     #: whoever runs the localization -- it goes through the project's one site partition
     #: (:func:`kuiva.interface.api.localize_active_space`) rather than a second one here --
@@ -558,21 +562,22 @@ def _floors(centres: Sequence[ctr.Centre], shell: cand.CandidateSet) -> Tuple[in
     can reach it, since quietly proposing a fraction of it would be proposing a cut inside an
     exchange manifold.
 
-    ⚠ The electron count per atom is the shell's **measured** total divided over the atoms
-    carrying it: one pooled centre of two equivalent metals holds both shells, and its floor
-    is one atom's manifold, not the pair's.
+    ⚠ The electron count per atom is each centre's own (:attr:`CandidateSet.centre_electrons`)
+    divided over its atoms: one pooled centre of two equivalent metals holds both shells, and
+    its floor is one atom's manifold, not the pair's. With centres of **different** ``l`` the
+    per-centre counts are the attributed ones, so the product runs over centres of different
+    blocks, each in its own regime -- a Ti(3+) d^1 is a spin doublet and a Ce(3+) f^1 the
+    six-fold ``2F5/2``, twelve states together.
     """
     if not centres:
         return 1, 1, "no centre: no theoretical floor"
-    n_atoms = sum(len(c.atoms) for c in centres)
-    per_atom = float(shell.electrons) / max(n_atoms, 1)
-    note = ""
-    if abs(per_atom - round(per_atom)) > 1e-6:
-        note = " (the shell's {:.1f} electrons do not divide over {} atoms; rounded)".format(
-            float(shell.electrons), n_atoms)
     floors: List[int] = []
     terms: List[str] = []
-    for centre in centres:
+    notes: List[str] = []
+    for centre, per_atom in zip(centres, _per_atom_electrons(centres, shell)):
+        if abs(per_atom - round(per_atom)) > 1e-6:
+            notes.append("{}'s {:.1f} electrons per atom are not whole; rounded".format(
+                centre.where, per_atom))
         n = int(max(0, min(round(per_atom), 4 * centre.l + 2)))
         term = mult.hund_ground_term(centre.l, n)
         floor = mult.shell_floor(centre.l, n)
@@ -580,21 +585,35 @@ def _floors(centres: Sequence[ctr.Centre], shell: cand.CandidateSet) -> Tuple[in
         terms.append("{}{} ({})".format(
             "{} x ".format(len(centre.atoms)) if len(centre.atoms) > 1 else "",
             term.symbol, centre.where))
+    note = " ({})".format("; ".join(notes)) if notes else ""
     return int(max(floors)), int(mult.coupled_floor(floors)), ", ".join(terms) + note
+
+
+def _per_atom_electrons(centres: Sequence[ctr.Centre], shell: cand.CandidateSet) -> List[float]:
+    """Electrons per atom of each centre, from the shell's per-centre counts.
+
+    A shell built without per-centre counts (a hand-made one) divides the whole shell's
+    electrons over every atom, which is what the per-centre counts reduce to for centres of
+    one ``l``.
+    """
+    counts = tuple(getattr(shell, "centre_electrons", ()))
+    if len(counts) != len(centres):
+        n_atoms = sum(len(c.atoms) for c in centres)
+        counts = tuple(float(shell.electrons) * len(c.atoms) / max(n_atoms, 1)
+                       for c in centres)
+    return [float(n) / max(len(c.atoms), 1) for c, n in zip(centres, counts)]
 
 
 def _hund_product(centres: Sequence[ctr.Centre], shell: cand.CandidateSet) -> Tuple[int, str]:
     """``(dimension, statement)``: determinants of the product of every site's Hund configurations.
 
-    Per **atom**, with the shell's measured electrons divided over the atoms carrying it, as
-    :func:`_floors` does: a pooled centre of three d^5 manganese is three sites of 32
-    determinants each, 32 768 together.
+    Per **atom**, with each centre's electrons divided over its atoms, as :func:`_floors`
+    does: a pooled centre of three d^5 manganese is three sites of 32 determinants each,
+    32 768 together; a Ti d^1 beside a Ce f^1 is 10 x 14.
     """
-    n_atoms = sum(len(c.atoms) for c in centres)
-    per_atom = int(round(float(shell.electrons) / max(n_atoms, 1)))
     product, parts = 1, []
-    for centre in centres:
-        n = int(max(0, min(per_atom, 4 * centre.l + 2)))
+    for centre, per_atom in zip(centres, _per_atom_electrons(centres, shell)):
+        n = int(max(0, min(int(round(per_atom)), 4 * centre.l + 2)))
         dim = mult.hund_configuration_dimension(centre.l, n)
         product *= dim ** len(centre.atoms)
         parts.append("{}{}^{} ({} determinants{})".format(
@@ -652,7 +671,7 @@ def _coupled_and_truncated(space, centres, budget: ProbeBudget) -> str:
     """
     from ..ci.strings import cas_dimension
 
-    n_sites = sum(len(c.atoms) for c in centres)
+    n_sites = len({int(a) for c in centres for a in c.atoms})
     ndet = cas_dimension(space.n_active, space.n_elec)
     if n_sites < 2 or ndet <= int(budget.max_determinants):
         return ""
@@ -674,10 +693,15 @@ def _site_split(reference, coeff, centres, shell_columns):
     them is a statement about anything. That case returns ``None`` and the consumer says so;
     separating the sites is a localization, and it happens once, at the end.
     """
-    atoms = [list(c.atoms) for c in centres]
+    # One entry per distinct atom set: a 4f and a 5d shell of one lanthanide are two centres
+    # and one site, and two identical population rows cannot split anything.
+    atoms: List[List[int]] = []
+    for centre in centres:
+        if list(centre.atoms) not in atoms:
+            atoms.append(list(centre.atoms))
     if len(atoms) < 2:
-        if len(centres) == 1 and len(centres[0].atoms) > 1:
-            atoms = [[a] for a in centres[0].atoms]
+        if len(atoms) == 1 and len(atoms[0]) > 1:
+            atoms = [[a] for a in atoms[0]]
         else:
             return None
     columns = np.asarray(shell_columns, dtype=int)
@@ -696,8 +720,10 @@ def _resolve_centres(reference, shell_targets, *, report: bool) -> Tuple[ctr.Cen
 
     ``Shell()`` -- the default target -- is "whatever the detection finds"; a named one is
     resolved atom by atom, with the detection's own refusals (a closed shell, two open
-    channels, a ghost). ⚠ Centres of two different ``l`` are refused rather than composed:
-    one AVAS projector per ``l``, and a second projector re-mixes the first one's selection.
+    channels, a ghost). ⚠ **Centres of different ``l`` are composed, as one projection onto
+    the union of their reference spans** (:func:`kuiva.autocas.candidates.shell_candidates`):
+    never as one projection per ``l``, whose second rotation re-mixes the first one's
+    selection.
     """
     found: List[ctr.Centre] = []
     for target in shell_targets:
@@ -718,22 +744,29 @@ def _resolve_centres(reference, shell_targets, *, report: bool) -> Tuple[ctr.Cen
     seen: Dict[Tuple[Tuple[int, ...], int], ctr.Centre] = {}
     for centre in found:
         seen.setdefault((centre.atoms, centre.l), centre)
-    centres = tuple(sorted(seen.values(), key=lambda c: (c.atoms[0], c.l)))
-    ells = sorted({c.l for c in centres})
-    if len(ells) > 1:
-        raise ValueError(
-            "the targets name shells of more than one angular momentum ({}), which needs one "
-            "AVAS projection each -- and a second projection's rotation re-mixes the pairs "
-            "the first one selected, because they are degenerate at zero projection in it. "
-            "Select one shell at a time, or state the active space explicitly"
-            .format(", ".join(tg.angular_momentum_letter(e) for e in ells)))
-    return centres
+    return tuple(sorted(seen.values(), key=lambda c: (c.atoms[0], c.l)))
 
 
 def _centre_atoms(centres: Sequence[ctr.Centre]) -> Tuple[Tuple[int, ...], ...]:
-    """One site per **atom** of every centre -- what a site partition is computed from."""
-    atoms = tuple((int(a),) for c in centres for a in c.atoms)
+    """One site per **atom** of every centre -- what a site partition is computed from.
+
+    Distinct atoms, in first-seen order: an atom carrying two shells (a 4f and its 5d) is one
+    site holding both, never two sites on one nucleus.
+    """
+    ordered: List[int] = []
+    for c in centres:
+        for a in c.atoms:
+            if int(a) not in ordered:
+                ordered.append(int(a))
+    atoms = tuple((a,) for a in ordered)
     return atoms if len(atoms) > 1 else ()
+
+
+def _site_counts(centres: Sequence[ctr.Centre],
+                 site_atoms: Sequence[Tuple[int, ...]]) -> Tuple[int, ...]:
+    """Shell spinors on each site: ``2(2l+1)`` for every shell the site's atom carries."""
+    return tuple(sum(2 * (2 * int(c.l) + 1) for c in centres if int(site[0]) in c.atoms)
+                 for site in site_atoms)
 
 
 def _check_named(centres: Sequence[ctr.Centre], target, layout, what: str) -> None:
@@ -1118,7 +1151,9 @@ def assemble(reference, targets=None, *, solver: str = "ci",
     assembly = Assembly(space=space, coeff=current.coeff, sets=tuple(accepted),
                         rounds=rounds, probe=current, centres=centres, floor=floor,
                         product_floor=product_floor, budget=budget, proposal=proposal,
-                        site_atoms=_centre_atoms(centres), notes=tuple(notes),
+                        site_atoms=_centre_atoms(centres),
+                        site_counts=_site_counts(centres, _centre_atoms(centres)),
+                        notes=tuple(notes),
                         decided=decided)
     if report:
         report_assembly(assembly)
