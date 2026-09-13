@@ -613,12 +613,21 @@ class AutoCAS(_Stage):
     ----------------------
     ⚠ **The cheap CI probes, the spectrum decides, and entropy only prunes.** The shells are
     the core; each further class is offered in a fixed priority order, its candidates pruned
-    by relative single-orbital entropy, and the class kept only if the probe's *target
-    manifold* -- the ground manifold's relative energies and the gap above it -- moved by more
-    than ``max(spectrum_tol x the manifold width, spectrum_tol_cm)``. A change under the
-    tolerance but above the probe's measured noise floor is **"inconclusive, kept"**: a larger
-    space is the safe error, and the budget is what bounds it. Every verdict is printed with
-    the number it was taken on.
+    by relative single-orbital entropy, and the class kept only if the *target manifold* --
+    the ground manifold's relative energies and the gap above it -- moved by more than
+    ``max(spectrum_tol x the manifold width, spectrum_tol_cm)``. A change under the tolerance
+    but above the measured noise floor is **"inconclusive, kept"**: a larger space is the safe
+    error, and the budget is what bounds it. Every verdict is printed with the number it was
+    taken on.
+
+    ⚠ **Every verdict is taken at fixed orbitals** -- the cheap CI at the candidate
+    construction's orbitals, each trial's determinants nested in the accepted space's -- and
+    the accepted space is pre-optimized once, at the end. Comparing two pre-optimizations
+    read the optimizer's trajectory: pairs that describe nothing moved the spectrum by up to
+    100 cm^-1, where at fixed orbitals they move it by a fraction of one. ⚠ And the probe's
+    determinant budget (``probe={"max_determinants": ...}``) must hold the product of the
+    sites' Hund configurations -- 32 768 for three d^5 ions -- or the stage refuses: below it a
+    selected CI cannot represent a coupled system's ground manifold at all.
 
     ⚠ **A target shell is never pruned and never cut.** Its empty members *are* the
     ligand-field spectrum, and a shell with pairs missing is a different physical statement
@@ -649,8 +658,8 @@ class AutoCAS(_Stage):
     orbitals by a character statement -- ``("character", atom, l, n_spinors[, skip_pairs])``
     -- for what the probe cannot see.
 
-    ⚠ **This is several pre-optimizations and the cost is printed per round.** One probe per
-    round, plus one for every prune that removed something.
+    ⚠ **The cost is printed per round.** One fixed-orbital CI per round, one more for every
+    prune that removed something, and one pre-optimization of the accepted space.
 
     After :meth:`run`: :attr:`space`, :attr:`orbitals`, :attr:`n_states`, :attr:`window`,
     :attr:`floor`, :attr:`product_floor`, :attr:`spectrum_cm`, :attr:`rounds`,

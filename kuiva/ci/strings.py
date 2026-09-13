@@ -1439,6 +1439,25 @@ def _scatter(target: np.ndarray, flat_index: np.ndarray, values: np.ndarray) -> 
     target.ravel().imag += np.bincount(flat_index, weights=values.imag, minlength=size)
 
 
+def _pair_densities(civecs: np.ndarray, weights: np.ndarray, rows: np.ndarray,
+                    cols: np.ndarray, phase: np.ndarray) -> np.ndarray:
+    """``phase * sum_s w_s conj(c_{I,s}) c_{J,s}`` per connection, gathered in batches.
+
+    ⚠ **Batched because the gather is the largest array of the whole cheap CI.** Unbatched,
+    ``civecs[rows]`` is ``(n_connections, n_states)`` complex -- twice, for both ends of the
+    pair: at 40 000 determinants of ``mn3_linear``'s CAS(15, 30) and 24 roots that is 6.4 GB
+    each, where the determinant list, the pair list and the sparse Hamiltonian together peaked
+    at 3.9 GB, and the process was stopped past 10.7 GB. A batch holds
+    :data:`_CONN_BATCH` connections, so the transient is ``2 x 65 536 x n_states`` complex.
+    """
+    out = np.empty(rows.size, dtype=np.complex128)
+    for lo in range(0, rows.size, _CONN_BATCH):
+        sl = slice(lo, min(lo + _CONN_BATCH, rows.size))
+        out[sl] = phase[sl] * np.einsum("s,xs,xs->x", weights, np.conj(civecs[rows[sl]]),
+                                        civecs[cols[sl]])
+    return out
+
+
 def rdm12(dets: Determinants, civecs: np.ndarray, weights: Optional[np.ndarray] = None,
           conn: Optional[Connections] = None, *, with_2rdm: bool = True
           ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
@@ -1495,8 +1514,8 @@ def rdm12(dets: Determinants, civecs: np.ndarray, weights: Optional[np.ndarray] 
         # --- rank 1: J -> I excites i -> a, spectators k occupied in both ---
         if conn.n_single:
             i, a = conn.single_from, conn.single_to
-            rho = conn.single_phase * np.einsum(
-                "s,xs,xs->x", weights, np.conj(civecs[conn.single_i]), civecs[conn.single_j])
+            rho = _pair_densities(civecs, weights, conn.single_i, conn.single_j,
+                                  conn.single_phase)
             _scatter(gamma, a * n + i, rho)
             if with_2rdm:
                 for lo in range(0, conn.n_single, _CONN_BATCH):
@@ -1513,14 +1532,16 @@ def rdm12(dets: Determinants, civecs: np.ndarray, weights: Optional[np.ndarray] 
 
         # --- rank 2: J -> I excites i,j -> a,b ---
         if conn.n_double and with_2rdm:
-            i, j = conn.double_from[:, 0], conn.double_from[:, 1]
-            a, b = conn.double_to[:, 0], conn.double_to[:, 1]
-            rho = conn.double_phase * np.einsum(
-                "s,xs,xs->x", weights, np.conj(civecs[conn.double_i]), civecs[conn.double_j])
-            _scatter(gam2, ((a * n + i) * n + b) * n + j, rho)
-            _scatter(gam2, ((b * n + j) * n + a) * n + i, rho)
-            _scatter(gam2, ((a * n + j) * n + b) * n + i, -rho)
-            _scatter(gam2, ((b * n + i) * n + a) * n + j, -rho)
+            for lo in range(0, conn.n_double, _CONN_BATCH):
+                sl = slice(lo, min(lo + _CONN_BATCH, conn.n_double))
+                i, j = conn.double_from[sl, 0], conn.double_from[sl, 1]
+                a, b = conn.double_to[sl, 0], conn.double_to[sl, 1]
+                rho = _pair_densities(civecs, weights, conn.double_i[sl], conn.double_j[sl],
+                                      conn.double_phase[sl])
+                _scatter(gam2, ((a * n + i) * n + b) * n + j, rho)
+                _scatter(gam2, ((b * n + j) * n + a) * n + i, rho)
+                _scatter(gam2, ((a * n + j) * n + b) * n + i, -rho)
+                _scatter(gam2, ((b * n + i) * n + a) * n + j, -rho)
 
     # The scan covered only I < J; restore hermiticity.
     gamma = gamma + gamma.conj().T

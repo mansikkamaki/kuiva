@@ -156,20 +156,24 @@ with its context. Each entry links to the page that explains the mechanism.
   only.
 - ⚠ **An automatically chosen active space is a proposal made by a *qualitative* probe**
   ([AutoCAS](reference/stages/AutoCAS.md)), and three of its limits bite in practice. The
-  keep/drop verdict is taken on a cheap CI's state spectrum, whose budget-to-budget spread
-  is hundreds of cm⁻¹ on every system measured — comparable only between two probes at the
-  same budget, which is what the protocol does, and never with a CASSCF's. A class whose
-  effect is below what the probe resolves comes back **"inconclusive, kept"** rather than
-  decided: that is the normal outcome for lanthanide exchange, where the manifold is split
-  by a few cm⁻¹, and it means the bridge orbitals are in the space because they were asked
-  for. ⚠ The noise floor that verdict uses was measured for adding **one or two** pairs;
-  adding four to seven pairs that do not matter moves the probe's spectrum by 60–100 cm⁻¹,
-  above the tolerance, so a "kept" on a **double shell** or on a bridge of four candidates is
-  not by itself evidence that the class matters (the Ce(3+) double shell is kept although a
-  one-electron shell has no correlation for it to describe). And the proposed state count is
-  a boundary read off that same spectrum — what makes it a count is the state-averaging gate,
-  the boundary diagnostic and the window's ladder downstream, none of which this stage
-  replaces.
+  keep/drop verdict is taken on a cheap CI's state spectrum at the reference orbitals —
+  comparable only with another at the same orbitals and budget, which is what the protocol
+  does, and never with a CASSCF's. A class whose effect is below what it resolves comes back
+  **"inconclusive, kept"** rather than decided: that is the normal outcome for lanthanide
+  exchange, where the manifold is split by a few cm⁻¹, and it means the bridge orbitals are
+  in the space because they were asked for. ⚠ A "kept" means the class changes the CI at
+  **fixed orbitals** — correlation, or the state-specific relaxation a larger space allows —
+  and the second alone keeps a **double shell** on a one-electron ion (Ti(3+), Ce(3+)), where
+  there is no correlation for it to describe. ⚠ On a coupled polynuclear system the stage
+  refuses a determinant budget below the product of the sites' Hund configurations (32 768
+  for three high-spin d⁵ ions), and ⚠ **where the coupled core is larger than the budget no
+  class is decided at all**: requested classes come back "kept (not measurable)", because a
+  truncated cheap CI of coupled centres was measured not to represent their exchange
+  manifold. An automatically assembled polynuclear space beyond the complete-CI size is
+  therefore exactly the classes that were requested. And the proposed state
+  count is a boundary read off a pre-optimized probe's spectrum — what makes it a count is
+  the state-averaging gate, the boundary diagnostic and the window's ladder downstream, none
+  of which this stage replaces.
 - ⚠ **Shells of two different `l` are refused rather than composed** by the automatic
   selection: one AVAS projector per `l`, and a second projector's rotation re-mixes the
   pairs the first one selected (they are degenerate at zero projection in it). A

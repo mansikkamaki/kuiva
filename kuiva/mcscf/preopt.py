@@ -401,7 +401,8 @@ def cheap_ci(h_eff: np.ndarray, eri: np.ndarray, n_elec: int, *, n_states=1,
              max_generators: int = DEFAULT_MAX_GENERATORS,
              state_weights: Optional[Sequence[float]] = None,
              ensemble_selection: bool = True,
-             with_2rdm: bool = True, report: bool = False) -> CheapCIResult:
+             with_2rdm: bool = True, report: bool = False,
+             seed: Optional[Determinants] = None) -> CheapCIResult:
     """Selected multireference CISD in the active space (see the module docstring).
 
     ``h_eff`` is the active-space effective one-electron Hamiltonian (the inactive Fock
@@ -423,6 +424,15 @@ def cheap_ci(h_eff: np.ndarray, eri: np.ndarray, n_elec: int, *, n_states=1,
     the verdict is good for is being a *rung*: these energies are qualitative by
     construction, so the number of roots inside a cutoff is an estimate of the full CI's,
     never a substitute for resolving the window where the states are actually wanted.
+
+    ``seed`` replaces the reference CAS as the space the selection starts from, and is **kept
+    whole**: the result's determinant list contains every seed determinant, and
+    ``max_determinants`` then bounds what the selection may *add* to it. ⚠ That nesting is
+    what makes two solves comparable when one space extends the other -- a selection started
+    afresh in the larger space may drop determinants the smaller one held, and a comparison of
+    the two spectra then reads the truncation (measured on Ti2Cl6: two to seven deep inactive
+    pairs moved the target manifold by 14-3149 cm^-1 through the selection alone). Eigenvalues
+    of the seeded space are bounded above by the seed's own, by interlacing, whatever is added.
     """
     n_spinor = int(h_eff.shape[0])
     window = None
@@ -439,9 +449,16 @@ def cheap_ci(h_eff: np.ndarray, eri: np.ndarray, n_elec: int, *, n_states=1,
                              "state_weights=, or state a count")
         window = n_states
 
-    # The reference CAS can never exceed the total budget: it is the seed, not the space.
-    dets = reference_determinants(np.diag(h_eff), n_spinor, n_elec,
-                                  max_reference=min(max_reference, max_determinants))
+    if seed is not None:
+        if int(seed.n_spinor) != n_spinor or int(seed.n_elec) != int(n_elec):
+            raise ValueError("the seed space is {} electrons in {} spinors, the CI {} in {}"
+                             .format(seed.n_elec, seed.n_spinor, n_elec, n_spinor))
+        dets = seed
+        max_determinants = int(seed.ndet) + int(max_determinants)
+    else:
+        # The reference CAS can never exceed the total budget: it is the seed, not the space.
+        dets = reference_determinants(np.diag(h_eff), n_spinor, n_elec,
+                                      max_reference=min(max_reference, max_determinants))
     # Solve the reference CAS before selecting anything: the perturbative weight needs a
     # meaningful E_ref in its denominator and meaningful coefficients on the generators, and
     # the reference is small enough (a few hundred determinants) that this is free.
@@ -467,17 +484,22 @@ def cheap_ci(h_eff: np.ndarray, eri: np.ndarray, n_elec: int, *, n_states=1,
     # quantity — take the single-root path explicitly, so that a one-state calculation is
     # bitwise unaffected by this option rather than merely almost unaffected.
     sel_weights = weights if (ensemble_selection and n_states > 1) else None
+    conn = None
     for rnd in range(max(1, selection_rounds)):
         grown = _select_space(dets, civecs, energies, h_eff, eri,
                               max_determinants, max_excitation, max_generators, sel_weights)
         if grown.ndet == dets.ndet:
             break                                        # nothing new survived selection
         dets = grown
-        energies, civecs = _solve(dets, h_eff, eri, n_states)
+        # The pair search depends on the determinants only, so the one made for this solve is
+        # the one the density matrices below use whenever the space stops growing here.
+        conn = connections(dets)
+        energies, civecs = _solve(dets, h_eff, eri, n_states, conn=conn)
         log.debug("selection round %d: %d determinants, E0 = %.8f Eh",
                   rnd + 1, dets.ndet, energies[0])
 
-    conn = connections(dets)
+    if conn is None:
+        conn = connections(dets)
     if window is not None:
         # The verdict, on the space the selection produced — the states this call returns are
         # the ones the rule read, so the count and the spectrum belong together.

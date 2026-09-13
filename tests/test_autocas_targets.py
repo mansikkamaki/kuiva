@@ -241,7 +241,7 @@ def test_the_bridging_atoms_of_the_dimer_are_detected_by_contact():
 def test_a_detection_that_finds_nothing_asks_for_the_atoms_by_name():
     far = _layout([("Ti", (0.0, 0.0, 0.0)), ("Ti", (40.0, 0.0, 0.0)),
                    ("Cl", (0.0, 4.0, 0.0))])
-    with pytest.raises(ValueError, match="name the bridging atoms|no atom is within"):
+    with pytest.raises(ValueError, match="Name the bridging atoms|no ligand is within"):
         cand.bridge_atoms_by_contact(far, (0,), (1,))
 
 

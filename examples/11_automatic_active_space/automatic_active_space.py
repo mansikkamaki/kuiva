@@ -14,7 +14,7 @@ program instead:
     ScalarSCF -> Reference -> AutoCAS -> CASSCF
 
 ``AutoCAS`` is not a black box and is not meant to be read as one. It turns *physical
-statements* into orbitals, probes each of them with the cheap CI, prints every keep and drop
+statements* into orbitals, measures each of them with the cheap CI, prints every keep and drop
 with the number it was decided on, and proposes how many states to average over. What comes
 out is the same kind of object a hand-written selection produces -- a stated active space and
 a stated count -- and every check downstream runs on it unchanged.
@@ -47,19 +47,24 @@ Six things are worth watching.
 
 3. **A feature class is kept or dropped by what it does to the SPECTRUM.** The second run
    here asks for the metal-ligand bonding partners as well -- ``("bonding", "Ti")`` -- and the
-   rounds table shows the class being probed, pruned and then judged on how far it moved the
+   rounds table shows the class being measured, pruned and then judged on how far it moved the
    target manifold. Entanglement only *prunes*, inside one class, and is never asked whether
    the class matters: a single-orbital entropy is blind to a correlating shell and to the
    empty members of a d manifold, and a bridging orbital shares at most ln 2 nats with either
    metal however real the pathway. ⚠ Watch the middle of the verdict column: a change under
-   the tolerance but above the probe's measured noise floor comes back **"inconclusive,
-   kept"** rather than decided. A larger space is the safe error and the budget bounds it.
+   the tolerance but above the measured noise floor comes back **"inconclusive, kept"** rather
+   than decided. A larger space is the safe error and the budget bounds it.
 
-4. **The probe is qualitative and the code says so everywhere.** Every number in the rounds
-   table comes from a truncated CI in a truncated space, run at a fixed small budget. Two
-   probes at the same budget are comparable with each other and with nothing else -- never
-   with a CASSCF, never across budgets. That is why the *decision* is a comparison of two
-   probes and why the state count that comes out is a proposal rather than an answer.
+4. **Every verdict is taken at FIXED orbitals, and the numbers are qualitative.** Each number
+   in the rounds table is a cheap CI -- a truncated CI in a truncated space, at a fixed small
+   budget -- at the orbitals the candidates were constructed in, with the trial space's
+   determinants starting from the accepted space's. Only the space that comes out is
+   pre-optimized, once, at the end. ⚠ Deciding on two pre-optimizations instead would read
+   the optimizer's path rather than the class: a pre-optimization stopped on its budget
+   rotates into whatever it is given, and pairs that describe nothing once moved the spectrum
+   by up to 100 cm^-1 that way. Two measurements at the same orbitals and budget are
+   comparable with each other and with nothing else -- never with a CASSCF -- which is also why
+   the state count that comes out is a proposal rather than an answer.
 
 5. **The proposed count is a manifold boundary at or above a theoretical floor.** For a d1
    ion the floor is the spin multiplicity, 2 -- on the d block the ligand field decides the
@@ -131,9 +136,9 @@ R_TICL = 2.25
 #: What the committed cross-check states by hand: the Ti 3d shell, one electron.
 N_ACTIVE, N_ACTIVE_ELEC = 10, 1
 
-#: Probe budget for this example, smaller than the default so the run stays short. ⚠ It is
-#: the same budget for every round -- two probes are comparable only at one budget -- and it
-#: is stated rather than adapted, because a budget that moved with the space would make the
+#: Cheap-CI budget for this example, smaller than the default so the run stays short. ⚠ It is
+#: the same budget for every round -- two measurements are comparable only at one budget -- and
+#: it is stated rather than adapted, because a budget that moved with the space would make the
 #: rounds table a measurement of itself.
 PROBE = dict(max_iter=6, max_determinants=4000)
 

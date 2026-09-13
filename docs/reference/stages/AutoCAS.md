@@ -32,12 +32,12 @@ Both are refused at construction, naming the knob.
 | `max_states` | `64` | cap on the proposed count. A manifold boundary above it proposes **no count** — only the window |
 | `spectrum_tol` | `0.05` | a class stays if it moves the target manifold by more than this fraction of the manifold's width … |
 | `spectrum_tol_cm` | `50.0` | … or by more than this many cm⁻¹, whichever is larger |
-| `probe_noise_cm` | `10.0` | below this a difference is not a measurement and the class is dropped; between it and the tolerance the verdict is **"inconclusive, kept"**. Measured for adding one or two pairs; a class of four or more pairs moves the probe by more than this whatever it is |
+| `probe_noise_cm` | `10.0` | below this a difference is not a measurement and the class is dropped; between it and the tolerance the verdict is **"inconclusive, kept"**. Measured at fixed orbitals by adding up to seven pairs that describe nothing: under 0.2 cm⁻¹ on the single-ion systems, 8 on a coupled dimer |
 | `prune_rel` | `0.1` | keep a candidate pair whose single-orbital entropy is at least this fraction of the largest in its own class |
 | `manifold_gap_cm` | `50.0` | consecutive states closer than this are one manifold and are never separated |
 | `require` | `()` | character statements pinning orbitals into the core: `("character", atom, l, n_spinors[, skip_pairs])` |
 | `exclude` | `()` | the same form, banning orbitals from every class |
-| `probe` | `dict(max_iter=8, max_determinants=6000, margin=8)` | the probe budget, held constant across the whole protocol; `margin` is how many roots are solved above the floor, so the boundary can be seen from the state above it |
+| `probe` | `dict(max_iter=8, max_determinants=6000, margin=8)` | the cheap-CI budget, held constant across the whole protocol: `max_determinants` for every measurement (for a trial, what it may add to the accepted space's determinants), `max_iter` for the one pre-optimization at the end, `margin` the roots solved above the floor so the boundary can be seen from the state above it. ⚠ `max_determinants` must hold the product of the sites' Hund configurations (32 768 for three d⁵ ions) or the stage refuses |
 | `localize` | `True` | localize the shells onto the individual centres afterwards, so the space has **sites** as well as orbitals |
 | `report` | `True` | print the `[automatic active space]` block |
 
@@ -51,9 +51,9 @@ that element.
 |---|---|---|---|
 | `"shells"`, `("shell", "Dy")`, `("shell", ("Ti1","Ti2"), "d")` | the whole valence `l` shell of the centre(s), by count-stated AVAS | fixed: `2l+1` pairs per centre; **never pruned, never cut** | 1 |
 | `("frontier", atoms)`, `("frontier", atoms, n_occ, n_vir)` | a fragment's singly occupied pairs — the radical HOMO — plus neighbours of largest population there | stated | 2 |
-| `("bridge", (site_a, site_b))`, `("bridge", (site_a, site_b), atoms, n_pairs)` | ligand pairs on the bridging atoms (named, or detected by covalent contact with both sites [[200]](../../references.md#r200)) that **mix with the shell** | bounded, pruned | 3 |
+| `("bridge", (site_a, site_b))`, `("bridge", (site_a, site_b), atoms, n_pairs)` | ligand pairs on the bridging atoms (named, or detected: every **ligand** — a fragment connected by covalent contact [[200]](../../references.md#r200), other centres not conducting — that touches both sites, so a μ-carboxylate is found as well as a μ-oxo) that **mix with the shell**. A site may be a sublattice, `((1, 3), (2,))` | bounded, pruned | 3 |
 | `("bonding", atoms)`, `("bonding", atoms, n_pairs)` | the metal–ligand bonding combinations just below the shell's projection cut | bounded, pruned | 4 |
-| `("double", atoms)` | the correlating shell of the same `l` | fixed; accepted or dropped **whole** | 5 |
+| `("double", atoms)` | the correlating shell of the same `l`, built in what the shell left over — asking for it changes neither the shell nor the spectrum the other classes read | fixed; accepted or dropped **whole** | 5 |
 
 ⚠ **Priority is fixed and is not a knob.** It is the order the classes are *added* in — so a
 bonding partner is tested in the presence of the bridge and never the other way round — and
@@ -72,10 +72,10 @@ kuiva.AutoCAS(ref, targets=[("shell", "Fe", "d"), ("bonding", "Fe", 3),
 
 ## How a class is decided
 
-⚠ **The cheap CI probes, the spectrum decides, and entropy only prunes.** The shells are the
+⚠ **The cheap CI measures, the spectrum decides, and entropy only prunes.** The shells are the
 core; each further class is offered in its own round, its candidates pruned by *relative*
 single-orbital entropy [[113]](../../references.md#r113)[[198]](../../references.md#r198),
-and the class kept only if the probe's **target manifold** — the ground manifold's relative
+and the class kept only if its **target manifold** — the ground manifold's relative
 energies and the gap above it — moved by more than the tolerance. That is the exchange
 splitting for coupled shells, the ligand-field pattern for a single ion, the radical–ion
 coupling for a radical bridge: the quantity the active space is being chosen to describe.
@@ -85,14 +85,30 @@ reasons: it is blind to a correlating shell and to the empty members of a d mani
 carry ~1e-4 occupations at this level of correlation), and a low-dimensional bridge shares at
 most `ln 2` nats with either ion, so in absolute terms it ranks below every metal orbital.
 
-**Three verdicts, not two.** Above the tolerance is *kept*; below the probe's noise floor is
+⚠ **Every verdict is a cheap CI at fixed orbitals** — the orbitals the candidates were
+constructed in — with each trial's determinants nested in the accepted space's; only the
+accepted space is pre-optimized, once, at the end. Two pre-optimizations differ by what the
+addition did to the optimizer's path, which moved the spectrum by up to 100 cm⁻¹ for pairs
+that describe nothing ([active spaces](../../methods/active-spaces.md#what-decides-whether-a-class-stays)).
+What a verdict includes is therefore correlation and the state-specific relaxation a larger
+space allows: a double shell is kept on a one-electron ion for the second reason alone.
+
+**Three verdicts, not two.** Above the tolerance is *kept*; below the noise floor is
 *dropped*; in between is **"inconclusive, kept"** — a larger space is the safe error and the
 budget bounds it, whereas dropping a class the probe could not resolve is a silent claim that
 it does not matter. Lanthanide exchange is the case this exists for: 256 states split by a few
 cm⁻¹ is below what any cheap CI resolves, and the honest outcome is that the bridge orbitals
 ride on a *requested* class.
 
-⚠ **A probe that failed is not a probe that measured nothing.** A solver failure at a trial
+⚠ **A truncated core of coupled centres is not measured at all.** Where the shells belong to
+more than one atom and their determinant space exceeds the budget, every requested class that
+fits is **"kept (not measurable)"**, with the reason printed: a selected CI of three coupled
+high-spin Mn(II) ions was measured not to be a spin manifold at 6 000 or 40 000 determinants,
+and seeded with the sites' Hund configurations it put the ferromagnetic level lowest and split
+its components by more than the exchange. On such a system a bridge is in the space because it
+was asked for, never because a number said so.
+
+⚠ **A measurement that failed is not one that measured nothing.** A solver failure at a trial
 space marks the round "not measured", keeps the class **out**, and the run continues on the
 last accepted space.
 
@@ -176,9 +192,11 @@ cas = kuiva.CASSCF(auto, solver="dmrg", graph="site-blocked",
   escalation paying for a pre-optimization far from stationary). Raise
   `probe=dict(max_iter=...)` where that matters, or state the space and let the production
   stage start from the reference.
-- ⚠ **This is several pre-optimizations**, one per round plus one for every prune that removed
-  something. The rounds table records the CPU seconds of each; the probe budget is small on
-  purpose and is an explicit argument.
+- ⚠ **The cost is one fixed-orbital CI per round** (plus one for every prune that removed
+  something) **and one pre-optimization**. The rounds table records the CPU seconds of each;
+  the budget is an explicit argument. On a coupled polynuclear system the determinant budget
+  the stage requires is large — tens of thousands of determinants — and so is each
+  measurement.
 
 ## Cross-links
 

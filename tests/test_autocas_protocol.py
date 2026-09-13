@@ -285,7 +285,8 @@ class _ScriptedProbe:
         self.fail_at = fail_at
         self.calls = []
 
-    def __call__(self, reference, coeff, space, *, n_roots, budget=None, report=False):
+    def __call__(self, reference, coeff, space, *, n_roots, budget=None, report=False,
+                 seed=None):
         n_extra = (space.n_active - self.n_core) // 2
         self.calls.append(space.n_active)
         if self.fail_at is not None and space.n_active == self.fail_at:
@@ -298,6 +299,9 @@ class _ScriptedProbe:
 
 
 def _assemble_ticl3(ticl3, monkeypatch, scripted, **kwargs):
+    # The same script stands in for the fixed-orbital measurement every verdict is taken on
+    # and for the one pre-optimization of the accepted space at the end.
+    monkeypatch.setattr(proto, "measure", scripted)
     monkeypatch.setattr(proto, "probe", scripted)
     return proto.assemble(ticl3, report=False, **kwargs)
 
@@ -350,12 +354,13 @@ def test_a_class_over_budget_is_dropped_with_its_size_printed_and_never_probed(
                                targets=["shells", ("bonding", "Ti", 2)], max_spinors=10)
     assert assembly.rounds[1].verdict == "dropped (over budget)"
     assert "against a budget of 10" in assembly.rounds[1].note
-    assert scripted.calls == [10]                       # the core, and nothing else
+    assert scripted.calls == [10, 10]      # the core's measurement and its final probe only
 
 
 def test_the_core_alone_over_budget_refuses_before_the_first_probe(ticl3, monkeypatch):
     """⚠ A shell is never cut to fit, and the refusal names the two ways out."""
     scripted = _ScriptedProbe(10)
+    monkeypatch.setattr(proto, "measure", scripted)
     monkeypatch.setattr(proto, "probe", scripted)
     with pytest.raises(ValueError, match="never cut"):
         proto.assemble(ticl3, targets="shells", max_spinors=8, report=False)
@@ -387,6 +392,133 @@ def test_every_accepted_space_is_whole_kramers_pairs_and_carries_its_statement(
     assert np.all(columns[0::2] % 2 == 0)
     assert "AVAS" in assembly.space.description
     assert "[" not in assembly.space.description       # a description carries no index list
+
+
+def test_a_probe_budget_below_the_sites_hund_configurations_is_refused():
+    """⚠ The mechanism behind the Tier-3 run whose every verdict was an artefact: three d^5
+    sites need 32**3 = 32 768 determinants before a single charge-transfer one, and a
+    selected CI capped at 6000 returned spectra that were not spectra. Refused before any
+    measurement, with the number to state; a space whose whole CAS fits is never refused."""
+    from types import SimpleNamespace
+
+    centre = SimpleNamespace(l=2, atoms=(0, 1, 2))
+    shell = SimpleNamespace(electrons=15.0)
+    space = _space_over(np.arange(30), n_elec=15, n_orb=60)
+    with pytest.raises(ValueError, match="32768 determinants"):
+        proto._check_probe_budget(ProbeBudget(max_determinants=6000), space, [centre], shell)
+    proto._check_probe_budget(ProbeBudget(max_determinants=40000), space, [centre], shell)
+    small = _space_over(np.arange(10), n_elec=1)
+    proto._check_probe_budget(ProbeBudget(max_determinants=10), small,
+                              [SimpleNamespace(l=2, atoms=(0,))], SimpleNamespace(electrons=1.0))
+
+
+def test_embedded_determinants_carry_the_added_pairs_reference_occupations():
+    """The nesting a trial measurement starts from: the accepted determinants over the larger
+    space, a doubly occupied added pair filled, an empty one left empty, and a singly
+    occupied one taken both ways -- so the embedded list has the trial's particle number."""
+    from kuiva.autocas.probe import embed_determinants
+    from kuiva.ci.strings import Determinants, popcount
+
+    small = _space_over([4, 5, 6, 7], n_elec=1)
+    dets = Determinants.from_occupations([[0], [1], [2], [3]], 4)
+    occupation = np.zeros(40)
+    occupation[[0, 1]] = 1.0           # a doubly occupied pair below the space
+    occupation[[8, 9]] = 0.5           # a singly occupied pair
+    trial = _space_over([0, 1, 4, 5, 6, 7, 8, 9, 10, 11], n_elec=4)
+    seeded = embed_determinants(dets, small, trial, occupation)
+    assert seeded.ndet == 2 * dets.ndet
+    assert np.all(popcount(seeded.masks) == 4)
+    assert np.all(seeded.masks & np.uint64(0b11) == np.uint64(0b11))     # the filled pair
+    assert np.all(seeded.masks & np.uint64(0b11 << 8) == 0)               # the empty pair
+    somo = (seeded.masks >> np.uint64(6)) & np.uint64(0b11)
+    assert sorted(set(int(x) for x in somo)) == [1, 2]
+    with pytest.raises(ValueError, match="do not embed"):
+        embed_determinants(dets, small, _space_over([0, 1, 4, 5, 6, 7], n_elec=1),
+                           occupation)
+
+
+def test_a_seeded_cheap_ci_keeps_every_seed_determinant_and_adds_within_its_budget():
+    """⚠ Nesting is what makes two measurements comparable: a selection started afresh in a
+    larger space may drop what the smaller one held."""
+    from kuiva.ci.strings import Determinants
+    from kuiva.mcscf.preopt import cheap_ci
+
+    rng = np.random.default_rng(7)
+    n = 8
+    h = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+    h = h + h.conj().T + np.diag(np.arange(n, dtype=float) * 2.0)
+    eri = np.zeros((n, n, n, n), dtype=complex)
+    seed = Determinants.from_occupations([[0, 1, 2], [0, 1, 3], [0, 2, 5], [4, 6, 7]], n)
+    ci = cheap_ci(h, eri, 3, n_states=2, max_determinants=5, seed=seed, with_2rdm=False)
+    assert np.all(ci.dets.positions(seed.masks) >= 0)
+    assert seed.ndet < ci.n_determinants <= seed.ndet + 5
+
+
+def test_irrelevant_pairs_do_not_move_a_fixed_orbital_measurement_whatever_their_number(ticl3):
+    """⚠ The mechanism the verdicts are taken at fixed orbitals for. When two pre-optimized
+    probes were compared, four to seven Kramers pairs describing nothing moved the target
+    spectrum by 58-102 cm^-1 -- above the tolerance -- because the optimizer rotated into
+    them. At fixed orbitals, with the trial nested in the core, the highest-energy virtual
+    pairs (unique: eigenvectors of the pair-folded inactive Fock) move it by far less than
+    the noise floor at every size."""
+    from kuiva.autocas.probe import measure
+    from kuiva.mcscf.casci import active_space
+    from kuiva.mcscf.orbopt import CASIntegrals
+    from kuiva.spinor.expand import fold_to_kramers_pairs, rotate_kramers_pairs
+
+    centres = ctr.detect_centres(ticl3, report=False).centres
+    construction = cand.shell_candidates(ticl3, centres, report=False)
+    space = proto._space_of(ticl3, [construction.shell])
+    coeff = construction.coeff
+    ints = CASIntegrals.build(ticl3.factors, ticl3.h_one_electron(), coeff, space.spaces,
+                              e_nuc=ticl3.data.e_nuc)
+    virtual = np.asarray(space.spaces.virtual, dtype=int)
+    f_pair, _ = fold_to_kramers_pairs(ints.f_inactive, columns=virtual)
+    _, v = np.linalg.eigh(f_pair)
+    coeff = rotate_kramers_pairs(coeff, v, virtual)       # virtual columns by orbital energy
+    budget = ProbeBudget()
+    core = measure(ticl3, coeff, space, n_roots=10, budget=budget)
+    assert core.fixed_orbitals and core.coeff is not None
+    reference = rts.target_spectrum(core.spectrum_cm, 2)
+    for n_pairs in (1, 4, 7):
+        extra = virtual[-2 * n_pairs:]
+        trial = active_space(np.sort(np.concatenate([space.spaces.active, extra])),
+                             int(ticl3.nspinor), int(ticl3.data.nelec_total),
+                             n_active_elec=space.n_elec)
+        moved = measure(ticl3, coeff, trial, n_roots=10, budget=budget, seed=core)
+        distance, _ = proto.spectrum_distance(reference,
+                                              rts.target_spectrum(moved.spectrum_cm, 2))
+        assert distance < 0.1 * proto.DEFAULT_PROBE_NOISE_CM, (n_pairs, distance)
+
+
+def test_a_truncated_core_of_coupled_centres_is_not_measured():
+    """⚠ Measured on mn3_linear: a selected CI of three coupled d^5 sites is not a spin
+    manifold at 6000 or 40 000 determinants, and seeded with the Hund product it puts the
+    ferromagnetic S = 15/2 lowest with its components split by more than the exchange. A
+    single centre, or a complete core of several, is measured as before."""
+    from types import SimpleNamespace
+
+    budget = ProbeBudget(max_determinants=40000)
+    trimer = [SimpleNamespace(l=2, atoms=(0, 1, 2))]
+    big = _space_over(np.arange(30), n_elec=15, n_orb=60)
+    assert "KEPT UNMEASURED" in proto._coupled_and_truncated(big, trimer, budget)
+    dimer = [SimpleNamespace(l=2, atoms=(0, 1))]
+    assert proto._coupled_and_truncated(_space_over(np.arange(20), n_elec=2), dimer,
+                                        budget) == ""       # CAS(2, 20) is complete
+    one = [SimpleNamespace(l=2, atoms=(0,))]
+    assert proto._coupled_and_truncated(big, one, budget) == ""
+
+
+def test_classes_on_an_unmeasurable_core_are_kept_without_a_measurement(ticl3, monkeypatch):
+    scripted = _ScriptedProbe(10, shift_per_pair=0.0)
+    monkeypatch.setattr(proto, "_coupled_and_truncated", lambda *a: "scripted reason")
+    assembly = _assemble_ticl3(ticl3, monkeypatch, scripted,
+                               targets=["shells", ("bonding", "Ti", 2)])
+    assert [r.verdict for r in assembly.rounds] == ["core", "kept (not measurable)"]
+    assert assembly.n_active > 10
+    assert assembly.decided is None
+    assert len(scripted.calls) == 1                # the final probe only
+    assert "scripted reason" in assembly.notes
 
 
 def test_a_target_set_without_a_shell_is_refused(ticl3):

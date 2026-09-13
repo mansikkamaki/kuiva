@@ -12,10 +12,10 @@ orbitals (:func:`kuiva.mcscf.avas.avas`), in its **count-stated** mode, because 
 rotate: they select pairs of the set they are given by Loewdin population on a fragment.
 
 ⚠ **Therefore the shell is constructed once, for every class that reads its projection.**
-The double shell is the *same* AVAS call with ``n_shells=2`` and twice the count -- not a
-second call, because a second projector's rotation would re-mix the first one's selection
-inside each occupation group -- and the bonding partners are read off the same call's
-eigenvalue spectrum. :func:`shell_candidates` is where all three come from.
+The bonding partners and the bridge candidates are read off that call's eigenvalue spectrum,
+and the double shell is built *after* it, by a second rotation confined to the empty pairs the
+shell left over at (near) zero projection -- so asking for it changes neither the shell nor
+the spectrum the other classes read. :func:`shell_candidates` is where all three come from.
 
 ⚠ **One rotation per orbital set, and a second one is refused rather than composed.** Two
 shells of *different* ``l`` (a heteronuclear 3d/4f pair) need two AVAS calls with two
@@ -543,60 +543,71 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
     # count and `active_space` can only refuse one (see `_shell_electrons`).
     result = avas_projection(coeff, reference.data.s_ao, reference.ao_layout,
                              reference.data.atomic_reference, atom=list(atoms), l=ell,
-                             occupation=occupation, n_shells=2 if double else 1,
-                             n_pairs=n_shell_pairs * (2 if double else 1))
+                             occupation=occupation, n_shells=1, n_pairs=n_shell_pairs)
     if report:
         result.report(log)
     values = np.asarray(result.eigenvalues, dtype=float)
     pair_occ = np.asarray(result.occupations, dtype=float)
     selected = np.asarray(result.selected, dtype=int)
+    shell_pairs = np.sort(selected)
+    ranking, ranking_name = values, "AVAS projection"
 
     double_pairs = np.zeros(0, dtype=int)
-    ranking, ranking_name = values, "AVAS projection"
+    double_values = np.zeros(0)
     if double:
-        # The valence shell first, the correlating shell second: the two-shell selection is
-        # split by each pair's projection onto the **valence reference shell alone** -- the
-        # diagonal of that projector in the orbitals the two-shell rotation produced. Reading
-        # a diagonal rotates nothing, so the two-shell selection is not re-mixed (which a
-        # second AVAS rotation would do). Ties fall to the column order, deterministically.
+        # ⚠ **The valence shell is the one-shell construction, bitwise, and the correlating
+        # shell is built in what it left over.** Asking for a class may not change the core
+        # the class is judged against. This was once one AVAS call with two shells projected,
+        # the valence shell read back off it -- and on TiCl3 that shell was a different span
+        # (principal overlaps 0.87-0.91 with the one-shell one) whose empty d pairs put the
+        # ligand-field states at 28 800 cm^-1 instead of 4 300: a double-shell round then
+        # compared a broken core with a repaired one and "kept" the class by 24 000 cm^-1.
         #
-        # ⚠ **Not "occupied pairs first"**, which is what this was and what it got wrong:
-        # the two-shell selection of a d^1 TiCl3 holds doubly occupied Cl sigma pairs with a
-        # fraction of 3d projection, and an occupied-first split put them in the valence shell
-        # -- a CAS(5, 10) with a 6S floor instead of the committed CAS(1, 10). It happened to be
-        # right where the valence shell is the whole occupied part of the selection (a free
-        # Dy(3+), FeCl2), which is what it had been measured on.
-        m_valence, _, _ = projection_pair_matrix(
+        # The second rotation is confined to the EMPTY pairs the shell did not select AND whose
+        # one-shell projection is below the bonding floor. Those are degenerate at (near) zero
+        # projection, so no basis of them was defined and rotating them destroys nothing --
+        # the frontier class's rule. The empty pairs above the floor are non-degenerate
+        # eigenvectors carrying shell character, which the bonding and bridge classes read,
+        # and they are left as they are. Inside the pool the two-shell projector is
+        # diagonalized: its eigenvectors are unique wherever the projection is not zero.
+        from ..spinor.expand import rotate_kramers_pairs
+
+        pool = np.array([p for p in np.nonzero(pair_occ <= 1.0e-8)[0]
+                         if int(p) not in set(shell_pairs.tolist())
+                         and values[p] < DEFAULT_BONDING_FLOOR], dtype=int)
+        m_two, _, _ = projection_pair_matrix(
             result.coeff, reference.data.s_ao, reference.ao_layout,
+            reference.data.atomic_reference, atom=list(atoms), l=ell, n_shells=2)
+        w, v = np.linalg.eigh(m_two[np.ix_(pool, pool)])
+        order = np.argsort(-w, kind="stable")
+        w, v = w[order], v[:, order]
+        rotated = rotate_kramers_pairs(result.coeff, v, _pair_columns(pool))
+        from dataclasses import replace as _replace
+
+        # The rotated pool's one-shell projections are its diagonal now; each lies inside the
+        # pool's eigenvalue range, so none can cross the floor the other classes read.
+        m_one, _, _ = projection_pair_matrix(
+            rotated, reference.data.s_ao, reference.ao_layout,
             reference.data.atomic_reference, atom=list(atoms), l=ell, n_shells=1)
-        ranking = np.real(np.diag(m_valence)).copy()
-        ranking_name = "AVAS projection onto the valence shell"
-        order = selected[np.argsort(-ranking[selected], kind="stable")]
-        shell_pairs = np.sort(order[:n_shell_pairs])
-        # ⚠ The correlating shell is the next pairs that are EMPTY, by the two-shell
-        # projection, and not simply "the rest of the selection": on TiCl3 the rest held two
-        # doubly occupied Cl sigma pairs (4 electrons in a "correlating shell"), because an
-        # occupied ligand pair with a little 3d in it can outrank a 4d-like virtual on the
-        # two-shell eigenvalue. The empty group's eigenvalues come from the same rotation, so
-        # these pairs are its eigenvectors and unique wherever their projection is not zero.
-        empty = np.setdiff1d(np.nonzero(pair_occ <= 1.0e-8)[0], shell_pairs)
-        double_pairs = np.sort(empty[np.argsort(-values[empty], kind="stable")][:n_shell_pairs])
-        if double_pairs.size and float(values[double_pairs].min()) < DEFAULT_BONDING_FLOOR:
+        values = values.copy()
+        values[pool] = np.real(np.diag(m_one))[pool]
+        result = _replace(result, coeff=rotated, eigenvalues=values)
+        ranking = values
+        take = min(n_shell_pairs, pool.size)
+        double_pairs = np.sort(pool[:take])          # the pool columns now hold ordered vectors
+        double_values = w[:take][np.argsort(pool[:take])]
+        if take < n_shell_pairs:
+            raise ValueError(
+                "the basis leaves only {} empty Kramers pairs outside the {} shell of {} for a "
+                "correlating shell of {}".format(pool.size, tg.angular_momentum_letter(ell),
+                                                 " and ".join(c.where for c in centres),
+                                                 n_shell_pairs))
+        if float(double_values.min()) < DEFAULT_BONDING_FLOOR:
             log.warning("the correlating shell of %s reaches down to empty pairs carrying "
                         "only %.3f of the two-shell projection: the basis does not hold a "
                         "second %s shell for them to be, so the class is weakly defined",
                         " and ".join(c.where for c in centres),
-                        float(values[double_pairs].min()), tg.angular_momentum_letter(ell))
-        margin = float(ranking[shell_pairs].min() - ranking[double_pairs].max())
-        if margin < 0.05:
-            log.warning("the valence and correlating shells of %s are not separated by the "
-                        "valence-shell projection (smallest valence pair %.3f, largest "
-                        "correlating pair %.3f): which pairs are labelled which is the count's "
-                        "decision rather than the electronic structure's",
-                        " and ".join(c.where for c in centres),
-                        float(ranking[shell_pairs].min()), float(ranking[double_pairs].max()))
-    else:
-        shell_pairs = np.sort(selected)
+                        float(double_values.min()), tg.angular_momentum_letter(ell))
 
     where = " and ".join(c.where for c in centres)
     state = centres[0].reference_state
@@ -604,9 +615,8 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
                   else "no pair was dropped, so there is no gap to report")
     description = (
         "the {} Kramers pairs of largest {} projection on {} (count-stated AVAS on the "
-        "free-atom reference, {}{}; {})".format(
-            shell_pairs.size, tg.angular_momentum_letter(ell), where, state,
-            ", two shells projected" if double else "", shell_note))
+        "free-atom reference, {}; {})".format(
+            shell_pairs.size, tg.angular_momentum_letter(ell), where, state, shell_note))
     electrons, electron_note = _shell_electrons(centres, pair_occ[shell_pairs])
     shell = CandidateSet(
         cls="shell", columns=_pair_columns(shell_pairs), description=description,
@@ -621,12 +631,15 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
     if double:
         double_set = CandidateSet(
             cls="double", columns=_pair_columns(double_pairs),
-            description=("the next {} empty Kramers pairs of {} projection on {} -- the "
-                         "correlating shell (AVAS with two shells projected, {})"
+            description=("the {} empty Kramers pairs of largest two-shell {} projection on {} "
+                         "outside the valence shell -- the correlating shell (projections "
+                         "{:.3f}..{:.3f}, {})"
                          .format(double_pairs.size, tg.angular_momentum_letter(ell), where,
+                                 float(double_values.max()), float(double_values.min()),
                                  state)),
-            occupations=pair_occ[double_pairs], ranking=ranking[double_pairs],
-            ranking_name=ranking_name, fixed=True,
+            occupations=pair_occ[double_pairs], ranking=double_values,
+            ranking_name="AVAS projection onto two shells, outside the valence shell",
+            fixed=True,
             fragments=_attribute(reference, result.coeff, centres, double_pairs),
             notes=("taken whole or not at all: at this level a correlating shell is empty "
                    "whatever it is worth, so only the spectrum can decide it",))
@@ -924,18 +937,32 @@ def frontier_candidates(reference, target: tg.Frontier, *, coeff=None, occupatio
 
 
 def bridge_atoms_by_contact(layout, site_a: Sequence[int], site_b: Sequence[int], *,
-                            scale: float = DEFAULT_CONTACT_SCALE) -> Tuple[int, ...]:
-    """Atoms in covalent contact with **both** sites -- the bridging atoms, detected.
+                            scale: float = DEFAULT_CONTACT_SCALE,
+                            barriers: Sequence[int] = ()) -> Tuple[int, ...]:
+    """The atoms of every **bridging ligand** between two sites, detected.
 
-    "In contact" is a distance within ``scale`` times the sum of the two covalent radii
-    (Cordero et al. 2008). A detection that finds nothing is a refusal rather than an empty
-    set: the target claimed a pathway between the two sites, and if none touches both, the
-    atoms have to be named.
+    Two atoms are in contact when their distance is within ``scale`` times the sum of their
+    covalent radii (Cordero et al. 2008). The non-site atoms fall apart into ligands -- the
+    connected components of that contact graph -- and a ligand bridges when some atom of it
+    touches ``site_a`` and some atom of it (the same or another) touches ``site_b``. The
+    bridging atoms are all the atoms of all bridging ligands.
+
+    ⚠ **A ligand, not an atom that touches both sites.** The atom rule sees a mu-oxo or a
+    mu-chloride and nothing else: a syn-syn carboxylate bridges through O-C-O, each oxygen
+    touching one metal, and on ``mn3_linear`` (each Mn pair bridged by one hydroxide and two
+    formates) it offered only the hydroxide oxygen -- where no orbital that mixes with the
+    shell holds half its population, so the class was refused although the pathway is
+    there. ``barriers`` are atoms a ligand may not be connected *through* (the sites always,
+    and every other magnetic centre: through a metal the whole molecule is one component).
+
+    A detection that finds nothing is a refusal rather than an empty set: the target claimed a
+    pathway between the two sites, and if no ligand touches both, the atoms have to be named.
     """
     coords = np.asarray(layout.coords_bohr, dtype=float)
     site_a = tuple(int(a) for a in site_a)
     site_b = tuple(int(b) for b in site_b)
     sites = set(site_a) | set(site_b)
+    blocked = sites | set(int(a) for a in barriers)
 
     def radius(atom: int) -> float:
         from ..basis.ghosts import is_ghost, normalize_symbol
@@ -951,17 +978,33 @@ def bridge_atoms_by_contact(layout, site_a: Sequence[int], site_b: Sequence[int]
                 "the bridging atoms cannot be detected by contact here -- name them: "
                 "(\"bridge\", (site_a, site_b), atoms)".format(symbol))
 
-    def touches(atom: int, site: Sequence[int]) -> bool:
-        return any(np.linalg.norm(coords[atom] - coords[s])
-                   <= scale * (radius(atom) + radius(s)) for s in site)
+    def in_contact(i: int, j: int) -> bool:
+        return bool(np.linalg.norm(coords[i] - coords[j]) <= scale * (radius(i) + radius(j)))
 
-    found = tuple(sorted(ia for ia in range(layout.natm)
-                         if ia not in sites and radius(ia) > 0.0
-                         and touches(ia, site_a) and touches(ia, site_b)))
+    def touches(atom: int, site: Sequence[int]) -> bool:
+        return any(in_contact(atom, s) for s in site)
+
+    ligand_atoms = [ia for ia in range(layout.natm) if ia not in blocked and radius(ia) > 0.0]
+    unvisited, found_atoms = set(ligand_atoms), []
+    for start in ligand_atoms:
+        if start not in unvisited:
+            continue
+        unvisited.discard(start)
+        component, frontier = [start], [start]
+        while frontier:
+            atom = frontier.pop()
+            for other in [o for o in unvisited if in_contact(atom, o)]:
+                unvisited.discard(other)
+                component.append(other)
+                frontier.append(other)
+        if any(touches(a, site_a) for a in component) and \
+                any(touches(a, site_b) for a in component):
+            found_atoms.extend(component)
+    found = tuple(sorted(found_atoms))
     if not found:
         raise ValueError(
-            "no atom is within {:.2f} x (r_cov + r_cov) of both {} and {}, so this molecule "
-            "has no bridging atom to detect: the two sites are either directly bonded or too "
+            "no ligand is within {:.2f} x (r_cov + r_cov) of both {} and {}, so this molecule "
+            "has no bridging ligand to detect: the two sites are either directly bonded or too "
             "far apart for a contact criterion. Name the bridging atoms: "
             "(\"bridge\", (site_a, site_b), atoms)"
             .format(scale, "+".join(layout.atom_label(a) for a in site_a),
@@ -971,6 +1014,7 @@ def bridge_atoms_by_contact(layout, site_a: Sequence[int], site_b: Sequence[int]
 
 def bridge_candidates(reference, target: tg.Bridge, projection, *,
                       exclude: Optional[Sequence[int]] = None,
+                      barriers: Sequence[int] = (),
                       threshold: float = DEFAULT_FRAGMENT_THRESHOLD,
                       floor: float = DEFAULT_BONDING_FLOOR,
                       scale: float = DEFAULT_CONTACT_SCALE,
@@ -1006,9 +1050,10 @@ def bridge_candidates(reference, target: tg.Bridge, projection, *,
             "which atoms belong to which side is the statement"
             .format(", ".join(layout.atom_label(a) for a in sorted(shared))))
     if target.atoms is None:
-        atoms = bridge_atoms_by_contact(layout, site_a, site_b, scale=scale)
-        how = ("detected by covalent contact with both sites (within {:.2f} x the sum of the "
-               "covalent radii)".format(scale))
+        atoms = bridge_atoms_by_contact(layout, site_a, site_b, scale=scale,
+                                        barriers=barriers)
+        how = ("the ligands in covalent contact with both sites, detected (contact within "
+               "{:.2f} x the sum of the covalent radii)".format(scale))
     else:
         atoms = tg.resolve_atoms(layout, target.atoms)
         overlap = set(atoms) & (set(site_a) | set(site_b))
@@ -1041,7 +1086,11 @@ def bridge_candidates(reference, target: tg.Bridge, projection, *,
             "population cut and the largest projection among them is {:.4f}. Either the "
             "bridging atoms are not these ({}), or they are orthogonal to the metal shell at "
             "this reference -- which is a statement that there is no superexchange pathway to "
-            "offer, not a threshold to lower"
+            "offer, not a threshold to lower. ⚠ Where the molecule has EQUIVALENT pathways "
+            "the orbitals are their symmetric and antisymmetric combinations, exactly as for "
+            "equivalent centres, and no pair holds half its population on one of them: state "
+            "one bridge between the sublattices instead, e.g. ('bridge', ((1, 3), (2,))) for "
+            "the two pathways of a linear trimer"
             .format("+".join(labels), threshold, floor, on_bridge.size,
                     float(np.max(values[on_bridge])) if on_bridge.size else 0.0, how))
 

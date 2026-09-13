@@ -112,6 +112,20 @@ def test_the_coupled_floor_is_the_product_and_is_printed_whatever_its_size():
         mult.coupled_floor([4, 0])
 
 
+def test_the_hund_configuration_dimension_counts_the_maximally_unpaired_determinants():
+    """The lower bound a probe's determinant budget is checked against: ``d^5`` holds its
+    sextet only with one electron per orbital (32 determinants), ``d^6`` needs one pair
+    (5 x 16), and the count is particle-hole symmetric."""
+    assert mult.hund_configuration_dimension(2, 5) == 32
+    assert mult.hund_configuration_dimension(2, 1) == mult.hund_configuration_dimension(2, 9) == 10
+    assert mult.hund_configuration_dimension(2, 6) == 80
+    assert mult.hund_configuration_dimension(3, 9) == 672
+    assert mult.hund_configuration_dimension(3, 7) == 128
+    assert mult.hund_configuration_dimension(2, 0) == mult.hund_configuration_dimension(2, 10) == 1
+    with pytest.raises(ValueError, match="do not fit"):
+        mult.hund_configuration_dimension(2, 11)
+
+
 def test_the_l_letters_skip_j_as_the_convention_does():
     assert [mult.term_letter(l) for l in range(8)] == list("SPDFGHIK")
 

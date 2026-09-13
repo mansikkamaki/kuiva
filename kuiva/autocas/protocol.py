@@ -2,12 +2,27 @@
 
 One paragraph of design
 -----------------------
-Round 0 probes the **core** -- every target shell, plus anything ``require=`` pinned. Each
-later round offers one feature class, prunes its candidates by relative single-orbital
-entropy, probes again, and keeps the class only if the probe's *target spectrum* moved by
-more than a stated tolerance. Over budget, whole classes are dropped in a fixed priority
-order. Every keep, drop and number is printed in one table, so the space that comes out is
-attributable class by class.
+Round 0 measures the **core** -- every target shell, plus anything ``require=`` pinned -- with
+the cheap CI at the candidate construction's orbitals. Each later round offers one feature
+class, prunes its candidates by relative single-orbital entropy, measures again at the same
+orbitals, and keeps the class only if the *target spectrum* moved by more than a stated
+tolerance. Over budget, whole classes are dropped in a fixed priority order. The accepted
+space is then pre-optimized **once** (the probe), for the orbitals handed downstream and the
+spectrum the root proposal reads. Every keep, drop and number is printed in one table, so the
+space that comes out is attributable class by class.
+
+⚠ **Verdicts at fixed orbitals, the pre-optimization once at the end** (measured, 2026-09-13).
+The rounds used to compare two *probes*, each pre-optimized, and a pre-optimization stopped on
+its iteration budget rotates into whatever it is given: adding seven Kramers pairs that
+describe nothing moved the target spectrum by up to 102 cm^-1, above the tolerance, so a
+"kept" on a multi-pair class did not say the class mattered. At fixed orbitals the same
+additions move it by at most 0.2 cm^-1. See :func:`kuiva.autocas.probe.measure` for what
+that measurement does and does not include.
+
+⚠ **The probe's determinant budget must hold the sites' Hund configurations**, or the
+protocol refuses before its first measurement (:func:`_check_probe_budget`): below that
+product a selected CI cannot represent a coupled system's ground manifold, and the verdicts
+were once read off truncation artefacts without anything noticing.
 
 ⚠ **The spectrum decides and entropy only prunes** (user decision, 2026-09-12), and the two
 halves of that rule are here for measured reasons rather than taste:
@@ -71,7 +86,7 @@ from . import candidates as cand
 from . import centres as ctr
 from . import multiplets as mult
 from . import targets as tg
-from .probe import ProbeBudget, ProbeResult, probe, probe_roots
+from .probe import ProbeBudget, ProbeResult, measure, probe, probe_roots
 from .roots import RootProposal, propose_roots, target_spectrum
 
 log = get_logger(__name__)
@@ -98,22 +113,20 @@ DEFAULT_SPECTRUM_TOL_CM = 50.0
 #: measurement at all, and the class is **dropped**. Between it and the tolerance the verdict
 #: is "inconclusive, kept".
 #:
-#: ⚠ **Measured against a control, because repeats cannot see it.** Two probes of one space at
-#: one budget in one process agree *bitwise*, so what the round loop reads -- the distance
-#: between a probe of the core and a probe of the core plus a class -- has a component that
-#: comes from the addition changing the determinant selection and the optimizer's trajectory
-#: rather than from its physics. Measured by adding a pair that cannot describe anything the
-#: ground manifold is made of (a deep inactive one): 1.7 to 7.7 cm^-1 across the validation
-#: systems, so 10 is above every case and is an upper bound rather than the noise itself.
+#: ⚠ **Measured against a control, because repeats cannot see it.** The measurement is
+#: deterministic, so what the round loop reads -- the distance between the core and the core
+#: plus a class -- can only be checked for a component that is not the class's physics by
+#: adding pairs that describe nothing the ground manifold is made of: the deepest inactive and
+#: the highest virtual pairs, taken as eigenvectors of the pair-folded inactive Fock so the
+#: control is unique. At the fixed orbitals the verdicts are taken at, one to seven such pairs
+#: moved the target spectrum by at most 0.2 cm^-1 on TiCl3 and FeCl2, so 10 is far above the
+#: noise at every class size.
 #:
-#: ⚠ **It is a floor for a class of one or two pairs and not for a larger one.** Adding four
-#: or seven pairs that do not matter moved the target spectrum by 58-102 cm^-1 on the same
-#: systems (two pairs: 12-24), above :data:`DEFAULT_SPECTRUM_TOL_CM`: a pre-optimization
-#: stopped on its budget rotates into whatever it is given. A "kept" on a double shell or a
-#: four-candidate bridge is therefore the protocol's verdict and not, by itself, evidence that
-#: the class matters. A size-aware floor needs a control that is reproducible, and neither
-#: obvious choice is (the nearest-gap virtuals genuinely mix with the shell; the pairs outside
-#: the projection are a basis nobody chose).
+#: ⚠ **Size-independent only because the orbitals are fixed.** When the verdict compared two
+#: pre-optimized probes the same one-pair control gave 1.7-7.7 cm^-1 and four to seven pairs
+#: gave 58-102, above :data:`DEFAULT_SPECTRUM_TOL_CM`: a pre-optimization stopped on its budget
+#: rotates into whatever it is given. Reintroducing an optimization before a verdict
+#: reintroduces that.
 DEFAULT_PROBE_NOISE_CM = 10.0
 
 #: Relative single-orbital-entropy cut for pruning a class's candidates: keep a pair whose
@@ -304,6 +317,11 @@ class Assembly:
     #: population floor.
     sites: Optional[Tuple[Tuple[int, ...], ...]] = None
     notes: Tuple[str, ...] = ()
+    #: The fixed-orbital measurement of the accepted space the last verdict was taken on
+    #: (:func:`~kuiva.autocas.probe.measure`), beside :attr:`probe`, the pre-optimization of
+    #: the same space. ⚠ Two spectra of one space that differ by the orbitals only; the rounds
+    #: table's numbers are this one's.
+    decided: Optional[ProbeResult] = None
 
     @property
     def n_active(self) -> int:
@@ -565,6 +583,89 @@ def _floors(centres: Sequence[ctr.Centre], shell: cand.CandidateSet) -> Tuple[in
     return int(max(floors)), int(mult.coupled_floor(floors)), ", ".join(terms) + note
 
 
+def _hund_product(centres: Sequence[ctr.Centre], shell: cand.CandidateSet) -> Tuple[int, str]:
+    """``(dimension, statement)``: determinants of the product of every site's Hund configurations.
+
+    Per **atom**, with the shell's measured electrons divided over the atoms carrying it, as
+    :func:`_floors` does: a pooled centre of three d^5 manganese is three sites of 32
+    determinants each, 32 768 together.
+    """
+    n_atoms = sum(len(c.atoms) for c in centres)
+    per_atom = int(round(float(shell.electrons) / max(n_atoms, 1)))
+    product, parts = 1, []
+    for centre in centres:
+        n = int(max(0, min(per_atom, 4 * centre.l + 2)))
+        dim = mult.hund_configuration_dimension(centre.l, n)
+        product *= dim ** len(centre.atoms)
+        parts.append("{}{}^{} ({} determinants{})".format(
+            "{} x ".format(len(centre.atoms)) if len(centre.atoms) > 1 else "",
+            tg.angular_momentum_letter(centre.l), n, dim,
+            " each" if len(centre.atoms) > 1 else ""))
+    return int(product), ", ".join(parts)
+
+
+def _check_probe_budget(budget: ProbeBudget, space, centres, shell) -> None:
+    """Refuse a determinant budget that cannot hold the sites' Hund configurations.
+
+    ⚠ **A selected CI capped below that product cannot represent a coupled system's exchange
+    manifold at all**, and nothing downstream notices: measured on ``mn3_linear`` (three d^5
+    sites, 32 768 determinants) at the 6000-determinant default, three probes of nearly the
+    same space returned incompatible spectra -- the core's fifth state at 50 000 cm^-1, the
+    bridged space's at 4 400 -- and the round loop "kept" a bridge at 60 538 cm^-1 on them.
+    Where the core's whole determinant space fits the budget there is nothing to truncate and
+    nothing to check. The product is a lower bound, never a sufficient budget: the
+    charge-transfer determinants that mediate the coupling come on top of it.
+    """
+    from ..ci.strings import cas_dimension
+
+    if cas_dimension(space.n_active, space.n_elec) <= int(budget.max_determinants):
+        return
+    product, statement = _hund_product(centres, shell)
+    if product > int(budget.max_determinants):
+        raise ValueError(
+            "the probe's determinant budget ({}) cannot hold the {} determinants of the "
+            "centres' Hund configurations ({}), so the selected CI cannot represent the "
+            "ground manifold the classes are judged on, and every verdict would be read off a "
+            "truncation artefact. State a budget of at least that size -- "
+            "probe={{'max_determinants': {}}} on the stage, probe_budget=ProbeBudget("
+            "max_determinants={}) here -- and more than it where ligand classes are offered, "
+            "since the charge-transfer determinants come on top"
+            .format(int(budget.max_determinants), product, statement, product, product))
+
+
+def _coupled_and_truncated(space, centres, budget: ProbeBudget) -> str:
+    """The reason no verdict can be measured on this core, or ``""`` where one can.
+
+    ⚠ **A truncated core of coupled centres is not a space the cheap CI can measure an
+    exchange manifold in, at any budget this was measured at.** On ``mn3_linear``'s CAS(15, 30)
+    (three high-spin d^5 sites): selected at 6000 and at 40 000 determinants -- the latter above
+    the 32 768 of the sites' Hund configurations -- the roots are not spin eigenstates at all
+    (``<S^2>`` 9.69, 6.66, ... and 10.37, 8.83, ...); seeded with the whole Hund product space
+    and 8000 selected on top, the ground level is S = 15/2 (the D = 8 network at comparable
+    orbitals agrees) where Lieb-Mattis requires S = 5/2, and the selection splits that
+    multiplet's components by 57-116 cm^-1 -- more than the exchange splittings a bridge class
+    is judged on. A verdict read off that is a verdict on the selection. So where the shells
+    belong to more than one atom and their determinant space exceeds the budget, the ligand
+    classes are **kept unmeasured**, because they were asked for, and the output says so.
+    Where the core is complete (``ti2cl6``'s CAS(2, 20)) the measurement is exact in the core
+    and this does not apply.
+    """
+    from ..ci.strings import cas_dimension
+
+    n_sites = sum(len(c.atoms) for c in centres)
+    ndet = cas_dimension(space.n_active, space.n_elec)
+    if n_sites < 2 or ndet <= int(budget.max_determinants):
+        return ""
+    return ("the core is the shells of {} coupled centres in {} determinants, over the "
+            "{}-determinant budget: a truncated cheap CI of coupled centres does not "
+            "represent their exchange manifold (measured: its roots are not spin eigenstates, "
+            "or a spin multiplet split by more than the exchange), so no class can be decided "
+            "on it. Every requested class that fits the size budget is KEPT UNMEASURED -- the "
+            "pathway is in the space because it was asked for -- and the proposed count is "
+            "read off a spectrum that has the same defect".format(n_sites, ndet,
+                                                                   int(budget.max_determinants)))
+
+
 def _site_split(reference, coeff, centres, shell_columns):
     """Shell columns per centre, by Loewdin population -- or ``None`` where it is ambiguous.
 
@@ -800,7 +901,9 @@ def assemble(reference, targets=None, *, solver: str = "ci",
         ligand_sets.append(built.candidates)
     for target in [t for t in parsed if t.cls == "bridge"]:
         built = cand.bridge_candidates(reference, target, projection,
-                                       exclude=sorted(claimed), report=report)
+                                       exclude=sorted(claimed), report=report,
+                                       barriers=sorted({int(a) for c in centres
+                                                        for a in c.atoms}))
         claimed.update(int(c) for c in built.columns)
         ligand_sets.append(built)
 
@@ -833,20 +936,40 @@ def assemble(reference, targets=None, *, solver: str = "ci",
             "centres. The core is: {}"
             .format(space.n_active, budget.describe(), space.description))
 
+    _check_probe_budget(budget_probe, space, centres, shell)
+    unmeasurable = _coupled_and_truncated(space, centres, budget_probe)
+
     # The floor plus a margin: a manifold boundary is only visible from the state above it,
     # and the probe averages over all of them (measured -- see the probe module).
     n_roots = probe_roots(floor_target, n_elec=space.n_elec, n_active=space.n_active,
                           margin=budget_probe.margin)
     rounds: List[RoundRecord] = []
-    current = probe(reference, coeff, space, n_roots=n_roots, budget=budget_probe)
-    reference_spectrum = target_spectrum(current.spectrum_cm, floor_target,
-                                         gap_cm=manifold_gap_cm)
+    # ⚠ **Every verdict is taken at FIXED orbitals** -- the candidate construction's, one set
+    # for the whole protocol -- and only the accepted space is pre-optimized, once, at the
+    # end. Two pre-optimizations stopped on their budgets differ by what the addition did to
+    # the trajectory: seven pairs that describe nothing moved a probe's target spectrum by up
+    # to 102 cm^-1 and by at most 0.2 cm^-1 at fixed orbitals (see :func:`measure`).
+    #
+    # ⚠ And every trial is **nested** in the accepted space: its selected CI starts from the
+    # accepted space's whole determinant list, and the budget bounds what the class adds.
+    # A selection started afresh in the larger space dropped determinants the accepted one
+    # held, and deep core pairs then "moved" a Ti2Cl6 target manifold by 3149 cm^-1.
+    notes: List[str] = []
+    current = None
+    reference_spectrum = None
+    if unmeasurable:
+        notes.append(unmeasurable)
+        log.warning("%s", unmeasurable)
+    else:
+        current = measure(reference, coeff, space, n_roots=n_roots, budget=budget_probe)
+        reference_spectrum = target_spectrum(current.spectrum_cm, floor_target,
+                                             gap_cm=manifold_gap_cm)
     rounds.append(RoundRecord(index=0, cls="shell", n_candidates=shell.n_pairs, n_pruned=0,
                               distance_cm=None, tolerance_cm=None, verdict="core",
-                              n_spinors=space.n_active, cpu_seconds=current.cpu_seconds,
+                              n_spinors=space.n_active,
+                              cpu_seconds=current.cpu_seconds if current is not None else 0.0,
                               note=terms))
 
-    notes: List[str] = []
     for index, candidate in enumerate(offered, start=1):
         if candidate.empty:
             rounds.append(RoundRecord(index=index, cls=candidate.cls, n_candidates=0,
@@ -865,9 +988,21 @@ def assemble(reference, targets=None, *, solver: str = "ci",
                 note="the space would be {} spinors against a budget of {}".format(
                     trial.n_active, budget.max_spinors)))
             continue
+        if unmeasurable:
+            # ⚠ Kept because it was asked for, and said so: no CI is solved for a verdict
+            # the measurement cannot give (see `_coupled_and_truncated`).
+            accepted.append(candidate)
+            space = trial
+            rounds.append(RoundRecord(
+                index=index, cls=candidate.cls, n_candidates=candidate.n_pairs, n_pruned=0,
+                distance_cm=None, tolerance_cm=None, verdict="kept (not measurable)",
+                n_spinors=space.n_active, cpu_seconds=0.0,
+                note="requested and kept unmeasured: the core is a truncated space of "
+                     "coupled centres"))
+            continue
         try:
-            trial_probe = probe(reference, coeff, trial, n_roots=n_roots,
-                                budget=budget_probe)
+            trial_probe = measure(reference, coeff, trial, n_roots=n_roots,
+                                  budget=budget_probe, seed=current)
         except SolverFailure as exc:
             # ⚠ An untested addition is not an accepted one. The round is marked and the run
             # continues on the last accepted space, with the failure printed.
@@ -923,8 +1058,8 @@ def assemble(reference, targets=None, *, solver: str = "ci",
             trial_sets = accepted + [kept_candidate]
             trial = _space_of(reference, trial_sets, extra_columns=pinned,
                               extra_description=pinned_text)
-            trial_probe = probe(reference, coeff, trial, n_roots=n_roots,
-                                budget=budget_probe)
+            trial_probe = measure(reference, coeff, trial, n_roots=n_roots,
+                                  budget=budget_probe, seed=current)
             cpu += trial_probe.cpu_seconds
         trial_spectrum = target_spectrum(trial_probe.spectrum_cm, floor_target,
                                          gap_cm=manifold_gap_cm)
@@ -956,6 +1091,12 @@ def assemble(reference, targets=None, *, solver: str = "ci",
                         "cheap CI resolves", candidate.cls, distance, tolerance,
                         probe_noise_cm)
 
+    # The one pre-optimization: the orbitals handed downstream and the spectrum the proposal
+    # reads. ⚠ A failure here propagates -- there is no accepted space left to fall back to,
+    # and a stage that returned construction orbitals labelled as probed ones would be lying
+    # about what a CASSCF starts from.
+    decided = current
+    current = probe(reference, coeff, space, n_roots=n_roots, budget=budget_probe)
     proposal = propose_roots(current.spectrum_cm, floor, product_floor=product_floor,
                              gap_cm=manifold_gap_cm, max_states=max_states)
     # ⚠ The loop the budget has with the proposal, closed by measuring twice: the budget was
@@ -977,7 +1118,8 @@ def assemble(reference, targets=None, *, solver: str = "ci",
     assembly = Assembly(space=space, coeff=current.coeff, sets=tuple(accepted),
                         rounds=rounds, probe=current, centres=centres, floor=floor,
                         product_floor=product_floor, budget=budget, proposal=proposal,
-                        site_atoms=_centre_atoms(centres), notes=tuple(notes))
+                        site_atoms=_centre_atoms(centres), notes=tuple(notes),
+                        decided=decided)
     if report:
         report_assembly(assembly)
     return assembly
@@ -1007,13 +1149,17 @@ def report_assembly(assembly: Assembly, logger=None) -> None:
                   record.distance_cm, record.tolerance_cm, record.verdict,
                   record.n_spinors, record.cpu_seconds)
     table.end("d is the largest change of the target manifold's relative energies and its "
-              "gap; a class is kept above the tolerance, kept as inconclusive above the "
-              "probe's noise floor, and dropped below it")
+              "gap, both measured at the candidate construction's orbitals; a class is kept "
+              "above the tolerance, kept as inconclusive above the noise floor, and dropped "
+              "below it")
     for record in assembly.rounds:
         if record.note:
             out.note(logger, "round {}: {}".format(record.index, record.note))
     out.entry(logger, "budget", assembly.budget.describe(), "",
               "provisional" if assembly.budget.provisional else "")
+    out.entry(logger, "final probe", assembly.probe.cpu_seconds, "s cpu",
+              "pre-optimized once, on the accepted space ({} determinants)".format(
+                  assembly.probe.n_determinants), out.TIME_FMT)
     assembly.proposal.report(logger)
     out.entry(logger, "active space", "CAS({}, {})".format(assembly.space.n_elec,
                                                            assembly.n_active))

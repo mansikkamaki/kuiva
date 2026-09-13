@@ -205,8 +205,13 @@ def test_asking_for_the_double_shell_does_not_change_what_the_valence_shell_hold
     assert both.shell.electrons == single.shell.electrons == 1.0
     assert both.double.n_pairs == 5 and both.double.electrons == 0.0
     assert np.all(both.double.occupations == 0.0)
-    # Ranked by the projection onto the valence shell alone, and separated by it.
-    assert float(both.shell.ranking.min()) > float(both.double.ranking.max()) + 0.05
+    # ⚠ And the shell is the SAME orbitals, not merely the same count: a two-shell projection
+    # read back once gave a span with principal overlaps 0.87-0.91 whose ligand-field states
+    # sat at 28 800 cm^-1 instead of 4 300, and a double-shell round compared that broken core
+    # with a repaired one.
+    assert np.array_equal(both.shell.columns, single.shell.columns)
+    cols = np.asarray(single.shell.columns, dtype=int)
+    assert np.allclose(both.coeff[:, cols], single.coeff[:, cols], atol=1e-12, rtol=0.0)
     cand.check_disjoint(both.sets)
 
 
@@ -612,3 +617,37 @@ def test_the_bridge_orbitals_of_the_dimer_are_the_pairs_that_mix_with_the_metal(
     assert bridge.ranking_name == "AVAS projection onto the shell"
     assert int(np.max(bridge.columns)) < int(np.min(construction.shell.columns))
     cand.check_disjoint([construction.shell, construction.bonding, bridge])
+
+
+# --- bridging ligands by contact (geometry only) ------------------------------------------------
+
+def _layout_of(atoms):
+    """The four things contact detection reads off an AO layout, from a bare geometry [A]."""
+    from types import SimpleNamespace
+
+    symbols = [a for a, _ in atoms]
+    coords = np.asarray([xyz for _, xyz in atoms], dtype=float) / 0.52917721092
+    return SimpleNamespace(atom_symbols=symbols, coords_bohr=coords, natm=len(atoms),
+                           atom_label=lambda i: "{}{}".format(symbols[i], i + 1))
+
+
+def test_contact_detection_finds_whole_bridging_ligands_and_not_only_mu_atoms():
+    """⚠ The mechanism the first Tier-3 bridge round was refused on. Each Mn pair of
+    ``mn3_linear`` is bridged by one hydroxide and two syn-syn formates; a formate oxygen
+    touches ONE metal, so a rule that wants an atom touching both sites found the hydroxide
+    oxygen alone -- where no orbital holds half its population. A bridging ligand is a
+    connected fragment touching both sites, and the other metal may not connect one."""
+    import dmrg_campaign as camp
+
+    mn3 = _layout_of(camp._mn3_linear())
+    metals = (0, 1, 2)
+    first = cand.bridge_atoms_by_contact(mn3, (0,), (1,), barriers=metals)
+    assert first == tuple(range(3, 13)), first          # OH + two HCO2 of the first pathway
+    both = cand.bridge_atoms_by_contact(mn3, (0, 2), (1,), barriers=metals)
+    assert both == tuple(range(3, 23)), both            # the pooled statement: all twenty
+    # Without the other metal as a barrier nothing changes here, because Mn3 touches no
+    # ligand of the first pathway -- but the rule must not route through a site either.
+    assert cand.bridge_atoms_by_contact(mn3, (0,), (1,)) == first
+
+    ti2cl6 = _layout_of(sysdef.get("ti2cl6").atoms)
+    assert cand.bridge_atoms_by_contact(ti2cl6, (0,), (1,)) == (2, 3)   # terminal Cl excluded

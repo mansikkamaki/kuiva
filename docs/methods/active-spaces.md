@@ -182,11 +182,35 @@ shell, **orders**.
 
 ### What decides whether a class stays
 
-The cheap CI is the **probe**: one bounded pre-optimization per round, at a budget held
-constant across the whole protocol, whose relative state energies inside the ground manifold
-— plus the gap above it — are the *target spectrum*. A class is kept when it moves one of
-those numbers by more than a percentage of the manifold's width with an absolute floor under
-it, the same shape as every ligand-field band in this project.
+The cheap CI is the measuring instrument: its relative state energies inside the ground
+manifold — plus the gap above it — are the *target spectrum*, and a class is kept when it moves
+one of those numbers by more than a percentage of the manifold's width with an absolute floor
+under it, the same shape as every ligand-field band in this project.
+
+⚠ **Every verdict is taken at fixed orbitals.** The core and each trial space are solved by the
+cheap CI at the orbitals the candidates were constructed in, and the accepted space is
+pre-optimized — the **probe** — once, at the end, for the orbitals handed downstream and the
+spectrum the proposal reads. Comparing two pre-optimizations instead reads the optimizer's
+trajectory: one stopped on its iteration budget rotates into whatever it is given, and adding
+four to seven Kramers pairs that describe nothing moved a probe's spectrum by 58–102 cm⁻¹,
+while at fixed orbitals the same additions move it by at most 0.2 cm⁻¹ on TiCl₃ and FeCl₂.
+What a verdict then measures is what the class does to the CI at the reference orbitals —
+correlation plus the *state-specific* relaxation a larger space allows, which on a one-electron
+shell is all of it — and not how an optimizer would move the orbitals for the average.
+
+⚠ **And every trial is nested in the accepted space**: its selected CI starts from the accepted
+space's whole determinant list, and the budget bounds what the class adds. A selection started
+afresh in the larger space can drop determinants the smaller one held, and the distance then
+reads the truncation — measured on Ti₂Cl₆, deep core pairs "moved" the spectrum by 3 149 cm⁻¹
+that way. ⚠ For the same reason the determinant budget must hold the product of the sites'
+**Hund configurations** — the determinants with the most singly occupied orbitals each shell
+allows, 32 per d⁵ site and 32 768 for three — or the stage refuses: below it a selected CI
+cannot represent a coupled system's ground manifold at all, and the verdicts were once read off
+truncation artefacts without anything noticing. Necessary is not sufficient: above that budget, on three
+coupled Mn(II) d⁵ ions, the selected roots were still not spin eigenstates, and seeded with the
+Hund product space the ferromagnetic S = 15/2 came lowest (Lieb–Mattis requires S = 5/2) with its
+components split by more than the exchange. So **a truncated core of coupled centres is not
+measured**: requested classes are kept as "not measurable", and say why.
 
 ⚠ **The spectrum decides; entropy only prunes.** The relative single-orbital-entropy criterion
 [[113]](../references.md#r113)[[198]](../references.md#r198) ranks the candidates *inside one
@@ -195,7 +219,7 @@ it is structurally blind to a correlating shell and to the empty members of a d 
 a bridging orbital or a radical shares at most $`\ln 2`$ nats with either ion, so in absolute
 terms it ranks below every metal orbital.
 
-A change under the tolerance but above the probe's measured noise floor is reported
+A change under the tolerance but above the measured noise floor is reported
 **"inconclusive, kept"** rather than resolved: a larger space is the safe error and the size
 budget bounds it. That is the honest outcome for lanthanide exchange, where 256 states split
 by a few cm⁻¹ is below what any cheap CI resolves.

@@ -44,7 +44,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-__all__ = ["HundTerm", "RADICAL_FLOOR", "coupled_floor", "hund_ground_term", "shell_floor",
+__all__ = ["HundTerm", "RADICAL_FLOOR", "coupled_floor", "hund_configuration_dimension",
+           "hund_ground_term", "shell_floor",
            "term_letter"]
 
 #: Total-orbital-angular-momentum letters. ⚠ ``J`` is skipped, by spectroscopic convention.
@@ -170,6 +171,30 @@ def shell_floor(l: int, n: int, *, regime: Optional[str] = None) -> int:
             floor += 1
         return floor
     raise ValueError("regime is 'level', 'spin' or None; got {!r}".format(regime))
+
+
+def hund_configuration_dimension(l: int, n: int) -> int:
+    """Determinants of the configurations that hold the Hund ground term of ``l^n``.
+
+    The high-spin term needs the largest possible number of singly occupied orbitals,
+    ``u = min(n, 2(2l+1) - n)``, with the remaining ``(n - u) / 2`` orbitals doubly occupied:
+    ``C(2l+1, u) C(2l+1-u, (n-u)/2) 2^u`` determinants. ``d^5`` is 32, ``d^1`` and ``d^9`` are
+    10, ``f^9`` is 672, a closed shell is 1.
+
+    ⚠ **The product over the sites is a LOWER bound on what a determinant list must hold to
+    carry a coupled system's exchange manifold** -- every state of it has weight in that
+    product space, and the charge-transfer determinants that mediate the coupling come on top.
+    A selected CI capped below it cannot represent the manifold at all, and returns a spectrum
+    that is an artefact of which determinants it happened to select.
+    """
+    from math import comb
+
+    l, n = int(l), int(n)
+    m = 2 * l + 1
+    if not 0 <= n <= 2 * m:
+        raise ValueError("{} electrons do not fit a shell of l = {}".format(n, l))
+    u = min(n, 2 * m - n)
+    return int(comb(m, u) * comb(m - u, (n - u) // 2) * 2 ** u)
 
 
 def coupled_floor(floors: Iterable[int]) -> int:

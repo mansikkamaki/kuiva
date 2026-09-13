@@ -78,7 +78,8 @@ from ..util.timing import timer
 log = get_logger(__name__)
 
 __all__ = ["DEFAULT_PROBE_DETERMINANTS", "DEFAULT_PROBE_MAX_ITER", "DEFAULT_ROOT_MARGIN",
-           "ProbeBudget", "ProbeResult", "probe", "probe_roots", "report_probe"]
+           "ProbeBudget", "ProbeResult", "embed_determinants", "measure", "probe", "probe_roots",
+           "report_probe"]
 
 #: Macro-iterations one probe may spend. Small on purpose: a probe is asked whether a class
 #: of orbitals *changes the spectrum*, and the occupations that answer converge far faster
@@ -138,6 +139,10 @@ class ProbeResult:
     budget: ProbeBudget = field(default_factory=ProbeBudget)
     #: Worst Kramers partner deviation before the repair -- how far the cheap stage drifted.
     pairing_deviation: float = 0.0
+    #: ``True`` for :func:`measure` -- the cheap CI at the orbitals it was given, with no
+    #: pre-optimization. :attr:`result` is then the :class:`~kuiva.mcscf.preopt.CheapCIResult`
+    #: rather than a :class:`~kuiva.mcscf.preopt.PreoptResult`.
+    fixed_orbitals: bool = False
 
     @property
     def n_active(self) -> int:
@@ -255,6 +260,124 @@ def probe(reference, coeff: np.ndarray, space, *, n_roots: int,
     if report:
         report_probe(probe_result)
     return probe_result
+
+
+def embed_determinants(dets, space, trial, occupation) -> object:
+    """``dets`` of ``space`` re-expressed over the larger ``trial`` space's active spinors.
+
+    Every active spinor of ``space`` must be active in ``trial``; the spinors ``trial`` adds
+    carry their reference occupation -- a doubly occupied pair both bits, an empty pair none,
+    and a singly occupied pair **either** bit, so each seed determinant appears once per
+    choice and the embedded list stays closed under time reversal as far as the seed was.
+    ⚠ The electron count must come out as ``trial``'s: a space whose electrons were *stated*
+    for a class rather than read off the occupations cannot be embedded, and the refusal says
+    so rather than seeding with a list of the wrong particle number.
+    """
+    from itertools import product
+
+    from ..ci.strings import Determinants
+
+    small = np.asarray(space.spaces.active, dtype=int)
+    large = np.asarray(trial.spaces.active, dtype=int)
+    position = {int(c): i for i, c in enumerate(large)}
+    missing = [int(c) for c in small if int(c) not in position]
+    if missing:
+        raise ValueError("spinor(s) {} of the accepted space are not active in the trial "
+                         "space, so its determinants cannot be embedded".format(missing))
+    added = [int(c) for c in large if int(c) not in set(small.tolist())]
+    occ = np.asarray(occupation, dtype=float)
+    base = np.zeros(dets.ndet, dtype=np.uint64)
+    masks = np.asarray(dets.masks, dtype=np.uint64)
+    for i, c in enumerate(small):
+        bit = (masks >> np.uint64(i)) & np.uint64(1)
+        base |= bit << np.uint64(position[int(c)])
+    fixed = np.uint64(0)
+    choices = []
+    electrons = 0
+    for c in added[0::2]:
+        pair = float(occ[c] + occ[c + 1])
+        lo, hi = np.uint64(1) << np.uint64(position[c]), np.uint64(1) << np.uint64(position[c + 1])
+        if pair > 1.5:
+            fixed |= lo | hi
+            electrons += 2
+        elif pair > 0.5:
+            choices.append((lo, hi))
+            electrons += 1
+    if int(trial.n_elec) != int(space.n_elec) + electrons:
+        raise ValueError(
+            "the trial space holds {} electrons and the accepted space {} plus {} from the "
+            "reference occupations of the added pairs: the class's electron count is not the "
+            "one its orbitals carry, so the accepted determinants do not embed"
+            .format(trial.n_elec, space.n_elec, electrons))
+    parts = [base | fixed | np.uint64(sum(int(b) for b in bits))
+             for bits in product(*choices)] if choices else [base | fixed]
+    return Determinants(masks=np.concatenate(parts), n_spinor=int(large.size),
+                        n_elec=int(trial.n_elec))
+
+
+def measure(reference, coeff: np.ndarray, space, *, n_roots: int,
+            budget: ProbeBudget = ProbeBudget(), seed=None) -> ProbeResult:
+    """The cheap CI of ``space`` at the orbitals ``coeff``, **without** pre-optimizing them.
+
+    What a keep/drop verdict is taken on. The returned object has the probe's shape (spectrum,
+    entropies, mutual information) so the pruning and the bridge ranking read it unchanged;
+    :attr:`ProbeResult.coeff` is ``coeff`` itself and :attr:`ProbeResult.fixed_orbitals` is set.
+
+    ⚠ **Why the decision is not taken on two probes.** A probe pre-optimizes, and an
+    optimization stopped on its iteration budget rotates into whatever it is given: adding
+    four or seven Kramers pairs that describe nothing (the highest virtuals, the deepest core)
+    moved a probe's target spectrum by 58-102 cm^-1, above the tolerance, and even a rotation
+    *inside* the inactive and virtual blocks -- which changes no energy -- moved a TiCl3 probe's
+    gap from 3945 to 2312 cm^-1. At fixed orbitals the same additions move the spectrum by at
+    most 0.2 cm^-1 on TiCl3 and FeCl2 (seven pairs of either kind, drawn from orbital-energy
+    eigenvectors so the control is unique), and the measurement is deterministic: no
+    trajectory, and one selected CI whose inputs are the integrals alone.
+
+    ⚠ **What it therefore measures is what a class does to the CI at the reference orbitals.**
+    That is correlation plus the *state-specific* relaxation a larger space allows (a
+    correlating shell on a ``d^1`` ion is all relaxation) -- both real reasons for a class, and
+    neither something a state-averaged calculation on the smaller space would recover. What it
+    no longer sees is how the optimizer would move the orbitals for the average, which is the
+    part that did not reproduce.
+
+    The orbitals are the candidate construction's (AVAS-rotated reference orbitals), which are
+    exactly Kramers paired, so there is nothing to repair.
+
+    ``seed`` is the accepted space's result (a :class:`ProbeResult` of this function) when
+    ``space`` extends it: its determinants are embedded (:func:`embed_determinants`) and kept
+    whole, and ``budget.max_determinants`` bounds what this measurement adds to them. ⚠ Without
+    the nesting a selection started afresh in the larger space can drop determinants the
+    accepted one held, and the distance between the two spectra reads the truncation.
+    """
+    from ..mcscf.orbopt import CASIntegrals
+    from ..mcscf.preopt import cheap_ci
+
+    n_roots = int(max(1, n_roots))
+    coeff = np.asarray(coeff)
+    with timer("autocas/measure", log=log) as clock:
+        ints = CASIntegrals.build(reference.factors, reference.h_one_electron(), coeff,
+                                  space.spaces, e_nuc=reference.data.e_nuc)
+        seeded = None
+        if seed is not None:
+            seeded = embed_determinants(seed.result.dets, seed.space, space,
+                                        reference.spinors.occ)
+        ci = cheap_ci(ints.h_active_effective(), ints.active_eri(), int(space.n_elec),
+                      n_states=n_roots, max_determinants=budget.max_determinants,
+                      with_2rdm=False, seed=seeded)
+        entropy, information = ci.entanglement()
+    spectrum = np.asarray(ci.relative_cm, dtype=float)
+    result = ProbeResult(
+        space=space, coeff=coeff, result=ci, spectrum_cm=spectrum,
+        entropy=np.asarray(entropy, dtype=float),
+        mutual_information=np.asarray(information, dtype=float),
+        occupations=np.clip(np.real(np.diag(ci.gamma)), 0.0, 1.0),
+        n_roots=int(spectrum.size), n_determinants=int(ci.n_determinants), converged=True,
+        cpu_seconds=float(clock.cpu), wall_seconds=float(clock.wall), budget=budget,
+        fixed_orbitals=True)
+    log.debug("fixed-orbital CI of CAS(%d, %d): %d roots over %d determinants, %.1f s cpu",
+              space.n_elec, result.n_active, result.n_roots, result.n_determinants,
+              result.cpu_seconds)
+    return result
 
 
 def report_probe(result: ProbeResult, logger=None) -> None:
