@@ -290,6 +290,34 @@ def test_shells_of_two_different_l_are_one_projection_with_every_pair_attributed
     assert np.abs(overlaps - 1.0).max() < 1e-10
 
 
+def test_a_required_avas_pin_joins_the_union_without_moving_the_shell_or_the_ligand_ranking(
+        ticl3):
+    """⚠ The two ways an AVAS pin could be wrong. As a second AVAS call it would re-mix the
+    shell; inside the union the shell's pairs must still span the Ti shell alone. And if the
+    ligand classes ranked by the union's eigenvalues, every chloride pair of the pinned 3p
+    would read as carrying "the shell's character" and become a bonding candidate; they rank
+    by the centres' own projection."""
+    titanium, _ = _chloride_p_centre(ticl3)
+    plain = cand.shell_candidates(ticl3, [titanium], bonding=1, report=False)
+    pinned = cand.shell_candidates(ticl3, [titanium], bonding=1, report=False,
+                                   pins=[((1,), 1, 3, "2 Cl")])
+    assert pinned.shell.n_pairs == 5 and len(pinned.pinned) == 1
+    pin = pinned.pinned[0]
+    assert pin.n_pairs == 3 and pin.electrons == 6.0 and _whole_pairs(pin.columns)
+    cand.check_disjoint([pinned.shell, pin])
+    overlaps = _principal_overlaps(ticl3, pinned.coeff, pinned.shell.columns,
+                                   plain.coeff, plain.shell.columns)
+    assert np.abs(overlaps - 1.0).max() < 1e-8, overlaps
+    # The pin takes the Ti-Cl2 sigma combination with it (it is a Cl2 3p pair), which leaves
+    # one of the two degenerate bonding pairs -- and that one ranks at the Ti projection it had
+    # without the pin, not at the ~1 a union eigenvalue would give a chloride pair.
+    assert pinned.bonding.n_pairs == 1 and plain.bonding.n_pairs == 2
+    assert float(pinned.bonding.ranking.max()) == pytest.approx(
+        float(plain.bonding.ranking.max()), abs=1e-3)
+    assert float(pinned.bonding.ranking.max()) < 0.5
+    assert not set(pinned.bonding.columns.tolist()) & set(pin.columns.tolist())
+
+
 def test_the_correlating_shells_of_a_union_do_not_change_its_valence_shells(ticl3):
     """The double-shell rule carries over unchanged: the second rotation is confined to the
     empty pairs the union left at zero projection, so the valence shells are bitwise the

@@ -35,8 +35,8 @@ Both are refused at construction, naming the knob.
 | `probe_noise_cm` | `10.0` | below this a difference is not a measurement and the class is dropped; between it and the tolerance the verdict is **"inconclusive, kept"**. Measured at fixed orbitals by adding up to seven pairs that describe nothing: under 0.2 cm⁻¹ on the single-ion systems, 8 on a coupled dimer |
 | `prune_rel` | `0.1` | keep a candidate pair whose single-orbital entropy is at least this fraction of the largest in its own class |
 | `manifold_gap_cm` | `50.0` | consecutive states closer than this are one manifold and are never separated |
-| `require` | `()` | character statements pinning orbitals into the core: `("character", atom, l, n_spinors[, skip_pairs])` |
-| `exclude` | `()` | the same form, banning orbitals from every class |
+| `require` | `()` | statements pinning orbitals into the core: `("character", atom, l, n_spinors[, skip_pairs])`, or `("avas", atom, l, n_spinors)` — the pairs of that free-atom reference shell, selected by the **same** union projection as the shells (never a second one, which would scramble them) |
+| `exclude` | `()` | a character statement, banning orbitals from every class |
 | `probe` | `dict(max_iter=8, max_determinants=6000, margin=8)` | the cheap-CI budget, held constant across the whole protocol: `max_determinants` for every measurement (for a trial, what it may add to the accepted space's determinants), `max_iter` for the one pre-optimization at the end, `margin` the roots solved above the floor so the boundary can be seen from the state above it. ⚠ `max_determinants` must hold the product of the sites' Hund configurations (32 768 for three d⁵ ions) or the stage refuses |
 | `localize` | `True` | localize the shells onto the individual centres afterwards, so the space has **sites** as well as orbitals |
 | `report` | `True` | print the `[automatic active space]` block |

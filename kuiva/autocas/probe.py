@@ -28,7 +28,10 @@ A probe solves the **floor plus a margin** roots (:func:`probe_roots`) -- enough
 manifold boundary the proposal reads is inside the solved spectrum, rounded up to an even
 count for an odd electron number (Kramers), and clamped to the determinant count, where
 "the space is exhausted" is a complete answer rather than a reason to pad. The margin exists
-because a boundary is only visible from the state *above* it.
+because a boundary is only visible from the state *above* it. ⚠ The protocol's one
+pre-optimization extends that count to a manifold boundary of the fixed-orbital spectrum
+(:func:`kuiva.autocas.protocol._probe_count_on_a_boundary`), because an average that ends
+inside a manifold splits it.
 
 ⚠ **And the probe AVERAGES over all of them, which is a decision about the handoff and was
 measured rather than assumed.** The natural-looking alternative is to average over the floor

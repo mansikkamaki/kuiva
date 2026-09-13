@@ -263,6 +263,10 @@ class ShellConstruction:
     centres: Tuple[ctr.Centre, ...]
     double: Optional[CandidateSet] = None
     bonding: Optional[CandidateSet] = None
+    #: One set per ``require=`` AVAS pin, selected by the same union projection as the shell
+    #: and attributed to the pin's reference shell. Not a class: never offered, never pruned,
+    #: and its electrons are its pairs' reference occupations, as a character pin's are.
+    pinned: Tuple[CandidateSet, ...] = ()
 
     @property
     def sets(self) -> Tuple[CandidateSet, ...]:
@@ -498,7 +502,7 @@ def _population_table(logger, values, occupations, kept) -> None:
 def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
                      occupation=None, double: bool = False, bonding: int = 0,
                      bonding_floor: float = DEFAULT_BONDING_FLOOR,
-                     rtol: float = DEFAULT_RANKING_RTOL,
+                     rtol: float = DEFAULT_RANKING_RTOL, pins=(),
                      report: bool = True) -> ShellConstruction:
     """The valence shells of ``centres``, and whatever else that AVAS call defines.
 
@@ -527,6 +531,16 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
     bonding
         Offer up to this many metal-ligand bonding pairs per centre, with their antibonding
         partners, from the same spectrum.
+    pins
+        ``require=`` AVAS statements, as ``(atoms, l, n_pairs, label)``. ⚠ **A pin joins the
+        core's projection, never a second one**: it is one more entry of the union, the count
+        grows by its ``n_pairs``, and its pairs are the selected ones attributed to it. A
+        separate AVAS call would re-mix the shell it is meant to sit beside -- the reason
+        such a pin was once refused. What a pin does change is the core's projection itself:
+        with a pin the shell is selected from the union and attributed by projection, so it
+        is not the single-shell construction bitwise. ⚠ **The ligand classes read the
+        projection onto the centres alone** (a diagonal read after the rotation), so a pinned
+        Cl 3p does not turn every chloride pair into a "bonding partner" of the metal.
     """
     from ..mcscf.avas import avas_projection, projection_pair_matrix
 
@@ -537,14 +551,21 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
     mixed = len(ells) > 1
     ell = ells[0]
     atoms = tuple(sorted({int(a) for c in centres for a in c.atoms}))
+    pins = tuple((tuple(int(a) for a in p[0]), int(p[1]), int(p[2]), str(p[3])) for p in pins)
+    union = mixed or bool(pins)
     # ⚠ The one statement of what is projected onto, shared by every call below: the single
-    # (atoms, l) form where the centres share an l -- bitwise what it always was -- and one
-    # union entry per centre where they do not, so the attribution has a row per centre.
-    if mixed:
-        def target(n_shells):
-            return dict(shells=[(list(c.atoms), int(c.l), int(n_shells)) for c in centres])
+    # (atoms, l) form where the centres share an l and nothing is pinned -- bitwise what it
+    # always was -- and otherwise one union entry per centre (then per pin), so the
+    # attribution has a row per centre. ``with_pins=False`` is the centres' own projection,
+    # which is what every ranking reads.
+    if union:
+        def target(n_shells, with_pins=True):
+            entries = [(list(c.atoms), int(c.l), int(n_shells)) for c in centres]
+            if with_pins:
+                entries += [(list(p[0]), p[1], 1) for p in pins]
+            return dict(shells=entries)
     else:
-        def target(n_shells):
+        def target(n_shells, with_pins=True):
             return dict(atom=list(atoms), l=ell, n_shells=int(n_shells))
     if coeff is None:
         coeff = reference.spinors_in_ao()
@@ -555,19 +576,43 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
                          "groups of equal occupation and cannot infer them from orbitals")
 
     n_shell_pairs = sum(c.n_pairs for c in centres)
+    n_pin_pairs = sum(p[2] for p in pins)
 
     # ⚠ **`avas_projection`, not `avas`**: the space -- and with it the electron count -- is
     # this function's decision, because a shell that is empty in the reference has no aufbau
     # count and `active_space` can only refuse one (see `_shell_electrons`).
     result = avas_projection(coeff, reference.data.s_ao, reference.ao_layout,
                              reference.data.atomic_reference, occupation=occupation,
-                             n_pairs=n_shell_pairs, **target(1))
+                             n_pairs=n_shell_pairs + n_pin_pairs, **target(1))
     if report:
         result.report(log)
     values = np.asarray(result.eigenvalues, dtype=float)
     pair_occ = np.asarray(result.occupations, dtype=float)
-    selected = np.asarray(result.selected, dtype=int)
-    shell_pairs = np.sort(selected)
+    selected = np.sort(np.asarray(result.selected, dtype=int))
+    shell_pairs = selected
+    pin_groups: List[np.ndarray] = []
+    if pins:
+        from dataclasses import replace as _replace
+
+        owner = result.owners(selected)
+        shell_pairs = np.sort(selected[owner < len(centres)])
+        for k, pin in enumerate(pins):
+            mine = np.sort(selected[owner == len(centres) + k])
+            if mine.size != pin[2]:
+                log.warning("%d of the pairs selected by the core's union projection project "
+                            "most onto the required %s shell of %s, which was stated as %d: "
+                            "the union's orbitals do not separate into the pieces the "
+                            "statements name. The space is still the union asked for",
+                            mine.size, tg.angular_momentum_letter(pin[1]), pin[3], pin[2])
+            pin_groups.append(mine)
+        # The centres' own projection, read in the rotated orbitals: what the bonding, bridge
+        # and double-shell classes rank by. The union's eigenvalues would carry the pins'
+        # character into every one of them.
+        m_centres, _, _ = projection_pair_matrix(
+            result.coeff, reference.data.s_ao, reference.ao_layout,
+            reference.data.atomic_reference, **target(1, with_pins=False))
+        values = np.real(np.diag(m_centres)).copy()
+        result = _replace(result, eigenvalues=values)
     ranking, ranking_name = values, "AVAS projection"
 
     double_pairs = np.zeros(0, dtype=int)
@@ -591,11 +636,11 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
         from ..spinor.expand import rotate_kramers_pairs
 
         pool = np.array([p for p in np.nonzero(pair_occ <= 1.0e-8)[0]
-                         if int(p) not in set(shell_pairs.tolist())
+                         if int(p) not in set(selected.tolist())
                          and values[p] < DEFAULT_BONDING_FLOOR], dtype=int)
         m_two, _, _ = projection_pair_matrix(
             result.coeff, reference.data.s_ao, reference.ao_layout,
-            reference.data.atomic_reference, **target(2))
+            reference.data.atomic_reference, **target(2, with_pins=False))
         w, v = np.linalg.eigh(m_two[np.ix_(pool, pool)])
         order = np.argsort(-w, kind="stable")
         w, v = w[order], v[:, order]
@@ -606,7 +651,7 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
         # pool's eigenvalue range, so none can cross the floor the other classes read.
         m_one, _, _ = projection_pair_matrix(
             rotated, reference.data.s_ao, reference.ao_layout,
-            reference.data.atomic_reference, **target(1))
+            reference.data.atomic_reference, **target(1, with_pins=False))
         values = values.copy()
         values[pool] = np.real(np.diag(m_one))[pool]
         result = _replace(result, coeff=rotated, eigenvalues=values)
@@ -628,7 +673,7 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
     state = centres[0].reference_state
     shell_note = ("gap at the cut {:.3f}".format(result.gap) if np.isfinite(result.gap)
                   else "no pair was dropped, so there is no gap to report")
-    if mixed:
+    if union:
         shell_fragments = _attribute_by_projection(reference, result.coeff, centres,
                                                    shell_pairs, n_shells=1)
         description = (
@@ -670,7 +715,7 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
                          .format(double_pairs.size, _shells_phrase(centres),
                                  float(double_values.max()), float(double_values.min()),
                                  ", ".join(c.reference_state for c in centres))
-                         if mixed else
+                         if union else
                          "the {} empty Kramers pairs of largest two-shell {} projection on {} "
                          "outside the valence shell -- the correlating shell (projections "
                          "{:.3f}..{:.3f}, {})"
@@ -682,18 +727,29 @@ def shell_candidates(reference, centres: Sequence[ctr.Centre], *, coeff=None,
             fixed=True,
             fragments=(_attribute_by_projection(reference, result.coeff, centres,
                                                 double_pairs, n_shells=2)
-                       if mixed else
+                       if union else
                        _attribute(reference, result.coeff, centres, double_pairs)),
             notes=("taken whole or not at all: at this level a correlating shell is empty "
                    "whatever it is worth, so only the spectrum can decide it",))
+    pinned_sets = tuple(
+        CandidateSet(
+            cls="require", columns=_pair_columns(group),
+            description=("the {} Kramers pair(s) of the core's union projection attributed to "
+                         "the {} reference shell of {} (require=, count stated)"
+                         .format(group.size, tg.angular_momentum_letter(pin[1]), pin[3])),
+            occupations=pair_occ[group],
+            ranking=np.asarray(result.component_projections)[len(centres) + k, group],
+            ranking_name="AVAS projection onto the required shell", fixed=True)
+        for k, (pin, group) in enumerate(zip(pins, pin_groups)))
     bonding_set = None
     if bonding:
+        claimed = [shell_pairs, double_pairs] + list(pin_groups)
         bonding_set = bonding_candidates(
             result, centres, n_pairs=int(bonding), floor=float(bonding_floor), rtol=rtol,
-            exclude=_pair_columns(np.concatenate([shell_pairs, double_pairs])))
+            exclude=_pair_columns(np.concatenate(claimed)))
     return ShellConstruction(coeff=result.coeff, occupation=np.asarray(occupation, float),
                              avas=result, shell=shell, centres=centres, double=double_set,
-                             bonding=bonding_set)
+                             bonding=bonding_set, pinned=pinned_sets)
 
 
 def _shell_electrons(centres, occupations) -> Tuple[Optional[float], str]:

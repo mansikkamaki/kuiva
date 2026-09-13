@@ -124,6 +124,65 @@ def test_no_boundary_proposes_the_floor_and_says_it_is_a_lower_bound():
     assert "boundary not found" in " ".join(proposal.notes)
 
 
+def test_a_count_inside_a_manifold_of_the_fixed_orbital_spectrum_is_extended_to_its_end():
+    """⚠ The tice_far mechanism, without an SCF. A pre-optimization split a 24-fold manifold
+    into three blocks of eight over 196 cm^-1 while the construction orbitals show it within
+    5.4 cm^-1; read off the probe alone the count is 8, a cut inside the manifold. Held to the
+    fixed-orbital spectrum it is 24, the probe's own gap is where the window goes, and the
+    note says why. Where the probe's boundary is also a fixed-orbital one nothing moves."""
+    probe = [0.0] * 8 + [98.0] * 8 + [196.0] * 8 + [780.0] * 8
+    fixed = [0.0] * 20 + [5.4] * 4 + [779.0] * 8
+    plain = rts.propose_roots(probe, 6, product_floor=12)
+    held = rts.propose_roots(probe, 6, product_floor=12, fixed_spectrum_cm=fixed,
+                             fixed_dimension=276)
+    assert plain.n_states == 8
+    assert held.n_states == 24 and held.boundary.gap_cm == pytest.approx(584.0)
+    assert held.window.cutoff == pytest.approx(488.0)
+    assert any("extended to 24" in n for n in held.notes)
+    agree = rts.propose_roots([0.0, 0.0, 900.0, 900.0], 2, fixed_spectrum_cm=[0.0, 0.0, 850.0],
+                              fixed_dimension=10)
+    assert agree.n_states == 2 and not agree.notes
+
+
+def test_a_count_beyond_what_the_fixed_spectrum_solved_is_not_held_to_it():
+    """The fixed-orbital spectrum constrains only the counts it has seen a state above."""
+    probe = [0.0] * 4 + [500.0] * 4 + [1500.0] * 2
+    short = [0.0] * 4 + [3.0] * 2                   # solved six roots, no boundary seen
+    held = rts.propose_roots(probe, 2, fixed_spectrum_cm=short, fixed_dimension=100)
+    assert held.n_states == 8
+
+
+def test_the_probe_averages_a_count_that_ends_on_a_fixed_orbital_boundary(monkeypatch):
+    """``floor + margin`` roots extended to the first fixed-orbital boundary past the ground
+    manifold, with the CI re-solved for more roots until one is visible -- and left alone
+    where it already is one, or where the space is exhausted."""
+    from types import SimpleNamespace
+
+    ladder = [0.0] * 24 + [779.0] * 36 + [2400.0] * 40
+    calls = []
+
+    def fake_measure(reference, coeff, space, *, n_roots, budget=None, seed=None):
+        calls.append(n_roots)
+        return SimpleNamespace(spectrum_cm=np.asarray(ladder[:n_roots]))
+
+    monkeypatch.setattr(proto, "measure", fake_measure)
+    space = SimpleNamespace(n_active=24, n_elec=2)
+    decided = SimpleNamespace(spectrum_cm=np.asarray(ladder[:20]))
+    count, note, fixed = proto._probe_count_on_a_boundary(
+        None, None, space, decided, n_roots=20, floor=12, gap_cm=50.0, max_states=64,
+        budget=None)
+    assert count == 60 and "averages 60 roots" in note
+    assert calls == [40, 80] and fixed.spectrum_cm.size == 80
+
+    calls.clear()
+    whole = SimpleNamespace(spectrum_cm=np.asarray([0.0, 0.0, 900.0, 900.0, 950.0, 950.0,
+                                                    3000.0, 3000.0, 3100.0, 3100.0]))
+    count, note, _ = proto._probe_count_on_a_boundary(
+        None, None, SimpleNamespace(n_active=10, n_elec=1), whole, n_roots=10, floor=2,
+        gap_cm=50.0, max_states=64, budget=None)
+    assert (count, note, calls) == (10, "", [])
+
+
 def test_probe_roots_are_kramers_even_and_clamped_to_the_space():
     assert probe_roots(2, n_elec=1, n_active=10, margin=8) == 10        # C(10,1) = 10
     assert probe_roots(2, n_elec=1, n_active=30, margin=7) == 10        # 9 -> 10, odd N
@@ -583,15 +642,31 @@ def test_a_class_naming_an_atom_that_is_not_a_centre_is_refused(ticl3):
         proto.assemble(ticl3, targets=["shells", ("bonding", "Cl")], report=False)
 
 
-def test_require_takes_a_character_statement_and_refuses_an_avas_one(ticl3, monkeypatch):
-    """``require=`` pins orbitals the probe cannot see. ⚠ An AVAS statement is refused rather
-    than served: a second projection rotates the pairs the shell's projection selected."""
+def test_require_takes_a_character_statement(ticl3, monkeypatch):
+    """``require=`` pins orbitals the probe cannot see."""
     assembly = _assemble_ticl3(ticl3, monkeypatch, _ScriptedProbe(14),
                                targets="shells", require=[("character", "Cl", "p", 4)])
     assert assembly.n_active == 14
     assert "Kramers pairs of l=1 character" in assembly.space.description
-    with pytest.raises(ValueError, match="AVAS statement is deliberately not accepted"):
-        proto.assemble(ticl3, targets="shells", require=[("avas", "Ti", "d")], report=False)
+
+
+def test_require_takes_an_avas_statement_as_part_of_the_cores_projection(ticl3, monkeypatch):
+    """An AVAS pin is one more entry of the core's union projection, with its own count, and
+    carries its pairs' reference electrons into the space. It is refused where it would name
+    a shell the core already projects onto, and ``exclude=`` does not take the form at all."""
+    assembly = _assemble_ticl3(ticl3, monkeypatch, _ScriptedProbe(16),
+                               targets="shells", require=[("avas", "Cl2", "p", 6)])
+    assert (assembly.n_active, assembly.space.n_elec) == (16, 7)
+    assert "attributed to the p reference shell of 2 Cl (require=" in assembly.space.description
+    assert assembly.sets[0].n_pairs == 5, "the shell keeps its own five pairs"
+    with pytest.raises(ValueError, match="more than one entry"):
+        proto.assemble(ticl3, targets="shells", require=[("avas", "Ti", "d", 2)],
+                       report=False)
+    with pytest.raises(ValueError, match="require= form only"):
+        proto.assemble(ticl3, targets="shells", exclude=[("avas", "Cl2", "p", 2)],
+                       report=False)
+    with pytest.raises(ValueError, match="n_spinors"):
+        proto.assemble(ticl3, targets="shells", require=[("avas", "Cl2", "p")], report=False)
 
 
 # --- Tier 1: the real probe -----------------------------------------------------------------
@@ -820,11 +895,11 @@ def test_a_d_and_an_f_ion_assemble_into_one_space_whose_ground_manifold_is_their
     ion's charge acting on the other (measured 5.4 cm^-1 over the lowest twenty) -- the check
     that one union projection handed the CI both ions' shells and not a mixture of them.
 
-    ⚠ The proposal is deliberately NOT asserted. The d-block floor is a spin doublet, so the
-    probe averages 12 + 8 = 20 roots of a 24-fold manifold, the pre-optimization splits it
-    (to 288 cm^-1) and the count read off that is 8. That is the floor's regime meeting a
-    free ion, not the union; a complex's ligand field removes the orbital degeneracy the
-    doublet floor assumes gone.
+    ⚠ And the proposal is the whole manifold. The d-block floor is a spin doublet, so the
+    floor-plus-margin count is 20 roots of the 24-fold manifold: averaged, the pre-optimization
+    split it and the count read off that was 8. The probe now averages to the first
+    fixed-orbital boundary past the ground manifold (60) and the proposal may not end inside a
+    fixed-orbital manifold, which together give 24.
     """
     from kuiva.autocas.probe import ProbeBudget
     from test_autocas_centres import reference_for
@@ -837,6 +912,8 @@ def test_a_d_and_an_f_ion_assemble_into_one_space_whose_ground_manifold_is_their
     assert assembly.site_atoms == ((0,), (1,)) and assembly.site_counts == (10, 14)
     decided = np.asarray(assembly.decided.spectrum_cm)
     assert decided.size == 20 and float(decided.max()) < 10.0, decided
+    assert assembly.probe.n_roots == 60
+    assert assembly.proposal.n_states == 24, assembly.proposal.describe()
 
 
 @pytest.mark.slow

@@ -262,6 +262,15 @@ the Ce(3+) electron in a 5d orbital, leaving the 4f pairs empty beside a Ti 3d p
 its electron, and a test on the union as a whole would see a shell that is neither empty nor
 full and lose the cerium electron.
 
+⚠ **The probe's average and the proposal are both held to the spectrum at the construction
+orbitals**, where the verdicts were taken. The probe averages every root it solves, so its
+count is extended to a manifold boundary of that spectrum past the ground manifold, and a
+proposed count that ends inside one of its manifolds is extended to the manifold's end. Both
+are measured failures: on a bare Ti(3+)/Ce(3+) pair the d-block floor (a spin doublet) left 20
+roots of the 24-fold product of the free-ion levels to be averaged, the pre-optimization split
+them, and 8 states were proposed. Neither rule moves the count on TiCl₃, TiF₃, CeCl₃, FeCl₂ or
+Ti₂Cl₆.
+
 ⚠ It is a **proposal**, read off a qualitative probe. Everything that makes it a state count
 runs downstream unchanged: the state-averaging gate's refusal to split a degenerate block,
 the boundary diagnostic at both ends of the optimization, and the energy window's ladder with

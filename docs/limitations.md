@@ -179,12 +179,7 @@ with its context. Each entry links to the page that explains the mechanism.
   projects onto most. The attribution is a comparison of projections, not a rotation, so
   where two shells' orbitals genuinely mix it can come out other than `2l+1` pairs per
   centre; that **warns**, and the per-centre electron counts and floors built on it are then
-  not reliable, although the space is still the union asked for. `require=` still takes
-  character statements only. ⚠ On a **free or near-spherical d ion** the proposed state
-  count can cut a degenerate manifold: the d-block floor is the spin multiplicity, the probe
-  averages too few roots of the free-ion level and its pre-optimization splits them — measured
-  on a bare Ti(3+)/Ce(3+) pair, where 8 states were proposed out of a 24-fold ground manifold.
-  State the count there.
+  not reliable, although the space is still the union asked for.
 - ⚠ **Löwdin atomic charges are withdrawn from every printed report** (measured sign-wrong
   on three of five characterized systems, unrescued by basis); the supported charge is the
   atomic-reference partition

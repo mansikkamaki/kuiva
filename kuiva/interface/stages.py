@@ -649,14 +649,16 @@ class AutoCAS(_Stage):
     refused at construction, naming the knob. ⚠ Its space carries **no symmetry labels**, as
     any AVAS space does -- the labels belong to the guess spinors and the projection has
     rotated them -- so a per-irrep ``n_states`` is unavailable downstream. ⚠ Shells of two
-    different ``l`` (a heteronuclear 3d/4f pair) are refused rather than composed: a second
-    AVAS projector re-mixes the pairs the first one selected.
+    different ``l`` (a heteronuclear 3d/4f pair) are **one** AVAS projection onto the union of
+    their reference shells, each pair attributed to the shell it projects onto most -- never
+    one projection per ``l``, whose second rotation re-mixes the first one's selection.
 
     ``max_spinors`` / ``max_determinants`` bound the size; unstated, the budget is resolved
     from the configured memory limit at the floor root count for ``solver="ci"`` and is a
     provisional default for ``solver="dmrg"``. ``require=`` and ``exclude=`` pin or ban
     orbitals by a character statement -- ``("character", atom, l, n_spinors[, skip_pairs])``
-    -- for what the probe cannot see.
+    -- for what the probe cannot see; ``require=`` also takes ``("avas", atom, l,
+    n_spinors)``, pairs of that reference shell selected by the core's own union projection.
 
     ⚠ **The cost is printed per round.** One fixed-orbital CI per round, one more for every
     prune that removed something, and one pre-optimization of the accepted space.

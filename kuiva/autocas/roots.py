@@ -94,7 +94,9 @@ class ManifoldBoundary:
 
 
 def manifold_boundary(spectrum_cm: Sequence[float], floor: int, *,
-                      gap_cm: float = DEFAULT_MANIFOLD_GAP_CM) -> ManifoldBoundary:
+                      gap_cm: float = DEFAULT_MANIFOLD_GAP_CM,
+                      allowed: Optional[Sequence[int]] = None,
+                      allowed_through: int = 0) -> ManifoldBoundary:
     """The first manifold boundary of ``spectrum_cm`` at or above ``floor``.
 
     ``spectrum_cm`` is ascending relative energies [cm^-1] (a probe's
@@ -108,16 +110,27 @@ def manifold_boundary(spectrum_cm: Sequence[float], floor: int, *,
     ends inside a near-degenerate manifold makes the averaged density non-invariant, the Fock
     operator built from it splits the shell, and the selection keeps cutting the same way.
     Both failures are one-sided, so the rule extends outward and only outward.
+
+    ``allowed`` restricts the boundary to counts that are also boundaries of **another**
+    spectrum of the same space -- the fixed-orbital one, in practice -- known through
+    ``allowed_through`` states (above that nothing is known and every count is allowed).
+    ⚠ It exists because a pre-optimization can split a manifold the construction orbitals show
+    whole, and a count read inside such a split is the self-reinforcing cut; it too only ever
+    extends outward.
     """
     energies = np.asarray(spectrum_cm, dtype=float).ravel()
     floor = int(max(1, floor))
     if energies.size == 0:
         raise ValueError("a manifold boundary cannot be read off an empty spectrum")
     blocks = tuple(chain_blocks(energies / HARTREE_TO_CM, float(gap_cm) / HARTREE_TO_CM))
+    permitted = None if allowed is None else set(int(a) for a in allowed)
     for start, stop in blocks:
         if stop >= floor:
             if stop >= energies.size:
                 break                       # the last block: no state above it was solved
+            if (permitted is not None and int(stop) not in permitted
+                    and int(stop) <= int(allowed_through)):
+                continue                    # inside a manifold of the other spectrum
             return ManifoldBoundary(count=int(stop), found=True, floor=floor,
                                     gap_cm=float(energies[stop] - energies[stop - 1]),
                                     blocks=blocks, manifold_gap_cm=float(gap_cm))
@@ -193,7 +206,9 @@ class RootProposal:
 
 def propose_roots(spectrum_cm: Sequence[float], floor: int, *, product_floor: Optional[int] = None,
                   gap_cm: float = DEFAULT_MANIFOLD_GAP_CM,
-                  max_states: int = DEFAULT_MAX_STATES) -> RootProposal:
+                  max_states: int = DEFAULT_MAX_STATES,
+                  fixed_spectrum_cm: Optional[Sequence[float]] = None,
+                  fixed_dimension: Optional[int] = None) -> RootProposal:
     """Propose a state count and an equivalent window from one probe's spectrum.
 
     ``floor`` is the theoretical ground-manifold dimension the count may not fall below
@@ -203,11 +218,40 @@ def propose_roots(spectrum_cm: Sequence[float], floor: int, *, product_floor: Op
     The three outcomes are the module docstring's, and each one is a different *statement*
     rather than a different number: a found boundary, a boundary above the cap (no count, the
     window with the cap), and no boundary in the roots solved (the floor, marked).
+
+    ``fixed_spectrum_cm`` is the same space's spectrum at the construction orbitals, where the
+    verdicts were taken (``fixed_dimension`` its determinant count). ⚠ Where given, **a count
+    that ends inside one of its manifolds is extended to that manifold's end**: the probe's
+    pre-optimization can split what the construction orbitals show whole -- measured on a bare
+    Ti(3+)/Ce(3+) pair, whose 24 lowest states lie within 5.4 cm^-1 there and came back from
+    four macro-iterations as three blocks of eight spread over 196 cm^-1 -- and a count read
+    inside that split is the cut that reinforces itself downstream.
     """
     energies = np.asarray(spectrum_cm, dtype=float).ravel()
-    boundary = manifold_boundary(energies, floor, gap_cm=gap_cm)
-    product_floor = int(product_floor if product_floor is not None else floor)
     notes: List[str] = []
+    boundary = manifold_boundary(energies, floor, gap_cm=gap_cm)
+    if fixed_spectrum_cm is not None:
+        fixed = np.asarray(fixed_spectrum_cm, dtype=float).ravel()
+        dimension = -1 if fixed_dimension is None else int(fixed_dimension)
+        ends = [int(stop) for _, stop in chain_blocks(fixed / HARTREE_TO_CM,
+                                                      float(gap_cm) / HARTREE_TO_CM)]
+        allowed = [e for e in ends if e < fixed.size or e == dimension]
+        through = int(fixed.size) if fixed.size != dimension else int(energies.size)
+        constrained = manifold_boundary(energies, floor, gap_cm=gap_cm, allowed=allowed,
+                                        allowed_through=through)
+        if (constrained.count, constrained.found) != (boundary.count, boundary.found):
+            notes.append(
+                "the probe's boundary at {} states lies inside a manifold of the spectrum at "
+                "the construction orbitals, where the verdicts were taken (chained at {:.0f} "
+                "cm^-1): the pre-optimization split what those orbitals show whole, and a "
+                "count read inside the split would cut the manifold. {}".format(
+                    boundary.count, gap_cm,
+                    "The count is extended to {}.".format(constrained.count)
+                    if constrained.found else
+                    "No count whole in both spectra is inside the roots solved."))
+            log.warning("%s", notes[-1])
+        boundary = constrained
+    product_floor = int(product_floor if product_floor is not None else floor)
 
     if not boundary.found:
         window = EnergyWindow(cutoff=float(max(energies[-1], gap_cm)), unit="cm^-1",

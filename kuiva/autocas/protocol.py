@@ -476,10 +476,11 @@ def _require_columns(reference, coeff, occupation, statements, *, what: str):
     them. Two numbering conventions inside one stage is how a pin lands on the wrong atom and
     still produces an active space.
 
-    ⚠ **An AVAS statement is refused here rather than served.** A second projector's rotation
-    re-mixes the pairs the shell's projection selected (they are degenerate at zero
-    eigenvalue in it), so an AVAS-stated pin would silently redefine the shell it was meant to
-    sit beside. State it as a character selection, or state the whole space by hand.
+    ⚠ **AVAS statements never reach here**: :func:`_avas_pins` takes them out first, because
+    they join the core's projection before there are orbitals to select from, and a second
+    projection after it would re-mix the shell. What is left for ``exclude=`` to state is a
+    character selection only -- a ban on a projection would be a statement about a rotation
+    that has not happened.
     """
     from ..mcscf.casci import DEFAULT_CHARACTER_THRESHOLD, _character_columns
 
@@ -493,10 +494,11 @@ def _require_columns(reference, coeff, occupation, statements, *, what: str):
         parts = tuple(statement)
         if not parts or str(parts[0]).lower() != "character":
             raise ValueError(
-                "{}= takes character statements ('character', atom, l, n_spinors[, skip]); "
-                "an AVAS statement is deliberately not accepted, because a second projection "
-                "rotates the pairs the shell's projection already selected. Got {!r}"
-                .format(what, statement))
+                "{}= takes character statements ('character', atom, l, n_spinors[, skip]){}. "
+                "Got {!r}".format(
+                    what, " -- an AVAS statement pins orbitals into the core's projection "
+                    "and is a require= form only" if what == "exclude" else
+                    " or AVAS statements ('avas', atom, l, n_spinors)", statement))
         if not 4 <= len(parts) <= 5:
             raise ValueError("('character', atom, l, n_spinors[, skip_pairs]); got {!r}"
                              .format(statement))
@@ -513,6 +515,36 @@ def _require_columns(reference, coeff, occupation, statements, *, what: str):
         columns.extend(int(c) for c in np.asarray(cols, dtype=int))
         described.append(text)
     return np.unique(np.asarray(columns, dtype=int)), tuple(described)
+
+
+def _avas_pins(reference, statements):
+    """``require=`` split into ``(AVAS pins, the remaining statements)``.
+
+    ``("avas", atom, l, n_spinors)`` pins ``n_spinors / 2`` Kramers pairs of the ``(atom, l)``
+    free-atom reference shell into the core. ⚠ **It joins the shell's own projection** (the
+    ``pins`` of :func:`kuiva.autocas.candidates.shell_candidates`): one union, one count, the
+    pin's pairs being the ones attributed to it -- never a second AVAS call, whose rotation would
+    re-mix the shell's selection. Atoms are addressed as everywhere in this package.
+    """
+    from ..mcscf.casci import _angular_momentum
+
+    pins, rest = [], []
+    for statement in (statements or ()):
+        parts = tuple(statement) if isinstance(statement, (tuple, list)) else ()
+        if not parts or str(parts[0]).lower() != "avas":
+            rest.append(statement)
+            continue
+        if len(parts) != 4:
+            raise ValueError("('avas', atom, l, n_spinors); got {!r}".format(statement))
+        n_spinors = int(parts[3])
+        if n_spinors <= 0 or n_spinors % 2:
+            raise ValueError("require= names {} spinors, which is not a positive whole number "
+                             "of Kramers pairs".format(n_spinors))
+        layout = reference.ao_layout
+        atoms = tg.resolve_atoms(layout, parts[1])
+        pins.append((tuple(int(a) for a in atoms), _angular_momentum(parts[2]), n_spinors // 2,
+                     "+".join(tg.atom_labels(layout, atoms))))
+    return tuple(pins), tuple(rest)
 
 
 def _space_of(reference, sets: Sequence[cand.CandidateSet], *, extra_columns=(),
@@ -683,6 +715,93 @@ def _coupled_and_truncated(space, centres, budget: ProbeBudget) -> str:
             "pathway is in the space because it was asked for -- and the proposed count is "
             "read off a spectrum that has the same defect".format(n_sites, ndet,
                                                                    int(budget.max_determinants)))
+
+
+def _probe_count_on_a_boundary(reference, coeff, space, decided: ProbeResult, *,
+                               n_roots: int, floor: int, gap_cm: float, max_states: int,
+                               budget: ProbeBudget) -> Tuple[int, str, ProbeResult]:
+    """How many roots the one pre-optimization averages: ``(count, note, fixed spectrum)``.
+
+    The third is the fixed-orbital measurement the count was read on, with every root solved
+    for it: what the proposal is held to afterwards (``fixed_spectrum_cm`` of
+    :func:`kuiva.autocas.roots.propose_roots`).
+
+    ``n_roots`` (floor plus margin), **extended to a manifold boundary of the fixed-orbital
+    spectrum** and past the ground manifold. The probe averages every root it solves, and an
+    average that ends inside a near-degenerate manifold makes its density non-invariant: the
+    orbitals optimize on a split shell and the spectrum the proposal reads has been split by
+    the probe itself.
+
+    ⚠ **Measured, both ways it bites.** On a bare Ti(3+)/Ce(3+) pair the d-block floor is a spin
+    doublet while the ground manifold is the 24-fold product of the free-ion levels: twenty
+    roots were averaged, the pre-optimization split the manifold to 348 cm^-1, and 8 states were
+    proposed at a gap that cleared the boundary threshold. On FeCl2 the thirteen-root count
+    ended at a 45 cm^-1 gap of the fixed-orbital spectrum, inside the threshold. The rule
+    needs no floor to be right, only the spectrum the verdicts were already taken on: the
+    count is the first chained boundary at or above ``max(n_roots, G + 1)``, ``G`` the ground
+    manifold's boundary, so the proposal still sees a state above the manifold it reads.
+    The fixed-orbital CI is re-solved with more roots (the accepted determinants kept) until
+    such a boundary is inside what was solved, the space is exhausted, or ``4 * max_states``
+    roots have not shown one -- then the count stays ``n_roots`` and the note says the average
+    may cut a manifold.
+    """
+    from ..ci.strings import cas_dimension
+    from ..util.units import HARTREE_TO_CM
+    from ..util.window import chain_blocks
+    from .roots import manifold_boundary
+
+    dim = cas_dimension(int(space.n_active), int(space.n_elec))
+    cap = min(dim, max(4 * int(max_states), int(n_roots)))
+    result = decided
+    while True:
+        energies = np.asarray(result.spectrum_cm, dtype=float)
+        solved = int(energies.size)
+        if result is decided and solved < min(int(n_roots), dim):
+            # The CI already returned fewer roots than were asked of it (its determinant list
+            # holds no more), so asking for more cannot show a boundary.
+            return int(n_roots), (
+                "the fixed-orbital CI returned {} of the {} roots asked for, so no manifold "
+                "boundary past the ground manifold could be looked for: the probe averages "
+                "{} roots, which may end inside a manifold and split it"
+                .format(solved, n_roots, n_roots)), result
+        ends = [int(stop) for _, stop in chain_blocks(energies / HARTREE_TO_CM,
+                                                      float(gap_cm) / HARTREE_TO_CM)]
+        # A block end is a boundary only where a state above it was solved -- or where the
+        # space itself ends there.
+        visible = [e for e in ends if e < solved or e == dim]
+        ground = manifold_boundary(energies, int(floor), gap_cm=gap_cm)
+        lowest = int(n_roots)
+        if ground.found:
+            lowest = max(lowest, int(ground.count) + 1)
+        found = [e for e in visible if e >= min(lowest, dim)]
+        if found:
+            count = int(found[0])
+            if count == int(n_roots):
+                return count, "", result
+            return count, (
+                "the probe averages {} roots rather than the floor-plus-margin {}: {} ends "
+                "inside a manifold of the spectrum at the construction orbitals (chained at "
+                "{:.0f} cm^-1), and an average that cuts a manifold splits it -- the count "
+                "is the first boundary past the ground manifold".format(
+                    count, n_roots, n_roots, gap_cm)), result
+        if solved >= cap:
+            return int(n_roots), (
+                "no manifold boundary past the ground manifold within the {} roots solved at "
+                "the construction orbitals: the probe averages the floor-plus-margin {} roots, "
+                "which may end inside a manifold and split it. Read the proposal with that in "
+                "mind, or state the count".format(solved, n_roots)), result
+        grow = min(cap, max(2 * solved, solved + 2))
+        if int(space.n_elec) % 2 and grow % 2 and grow < dim:
+            grow += 1
+        result = measure(reference, coeff, space, n_roots=grow, budget=budget, seed=decided)
+        if np.asarray(result.spectrum_cm).size <= solved:
+            # ⚠ A selected CI returns at most as many roots as its determinant list holds, so
+            # asking again is not guaranteed to show more; without this the loop never ends.
+            return int(n_roots), (
+                "the fixed-orbital CI returned {} roots when {} were asked for, so no manifold "
+                "boundary past the ground manifold could be looked for: the probe averages the "
+                "floor-plus-margin {} roots, which may end inside a manifold and split it"
+                .format(np.asarray(result.spectrum_cm).size, grow, n_roots)), result
 
 
 def _site_split(reference, coeff, centres, shell_columns):
@@ -894,9 +1013,10 @@ def assemble(reference, targets=None, *, solver: str = "ci",
 
     coeff = reference.spinors_in_ao()
     occupation = np.asarray(reference.spinors.occ, dtype=float)
+    avas_pins, require = _avas_pins(reference, require)
     construction = cand.shell_candidates(
         reference, centres, coeff=coeff, occupation=occupation,
-        double=bool(double_targets), bonding=bonding_pairs, report=report)
+        double=bool(double_targets), bonding=bonding_pairs, pins=avas_pins, report=report)
     coeff = construction.coeff
     projection = _Projection(eigenvalues=np.asarray(construction.avas.eigenvalues, float),
                              occupations=np.asarray(construction.avas.occupations, float),
@@ -911,6 +1031,10 @@ def assemble(reference, targets=None, *, solver: str = "ci",
     banned, _ = _require_columns(reference, coeff, occupation, exclude, what="exclude")
     pinned, pinned_text = _require_columns(reference, coeff, occupation, require,
                                            what="require")
+    if construction.pinned:
+        pinned = np.unique(np.concatenate([pinned] + [np.asarray(p.columns, dtype=int)
+                                                      for p in construction.pinned]))
+        pinned_text = tuple(p.description for p in construction.pinned) + tuple(pinned_text)
     claimed = set(int(c) for c in shell.columns) | set(int(c) for c in pinned)
     for extra in (construction.double, construction.bonding):
         if extra is not None and not extra.empty:
@@ -1129,9 +1253,23 @@ def assemble(reference, targets=None, *, solver: str = "ci",
     # and a stage that returned construction orbitals labelled as probed ones would be lying
     # about what a CASSCF starts from.
     decided = current
-    current = probe(reference, coeff, space, n_roots=n_roots, budget=budget_probe)
-    proposal = propose_roots(current.spectrum_cm, floor, product_floor=product_floor,
-                             gap_cm=manifold_gap_cm, max_states=max_states)
+    n_probe, fixed = n_roots, None
+    if decided is not None:
+        n_probe, count_note, fixed = _probe_count_on_a_boundary(
+            reference, coeff, space, decided, n_roots=n_roots, floor=floor_target,
+            gap_cm=manifold_gap_cm, max_states=max_states, budget=budget_probe)
+        if count_note:
+            notes.append(count_note)
+            if n_probe == n_roots:
+                log.warning("%s", count_note)
+    current = probe(reference, coeff, space, n_roots=n_probe, budget=budget_probe)
+    from ..ci.strings import cas_dimension
+
+    proposal = propose_roots(
+        current.spectrum_cm, floor, product_floor=product_floor, gap_cm=manifold_gap_cm,
+        max_states=max_states,
+        fixed_spectrum_cm=None if fixed is None else fixed.spectrum_cm,
+        fixed_dimension=cas_dimension(int(space.n_active), int(space.n_elec)))
     # ⚠ The loop the budget has with the proposal, closed by measuring twice: the budget was
     # resolved at the FLOOR root count (the proposal did not exist yet) and the conventional-CI
     # ceiling moves with the root count, so a space that fits at the floor need not fit at the
