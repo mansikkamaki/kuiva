@@ -29,6 +29,11 @@ pip install .                       # or `pip install -e .` to work on the sourc
 source setup.sh                     # once per shell — must be SOURCED, not executed
 ```
 
+Every later shell needs the same two steps in the same order — activate the environment,
+then `source setup.sh` — because `setup.sh` checks the interpreter it finds on `PATH` and
+activates nothing itself. That includes batch jobs: see
+[Running on clusters](clusters.md#a-batch-script-skeleton).
+
 ## What `setup.sh` does
 
 `setup.sh` prepares the shell and then gets out of the way. It does three things:

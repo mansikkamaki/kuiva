@@ -20,18 +20,31 @@ plumbing.
 #SBATCH --time=24:00:00
 #SBATCH --signal=B:USR1@600            # only if the script uses signals=, see below
 
-source /path/to/kuiva/setup.sh
-
 export KUIVA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export KUIVA_MEMORY_GB=48              # leave headroom under --mem: the OS, PySCF's own
                                        # allocation, and everything Kuiva marks `external`
 export KUIVA_SCRATCH=$LOCAL_SCRATCH    # a real disk, never a RAM-backed tmpfs
 export KUIVA_AMF_CACHE=/proj/$USER/kuiva-amf   # shared: pay each atomic solve once ever
 
+. /path/to/kuiva/venv/bin/activate               # the environment Kuiva was installed into
+source /path/to/kuiva/setup.sh || exit 1         # after the exports, and fatal if it fails
+
 python calculation.py
 ```
 
-Three of those lines are worth a sentence each:
+Two things about the order of those lines, then three about their content:
+
+- ⚠ **Activate the environment before sourcing `setup.sh`.** `setup.sh` checks the
+  interpreter it finds on `PATH`; it does not activate anything. A batch shell starts clean
+  on most sites, so without the `activate` line (or a `module load`, or whatever puts *your*
+  interpreter first) it probes the system Python, reports PySCF missing, and
+  `python calculation.py` would have run that same wrong interpreter. It works by accident
+  where the scheduler copies the submitting shell's environment into the job — not something
+  to build on.
+- **Export the memory limit and the scratch directory before sourcing `setup.sh`**, and stop
+  the job if it fails. A batch shell has no terminal, so `setup.sh` cannot ask for either
+  setting: it refuses when neither the environment nor a `defaults.conf` supplies them — and
+  a sourced script that fails does not end the job by itself, hence `|| exit 1`.
 
 - **`KUIVA_MEMORY_GB` is what Kuiva may commit to its own arrays, not the allocation.** The
   PySCF SCF allocates outside Kuiva's ledger and is reported as `external`, so a limit equal
