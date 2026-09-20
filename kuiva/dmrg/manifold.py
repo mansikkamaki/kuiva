@@ -799,6 +799,7 @@ def effective_model(ttno: TTNO, state: TTNState, sites=None, *,
                     weight_tol: float = DEFAULT_MULTIPLET_WEIGHT_TOL,
                     min_dim: int = 1, max_dim: Optional[int] = None,
                     operators: Optional[Dict[str, Sequence]] = None,
+                    site_local: Optional[Sequence[str]] = None,
                     bases=None, n_elec: Optional[int] = None,
                     report: bool = True) -> EffectiveModel:
     """Site spaces + open-index contraction in one call (site spaces, then the open-index contraction).
@@ -809,6 +810,22 @@ def effective_model(ttno: TTNO, state: TTNState, sites=None, *,
     state's graph and contracted with the same isometries, and its **site-local part**
     (the terms supported inside one site) is additionally reduced to a per-site
     ``(d_k, d_k)`` matrix — what the pseudospin labelling consumes.
+
+    ``site_local`` names which operators get that per-site reduction; ``None`` (the default)
+    is all of them, which is what every caller before it existed got. It costs one further
+    model-space contraction per operator **per site**, so an operator nothing reduces per site
+    — a delocalized one-electron operator written whole, such as a nucleus's hyperfine field —
+    is cheaper and clearer named out. An unknown name is refused rather than ignored: a typo
+    would otherwise silently restore the default for the operator it was meant to exclude.
+
+    ⚠ **What the reduction is, and when it is complete.** It is a *projection*: only the terms
+    supported inside one site survive it. Where every site space sits in **one particle-number
+    sector** the dropped inter-site terms of a one-electron operator have identically zero
+    matrix elements on the model space — they move an electron between sites, and no pair of
+    charge-pure product states differs that way — so the per-site parts sum back to the model
+    operator exactly (measured to 1e-15) and skipping the reduction loses nothing but the
+    table. Where a site space **mixes** sectors they do not vanish, and the per-site matrices
+    are then an incomplete account of the operator that is still Hermitian and still plausible.
     """
     if ttno.graph != state.graph:
         raise ValueError("the TTNO and the state live on different trees")
@@ -831,11 +848,23 @@ def effective_model(ttno: TTNO, state: TTNState, sites=None, *,
     site_ops: Dict[str, List[np.ndarray]] = {}
     dims_t = tuple(sp.dim for sp in spaces)
     op_bases = ttno.bases if bases is None else bases
+    wanted = None if site_local is None else set(str(n) for n in site_local)
+    if wanted is not None:
+        unknown = sorted(wanted - set(operators or {}))
+        if unknown:
+            raise ValueError(
+                "site_local names {} which is not an operator of this model ({}); a name "
+                "that is ignored would silently give the operator it was meant to exclude "
+                "the default per-site reduction".format(unknown,
+                                                        ", ".join(sorted(operators or {}))
+                                                        or "none"))
     for name, terms in (operators or {}).items():
         table = TermTable.coerce(terms)
         with timer("effective operator {}".format(name)):
             model_ops[name] = effective_operator_from_terms(table, spaces, ttno,
                                                             bases=op_bases)
+        if wanted is not None and name not in wanted:
+            continue
         locals_: List[np.ndarray] = []
         for k, sp in enumerate(spaces):
             inside = set(sp.orbitals)
@@ -900,6 +929,7 @@ def solve_manifold(terms, graph: NetworkGraph, n_elec: int, *, bases=None,
                    weight_tol: float = DEFAULT_MULTIPLET_WEIGHT_TOL,
                    min_dim: int = 1, max_dim: Optional[int] = None,
                    operators: Optional[Dict[str, Sequence]] = None,
+                   site_local: Optional[Sequence[str]] = None,
                    n_roots: int = 2, max_roots: int = 64, grow_factor: float = 2.0,
                    max_outer: int = 6, outer_tol: float = 1.0e-6,
                    max_bond: Optional[int] = None, trunc_tol: float = 0.0,
@@ -947,8 +977,8 @@ def solve_manifold(terms, graph: NetworkGraph, n_elec: int, *, bases=None,
                 model = effective_model(ttno, state, sites, weights=sweep.weights,
                                         rule=rule, dims=dims, weight_tol=weight_tol,
                                         min_dim=min_dim, max_dim=max_dim,
-                                        operators=operators, bases=bases,
-                                        n_elec=n_elec, report=False)
+                                        operators=operators, site_local=site_local,
+                                        bases=bases, n_elec=n_elec, report=False)
             except UnderResolved as exc:
                 if roots >= max_roots:
                     table.end("under-resolved at the root cap")

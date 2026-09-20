@@ -15,7 +15,7 @@ import pytest
 
 from kuiva.dmrg import (NetworkGraph, hamiltonian_product_terms,
                         one_electron_product_terms, solve_manifold)
-from kuiva.props.multiplet import degeneracy_pattern
+from kuiva.props.multiplet import block_collinearity, degeneracy_pattern
 from kuiva.props.pseudospin import (FORMAT_VERSION, PseudospinModel, assign_pseudospin,
                                     pseudospin_from_model, read_pseudospin,
                                     write_pseudospin)
@@ -313,3 +313,284 @@ def test_a_pseudospin_export_round_trips_through_from_file(tmp_path):
         assert a.g_values == pytest.approx(b.g_values, rel=1e-12)
 
     assert [m.size for m in back.analyse()] == [m.size for m in ps.analyse()]
+
+
+# --- the hyperfine field on the model space --------------------------------------------------
+#
+# ⚠ **What these can fail on.** The operator is built as ``T = a L + b S`` with ``a != b``, so
+# it is genuinely a *different* vector operator from ``mu = -(L + 2 S)`` — one whose principal
+# values and whose spatial content differ — and yet Wigner-Eckart forces it to be proportional
+# to ``mu`` **inside each j manifold**. That is the sharp oracle: ``Tr_b(mu.T)^2 =
+# Tr_b(mu.mu) Tr_b(T.T)`` exactly, and it breaks on a permuted Cartesian component, on a frame
+# left unrotated, and on the conjugation trap of the transformation law — none of which any
+# hermiticity, degeneracy or magnitude check here can see. The ratio ``A(1/2)/A(3/2)``, which
+# the CI route asserts against the analytic 5, is *not* a claim about this synthetic operator:
+# it is a claim about the real hyperfine integrals and belongs where they are.
+
+def p1_hyperfine(a=1.0, b=0.25):
+    """``T = a L + b S`` over the six ``p^1`` spinors — a vector operator that is NOT ``mu``.
+
+    The shape that matters is the only one that matters: a Hermitian, time-odd vector operator
+    with different orbital and spin weights from the moment's. Everything asserted about it is
+    a consequence of it being *a* vector operator, which is exactly the content of the
+    Wigner-Eckart checks the real hyperfine field has to pass.
+    """
+    lz = np.diag([-1.0, 0.0, 1.0]).astype(np.complex128)
+    lp = np.zeros((3, 3), dtype=np.complex128)
+    lp[1, 0] = lp[2, 1] = np.sqrt(2.0)
+    lx = 0.5 * (lp + lp.conj().T)
+    ly = -0.5j * (lp - lp.conj().T)
+    sx = 0.5 * np.array([[0, 1], [1, 0]], dtype=np.complex128)
+    sy = 0.5 * np.array([[0, -1j], [1j, 0]], dtype=np.complex128)
+    sz = 0.5 * np.array([[1, 0], [0, -1]], dtype=np.complex128)
+    i2, i3 = np.eye(2), np.eye(3)
+    l_ops = np.stack([np.kron(m, i2) for m in (lx, ly, lz)])
+    s_ops = np.stack([np.kron(i3, m) for m in (sx, sy, sz)])
+    return a * l_ops + b * s_ops
+
+
+NUCLEUS = {"atom": 1, "atom_label": "X1", "element": "X", "atomic_number": 5,
+           "label": "11X", "twice_spin": 3, "g": 1.7924326, "quadrupole_barn": 0.040591,
+           "position_bohr": [0.0, 0.0, 0.0], "source": "synthetic (test)"}
+RECORD = {"unit": "Eh/mu_N", "decoupling": "1e", "nuclear_model": "point",
+          "picture_change": "always applied", "g_electron": 2.0,
+          "operator": "H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u",
+          "x2c_response": "not included (unperturbed X and R)",
+          "two_electron_picture_change": "not applied", "nuclear_magneton_au": 2.7e-4}
+
+
+def p1_projected(states=slice(None)):
+    """``(h_eff, mu, T)`` of the p^1 model projected onto a set of its eigenstates."""
+    h, mu = p1_operators()
+    t = p1_hyperfine()
+    _, vecs = np.linalg.eigh(h)
+    v = vecs[:, states]
+    return (v.conj().T @ h @ v,
+            np.stack([v.conj().T @ m @ v for m in mu]),
+            np.stack([v.conj().T @ m @ v for m in t]))
+
+
+def test_the_hyperfine_field_is_collinear_with_the_moment_on_a_j_manifold():
+    """The Wigner-Eckart oracle, on an operator deliberately unlike ``mu``.
+
+    Both invariants are isotropic inside one ``2J+1`` block and Cauchy-Schwarz is saturated,
+    so ``A.g`` is exactly ``+-1`` — a statement no convention in this program can move, and
+    the one that fails on a permuted component or a conjugation error.
+    """
+    from kuiva.props.multiplet import block_cross_tensor, block_hyperfine_tensor
+
+    for states, dim in ((slice(0, 2), 2), (slice(2, 6), 4)):
+        h_eff, mu_p, t_p = p1_projected(states)
+        ps = assign_pseudospin(h_eff, mu_p, [dim], [mu_p], site_electrons=[1],
+                               hyperfine={"X1": t_p}, hyperfine_nuclei=[NUCLEUS],
+                               hyperfine_record=RECORD)
+        t_eig = ps.hyperfine_in_eigenbasis()["X1"]
+        mu_eig = ps.mu_in_eigenbasis()
+        tensor = block_hyperfine_tensor(t_eig, 0, dim)
+        cross = block_cross_tensor(mu_eig, t_eig, 0, dim)
+        for x in (tensor, cross):
+            assert np.abs(x - np.diag(np.diag(x))).max() < 1e-12 * np.abs(x).max()
+            assert np.diag(x) == pytest.approx([np.diag(x)[0]] * 3, rel=1e-12)
+        assert abs(abs(block_collinearity(mu_eig, t_eig, 0, dim)) - 1.0) < 1e-12
+        # ...and T really is a different operator from mu, so the agreement is not trivial.
+        assert abs(np.trace(cross) / np.trace(block_hyperfine_tensor(mu_eig, 0, dim))
+                   - 1.0) > 0.1
+
+
+def test_the_hyperfine_field_rides_the_frame_rotation_with_the_moment():
+    """⚠ The file states **one** frame for every operator in it.
+
+    A ``T`` left behind in the input frame stays Hermitian, keeps every principal value it
+    had, and sits at an arbitrary angle to the ``mu`` a consumer pairs it with — invisible in
+    each operator alone and fatal to the pair. The invariant that sees it is the *mixed* one:
+    the collinearity is frame independent only if both operators were rotated together.
+    """
+    h_eff, mu_p, t_p = p1_projected(slice(0, 2))
+    axis = np.array([0.3, -0.5, 0.81])
+    plain = assign_pseudospin(h_eff, mu_p, [2], [mu_p], common_axis=axis,
+                              hyperfine={"X1": t_p}, hyperfine_nuclei=[NUCLEUS],
+                              hyperfine_record=RECORD)
+    rotated = assign_pseudospin(h_eff, mu_p, [2], [mu_p], common_axis=axis,
+                                rotate_frame=True, hyperfine={"X1": t_p},
+                                hyperfine_nuclei=[NUCLEUS], hyperfine_record=RECORD)
+    assert rotated.frame != plain.frame
+    assert not np.allclose(rotated.frame_rotation, np.eye(3))
+    # the operator moved with the frame...
+    assert not np.allclose(rotated.hyperfine["X1"], plain.hyperfine["X1"], atol=1e-8)
+    # ...and the mixed invariant, which is what would have caught it had it not.
+    before = block_collinearity(plain.mu_in_eigenbasis(),
+                                plain.hyperfine_in_eigenbasis()["X1"], 0, 2)
+    after = block_collinearity(rotated.mu_in_eigenbasis(),
+                               rotated.hyperfine_in_eigenbasis()["X1"], 0, 2)
+    assert after == pytest.approx(before, abs=1e-12)
+    # a rotation is orthogonal, so the quadratic invariant is unchanged too
+    from kuiva.props.multiplet import block_hyperfine_tensor
+    assert np.trace(block_hyperfine_tensor(rotated.hyperfine_in_eigenbasis()["X1"], 0, 2)) \
+        == pytest.approx(np.trace(block_hyperfine_tensor(
+            plain.hyperfine_in_eigenbasis()["X1"], 0, 2)), rel=1e-12)
+
+
+def test_the_two_halves_of_the_hyperfine_contract_cannot_come_apart():
+    """Matrices without a table name no nucleus and state no ``I``; a table without matrices
+    describes a coupling the file cannot supply. Both are refused, in both directions,
+    because a ``T`` matched to the wrong nucleus is Hermitian, plausible and wrong."""
+    h_eff, mu_p, t_p = p1_projected(slice(0, 2))
+    with pytest.raises(ValueError, match="same nuclei"):
+        assign_pseudospin(h_eff, mu_p, [2], [mu_p], hyperfine={"X1": t_p},
+                          hyperfine_nuclei=[dict(NUCLEUS, atom_label="Y1")])
+    with pytest.raises(ValueError, match="no hyperfine matrices"):
+        assign_pseudospin(h_eff, mu_p, [2], [mu_p], hyperfine_nuclei=[NUCLEUS])
+    with pytest.raises(ValueError, match=r"must be \(3, 2, 2\)"):
+        assign_pseudospin(h_eff, mu_p, [2], [mu_p], hyperfine={"X1": t_p[:, :1, :1]},
+                          hyperfine_nuclei=[NUCLEUS])
+    # ⚠ absent means None, never {}: "no nuclei were selected" and "the coupling is small"
+    # are different statements and a whole active space can be the difference.
+    bare = assign_pseudospin(h_eff, mu_p, [2], [mu_p])
+    assert bare.hyperfine is None and not bare.has_hyperfine
+    assert bare.hyperfine_labels == () and bare.hyperfine_nuclei == ()
+
+
+def test_the_hyperfine_half_round_trips_through_the_file(tmp_path):
+    """Written and read back element for element, table included — and rebuilt from the
+    file's own two sections rather than the provenance JSON, since a consumer that parses no
+    JSON must still get the nuclei."""
+    h_eff, mu_p, t_p = p1_projected(slice(0, 2))
+    ps = assign_pseudospin(h_eff, mu_p, [2], [mu_p], site_electrons=[1],
+                           hyperfine={"X1": t_p}, hyperfine_nuclei=[NUCLEUS],
+                           hyperfine_record=RECORD, provenance={"model": "p1"})
+    path = write_pseudospin(tmp_path / "hf.psd", ps)
+
+    raw = read_pseudospin(path)
+    assert len(raw["nuclei"]) == 1
+    row = raw["nuclei"][0]
+    assert row["atom_label"] == "X1" and row["label"] == "11X"
+    assert row["twice_spin"] == 3 and row["g"] == pytest.approx(NUCLEUS["g"])
+    assert row["quadrupole_barn"] == pytest.approx(NUCLEUS["quadrupole_barn"])
+    for k, a in enumerate("xyz"):
+        assert np.array_equal(raw["matrices"]["T_X1_" + a], ps.hyperfine["X1"][k])
+    header = raw["header"]
+    assert header["hyperfine_unit"] == "Eh/mu_N"
+    assert header["hyperfine_decoupling"] == "1e"
+    assert header["hyperfine_nuclear_model"] == "point"
+    assert "unperturbed" in header["hyperfine_x2c_response"]
+    assert "not applied" in header["hyperfine_2e_picture_change"]
+    assert header["n_hyperfine_nuclei"] == "1"
+    # ⚠ reported, never refused: 2 electronic states x (2I+1 = 4) nuclear
+    assert header["product_dim"] == "8" and ps.product_dim() == 8
+    assert "M_I = -I .. +I ascending" in header["nuclear_site_order"]
+
+    back = PseudospinModel.from_file(path)
+    assert back.hyperfine_labels == ("X1",)
+    assert np.array_equal(back.hyperfine["X1"], ps.hyperfine["X1"])
+    assert back.nucleus("X1")["label"] == "11X"
+    assert back.hyperfine_record["nuclear_model"] == "point"
+    with pytest.raises(KeyError, match="no nucleus labelled"):
+        back.nucleus("X2")
+    for a, b in zip(back.analyse(), ps.analyse()):
+        assert np.allclose(a.hyperfine["X1"], b.hyperfine["X1"], rtol=0, atol=0)
+        assert np.allclose(a.hyperfine_cross["X1"], b.hyperfine_cross["X1"], rtol=0, atol=0)
+
+
+def test_a_file_without_hyperfine_says_nothing_about_it(tmp_path):
+    h_eff, mu_p, _ = p1_projected(slice(0, 2))
+    ps = assign_pseudospin(h_eff, mu_p, [2], [mu_p], provenance={"model": "p1"})
+    path = write_pseudospin(tmp_path / "plain.psd", ps)
+    text = path.read_text()
+    assert "[NUCLEI]" not in text and "hyperfine_unit" not in text
+    assert "product_dim" not in text
+    back = PseudospinModel.from_file(path)
+    assert back.hyperfine is None and back.hyperfine_nuclei == ()
+    assert read_pseudospin(path)["nuclei"] == []
+
+
+def test_a_nuclear_table_without_its_operators_is_refused(tmp_path):
+    h_eff, mu_p, t_p = p1_projected(slice(0, 2))
+    ps = assign_pseudospin(h_eff, mu_p, [2], [mu_p], hyperfine={"X1": t_p},
+                           hyperfine_nuclei=[NUCLEUS], hyperfine_record=RECORD,
+                           provenance={"model": "p1"})
+    path = write_pseudospin(tmp_path / "cut.psd", ps)
+    text = path.read_text()
+    # ⚠ searched from `start`, not from the top: the file's own header comment mentions
+    # "[MATRIX U]", and cutting to that would duplicate half the file instead of trimming it.
+    start = text.index("[MATRIX T_X1_x]")
+    path.write_text(text[:start] + text[text.index("[MATRIX U]", start):])
+    with pytest.raises(ValueError, match="no complete set of"):
+        PseudospinModel.from_file(path)
+
+
+def test_a_header_count_that_disagrees_with_the_table_is_refused(tmp_path):
+    h_eff, mu_p, t_p = p1_projected(slice(0, 2))
+    ps = assign_pseudospin(h_eff, mu_p, [2], [mu_p], hyperfine={"X1": t_p},
+                           hyperfine_nuclei=[NUCLEUS], hyperfine_record=RECORD,
+                           provenance={"model": "p1"})
+    path = write_pseudospin(tmp_path / "count.psd", ps)
+    path.write_text(path.read_text().replace("n_hyperfine_nuclei               1",
+                                             "n_hyperfine_nuclei               2"))
+    with pytest.raises(ValueError, match="hyperfine nuclei"):
+        read_pseudospin(path)
+
+
+def test_writing_warns_about_what_no_number_in_the_file_shows(tmp_path, kuiva_caplog):
+    """The standing obligation, discharged every time the file is written: the treatment of
+    the operators and the core-polarization limitation the active space cannot repair."""
+    h_eff, mu_p, t_p = p1_projected(slice(0, 2))
+    ps = assign_pseudospin(h_eff, mu_p, [2], [mu_p], hyperfine={"X1": t_p},
+                           hyperfine_nuclei=[NUCLEUS], hyperfine_record=RECORD,
+                           provenance={"model": "p1"})
+    path = write_pseudospin(tmp_path / "warn.psd", ps)
+    assert any("HYPERFINE FIELD operators" in r.message and "core-s spin polarization"
+               in r.message for r in kuiva_caplog.records)
+    text = path.read_text()
+    assert "H_hf = sum_k g_N(k) sum_u T_<k>_u (x) I_<k>_u" in text
+    assert "ISOTOPE-INDEPENDENT" in text
+
+
+def test_a_large_product_space_is_reported_and_never_refused(tmp_path, kuiva_caplog):
+    """⚠ Kuiva does not form the electron-nuclear product space — that is the whole point of
+    storing electronic matrices and a nuclear table separately — so a big one is *said*, not
+    refused. Refusing on a consumer's behalf teaches a user to raise a limit blindly."""
+    from kuiva.props.pseudospin import PRODUCT_DIM_WARN
+
+    s1 = spin1_ops()
+    i3 = np.eye(3, dtype=np.complex128)
+    sa = np.stack([np.kron(m, i3) for m in s1])
+    sb = np.stack([np.kron(i3, m) for m in s1])
+    # nine electronic states and two fat nuclei: 9 x 512 x 512, well past the threshold
+    nuclei = [dict(NUCLEUS, atom_label="X1", twice_spin=511),
+              dict(NUCLEUS, atom_label="X2", twice_spin=511)]
+    t = 0.3 * sa - 0.1 * sb
+    ps = assign_pseudospin(0.1 * sum(sa[k] @ sb[k] for k in range(3)), -2.0 * (sa + sb),
+                           [3, 3], [-2.0 * s1, -2.0 * s1],
+                           hyperfine={"X1": t, "X2": t}, hyperfine_nuclei=nuclei,
+                           hyperfine_record=RECORD, provenance={"model": "S=1 pair"})
+    assert ps.product_dim() == 9 * 512 * 512 > PRODUCT_DIM_WARN
+    path = write_pseudospin(tmp_path / "big.psd", ps)         # written, not refused
+    assert any("electron-nuclear product space" in r.message
+               for r in kuiva_caplog.records)
+    assert read_pseudospin(path)["header"]["product_dim"] == str(9 * 512 * 512)
+
+
+def test_the_report_names_the_reduction_and_stays_ascii(kuiva_caplog):
+    """A reader has to be able to tell an ``|A|`` reduction from a fitted tensor, because this
+    program writes no tensor — and the output stream is ASCII only."""
+    h_eff, mu_p, t_p = p1_projected(slice(0, 2))
+    ps = assign_pseudospin(h_eff, mu_p, [2], [mu_p], hyperfine={"X1": t_p},
+                           hyperfine_nuclei=[NUCLEUS], hyperfine_record=RECORD)
+    ps.report()
+    text = kuiva_caplog.text
+    assert "hyperfine field operators" in text
+    assert "|A_1| [MHz]" in text and "A.g" in text
+    assert "X1" in text and "11X" in text
+    assert "electron-nuclear product dimension" in text
+    for record in kuiva_caplog.records:
+        record.getMessage().encode("ascii")
+
+
+def test_the_model_route_pulls_the_named_operators_and_refuses_a_missing_one():
+    """``pseudospin_from_model`` takes the three operator *names* per nucleus, so the naming
+    convention stays with the caller that chose it — and a name the model does not carry is
+    refused rather than silently dropped."""
+    result = p1_manifold(n_roots=2, dims=2)
+    with pytest.raises(ValueError, match="T_X1_x"):
+        pseudospin_from_model(result.model, hyperfine={"X1": ("T_X1_x", "T_X1_y", "T_X1_z")},
+                              hyperfine_nuclei=[NUCLEUS], hyperfine_record=RECORD)

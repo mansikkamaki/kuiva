@@ -23,6 +23,18 @@ about those files.
                         and the unitary that maps the ab initio states onto it. For the
                         external OuluSpin code, in its conventions and its storage order.
 
+Both of them also carry the HYPERFINE FIELD operator of every nucleus named at ingestion
+(here 47Ti), under the same block names and beside the same [NUCLEI] table. What is written
+is the isotope-independent operator T, in Hartree per nuclear magneton, so that
+
+    H_hf = sum_k g_N(k) sum_u T_<k>_u (x) I_<k>_u        [Eh]
+
+on the product of the electronic space with the nuclear spins. Kuiva never forms that product
+space -- it writes the electronic matrices and a nuclear table separately, which is exactly
+what lets a consumer change the isotope, or drop a nucleus, without re-running any of this.
+There is no A tensor and no hyperfine spin Hamiltonian anywhere in these files: those are the
+external code's, as the crystal field is.
+
 Both are contracts with programs outside this one, so both carry the full provenance of the
 Hamiltonian that produced them -- in particular which spin-orbit screening the Hamiltonian
 already contained, because that is worth 5 to 30 per cent on every splitting in the file
@@ -50,6 +62,23 @@ THREE THINGS THE FILES SAY IN THEIR HEADERS, AND WHY
   patterns, relative energies and the invariant Tr_block(mu_i mu_j), whose principal values
   are the g factors. The example uses that reduction and nothing else.
 
+* **The hyperfine operators are the exception to the first of those, and it is recorded.**
+  They ALWAYS carry the picture change, whatever the flag above says, because a bare
+  hyperfine operator is wrong by a factor of four to ten wherever s character carries spin
+  density. What replaces the "one flag governs both" guarantee is that each file states the
+  treatment of each operator family separately, in its own header fields.
+
+WHAT THIS EXAMPLE CANNOT SHOW, AND SAYS SO
+------------------------------------------
+The isotropic (contact) part of the hyperfine coupling comes from spin polarization of the
+core s shells, and a VALENCE active space -- ten 3d spinors here -- carries none of it. For a
+4f ion that is a minor error, the orbital mechanism dominating; for a 3d ion like this one it
+is qualitatively wrong, by twenty-five per cent and worse. So the |A| values below are a
+demonstration of the machinery and of the two routes agreeing with each other, and NOT a
+prediction of an experiment. Every run says this in a warning and both files record the
+active space so a reader can judge. The remedy is core s shells in the active space, which
+needs a tensor-network active space, not a correction term.
+
 WHAT TO LOOK FOR IN THE OUTPUT
 ------------------------------
 * the ten states resolving into five Kramers doublets, each with its principal g values;
@@ -65,7 +94,13 @@ WHAT TO LOOK FOR IN THE OUTPUT
   constant.)
 * the same g values coming out of the pseudospin export, which reaches them by contracting
   the network onto a model space rather than through CI transition densities: two
-  independent routes to one invariant.
+  independent routes to one invariant -- and the same again for the hyperfine field, whose
+  |A| values must agree between the routes far more tightly than they mean anything;
+* the [NUCLEI] table carrying a NEGATIVE g_N for 47Ti and 'none' for its quadrupole moment.
+  Both are deliberate: |A| is quadratic and cannot hold that sign, which is why the mixed
+  invariant Tr_block(mu.T) is printed beside it, and a quadrupole moment whose SIGN is not
+  established is written as absent rather than as a magnitude, because that sign is the sign
+  of every quadrupole splitting a consumer would compute from it.
 """
 from __future__ import annotations
 
@@ -78,7 +113,8 @@ from typing import List
 import numpy as np
 
 import kuiva
-from kuiva.props.dump import read_dump
+from kuiva.props.dump import DEFAULT_INACTIVE_TOL, read_dump
+from kuiva.props.multiplet import block_collinearity, multiplet_hyperfine_values
 from kuiva.props.pseudospin import read_pseudospin
 from kuiva.util import output as out
 from kuiva.util import timing
@@ -108,6 +144,15 @@ MAX_ITER, CONV_GRAD = 100, 1.0e-4
 #: agree far inside anything physical.
 G_AGREEMENT = 1.0e-6
 
+#: The same claim for the hyperfine field, as a RELATIVE band because |A| is a coupling in
+#: MHz rather than a dimensionless factor. Nothing here is an accuracy claim: see the
+#: core-polarization warning in the header comment.
+A_AGREEMENT = 1.0e-6
+
+#: The nucleus whose hyperfine field both files carry. 47Ti has I = 5/2, a negative g_N, and
+#: no tabulated signed quadrupole moment -- all three of which the [NUCLEI] table has to say.
+HYPERFINE = {"Ti": 47}
+
 
 def planar_mx3(metal: str, ligand: str, r: float) -> List[tuple]:
     """Planar D3h MX3, metal at the origin, ligands in the xy plane."""
@@ -116,6 +161,17 @@ def planar_mx3(metal: str, ligand: str, r: float) -> List[tuple]:
         theta = 2.0 * math.pi * k / 3.0
         atoms.append((ligand, (r * math.cos(theta), r * math.sin(theta), 0.0)))
     return atoms
+
+
+def energy_sorted(matrices, operator) -> np.ndarray:
+    """An operator re-indexed into the energy-ordered basis the multiplets are indexed in.
+
+    The blocks `analyse()` returns are slices of the *sorted* spectrum, and the matrices
+    arrive in the solver's order; a block invariant taken without this line is a trace over
+    whichever states happened to sit at those indices.
+    """
+    order = np.argsort(np.asarray(matrices.energies, dtype=float))
+    return np.asarray(operator)[:, order, :][:, :, order]
 
 
 def prepare_output() -> Path:
@@ -139,7 +195,10 @@ def main() -> int:
     # ----------------------------------------------------------------------------------
     molecule = kuiva.Molecule(atoms=planar_mx3("Ti", "Cl", R_TICL),
                               basis="x2c-SVPall-2c", charge=0, spin=1)
-    scf = kuiva.ScalarSCF(molecule, memory_gb=6.0).run()
+    # hyperfine=: naming the nuclei HERE is the whole request. Neither formatted product has
+    # a switch of its own -- a file that had computed the coupling and then not written it is
+    # the one thing a reader cannot recover from.
+    scf = kuiva.ScalarSCF(molecule, memory_gb=6.0, hyperfine=HYPERFINE).run()
     reference = kuiva.Reference(scf).run()
     cas = kuiva.CASSCF(reference, character=("Ti", "d"), n_active=N_ACTIVE,
                        n_active_elec=N_ACTIVE_ELEC, n_states=N_STATES,
@@ -196,6 +255,39 @@ def main() -> int:
          "hbar", "exactly zero for a Kramers-paired inactive set", out.SCI_FMT),
     ])
 
+    # The other half of the hyperfine contract, and it is the half that is not a matrix: the
+    # operators name no nucleus and state no I, and the table states no coupling. A consumer
+    # that parses no JSON at all still gets this, because it is a plain table and not part of
+    # the provenance block.
+    nucleus = stored["nuclei"][0]
+    out.subsection(log, "The nuclear table")
+    out.entries(log, [
+        ("nuclei", len(stored["nuclei"]), "",
+         ", ".join("{} ({})".format(n["atom_label"], n["label"])
+                   for n in stored["nuclei"])),
+        ("spin I", 0.5 * nucleus["twice_spin"], "hbar",
+         "a pseudospin site of dimension 2I+1 = {} for the consumer".format(
+             nucleus["twice_spin"] + 1), "{:.1f}"),
+        ("g_N", nucleus["g"], "",
+         "NEGATIVE for 47Ti; |A| is quadratic and cannot carry that sign", "{:+.6f}"),
+        ("quadrupole moment", "none (no signed value tabulated)", "",
+         "refused rather than replaced by a magnitude: the sign of Q is the sign of "
+         "every quadrupole splitting"),
+        ("nuclear data source", nucleus["source"]),
+        ("hyperfine operator unit", stored["header"]["hyperfine_unit"], "",
+         stored["header"]["hyperfine_operator"]),
+        ("picture change on the hyperfine operators",
+         stored["header"]["hyperfine_picture_change"], "",
+         "independently of what the header says about mu and d"),
+        # ⚠ Printed against max|T|, not on its own: T is of order 1e-06 Eh/mu_N here, so an
+        # absolute residual of 1e-16 says nothing until it is read relative to the operator.
+        ("inactive contribution to T", float(np.abs(
+            dump.matrices.hyperfine_inactive[nucleus["atom_label"]]).max())
+         / float(np.abs(dump.matrices.hyperfine[nucleus["atom_label"]]).max()),
+         "relative to max|T|",
+         "zero for a Kramers-paired core: T is time odd, like L and S", out.SCI_FMT),
+    ])
+
     # ----------------------------------------------------------------------------------
     # 3. The physics, through the phase-invariant reduction and nothing else.
     # ----------------------------------------------------------------------------------
@@ -218,6 +310,32 @@ def main() -> int:
     anisotropy = max(ground.g_values) - min(ground.g_values)
     out.entry(log, "g anisotropy of the ground doublet", anisotropy, "",
               "a D3h ligand field defines an axis, so this must be nonzero", "{:.4f}")
+
+    # The hyperfine field goes through exactly the same discipline, and the stage's own report
+    # above already printed it per doublet. What is tabulated here is the ground doublet alone,
+    # because that is the block the pseudospin export will model and therefore the only place
+    # the two routes can be compared at all.
+    #
+    # |A| is a REDUCTION of the stored operator, not a fitted tensor: the principal values of
+    # 3 g_N^2 Tr_b(T_i T_j) / [J(J+1)(2J+1)] at the isotope the table names -- the A.A^T
+    # construction of the published implementations, in the same sense the principal g values
+    # are a reduction. A.g is the MIXED invariant Tr_b(mu.T) normalized, and it is the only
+    # quantity here that carries the relative sign and orientation of A against g: |A| is
+    # quadratic and throws both away, while a comparison of matrix elements is forbidden by
+    # the arbitrary phases.
+    label = nucleus["atom_label"]
+    t_sorted = energy_sorted(dump.matrices, dump.matrices.hyperfine[label])
+    mu_sorted = energy_sorted(dump.matrices, dump.matrices.mu)
+    a_dump = multiplet_hyperfine_values(ground.hyperfine[label], ground.size,
+                                        float(nucleus["g"]))
+    collinearity_dump = block_collinearity(mu_sorted, t_sorted, ground.start, ground.size)
+    out.entries(log, [
+        ("|A| of the ground doublet", "  ".join("{:.2f}".format(a) for a in a_dump), "MHz",
+         "for {}; the stored operator is isotope independent".format(nucleus["label"])),
+        ("A.g on the ground doublet", collinearity_dump, "",
+         "+-1 would mean T is proportional to mu there; a ligand field need not make it so",
+         "{:+.4f}"),
+    ])
 
     # ----------------------------------------------------------------------------------
     # 3b. The electric dipole, which is in the same file and is read the same way.
@@ -308,6 +426,35 @@ def main() -> int:
     out.note(log, "tensor network onto the model space. Agreement at this level is a")
     out.note(log, "statement about both of them.")
 
+    # ...and the same claim for the hyperfine field, which is the sharper half of it: T took
+    # the network route here and the transition-density route there, and the only comparable
+    # quantities are the invariants. The [NUCLEI] table is written by the same code into both
+    # files, so it is the matrices that are being compared and not two different nuclei.
+    (site_block,) = export.model.analyse()
+    a_export = multiplet_hyperfine_values(site_block.hyperfine[label], site_block.size,
+                                          float(nucleus["g"]))
+    collinearity_export = block_collinearity(
+        export.model.mu_in_eigenbasis(), export.model.hyperfine_in_eigenbasis()[label], 0, 2)
+    a_difference = max(abs(a - b) for a, b in zip(sorted(a_export), sorted(a_dump)))
+    out.subsection(log, "The hyperfine field, on both routes")
+    out.entries(log, [
+        ("nucleus", "{} ({})".format(label, nucleus["label"]), "",
+         "2I+1 = {} nuclear states; the electron-nuclear product space is {}".format(
+             nucleus["twice_spin"] + 1, export.model.product_dim())),
+        ("|A| from the model space", "  ".join("{:.2f}".format(a) for a in a_export), "MHz"),
+        ("|A| from the property dump", "  ".join("{:.2f}".format(a) for a in a_dump), "MHz"),
+        ("largest difference between the two routes", a_difference, "MHz",
+         "{:.1e} relative".format(a_difference / max(a_dump)), out.SCI_FMT),
+        ("A.g, model space / property dump",
+         "{:+.6f} / {:+.6f}".format(collinearity_export, collinearity_dump)),
+    ])
+    out.note(log, "these |A| are NOT a prediction: a valence 3d active space carries no core-s")
+    out.note(log, "spin polarization, so the isotropic part of a transition-metal hyperfine")
+    out.note(log, "coupling is qualitatively wrong. What the agreement tests is the machinery.")
+    out.note(log, "Kuiva never builds the electron-nuclear product space named above -- it")
+    out.note(log, "writes the electronic matrices and the nuclear table, and the consumer")
+    out.note(log, "chooses the isotope. The dimension is reported for that reason only.")
+
     # ----------------------------------------------------------------------------------
     # 5. Assert. Structure and invariants only -- never a matrix element, which the file
     #    format leaves undefined up to a phase.
@@ -339,6 +486,25 @@ def main() -> int:
         "the two property routes agree to {:.0e}".format(G_AGREEMENT):
             max(abs(a - b) for a, b in zip(sorted(site_g),
                                            sorted(ground.g_values))) < G_AGREEMENT,
+        "both files carry the hyperfine operators and the nuclear table":
+            dump.matrices.has_hyperfine and export.model.has_hyperfine
+            and len(stored["nuclei"]) == len(back["nuclei"]) == 1,
+        "the nuclear table survives the round trip through both files":
+            back["nuclei"][0]["label"] == nucleus["label"] == "47Ti"
+            and back["nuclei"][0]["quadrupole_barn"] is None,
+        # ⚠ A RELATIVE band, at the library's own inactive tolerance. T is of order 1e-06
+        # Eh/mu_N here, four orders below the absolute tolerance that guards L and S, so an
+        # absolute reading of it would be a check that cannot fail on exactly the quantity it
+        # exists to protect.
+        "the Kramers-paired inactive space carries no hyperfine field either":
+            float(np.abs(dump.matrices.hyperfine_inactive[label]).max())
+            < DEFAULT_INACTIVE_TOL * float(np.abs(dump.matrices.hyperfine[label]).max()),
+        "the hyperfine field is a real coupling, not a rounding artefact":
+            min(a_dump) > 1.0,
+        "the two routes agree on |A| to {:.0e} relative".format(A_AGREEMENT):
+            a_difference < A_AGREEMENT * max(a_dump),
+        "...and on the mixed invariant that carries its sign against g":
+            abs(collinearity_export - collinearity_dump) < 1e-6,
     }
     failures = report(checks)
 

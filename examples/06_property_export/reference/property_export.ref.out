@@ -2,14 +2,14 @@
                                    K U I V A                                    
                  relativistic multireference quantum chemistry                  
                    example 6: property and pseudospin export                    
-                                 version 0.44.0                                 
+                                 version 0.55.0                                 
                 compiled kernels: disabled (KUIVA_KERNELS=numpy)                
            threads: 4 (KUIVA_NUM_THREADS); BLAS: MKL 2025.1, threaded           
 ================================================================================
    output file                                   output/property_export.out
 
 ================================================================================
- Scalar-relativistic X2C reference                                    t = 0.41 s
+ Scalar-relativistic X2C reference                                    t = 0.21 s
 ================================================================================
    atoms                                                          4   (Cl Ti)
    charge                                                         0
@@ -31,7 +31,19 @@
      three-index MO block B^P_p,occ                           0.288  GB   (210 spinors x 73 occupied)
    memory limit                                               6.000  GB   (set for this calculation)
    planned peak                                               0.588  GB
-   machine available                                         10.496  GB
+   machine available                                          9.715  GB
+ *** WARNING [interface.pyscf_bridge] hyperfine operators were requested for Ti1 (47Ti). The contact (isotropic) part comes from core-s spin polarization, which a VALENCE active space does not carry: for a 4f ion this is minor because the orbital mechanism dominates, but for s/d spin density, for ligand nuclei and for spin-only ions (Gd(III), Eu(II), Mn(II)) the isotropic part is qualitatively wrong -- 25% and worse on transition metals. The remedy is core s shells in the active space, not a correction; judge a number against the active space the file's header states.
+
+ -- Hyperfine field operators --------------------------------------------------
+   decoupling                                                    1e
+   nuclear model (hyperfine integrals)                        point
+   operator unit                                 Eh / nuclear magneton   (H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u)
+   g_e (anomaly included)                               2.002319304
+   picture change                                applied (always, independent of property_picture_change)
+   nucleus     isotope       2I           g_N  max |T| [Eh/mu_N]    spin part     identity
+   ----------  ----------  ----  ------------  -----------------  -----------  -----------
+   Ti1         47Ti           5     -0.315390          1.941e-04    1.941e-04    2.636e-16
+   ----------  ----------  ----  ------------  -----------------  -----------  -----------
    SCF reference                                               ROHF
    SCF one-electron Hamiltonian                  X2C (sfx2c1e, spin-free)
    AO basis functions                                           105
@@ -40,10 +52,11 @@
    two-electron route                                  conventional
    gauge origin (property operators)             (-0.0000, 0.0000, 0.0000) bohr   (centre of mass)
    nuclear repulsion                               381.610309039030  Eh
-   scalar X2C SCF energy                         -2235.138328803090  Eh
+   hyperfine nuclei                                    1 (Ti1:47Ti)
+   scalar X2C SCF energy                         -2235.138328803088  Eh
    SCF converged                                                yes
-   SCF time                                                    3.56  s wall   (9.50 s cpu)
-   AO integral time                                            2.47  s wall   (5.45 s cpu)
+   SCF time                                                    1.46  s wall   (5.85 s cpu)
+   AO integral time                                            2.69  s wall   (10.73 s cpu)
 
  -- Two-component X2C spin-orbit Hamiltonian -----------------------------------
    two-component Hamiltonian                                X2C-AMF
@@ -59,10 +72,10 @@
    reference configurations                      Cl: s6 p11, Ti: s8 p12 d2
    spin-free correction, max |dh_sf|                   7.592974e-02  Eh
    spin-orbit correction, max |dw|                     8.384170e-03  Eh
-   discarded time-reversal-odd part                       7.942e-10  Eh   (8.7e-12 relative)
+   discarded time-reversal-odd part                       9.291e-10  Eh   (1.0e-11 relative)
 
 ================================================================================
- Orthonormal working basis                                          t = 188.38 s
+ Orthonormal working basis                                           t = 96.36 s
 ================================================================================
    orthogonalization scheme                               canonical
    AO basis functions                                           105
@@ -73,17 +86,17 @@
    condition number of S (retained)                       2.203e+05
 
 ================================================================================
- Spinor expansion                                                   t = 188.39 s
+ Spinor expansion                                                    t = 96.37 s
 ================================================================================
    scalar basis functions                                       105   (working basis)
    spinors                                                      210
    Kramers pairs                                                105
    ordering                                      interleaved (p, pbar); rows [alpha|beta]
    Kramers pairing deviation                               0.00e+00
-   orthonormality error                                    3.06e-11
+   orthonormality error                                    2.90e-11
 
 ================================================================================
- Two-electron integrals                                             t = 188.40 s
+ Two-electron integrals                                              t = 96.37 s
 ================================================================================
 
  -- Cholesky decomposition of the AO two-electron integrals --------------------
@@ -95,11 +108,11 @@
    largest neglected diagonal                             9.968e-09  Eh
    factor storage                                             0.047  GB
    matrix elements                               stored AO integral array
-   decomposition time                                          3.12  s wall
+   decomposition time                                          4.13  s wall
    stored integral array released                             0.115  GB   (dead weight once the factors exist; release_eri=False keeps it for a second factorization)
 
 ================================================================================
- CASSCF                                                             t = 191.57 s
+ CASSCF                                                             t = 100.52 s
 ================================================================================
    active space                                          CAS(1, 10)   (5 lowest Kramers pairs of l=2 character on 1 Ti)
    inactive / active / virtual spinors                72 / 10 / 128
@@ -110,52 +123,52 @@
    inactive / active / virtual spinors                72 / 10 / 128
    orbital rotation parameters                                11216   (complex)
    optimizer mode                                              auto   (second order below |g| = 0.0e+00)
-   rotation                                      Kramers constrained   (orbitals paired to 2e-18; spaces stay time-reversal closed)
+   rotation                                      Kramers constrained   (orbitals paired to 2e-16; spaces stay time-reversal closed)
    gradient convergence                                     1.0e-04
    maximum rotation per step                                   0.20  rad
    iter                 E [Eh]      dE [Eh]         |g|   max rot  step     wall [s]
    ----  ---------------------  -----------  ----------  --------  ------  ---------
-      1     -2235.517156769080   -1.224e-02   1.954e+00    0.0109  qn           4.40
-      2     -2235.520759785288   -3.603e-03   1.450e-01    0.0073  qn           3.86
-      3     -2235.527149683407   -6.390e-03   2.947e-01    0.0226  qn           4.37
-      4     -2235.534795942297   -7.646e-03   5.784e-01    0.0392  qn           3.80
-      5     -2235.543313158631   -8.517e-03   6.178e-01    0.0793  qn           3.90
-      6     -2235.549606543761   -6.293e-03   3.547e-01    0.0257  qn           4.31
-      7     -2235.551736707732   -2.130e-03   3.955e-01    0.0144  qn           3.91
-      8     -2235.552675470602   -9.388e-04   1.653e-01    0.0136  qn           3.74
-      9     -2235.553409460112   -7.340e-04   1.436e-01    0.0139  qn           4.18
-     10     -2235.553849657108   -4.402e-04   1.781e-01    0.0104  qn           3.23
-     11     -2235.554150581001   -3.009e-04   9.922e-02    0.0083  qn           2.98
-     12     -2235.554353231867   -2.027e-04   1.261e-01    0.0041  qn           3.61
-     13     -2235.554575156857   -2.219e-04   6.506e-02    0.0064  qn           3.76
-     14     -2235.554688592299   -1.134e-04   7.035e-02    0.0063  qn           3.83
-     15     -2235.554756475397   -6.788e-05   1.443e-01    0.0012  qn           3.75
-     16     -2235.554774919794   -1.844e-05   3.181e-02    0.0008  qn           3.84
-     17     -2235.554784003804   -9.084e-06   1.554e-02    0.0009  qn           3.34
-     18     -2235.554787796326   -3.793e-06   1.090e-02    0.0009  qn           3.50
-     19     -2235.554791640133   -3.844e-06   2.595e-02    0.0002  qn           3.48
-     20     -2235.554793386623   -1.746e-06   8.863e-03    0.0002  qn           3.48
-     21     -2235.554795440498   -2.054e-06   2.694e-03    0.0005  qn           3.48
-     22     -2235.554795866295   -4.258e-07   5.140e-03    0.0008  qn           3.57
-     23     -2235.554798013763   -2.147e-06   1.890e-02    0.0001  qn           2.98
-     24     -2235.554798396369   -3.826e-07   4.428e-03    0.0001  qn           3.35
-     25     -2235.554798812812   -4.164e-07   1.021e-03    0.0002  qn           3.39
-     26     -2235.554799223313   -4.105e-07   3.132e-03    0.0003  qn           2.61
-     27     -2235.554799478571   -2.553e-07   8.068e-03    0.0004  qn           2.74
-     28     -2235.554799607080   -1.285e-07   4.980e-03    0.0001  qn           2.63
-     29     -2235.554799652655   -4.558e-08   8.202e-04    0.0001  qn           2.30
-     30     -2235.554799682528   -2.987e-08   1.265e-03    0.0001  qn           3.07
-     31     -2235.554799708158   -2.563e-08   9.772e-04    0.0001  qn           3.30
-     32     -2235.554799720430   -1.227e-08   5.409e-04    0.0001  qn           4.00
-     33     -2235.554799731609   -1.118e-08   2.388e-04    0.0001  qn           3.17
-     34     -2235.554799738760   -7.151e-09   3.518e-04    0.0001  qn           3.38
-     35     -2235.554799742885   -4.125e-09   7.115e-04    0.0000  qn           2.53
-     36     -2235.554799745600   -2.714e-09   1.399e-04    0.0000  qn           3.72
-     37     -2235.554799747816   -2.216e-09   1.964e-04    0.0000  qn           2.97
-     38     -2235.554799749926   -2.110e-09   3.819e-04    0.0001  qn           3.33
-     39     -2235.554799751478   -1.552e-09   3.714e-04    0.0000  qn           3.23
-     40     -2235.554799751980   -5.020e-10   1.389e-04    0.0000  qn           3.39
-     41     -2235.554799751980    0.000e+00   8.359e-05    0.0000  qn           0.04
+      1     -2235.517156769084   -1.224e-02   1.954e+00    0.0109  qn           5.26
+      2     -2235.520759785289   -3.603e-03   1.450e-01    0.0073  qn           5.41
+      3     -2235.527149683408   -6.390e-03   2.947e-01    0.0226  qn           4.82
+      4     -2235.534795942299   -7.646e-03   5.784e-01    0.0392  qn           4.74
+      5     -2235.543313158634   -8.517e-03   6.178e-01    0.0792  qn           4.71
+      6     -2235.549606543762   -6.293e-03   3.547e-01    0.0257  qn           4.72
+      7     -2235.551736707737   -2.130e-03   3.955e-01    0.0144  qn           5.14
+      8     -2235.552675470603   -9.388e-04   1.653e-01    0.0136  qn           4.75
+      9     -2235.553409460112   -7.340e-04   1.436e-01    0.0140  qn           3.78
+     10     -2235.553849657106   -4.402e-04   1.781e-01    0.0104  qn           4.65
+     11     -2235.554150580997   -3.009e-04   9.922e-02    0.0083  qn           3.38
+     12     -2235.554353231869   -2.027e-04   1.261e-01    0.0041  qn           2.33
+     13     -2235.554575156861   -2.219e-04   6.506e-02    0.0064  qn           2.51
+     14     -2235.554688592302   -1.134e-04   7.035e-02    0.0063  qn           2.40
+     15     -2235.554756475402   -6.788e-05   1.443e-01    0.0012  qn           2.10
+     16     -2235.554774919796   -1.844e-05   3.181e-02    0.0008  qn           2.09
+     17     -2235.554784003808   -9.084e-06   1.554e-02    0.0009  qn           2.02
+     18     -2235.554787796331   -3.793e-06   1.090e-02    0.0009  qn           2.24
+     19     -2235.554791640141   -3.844e-06   2.595e-02    0.0002  qn           2.53
+     20     -2235.554793386631   -1.746e-06   8.863e-03    0.0002  qn           2.63
+     21     -2235.554795440506   -2.054e-06   2.694e-03    0.0005  qn           2.29
+     22     -2235.554795866303   -4.258e-07   5.140e-03    0.0008  qn           3.98
+     23     -2235.554798013772   -2.147e-06   1.890e-02    0.0001  qn           4.84
+     24     -2235.554798396378   -3.826e-07   4.428e-03    0.0001  qn           4.45
+     25     -2235.554798812821   -4.164e-07   1.021e-03    0.0002  qn           4.39
+     26     -2235.554799223323   -4.105e-07   3.132e-03    0.0003  qn           4.46
+     27     -2235.554799478580   -2.553e-07   8.068e-03    0.0004  qn           4.88
+     28     -2235.554799607088   -1.285e-07   4.980e-03    0.0001  qn           3.60
+     29     -2235.554799652664   -4.558e-08   8.202e-04    0.0001  qn           2.47
+     30     -2235.554799682536   -2.987e-08   1.265e-03    0.0001  qn           2.31
+     31     -2235.554799708165   -2.563e-08   9.772e-04    0.0001  qn           1.95
+     32     -2235.554799720438   -1.227e-08   5.409e-04    0.0001  qn           2.13
+     33     -2235.554799731617   -1.118e-08   2.388e-04    0.0001  qn           1.84
+     34     -2235.554799738768   -7.151e-09   3.518e-04    0.0001  qn           2.07
+     35     -2235.554799742892   -4.124e-09   7.115e-04    0.0000  qn           1.81
+     36     -2235.554799745606   -2.714e-09   1.399e-04    0.0000  qn           2.03
+     37     -2235.554799747821   -2.216e-09   1.964e-04    0.0000  qn           1.88
+     38     -2235.554799749933   -2.112e-09   3.819e-04    0.0001  qn           2.08
+     39     -2235.554799751482   -1.549e-09   3.714e-04    0.0000  qn           1.82
+     40     -2235.554799751986   -5.039e-10   1.389e-04    0.0000  qn           2.05
+     41     -2235.554799751986    0.000e+00   8.359e-05    0.0000  qn           0.01
    ----  ---------------------  -----------  ----------  --------  ------  ---------
    converged
    second-order steps taken                                       0
@@ -163,28 +176,28 @@
    rejected steps                                                 0
      state                 E [Eh]     rel [cm^-1]     weight
    -------  ---------------------  --------------  ---------
-         0     -2235.581158950204            0.00     0.1000
-         1     -2235.581158950204            0.00     0.1000
-         2     -2235.571057252286         2217.07     0.1000
-         3     -2235.571057252286         2217.07     0.1000
-         4     -2235.570446353733         2351.14     0.1000
-         5     -2235.570446353733         2351.14     0.1000
-         6     -2235.525883468413        12131.57     0.1000
-         7     -2235.525883468413        12131.57     0.1000
-         8     -2235.525452735264        12226.10     0.1000
-         9     -2235.525452735264        12226.10     0.1000
+         0     -2235.581158950210            0.00     0.1000
+         1     -2235.581158950210            0.00     0.1000
+         2     -2235.571057252293         2217.07     0.1000
+         3     -2235.571057252293         2217.07     0.1000
+         4     -2235.570446353739         2351.14     0.1000
+         5     -2235.570446353739         2351.14     0.1000
+         6     -2235.525883468420        12131.57     0.1000
+         7     -2235.525883468420        12131.57     0.1000
+         8     -2235.525452735270        12226.10     0.1000
+         9     -2235.525452735270        12226.10     0.1000
    -------  ---------------------  --------------  ---------
    10 applications of H in 0 iterations
    state-average boundary                                  complete   (all 10 determinants averaged over)
-   state-average spin invariance                          4.240e-16   (spin-rotation invariant ensemble)
+   state-average spin invariance                          6.472e-16   (spin-rotation invariant ensemble)
 
 ================================================================================
- The reference calculation                                          t = 336.17 s
+ The reference calculation                                          t = 233.67 s
 ================================================================================
 CASSCF
   active space     : CAS(1, 10)  5 lowest Kramers pairs of l=2 character on 1 Ti
   solver           : ci
-  E(CASSCF) [Eh]   : -2235.554799751980
+  E(CASSCF) [Eh]   : -2235.554799751986
   converged        : True
   macro-iterations : 41
   |grad|           : 8.36e-05
@@ -192,15 +205,15 @@ CASSCF
    state average                                           complete   (all 10 determinants of the 3d shell)
 
 ================================================================================
- Property matrices                                                  t = 336.20 s
+ Property matrices                                                  t = 233.69 s
 ================================================================================
 
  -- Spin-orbit multiplets and magnetic moments ---------------------------------
    states                                                        10
    gauge origin                                  (-0.0000, 0.0000, 0.0000) bohr   (centre of mass)
    free-electron g factor                                2.00231930
-   inactive contribution to L                              6.28e-14  hbar   (exactly zero for a Kramers-paired inactive set)
-   moment matrix hermiticity                               1.11e-15  mu_B
+   inactive contribution to L                              1.56e-13  hbar   (exactly zero for a Kramers-paired inactive set)
+   moment matrix hermiticity                               1.64e-15  mu_B
      block    states       E [cm^-1]       spread        g_1        g_2        g_3
    -------  --------  --------------  -----------  ---------  ---------  ---------
          0         2            0.00    0.000e+00     1.7035     1.7035     1.9929
@@ -213,8 +226,8 @@ CASSCF
      block      g_max    axiality        e_x        e_y        e_z  axis           det g
    -------  ---------  ----------  ---------  ---------  ---------  ------------  ------
          0     1.9929        1.17    +0.0000    -0.0000    +1.0000  easy               +
-         1     0.3019        1.35    +0.9997    +0.0253    +0.0000  in a plane         -
-         2     3.8481    7.82e+06    +0.0000    +0.0000    +1.0000  easy               ?
+         1     0.3019        1.35    +0.9997    +0.0254    +0.0000  in a plane         -
+         2     3.8481    7.83e+06    +0.0000    +0.0000    +1.0000  easy               ?
          3     0.8771    5.35e+05    -0.0000    -0.0000    +1.0000  easy               ?
          4     4.8997    3.71e+03    +0.0000    +0.0000    +1.0000  easy               -
    -------  ---------  ----------  ---------  ---------  ---------  ------------  ------
@@ -227,32 +240,59 @@ CASSCF
      block          d_x          d_y          d_z          |d|     S to block 0
    -------  -----------  -----------  -----------  -----------  ---------------
          0     -0.00000     +0.00000     -0.00000      0.00000        4.509e-15
-         1     -0.00000     -0.00000     -0.00000      0.00000        4.612e-18
+         1     -0.00000     -0.00000     -0.00000      0.00000        4.605e-18
          2     -0.00000     +0.00000     -0.00000      0.00000        3.426e-04
          3     -0.00000     +0.00000     -0.00000      0.00000        2.633e-02
          4     -0.00000     -0.00000     -0.00000      0.00000        2.558e-02
    -------  -----------  -----------  -----------  -----------  ---------------
    d is the block-averaged permanent moment Tr_b(d_k)/size [e*a0], electronic plus nuclear; S is the line strength sum |d_IJ|^2 to the ground block [(e*a0)^2]. Both are phase invariant; individual matrix elements are not. S is a line strength and NOT an oscillator strength or a rate 
- *** WARNING [props.dump] the property operators L and S carry NO picture-change transformation : they are the bare non-relativistic AO operators used unchanged in the two-component basis. This matches OpenMolcas RASSI, so a cross-code comparison is like-for-like. The approximation has been measured and is small: below 0.3% on every free-ion multiplet g factor from Z=5 to Z=81, 0.02% on a 3d complex's ground doublet, and it splits no degeneracy at all. It is recorded in the header of ticl3.props
 
-   property matrices written to                  /home/akseli/Programs/kuiva/examples/06_property_export/output/ticl3.props   (10 states, 13 matrices)
+ -- Hyperfine field operators --------------------------------------------------
+   nuclei                                                         1   (Ti1 (47Ti))
+   operator unit                                            Eh/mu_N   (H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u)
+   picture change                                always applied; independent of property_picture_change   (decoupling=1e, nuclear model=point)
+   worst inactive contribution                             3.87e-16  Eh/mu_N   (exactly zero for a Kramers-paired inactive set; T is time odd)
+     block    states       E [cm^-1]  nucleus     isotope      |A_1| [MHz]    |A_2| [MHz]    |A_3| [MHz]        A.g
+   -------  --------  --------------  ----------  ---------  -------------  -------------  -------------  ---------
+         0         2            0.00  Ti1         47Ti               22.79          22.79          101.8    -0.8403
+         1         2         2217.07  Ti1         47Ti               33.02          33.02          106.7    +0.6764
+         2         2         2351.14  Ti1         47Ti                   0      6.886e-07            148    -1.0000
+         3         2        12131.57  Ti1         47Ti           1.665e-05       1.67e-05          278.5    -1.0000
+         4         2        12226.10  Ti1         47Ti               6.225          6.225            204    -0.9991
+   -------  --------  --------------  ----------  ---------  -------------  -------------  -------------  ---------
+   |A| are principal values of 3 g_N^2 Tr_block(T_i T_j)/[J(J+1)(2J+1)], the A.A^T reduction at the isotope named -- magnitudes only, since it is quadratic. A.g is Tr_block(mu.T) normalized: +-1 means T is proportional to mu on the block (exact inside a free-ion J manifold) and its sign is the relative sign of A and g. The stored operator is T itself, in Eh/mu_N, so the isotope may be changed by the consumer 
+ *** WARNING [props.dump] the property operators L and S carry NO picture-change transformation : they are the bare non-relativistic AO operators used unchanged in the two-component basis. This matches OpenMolcas RASSI, so a cross-code comparison is like-for-like. The approximation has been measured and is small: below 0.3% on every free-ion multiplet g factor from Z=5 to Z=81, 0.02% on a 3d complex's ground doublet, and it splits no degeneracy at all. It is recorded in the header of ticl3.props
+ *** WARNING [props.dump] ticl3.props carries HYPERFINE FIELD operators for Ti1. They are the isotope-independent operator T in Eh/mu_N, always X2C picture-changed, with the unperturbed transformation and no two-electron picture change; H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u, and the nuclear-spin algebra and any A tensor belong to the consumer. The isotropic part comes from core-s spin polarization, which a VALENCE active space does not carry, so judge it against the active space in the header
+
+   property matrices written to                  /home/akseli/Programs/kuiva/examples/06_property_export/output/ticl3.props   (10 states, 16 matrices)
 
 ================================================================================
- The property-matrix file                                           t = 336.21 s
+ The property-matrix file                                           t = 233.69 s
 ================================================================================
 PropertyDump
-  file     : /home/akseli/Programs/kuiva/examples/06_property_export/output/ticl3.props
-  states   : 10
-  energies : CASSCF
+  file             : /home/akseli/Programs/kuiva/examples/06_property_export/output/ticl3.props
+  states           : 10
+  energies         : CASSCF
+  hyperfine nuclei : Ti1
    file                                          output/ticl3.props
-   size                                                        87.9  kB
-   matrices                                                      13   (H L_x L_y L_z S_x S_y S_z d_x d_y d_z mu_x mu_y mu_z)
+   size                                                       111.0  kB
+   matrices                                                      16   (H L_x L_y L_z S_x S_y S_z T_Ti1_x T_Ti1_y T_Ti1_z d_x d_y d_z mu_x mu_y mu_z)
    format version                                                 1
    gauge origin                                      centre of mass
    Hamiltonian in the header                                X2C-AMF   (screening = x2camf)
    H off-diagonal magnitude                               0.000e+00  Eh   (the CI roots ARE the spin-orbit eigenstates)
    moment matrices read back element for element              exact
-   inactive contribution to L                             6.284e-14  hbar   (exactly zero for a Kramers-paired inactive set)
+   inactive contribution to L                             1.558e-13  hbar   (exactly zero for a Kramers-paired inactive set)
+
+ -- The nuclear table ----------------------------------------------------------
+   nuclei                                                         1   (Ti1 (47Ti))
+   spin I                                                       2.5  hbar   (a pseudospin site of dimension 2I+1 = 6 for the consumer)
+   g_N                                                    -0.315390   (NEGATIVE for 47Ti; |A| is quadratic and cannot carry that sign)
+   quadrupole moment                             none (no signed value tabulated)   (refused rather than replaced by a magnitude: the sign of Q is the sign of every quadrupole splitting)
+   nuclear data source                           Stone, IAEA INDC(NDS)-0794 (2019)
+   hyperfine operator unit                                  Eh/mu_N   (H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u)
+   picture change on the hyperfine operators     always applied; independent of property_picture_change   (independently of what the header says about mu and d)
+   inactive contribution to T                             5.791e-09  relative to max|T|   (zero for a Kramers-paired core: T is time odd, like L and S)
 
  -- Spin-orbit multiplets ------------------------------------------------------
      doublet    states     rel [cm^-1]    spread [cm^-1]  g principal values          
@@ -265,12 +305,14 @@ PropertyDump
    ---------  --------  --------------  ----------------  ----------------------------
    D3h splits the d shell into a1' + e'' + e': five Kramers doublets
    g anisotropy of the ground doublet                        0.2894   (a D3h ligand field defines an axis, so this must be nonzero)
+   |A| of the ground doublet                     22.79  22.79  101.80  MHz   (for 47Ti; the stored operator is isotope independent)
+   A.g on the ground doublet                                -0.8403   (+-1 would mean T is proportional to mu there; a ligand field need not make it so)
 
  -- Electric dipole ------------------------------------------------------------
    molecular charge                                               0  e   (neutral, so every dipole here is independent of the gauge origin)
    nuclear term                                           1.066e-14  e*a0   (diagonal only; zero here because D3h puts the origin on Ti)
    inactive electrons' term                               4.877e-08  e*a0   (generally NOT zero -- r is time even, unlike L and S -- but zero by symmetry here)
-   largest permanent moment over all ten states           8.557e-08  e*a0   (planar D3h has no dipole, so the three terms must cancel)
+   largest permanent moment over all ten states           8.559e-08  e*a0   (planar D3h has no dipole, so the three terms must cancel)
    strongest d-d line strength out of the ground doublet         2.633e-02  (e*a0)^2   (Laporte forbidden in a centrosymmetric field; D3h is not one)
    a line strength is NOT an oscillator strength and NOT a rate: this
    program writes operators and their invariants, and turning one into an
@@ -282,9 +324,9 @@ PropertyDump
  -- Memory plan: two-site DMRG -------------------------------------------------
    phase                     resident [GB]  transient [GB]   peak [GB]  verdict  
    ------------------------  -------------  --------------  ----------  ---------
-   network environments              0.123           0.000       0.123  ok       
-   two-site solves                   0.123           0.000       0.123  ok       
-   network RDMs                      0.123           0.000       0.123  ok       
+   network environments              0.195           0.000       0.195  ok       
+   two-site solves                   0.195           0.000       0.195  ok       
+   network RDMs                      0.195           0.000       0.195  ok       
    ------------------------  -------------  --------------  ----------  ---------
      renormalized operator blocks                             0.000  GB   (18 directed bonds, held until the solve ends)
      environment build                                        0.000  GB   (largest step of any build's chain, with the environments it folds into the operator ahead of the ket)
@@ -294,13 +336,13 @@ PropertyDump
      per-node environments                                    0.000  GB   (a second environment set, released with the contraction)
      slot extraction                                          0.000  GB   (largest chain of any node over every open leg and channel sector, input and output together)
    memory limit                                               6.000  GB   (set for this calculation)
-   planned peak                                               0.123  GB
-   machine available                                          6.808  GB
+   planned peak                                               0.195  GB
+   machine available                                          9.232  GB
    state-averaged two-site DMRG (2 roots, 10 nodes)
    sweep              E_SA [Eh]      dE [Eh]       w_disc   max D   wall [s]
    -----  ---------------------  -----------  -----------  ------  ---------
-       1        -0.565511735426                 0.000e+00       3       0.33
-       2        -0.565511735427   -8.619e-13    0.000e+00       3       0.19
+       1        -0.565511735426                 0.000e+00       3       0.18
+       2        -0.565511735427   -8.620e-13    0.000e+00       3       0.11
    -----  ---------------------  -----------  -----------  ------  ---------
    converged
        1       2       2        -0.565511735427          nan        resolved
@@ -311,7 +353,7 @@ PropertyDump
    sites                                                          1
    model dimension                                                2   (2)
    physical sector (N = 1)                                        2
-   H_eff hermiticity                                       1.63e-17  Eh
+   H_eff hermiticity                                       7.19e-18  Eh
     site    dim       N   gap ratio                      orbitals
    -----  -----  ------  ----------  ----------------------------
        0      2       1       exact           0 1 2 3 4 5 6 7 8 9
@@ -336,17 +378,31 @@ PropertyDump
    -------  --------  --------------  ---------  ---------  ---------
    compare only through these invariants; phases are arbitrary 
 
+ -- hyperfine field operators --------------------------------------------------
+   nuclei                                                         1   (Ti1 (47Ti))
+   operator unit                                            Eh/mu_N   (H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u)
+   picture change                                always applied; independent of property_picture_change   (decoupling=1e, nuclear model=point)
+   electron-nuclear product dimension                            12   (2 electronic x 2I+1=6)
+     block    states       E [cm^-1]  nucleus     isotope      |A_1| [MHz]    |A_2| [MHz]    |A_3| [MHz]        A.g
+   -------  --------  --------------  ----------  ---------  -------------  -------------  -------------  ---------
+         0         2            0.00  Ti1         47Ti               22.79          22.79          101.8    -0.8403
+   -------  --------  --------------  ----------  ---------  -------------  -------------  -------------  ---------
+   |A| are principal values of 3 g_N^2 Tr_block(T_i T_j)/[J(J+1)(2J+1)] at the isotope named -- magnitudes only, since the reduction is quadratic. A.g is Tr_block(mu.T) normalized: +-1 means T is proportional to mu on the block. The stored operator is T itself, in Eh/mu_N, so the consumer changes the isotope without re-running this calculation 
+ *** WARNING [props.pseudospin] ticl3.psd carries HYPERFINE FIELD operators for Ti1. They are the isotope-independent operator T in Eh/mu_N, always X2C picture-changed, with the unperturbed transformation and no two-electron picture change; H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u over the product of this model space with the nuclear spins, and the nuclear-spin algebra and any A tensor belong to the consumer. The isotropic part comes from core-s spin polarization, which a VALENCE active space does not carry
+
    pseudospin model written to                   /home/akseli/Programs/kuiva/examples/06_property_export/output/ticl3.psd   (1 sites, model dimension 2)
 
 ================================================================================
- The pseudospin file                                                t = 342.38 s
+ The pseudospin file                                                t = 236.93 s
 ================================================================================
 PseudospinExport
-  file     : /home/akseli/Programs/kuiva/examples/06_property_export/output/ticl3.psd
-  sites    : 2
-  g values : 1.7035 1.7035 1.9929
+  file                               : /home/akseli/Programs/kuiva/examples/06_property_export/output/ticl3.psd
+  sites                              : 2
+  g values                           : 1.7035 1.7035 1.9929
+  hyperfine nuclei                   : Ti1
+  electron-nuclear product dimension : 12 (reported; this program does not form it)
    file                                            output/ticl3.psd
-   size                                                         7.0  kB
+   size                                                        12.6  kB
    model space                                                    2   (one site: an effective spin 1/2)
    product basis (2M labels)                          [(-1,), (1,)]
    Hamiltonian provenance carried over                          yes
@@ -358,8 +414,21 @@ PseudospinExport
    tensor network onto the model space. Agreement at this level is a
    statement about both of them.
 
+ -- The hyperfine field, on both routes ----------------------------------------
+   nucleus                                               Ti1 (47Ti)   (2I+1 = 6 nuclear states; the electron-nuclear product space is 12)
+   |A| from the model space                      22.79  22.79  101.80  MHz
+   |A| from the property dump                    22.79  22.79  101.80  MHz
+   largest difference between the two routes              9.681e-07  MHz   (9.5e-09 relative)
+   A.g, model space / property dump              -0.840295 / -0.840295
+   these |A| are NOT a prediction: a valence 3d active space carries no core-s
+   spin polarization, so the isotropic part of a transition-metal hyperfine
+   coupling is qualitatively wrong. What the agreement tests is the machinery.
+   Kuiva never builds the electron-nuclear product space named above -- it
+   writes the electronic matrices and the nuclear table, and the consumer
+   chooses the isotope. The dimension is reported for that reason only.
+
 ================================================================================
- Result                                                             t = 342.39 s
+ Result                                                             t = 236.93 s
 ================================================================================
    check                                                           verdict   
    --------------------------------------------------------------  ----------
@@ -378,62 +447,73 @@ PseudospinExport
    the pseudospin file is one effective spin 1/2                   ok        
    the pseudospin basis is OuluSpin's 2M ordering                  ok        
    the two property routes agree to 1e-06                          ok        
+   both files carry the hyperfine operators and the nuclear table  ok        
+   the nuclear table survives the round trip through both files    ok        
+   the Kramers-paired inactive space carries no hyperfine field either  ok        
+   the hyperfine field is a real coupling, not a rounding artefact  ok        
+   the two routes agree on |A| to 1e-06 relative                   ok        
+   ...and on the mixed invariant that carries its sign against g   ok        
    --------------------------------------------------------------  ----------
-   checks                                             all 15 passed
+   checks                                             all 21 passed
 
 ================================================================================
- Timings                                                            t = 342.39 s
+ Timings                                                            t = 236.93 s
 ================================================================================
-   region                                calls     wall [s]       cpu [s]   cpu/wall   % wall
-   -----------------------------------  ------  -----------  ------------  ---------  -------
-   scalar X2C SCF                            1         3.56          9.50       2.67      1.0
-   AO integrals                              1         2.47          5.45       2.20      0.7
-     angular-momentum integrals              1         0.00          0.00       2.00      0.0
-     electric dipole integrals               1         0.00          0.00       2.00      0.0
-   X2C spin-orbit integrals                  1         1.32          3.57       2.69      0.4
-   atomic mean-field correction              1       180.04        437.08       2.43     52.8
-     atomic 4c solve                         2       178.87        434.02       2.43     52.5
-       atomic 4c DHF                         2       163.90        396.88       2.42     48.1
-     atomic mean-field decoupling            2         1.14          3.00       2.63      0.3
-   orthogonalization (canonical)             1         0.01          0.02       2.45      0.0
-   Cholesky decomposition                    1         3.12          7.86       2.52      0.9
-   CAS determinant addressing                1         0.00          0.00       2.98      0.0
-   CAS excitation map                        1         0.00          0.00       3.01      0.0
-   CAS integrals                             4         8.52         17.88       2.10      2.5
-     J/K build                               4         5.43         11.69       2.15      1.6
-     3-index transform                       4         2.94          5.79       1.97      0.9
-   full CI: diagonal                         1         0.00          0.00       3.50      0.0
-   dense CI diagonalization                  1         0.00          0.01       3.50      0.0
-     sigma step 1: gather F                 10         0.00          0.00       3.51      0.0
-     sigma one-electron term                10         0.00          0.00       3.40      0.0
-     sigma step 2: GEMM                     10         0.00          0.00       2.71      0.0
-     sigma step 3: gather sigma             10         0.00          0.00       3.42      0.0
-   RDM gather F                             10         0.00          0.00       3.52      0.0
-   RDM accumulation F^H F                   10         0.00          0.00       3.54      0.0
-   macro-iteration                          41       138.45        317.76       2.30     40.6
-     J/K build                              41        34.55         76.33       2.21     10.1
-     CAS integrals                          40        99.22        229.33       2.31     29.1
-       J/K build                            40        66.50        159.43       2.40     19.5
-       3-index transform                    40        31.16         65.71       2.11      9.1
-     full CI: diagonal                      40         0.00          0.01       2.47      0.0
-     dense CI diagonalization               40         0.19          0.46       2.45      0.1
-       sigma step 1: gather F              400         0.04          0.10       2.71      0.0
-       sigma one-electron term             400         0.00          0.01       2.89      0.0
-       sigma step 2: GEMM                  400         0.09          0.19       2.00      0.0
-       sigma step 3: gather sigma          400         0.03          0.09       2.89      0.0
-     RDM gather F                          400         0.03          0.09       2.76      0.0
-     RDM accumulation F^H F                400         0.12          0.28       2.36      0.0
-   transition densities                      1         0.00          0.00       2.00      0.0
-   manifold ensemble loop                    1         3.27          3.27       1.00      1.0
-     DMRG sweeps                             1         0.52          0.52       1.00      0.2
-       dense CI diagonalization             36         0.14          0.14       1.00      0.0
-     multiplet site spaces                   1         0.15          0.15       1.00      0.0
-     effective Hamiltonian contraction       1         1.82          1.82       1.00      0.5
-     effective operator mu_x                 1         0.08          0.08       1.00      0.0
-     effective operator mu_y                 1         0.09          0.09       1.00      0.0
-     effective operator mu_z                 1         0.09          0.09       1.00      0.0
-   -----------------------------------  ------  -----------  ------------  ---------  -------
-   total (top-level regions)                                 340.76  s wall
-   total CPU                                                 802.39  s cpu
+   region                                     calls     wall [s]       cpu [s]   cpu/wall   % wall
+   ----------------------------------------  ------  -----------  ------------  ---------  -------
+   scalar X2C SCF                                 1         1.46          5.85       4.00      0.6
+   AO integrals                                   1         2.69         10.73       3.99      1.1
+     angular-momentum integrals                   1         0.00          0.00       4.00      0.0
+     electric dipole integrals                    1         0.00          0.00       4.00      0.0
+     molecular four-component one-electron integrals       1         0.02          0.07       4.00      0.0
+     hyperfine picture change                     1         0.43          1.71       4.00      0.2
+   X2C spin-orbit integrals                       1         0.48          1.91       3.99      0.2
+   atomic mean-field correction                   1        91.23        319.92       3.51     38.6
+     atomic 4c solve                              2        90.36        317.02       3.51     38.3
+       atomic 4c DHF                              2        80.41        283.79       3.53     34.1
+     atomic mean-field decoupling                 2         0.84          2.82       3.37      0.4
+   orthogonalization (canonical)                  1         0.00          0.01       3.20      0.0
+   Cholesky decomposition                         1         4.13         11.20       2.71      1.7
+   CAS determinant addressing                     1         0.00          0.00       3.58      0.0
+   CAS excitation map                             1         0.00          0.00       2.40      0.0
+   CAS integrals                                  4         4.62         14.51       3.14      2.0
+     J/K build                                    4         3.05          9.85       3.23      1.3
+     3-index transform                            4         1.53          4.54       2.97      0.6
+   full CI: diagonal                              1         0.00          0.00       3.95      0.0
+   dense CI diagonalization                       1         0.00          0.01       3.98      0.0
+     sigma step 1: gather F                      10         0.00          0.00       3.95      0.0
+     sigma one-electron term                     10         0.00          0.00       3.75      0.0
+     sigma step 2: GEMM                          10         0.00          0.00       2.64      0.0
+     sigma step 3: gather sigma                  10         0.00          0.00       4.05      0.0
+   RDM gather F                                  10         0.00          0.00       4.00      0.0
+   RDM accumulation F^H F                        10         0.00          0.01       3.92      0.0
+   macro-iteration                               41       129.54        347.35       2.68     54.9
+     J/K build                                   41        35.08         91.88       2.62     14.9
+     CAS integrals                               40        90.92        244.37       2.69     38.5
+       J/K build                                 40        60.75        168.57       2.77     25.7
+       3-index transform                         40        29.07         72.27       2.49     12.3
+     full CI: diagonal                           40         0.00          0.01       3.54      0.0
+     dense CI diagonalization                    40         0.17          0.54       3.18      0.1
+       sigma step 1: gather F                   400         0.02          0.09       3.73      0.0
+       sigma one-electron term                  400         0.00          0.01       3.68      0.0
+       sigma step 2: GEMM                       400         0.07          0.19       2.61      0.0
+       sigma step 3: gather sigma               400         0.03          0.11       3.77      0.0
+     RDM gather F                               400         0.03          0.10       3.67      0.0
+     RDM accumulation F^H F                     400         0.10          0.31       3.17      0.0
+   transition densities                           1         0.00          0.00       4.00      0.0
+   manifold ensemble loop                         1         1.98          2.05       1.04      0.8
+     DMRG sweeps                                  1         0.29          0.29       1.00      0.1
+       dense CI diagonalization                  36         0.08          0.08       1.00      0.0
+     multiplet site spaces                        1         0.07          0.07       1.00      0.0
+     effective Hamiltonian contraction            1         1.09          1.09       1.00      0.5
+     effective operator mu_x                      1         0.04          0.04       1.00      0.0
+     effective operator mu_y                      1         0.04          0.04       1.00      0.0
+     effective operator mu_z                      1         0.04          0.04       1.00      0.0
+     effective operator T_Ti1_x                   1         0.04          0.04       1.00      0.0
+     effective operator T_Ti1_y                   1         0.04          0.04       1.00      0.0
+     effective operator T_Ti1_z                   1         0.04          0.04       1.00      0.0
+   ----------------------------------------  ------  -----------  ------------  ---------  -------
+   total (top-level regions)                                 236.13  s wall
+   total CPU                                                 713.56  s cpu
    cost is cpu [s]; wall [s] also reflects thread count and, on a
    thermally clamped machine, time the CPU was forced to stay idle.

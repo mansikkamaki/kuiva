@@ -227,8 +227,11 @@ distribution of the molecule's own nuclear model [[208]](../../references.md#r20
 isotope chosen here does **not** change that Gaussian exponent, which comes from the integral
 library's main-isotope masses — recorded rather than reconciled.
 
-What the operators become downstream is [`PropertyDump`](PropertyDump.md)'s `[NUCLEI]` table
-and `T_<k>_u` blocks.
+What the operators become downstream is the `[NUCLEI]` table and `T_<k>_u` blocks of
+**either** formatted product — [`PropertyDump`](PropertyDump.md) on the conventional-CI route
+and [`PseudospinExport`](PseudospinExport.md) on the tensor-network one, written under the
+same names, in the same units and with the same table by the same code. Neither has a switch
+of its own: naming the nuclei here *is* the request.
 
 ## Reference configurations: `configuration=`
 

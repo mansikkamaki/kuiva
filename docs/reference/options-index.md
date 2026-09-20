@@ -46,7 +46,7 @@ Stage names link to the reference page carrying the quick table and elaboration;
 | `gauge_origin` | `ScalarSCF` | [ScalarSCF](stages/ScalarSCF.md#the-gauge-origin) |
 | `graph` | `CASSCF` (`solver="dmrg"`) | [CASSCF](stages/CASSCF.md#solverdmrg-the-tree-tensor-network); `"site-blocked"` needs an `AutoCAS` upstream with a site partition, [AutoCAS](stages/AutoCAS.md#what-comes-out) |
 | `guess_from` | `ScalarSCF` | [workflows](../guide/workflows.md#an-scf-from-another-scf-guess_from) |
-| `hyperfine` | `ScalarSCF` | [ScalarSCF](stages/ScalarSCF.md#hyperfine-nuclei-hyperfine), [PropertyDump](stages/PropertyDump.md#the-hyperfine-field), [files](files.md#the-property-dump) |
+| `hyperfine` | `ScalarSCF` | [ScalarSCF](stages/ScalarSCF.md#hyperfine-nuclei-hyperfine), [PropertyDump](stages/PropertyDump.md#the-hyperfine-field), [PseudospinExport](stages/PseudospinExport.md#the-hyperfine-field), [files](files.md#the-property-dump) |
 | `imaginary_shift`, `shift` | `NEVPT2` | [NEVPT2](stages/NEVPT2.md#quick-reference) |
 | `include_dipole`, `include_l_s` | `PropertyDump` | [PropertyDump](stages/PropertyDump.md#quick-reference) |
 | `inactive_tol` | `PropertyDump` | [PropertyDump](stages/PropertyDump.md#quick-reference) |

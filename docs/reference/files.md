@@ -28,7 +28,8 @@ trivially parseable in any language.
 **Sections:** a versioned `[HEADER]`; a `[PROVENANCE]` block of JSON; `[NUCLEI]` when
 hyperfine operators were requested; `[ENERGIES]`; one section per matrix — `H`, `mu_x`,
 `mu_y`, `mu_z` (μ_B), `d_x`, `d_y`, `d_z` (e·a₀), `T_<k>_x`, `T_<k>_y`, `T_<k>_z` (Eh per
-nuclear magneton, per treated nucleus), and the bare `L`/`S` blocks when requested;
+nuclear magneton, per treated nucleus `k`, which is named in the block by its **atom label** —
+`T_Tb1_z` — and carried as a row of `[NUCLEI]`), and the bare `L`/`S` blocks when requested;
 `[INACTIVE]` with the inactive contributions.
 
 **Header fields a consumer must read:**
@@ -83,6 +84,19 @@ ascending, site 0 slowest) are OuluSpin's, restated in every file, so no permuta
 needed on the way in; an applied frame rotation is recorded. Spin operator matrices are
 deliberately not written — the format is confirmed against what OuluSpin reads, and nothing
 else widens it.
+
+When the reference ingested hyperfine nuclei the file additionally carries `[NUCLEI]` and
+`T_<k>_x/y/z` — **the same section, the same twelve columns and the same block names as the
+property dump**, written and parsed by the same code, so a consumer meets one vocabulary
+whichever file it opened — over the pseudospin product basis and in the frame the header
+states. Its header gains the same `hyperfine_*` fields, plus `nuclear_site_order` (nuclear
+sites follow the electronic sites, in `[NUCLEI]` order, each `M_I = −I … +I` ascending — the
+`[BASIS]` order extended, not a second convention) and `product_dim`, the electron–nuclear
+dimension `D × ∏_k (2I_k+1)`. ⚠ `product_dim` is **reported and never refused**, in the header
+and above a stated size as a warning: Kuiva does not form that space, which is exactly why the
+isotope is the consumer's to change. ⚠ There are no site-projected `T` matrices beside the
+site-projected moments — a nucleus feels every electronic site, so no per-site `T` is written
+and none is computed.
 
 ## The CASSCF checkpoint
 

@@ -2507,6 +2507,15 @@ class PseudospinExport(_Stage):
     the manifold loop re-solves the network from the integrals either way (warm topology
     from a DMRG run when available).
 
+    ⚠ **The hyperfine field operators are written whenever the reference ingested them**
+    (``hyperfine=`` on :class:`ScalarSCF`), with a ``[NUCLEI]`` table, exactly as
+    :class:`PropertyDump` writes them and under the same block names — naming the nuclei is
+    the request and there is no second switch here. There are deliberately **no
+    site-projected** ``T`` matrices beside the site-projected moments — OuluSpin consumes
+    none, and a nucleus feels every electronic site — so the manifold loop is told to skip
+    that reduction for them, which costs one model-space contraction per nucleus per site and
+    (the site spaces being charge pure) loses no information.
+
     ⚠ **This one takes a CASSCF and not a :class:`CASCI`**, unlike :class:`PropertyDump`:
     what it consumes is the converged *orbitals*, not the states — the model space is
     re-solved from the integrals those orbitals define — so it belongs on the stage that
@@ -2551,7 +2560,7 @@ class PseudospinExport(_Stage):
                        _allowed_options(solve_manifold,
                                         exclude=("terms", "graph", "n_elec", "bases",
                                                  "sites", "rule", "dims", "operators",
-                                                 "max_bond", "rng")),
+                                                 "site_local", "max_bond", "rng")),
                        "PseudospinExport manifold_options")
         self.rule, self.dims, self.max_bond = rule, dims, max_bond
         self.axes, self.common_axis, self.rotate_frame = axes, common_axis, rotate_frame
@@ -2565,7 +2574,8 @@ class PseudospinExport(_Stage):
         from ..dmrg.manifold import solve_manifold
         from ..dmrg.ttno import one_electron_product_terms
         from ..mcscf.orbopt import CASIntegrals
-        from ..props.dump import inactive_moment, spinor_operator, spinor_operators
+        from ..props.dump import (hyperfine_active_blocks, hyperfine_table, inactive_moment,
+                                  spinor_operator, spinor_operators)
         from ..props.multiplet import G_ELECTRON
         from ..props.pseudospin import pseudospin_from_model, write_pseudospin
         from ..spinor.expand import spin_operator
@@ -2609,6 +2619,26 @@ class PseudospinExport(_Stage):
         operators = {name: one_electron_product_terms(np.ascontiguousarray(mu_act[k]))
                      for k, name in enumerate(names)}
 
+        # The hyperfine field, once per selected nucleus, through the *same* active-block and
+        # inactive-trace step the CI route takes (kuiva.props.dump.hyperfine_active_blocks),
+        # so the two routes cannot drift in what they call T.
+        properties = ref.data.properties
+        hyperfine_names: Dict[str, Tuple[str, ...]] = {}
+        hyperfine_inactive: Dict[str, np.ndarray] = {}
+        hf_nuclei: Tuple[Dict[str, Any], ...] = ()
+        hf_record: Dict[str, Any] = {}
+        if getattr(properties, "has_hyperfine", False):
+            integrals = properties.hyperfine_integrals()
+            for label, t_act, trace in hyperfine_active_blocks(
+                    cas.coeff, integrals, spaces.active, spaces.inactive):
+                triple = tuple("T_{}_{}".format(label, a) for a in "xyz")
+                for k, name in enumerate(triple):
+                    operators[name] = one_electron_product_terms(
+                        np.ascontiguousarray(t_act[k]))
+                hyperfine_names[label] = triple
+                hyperfine_inactive[label] = trace
+            hf_nuclei, hf_record = hyperfine_table(integrals)
+
         graph = getattr(cas, "graph", None)
         if graph is None:
             graph = NetworkGraph.path(cas.active.n_active)
@@ -2621,12 +2651,26 @@ class PseudospinExport(_Stage):
             max_bond = cas.solver.max_bond
         manifold = solve_manifold(terms, graph, cas.active.n_elec, sites=node_sites,
                                   rule=self.rule, dims=self.dims, operators=operators,
+                                  # Only the moments are reduced per site: nothing consumes a
+                                  # site-projected T, and the reduction is one further
+                                  # model-space contraction per nucleus per site. It loses no
+                                  # information here -- on charge-pure site spaces the
+                                  # per-site parts of a one-electron operator sum back to the
+                                  # whole -- and the pseudospin assignment refuses a
+                                  # charge-mixed site anyway.
+                                  site_local=names,
                                   max_bond=max_bond, rng=np.random.default_rng(self.seed),
                                   **self.manifold_options)
         model = manifold.model
         eye = np.eye(model.model_dim)
         for k, name in enumerate(names):
             model.operators[name] = model.operators[name] + mu_inactive[k] * eye
+        # The inactive share of T is exactly zero for a Kramers-paired inactive set and is
+        # added as computed rather than assumed away, exactly as the moment's is.
+        for label, triple in hyperfine_names.items():
+            for k, name in enumerate(triple):
+                model.operators[name] = (model.operators[name]
+                                         + hyperfine_inactive[label][k] * eye)
 
         provenance: Dict[str, object] = {
             "active_space": cas.active.description or "explicit spinor indices",
@@ -2643,6 +2687,9 @@ class PseudospinExport(_Stage):
                                            common_axis=self.common_axis,
                                            rotate_frame=self.rotate_frame,
                                            energy_shift=float(ints.e_core),
+                                           hyperfine=hyperfine_names or None,
+                                           hyperfine_nuclei=hf_nuclei,
+                                           hyperfine_record=hf_record,
                                            provenance=provenance, comments=self.comments)
         if self.report:
             self.model.report(log)
@@ -2650,12 +2697,19 @@ class PseudospinExport(_Stage):
         write_pseudospin(self.path, self.model, title=self.title)
 
     def _summary_entries(self):
-        return [
+        entries = [
             ("file", str(self.path)),
             ("sites", " x ".join(str(d) for d in self.model.dims)),
             ("g values", "; ".join(
                 " ".join("{:.4f}".format(g) for g in site) for site in self.g_values)),
         ]
+        if self.model.has_hyperfine:
+            entries.append(("hyperfine nuclei",
+                            ", ".join(self.model.hyperfine_labels)))
+            entries.append(("electron-nuclear product dimension",
+                            "{} (reported; this program does not form it)"
+                            .format(self.model.product_dim())))
+        return entries
 
 
 def _nodes_of_modes(graph, modes: Sequence[int]) -> Tuple[int, ...]:

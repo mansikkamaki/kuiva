@@ -7,13 +7,17 @@ on the cheapest system that exhibits each structure:
   **analytic** Lande factor g = 1 - (g_e - 1)/3 = 0.66589, a target no convention of any
   code can move;
 * CASSCF + SC-NEVPT2 + the corrected (hybrid-protocol) dump on the same reference;
-* DMRG-CASSCF + the pseudospin export, whose g values must agree with the dump's
-  phase-invariant reduction — two independent property routes to one invariant.
+* DMRG-CASSCF + the pseudospin export, whose g values **and hyperfine field** must agree
+  with the dump's phase-invariant reductions — two independent property routes to one set of
+  invariants. The hyperfine half is the sharper half of that claim: it travels through the
+  TTNO on one route and through CI transition densities on the other, and the ``|A|`` values
+  and the mixed ``Tr_b(mu.T)`` invariant are the only comparable quantities.
 
 Tolerances: state degeneracies inside a Kramers doublet are asserted at 1e-10 Eh (the
 general path's measured splitting is 1e-15..1e-13 Eh); CI-vs-DMRG energies at 1e-8 Eh
 ; g against Lande at 2e-3 on a term-complete average (see below);
-dump-vs-pseudospin g at 1e-6 (same states, two contractions).
+dump-vs-pseudospin g at 1e-6 and |A| at 1e-6 relative (same states, two contractions;
+measured 2e-12).
 
 ⚠ **A g value may only be asserted against Lande on an average over the WHOLE term**, which
 is why ``cas_term`` exists beside ``cas``. Averaging the j = 1/2 doublet alone is a complete
@@ -40,6 +44,7 @@ import kuiva
 import kuiva.util.deadline
 from kuiva.interface.stages import (CASCI, CASSCF, CheapCI, NEVPT2, PropertyDump,
                                     PseudospinExport, Reference, ScalarSCF)
+from kuiva.props.multiplet import block_collinearity
 
 G_E = 2.00231930436256
 G_LANDE = {2: 1.0 - (G_E - 1.0) / 3.0,              # p^1, j = 1/2, with the real g_e
@@ -60,7 +65,14 @@ def scf():
     # screening="none": the 2e-SOC picture change is pure cost on every assertion here
     # (pytest may not depend on a warm AMF cache); the 1e SOC stays on, which is
     # what the g values need.
-    return ScalarSCF(boron(), memory_gb=4.0, screening="none").run()
+    #
+    # hyperfine={"B": 11}: the two property routes have to agree on the hyperfine field as
+    # well as on g, and this is the one fixture both of them are built from. It costs one
+    # picture-changed AO operator on a 14-function basis -- no atomic solve is involved --
+    # and it makes every file written below carry a [NUCLEI] table, which is the point:
+    # naming the nuclei at ingestion IS the request, on either route.
+    return ScalarSCF(boron(), memory_gb=4.0, screening="none",
+                     hyperfine={"B": 11}).run()
 
 
 @pytest.fixture(scope="module")
@@ -492,6 +504,58 @@ def test_pseudospin_export_agrees_with_the_dump(cas, cas_dmrg, tmp_path):
     back = read_pseudospin(psd.path)
     assert [tuple(row) for row in back["basis"]] == [(-1,), (1,)]
     assert "hamiltonian" in psd.model.provenance
+
+    # ⚠ **And the same two routes on the hyperfine field**, which is the part of this claim
+    # that no g value can carry: the network route contracts T onto the model space through
+    # the TTNO, the CI route contracts it against transition densities, and the only
+    # comparable quantity is the phase-invariant reduction. |A| is quadratic and isotope
+    # dependent, so it is taken at the isotope the [NUCLEI] table names -- the same table in
+    # both files, written by the same code.
+    assert psd.model.hyperfine_labels == ("B1",) == dump.matrices.hyperfine_labels
+    assert psd.model.nucleus("B1")["label"] == dump.matrices.nucleus("B1")["label"] == "11B"
+    # 2 electronic states x (2I+1 = 4) for 11B; reported, never refused -- Kuiva does not
+    # form the electron-nuclear product space.
+    assert psd.model.product_dim() == 8
+    assert back["header"]["product_dim"] == "8"
+    for k, axis in enumerate("xyz"):
+        assert np.array_equal(back["matrices"]["T_B1_" + axis],
+                              psd.model.hyperfine["B1"][k])
+
+    g_n = float(psd.model.nucleus("B1")["g"])
+    net = _principal_a(psd.model.analyse()[0], g_n)
+    ci = _principal_a(doublet, g_n)
+    assert min(ci) > 100.0                      # MHz: a real coupling, not a rounding artefact
+    # the same band the g comparison above carries, and for the same reason: two contractions
+    # of one set of states. Measured agreement is 2e-12 relative, five orders inside it.
+    assert max(abs(a - b) for a, b in zip(net, ci)) < 1e-6 * max(ci)
+    # The *mixed* invariant, which the magnitudes above cannot carry: it holds the relative
+    # orientation and sign of T against mu, and it is what a permuted Cartesian component, an
+    # unrotated frame or the conjugation trap breaks while every |A| stays right. ⚠ Compared
+    # between the two routes and **not** against the analytic +-1 of Wigner-Eckart: these
+    # fixtures average the j = 1/2 doublet alone, which is not the ensemble the term's symmetry
+    # leaves invariant (module docstring), so +-1 is off by ~3e-7 here for the same reason the
+    # g values are anisotropic. The analytic claim is asserted on a term-complete average in
+    # tests/test_hyperfine_states.py, where it means something.
+    net_coll = block_collinearity(psd.model.mu_in_eigenbasis(),
+                                  psd.model.hyperfine_in_eigenbasis()["B1"], 0, 2)
+    ci_coll = block_collinearity(_energy_sorted(dump.matrices, dump.matrices.mu),
+                                 _energy_sorted(dump.matrices, dump.matrices.hyperfine["B1"]),
+                                 doublet.start, doublet.size)
+    assert abs(net_coll - ci_coll) < 1e-9       # measured 1e-14
+    assert abs(abs(net_coll) - 1.0) < 1e-5
+
+
+def _principal_a(block, g_nuclear):
+    """The ``|A|`` principal values [MHz] of one degenerate block — the phase-invariant
+    reduction, which is the only comparable hyperfine quantity between two routes."""
+    from kuiva.props.multiplet import multiplet_hyperfine_values
+    return multiplet_hyperfine_values(block.hyperfine["B1"], block.size, g_nuclear)
+
+
+def _energy_sorted(matrices, operator):
+    """An operator re-indexed into the energy-ordered basis the multiplets are indexed in."""
+    order = np.argsort(np.asarray(matrices.energies, dtype=float))
+    return np.asarray(operator)[:, order, :][:, :, order]
 
 
 # --- the CheapCI stage and what CASSCF inherits from it --------------------------------------

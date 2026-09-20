@@ -311,6 +311,60 @@ def test_site_operators_are_extracted_and_verified():
     assert np.allclose(model.operators["n_A"], np.eye(9), atol=1e-10)
 
 
+def test_site_local_reduction_is_complete_on_charge_pure_sites_and_can_be_skipped():
+    """What the per-site reduction *does* with a delocalized one-electron operator, and why
+    skipping it is then a cost decision rather than a physics one.
+
+    The operator here is Hermitian with nonzero entries everywhere, on and between both
+    fragments — the shape every property operator has, ``mu`` and a nucleus's hyperfine field
+    alike. The reduction is a **projection**: only the terms supported inside one site survive
+    it. The claim asserted below is that on **charge-pure** site spaces nothing is lost by
+    that, because the discarded inter-site terms move an electron between sites and no pair of
+    charge-pure product states differs that way — so the per-site parts sum back to the model
+    operator exactly, and ``site_local=`` buys a contraction per site and costs nothing.
+
+    ⚠ That completeness is a property of the *site spaces*, not of the operator: a site space
+    mixing particle-number sectors leaves the dropped terms nonzero, and the per-site matrices
+    are then an incomplete account of the operator that is still Hermitian and still plausible.
+    The pseudospin export refuses a charge-mixed site for its own reasons, which is what keeps
+    this in the safe half.
+    """
+    n, h, eri, fa, fb = two_fragments()
+    number_a = np.zeros((n, n), dtype=np.complex128)
+    for p in fa:
+        number_a[p, p] = 1.0
+    rng = np.random.default_rng(1)
+    a = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+    delocalized = 0.5 * (a + a.conj().T)
+    ttno = compile_ttno(NetworkGraph.path(n), hamiltonian_product_terms(h, eri))
+    state = random_state(ttno, 2, 10 ** 9, n_roots=4, rng=np.random.default_rng(10))
+    sweep = solve_ttn(ttno, state, boundary_check=0)
+    operators = {"n_A": one_electron_product_terms(number_a),
+                 "D": one_electron_product_terms(delocalized)}
+    common = dict(weights=sweep.weights, rule="dimension", dims=3, report=False)
+
+    both = effective_model(ttno, state, [fa, fb], operators=operators, **common)
+    assert all(len({q.n for q in sp.charges}) == 1 for sp in both.sites)
+    s0, s1 = both.site_operators["D"]
+    eye3 = np.eye(3)
+    assert float(np.abs(both.operators["D"]).max()) > 0.1
+    assert np.allclose(both.operators["D"],
+                       np.kron(s0, eye3) + np.kron(eye3, s1), atol=1e-12)
+
+    skipped = effective_model(ttno, state, [fa, fb], operators=operators,
+                              site_local=["n_A"], **common)
+    # ⚠ Compared to machine precision and not bitwise: extracting the site spaces regauges
+    # the state, so a second `effective_model` on the same object is not a replay of the first.
+    assert np.allclose(skipped.operators["D"], both.operators["D"], atol=1e-12)
+    assert np.allclose(skipped.operators["n_A"], np.eye(9), atol=1e-10)
+    assert np.allclose(skipped.site_operators["n_A"][0], eye3, atol=1e-10)
+    assert "D" not in skipped.site_operators
+
+    with pytest.raises(ValueError, match="site_local names"):
+        effective_model(ttno, state, [fa, fb], operators=operators,
+                        site_local=["n_a"], **common)
+
+
 def test_site_operator_refuses_non_contiguous_site_labels():
     """The reconnection JW lesson in operator form: with interleaved mode labels a site-local
     ``a+_p a_q`` drags a Jordan-Wigner string through the other site, the model matrix is

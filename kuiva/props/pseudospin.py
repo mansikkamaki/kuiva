@@ -57,10 +57,44 @@ provenance dict passed in — once the ab initio route feeds this file, that is 
 screening and decoupling records land (the standing provenance obligation transfers
 here too), and a write with *empty* provenance warns.
 
+The hyperfine field, when nuclei were selected
+----------------------------------------------
+With ``hyperfine=`` at ingestion the file additionally carries, per treated nucleus, the three
+components of the **hyperfine field operator** ``T_{k,u}`` over the same pseudospin product
+basis as ``mu``, plus the ``[NUCLEI]`` table of what each nucleus is — the *same* section and
+the *same* block names the property dump writes, read and written through
+:mod:`kuiva.props.dump`'s one implementation of them, so a consumer meets one vocabulary
+whichever file it opened. On the electron-nuclear product space the interaction is
+
+    H_hf = sum_k g_N(k) sum_u T_{k,u} (x) I_{k,u}        [Eh]
+
+and everything in that formula except the matrices of ``T`` is nuclear-spin algebra belonging
+to OuluSpin. Four consequences, all decisions:
+
+* ⚠ **Kuiva never forms the electron-nuclear product space.** Writing the electronic matrices
+  and a nuclear table separately is what lets the isotope, or the subset of nuclei, be changed
+  without re-running the electronic calculation. The product dimension
+  ``D * prod_k (2 I_k + 1)`` is therefore **reported** — in the header and, above
+  :data:`PRODUCT_DIM_WARN`, as a ``WARNING`` — and never refused: it is not Kuiva's allocation.
+* **There are no site-projected ``T`` matrices, unlike ``mu``.** OuluSpin consumes none, and
+  the rule for this file is not to widen a contract without a consumer; a nucleus feels every
+  electronic site (transferred hyperfine), so a per-site table would also invite being read as
+  "this site's coupling" when what the interaction is made of is the sum. The export therefore
+  passes ``site_local=`` naming the moments alone, which is a saving of one model-space
+  contraction per nucleus per site and — the site spaces here all being charge pure — loses no
+  information: the per-site parts of a one-electron operator sum back to the whole.
+* ⚠ **``T`` is time odd, exactly as ``L`` and ``S`` are**, so a Kramers-paired inactive set
+  contributes exactly zero to it; the trace is computed and checked rather than assumed, and
+  added to the model operator as a multiple of the identity, as ``mu``'s is.
+* ⚠ **The isotropic part is only as good as the active space.** The contact mechanism comes
+  from core-s spin polarization, which a valence CAS does not carry. The front end warns at
+  the point of selection and the active space travels in this file's provenance.
+
 **What OuluSpin consumes, and therefore what this file is a contract for** (user
 decision): the Hamiltonian, the magnetic-moment operators, the pseudospin transformation and
 the basis — ``[MATRIX H]``, ``[MATRIX mu_*]``, ``[SITE_MATRIX k mu_*]``, ``[MATRIX U]``,
-``[SITES]`` and ``[BASIS]``. Two things follow, and both are decisions rather than
+``[SITES]`` and ``[BASIS]`` — and, when nuclei were selected, ``[NUCLEI]`` and
+``[MATRIX T_<label>_*]``. Two things follow, and both are decisions rather than
 oversights:
 
 * ⚠ **Spin operator matrices are deliberately NOT written.** OuluSpin does not use them, so
@@ -83,20 +117,31 @@ References
 * Effective Hamiltonians on model spaces (what ``H_eff``/``U`` realise): C. Bloch, Nucl.
   Phys. 6, 329 (1958), doi:10.1016/0029-5582(58)90116-0; J. des Cloizeaux, Nucl. Phys.
   20, 321 (1960), doi:10.1016/0029-5582(60)90177-2.
+* Hyperfine coupling from ab initio spin-orbit states, and the first-order ``A A^T``
+  construction the reported ``|A|`` values are: K. Sharkas, B. Pritchard, J. Autschbach,
+  J. Chem. Theory Comput. 11, 538 (2015), doi:10.1021/ct500988h; L. Birnoschi, N. F. Chilton,
+  J. Chem. Theory Comput. 18, 4719 (2022), doi:10.1021/acs.jctc.2c00257.
 """
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
 from ..util import output as out
 from ..util.logging import get_logger
+# ⚠ The [NUCLEI] table has ONE writer and ONE parser, and they live in the property dump
+# because that is where the section was born. Both formatted products emit the same bytes for
+# the same nucleus; a second implementation here would pass every test and still be a second
+# vocabulary in a file format that is a contract with an external program.
+from .dump import (HYPERFINE_UNIT, hyperfine_from_file, hyperfine_header, nucleus_line,
+                   parse_nucleus_line)
 from .multiplet import (HARTREE_TO_CM, Multiplet, analyse_spectrum,
-                        block_moment_tensor, multiplet_g_values)
+                        block_collinearity, block_hyperfine_tensor, block_moment_tensor,
+                        multiplet_g_values, multiplet_hyperfine_values)
 
 log = get_logger(__name__)
 
@@ -107,6 +152,14 @@ FORMAT_VERSION = 1
 #: which the principal axis is ambiguous (easy-plane site) and the labelling axis is an
 #: arbitrary in-plane choice — warned about, never silently resolved.
 AXIS_DEGENERACY_RTOL = 1.0e-6
+
+#: Electron-nuclear product dimension above which the file *says so* in a ``WARNING``. ⚠ It is
+#: a courtesy and never a refusal: Kuiva does not form that space, so the allocation is the
+#: consumer's, and refusing on someone else's behalf would only teach a user to raise a limit
+#: blindly. The number is where a consumer's own arithmetic starts to hurt — one dense
+#: ``complex128`` operator of this dimension is 0.27 GB, and a hyperfine problem carries
+#: ``1 + 3 + 3 N_nuclei`` of them.
+PRODUCT_DIM_WARN = 4096
 
 
 def _kuiva_version() -> str:
@@ -159,6 +212,12 @@ class PseudospinModel:
     within a site ``M = -S`` first, ascending); ``energies``/``unitary`` its eigen-decomposition,
     ``unitary[:, i]`` the i-th ab initio state over product-basis rows. Phases arbitrary
     throughout.
+
+    ``hyperfine`` maps a nucleus's **atom label** to its ``(3, D, D)`` field operator in the
+    same basis and the same units the property dump writes it in, with ``hyperfine_nuclei``
+    the ``[NUCLEI]`` table saying what each nucleus is. ⚠ It is ``None`` and never ``{}``
+    when no nuclei were selected: a missing hyperfine operator and a small one look identical
+    in every number, and only the first of the two is a statement about the *calculation*.
     """
 
     sites: Tuple[PseudospinSite, ...]
@@ -173,6 +232,14 @@ class PseudospinModel:
     frame_rotation: np.ndarray = field(default_factory=lambda: np.eye(3))
     provenance: Dict[str, object] = field(default_factory=dict)
     comments: Tuple[str, ...] = ()
+    #: ``{atom label: (3, D, D)}`` [Eh per nuclear magneton], or ``None`` — never ``{}``.
+    hyperfine: Optional[Dict[str, np.ndarray]] = None
+    #: The ``[NUCLEI]`` rows, in the order the ``T`` matrices are written and in the order the
+    #: consumer is to build its nuclear sites.
+    hyperfine_nuclei: Tuple[Dict[str, object], ...] = ()
+    #: The container half of the front end's hyperfine provenance (unit, treatment, decoupling,
+    #: nuclear model, ``g_e``) — what the ``hyperfine_*`` header keys are made of.
+    hyperfine_record: Dict[str, object] = field(default_factory=dict)
 
     @property
     def model_dim(self) -> int:
@@ -181,6 +248,34 @@ class PseudospinModel:
     @property
     def dims(self) -> Tuple[int, ...]:
         return tuple(s.dim for s in self.sites)
+
+    @property
+    def has_hyperfine(self) -> bool:
+        return bool(self.hyperfine)
+
+    @property
+    def hyperfine_labels(self) -> Tuple[str, ...]:
+        """The treated nuclei's atom labels, in ``[NUCLEI]`` order."""
+        return tuple(self.hyperfine) if self.hyperfine else ()
+
+    def nucleus(self, label: str) -> Dict[str, object]:
+        """One nucleus's record, refusing rather than guessing."""
+        for record in self.hyperfine_nuclei:
+            if str(record.get("atom_label")) == str(label):
+                return dict(record)
+        raise KeyError("no nucleus labelled {!r} in this model; it carries {}"
+                       .format(label, ", ".join(self.hyperfine_labels) or "none"))
+
+    def product_dim(self) -> int:
+        """``D * prod_k (2 I_k + 1)`` — the electron-nuclear space the *consumer* builds.
+
+        ⚠ Reported, never refused: Kuiva does not form this space, which is the whole point
+        of storing electronic matrices and a nuclear table separately.
+        """
+        dim = self.model_dim
+        for record in self.hyperfine_nuclei:
+            dim *= int(record.get("twice_spin", 0)) + 1
+        return dim
 
     def basis_labels(self) -> List[Tuple[int, ...]]:
         """Per product state, the ``2M`` value at each site (site 0 slowest, C order)."""
@@ -197,11 +292,29 @@ class PseudospinModel:
         u = self.unitary
         return np.stack([u.conj().T @ m @ u for m in self.mu])
 
+    def hyperfine_in_eigenbasis(self) -> Optional[Dict[str, np.ndarray]]:
+        """``T`` per nucleus in the basis of the effective eigenstates, or ``None``.
+
+        The same congruence :meth:`mu_in_eigenbasis` applies, and for the same reason: the
+        invariants compare blocks of the *spectrum*, so both operators have to be in the
+        basis the spectrum is indexed in.
+        """
+        if not self.hyperfine:
+            return None
+        u = self.unitary
+        return {label: np.stack([u.conj().T @ t @ u for t in op])
+                for label, op in self.hyperfine.items()}
+
     def analyse(self, tol_cm: float = 1.0,
                 pseudo_doublet_tol_cm: Optional[float] = None) -> List[Multiplet]:
-        """The phase-invariant reduction of the effective spectrum + moments."""
+        """The phase-invariant reduction of the effective spectrum + moments.
+
+        Carries the hyperfine field along when there is one; it moves no existing number,
+        the blocking being the energies' decision alone.
+        """
         return analyse_spectrum(self.energies, self.mu_in_eigenbasis(), tol_cm=tol_cm,
-                                pseudo_doublet_tol_cm=pseudo_doublet_tol_cm)
+                                pseudo_doublet_tol_cm=pseudo_doublet_tol_cm,
+                                hyperfine=self.hyperfine_in_eigenbasis())
 
     @classmethod
     def from_file(cls, path) -> "PseudospinModel":
@@ -216,6 +329,11 @@ class PseudospinModel:
         *reduction* of what the file stores, and recomputing keeps them in step with the
         matrices by construction — a stored reduction is a second thing that can disagree with
         the first. Same reasoning as the axes not being written in the first place.
+
+        ⚠ **The hyperfine half is rebuilt from the file's own two sections**, the ``[NUCLEI]``
+        table and the ``hyperfine_*`` header keys, never from the provenance JSON: a consumer
+        that parses no JSON must still get the nuclei, and this method reads what that consumer
+        reads. A table naming a nucleus whose matrices are absent is refused.
         """
         raw = read_pseudospin(path)
         header, matrices, site_matrices = raw["header"], raw["matrices"], raw["site_matrices"]
@@ -238,6 +356,8 @@ class PseudospinModel:
                 n_electrons=entry["n_electrons"], orbitals=tuple(entry["orbitals"]),
                 g_values=multiplet_g_values(m_tensor, twice_s + 1)))
 
+        nuclei = tuple(raw.get("nuclei") or ())
+        hyperfine, hf_record = hyperfine_from_file(path, header, matrices, nuclei)
         return cls(
             sites=tuple(sites), h=np.ascontiguousarray(matrices["H"]),
             mu=stack(matrices, "mu"),
@@ -246,7 +366,8 @@ class PseudospinModel:
             energy_shift=float(header.get("energy_shift", 0.0)),
             frame=header.get("frame", "input frame"),
             frame_rotation=np.asarray(raw["frame_rotation"], dtype=float),
-            provenance=dict(raw.get("provenance") or {}))
+            provenance=dict(raw.get("provenance") or {}),
+            hyperfine=hyperfine, hyperfine_nuclei=nuclei, hyperfine_record=hf_record)
 
     def report(self, logger=None) -> None:
         logger = logger or log
@@ -277,11 +398,77 @@ class PseudospinModel:
             out.Column("g_1", "{:.4f}", 9), out.Column("g_2", "{:.4f}", 9),
             out.Column("g_3", "{:.4f}", 9)])
         table.start("effective spectrum (phase-invariant reduction)")
-        for i, m in enumerate(self.analyse()):
+        blocks = self.analyse()
+        for i, m in enumerate(blocks):
             g = m.g_values if m.g_values else (float("nan"),) * 3
             table.row(i, m.size, m.energy_cm, g[0], g[1], g[2])
         table.end("compare only through these invariants; phases are arbitrary "
                   "")
+        self._report_hyperfine(logger, blocks)
+
+    def _report_hyperfine(self, logger, blocks: List[Multiplet]) -> None:
+        """``|A|`` per block per nucleus, and how it sits against ``g``.
+
+        ⚠ **Everything here is a reduction of the stored operator, and none of it is stored.**
+        The file carries ``T`` in Eh per nuclear magneton, isotope-independent; ``|A|`` below is
+        that reduction evaluated at the isotope that was *requested*, a report quantity in
+        exactly the sense the principal g values are — never a fitted tensor and never a spin
+        Hamiltonian. The last column is the mixed invariant's one-number reading: ``+-1`` means
+        ``T`` is proportional to ``mu`` on that block, and its **sign** is the relative sign of
+        ``A`` and ``g``, which ``|A|`` throws away by being quadratic.
+        """
+        if not self.hyperfine:
+            return
+        out.subsection(logger, "hyperfine field operators")
+        entries = [
+            ("nuclei", len(self.hyperfine_nuclei),
+             "", ", ".join("{} ({})".format(r.get("atom_label"), r.get("label"))
+                           for r in self.hyperfine_nuclei)),
+            ("operator unit", HYPERFINE_UNIT, "",
+             str(self.hyperfine_record.get("operator", ""))),
+            ("picture change",
+             str(self.hyperfine_record.get("picture_change", "unrecorded")), "",
+             "decoupling={}, nuclear model={}".format(
+                 self.hyperfine_record.get("decoupling", "?"),
+                 self.hyperfine_record.get("nuclear_model", "?"))),
+            # ⚠ Reported, never refused: Kuiva does not form this space.
+            ("electron-nuclear product dimension", self.product_dim(), "",
+             "{} electronic x {}".format(
+                 self.model_dim,
+                 " x ".join("2I+1={}".format(int(r.get("twice_spin", 0)) + 1)
+                            for r in self.hyperfine_nuclei))),
+        ]
+        out.entries(logger, entries)
+        t_eigen = self.hyperfine_in_eigenbasis() or {}
+        mu_eigen = self.mu_in_eigenbasis()
+        table = out.Table(logger, [
+            out.col_count("block", 7), out.Column("states", "{:d}", 8),
+            out.Column("E [cm^-1]", out.CM_FMT, 14),
+            out.Column("nucleus", "{}", 10, align="<"),
+            out.Column("isotope", "{}", 9, align="<"),
+            out.Column("|A_1| [MHz]", "{:.4g}", 13),
+            out.Column("|A_2| [MHz]", "{:.4g}", 13),
+            out.Column("|A_3| [MHz]", "{:.4g}", 13),
+            out.Column("A.g", "{:+.4f}", 9)])
+        table.start()
+        for i, m in enumerate(blocks):
+            for label in self.hyperfine_labels:
+                record = self.nucleus(label)
+                tensor = None if m.hyperfine is None else m.hyperfine.get(label)
+                if tensor is None:
+                    continue
+                a = multiplet_hyperfine_values(tensor, m.size, float(record.get("g", 0.0)))
+                # ⚠ `nan`, never 0, for a block that carries no moment: a size-1 block has no
+                # A tensor for the same reason it has no g, and the two must not print alike.
+                a3 = a if a else (float("nan"),) * 3
+                table.row(i, m.size, m.energy_cm, label, str(record.get("label", "?")),
+                          a3[0], a3[1], a3[2],
+                          block_collinearity(mu_eigen, t_eigen[label], m.start, m.size))
+        table.end("|A| are principal values of 3 g_N^2 Tr_block(T_i T_j)/[J(J+1)(2J+1)] at the "
+                  "isotope named -- magnitudes only, since the reduction is quadratic. A.g is "
+                  "Tr_block(mu.T) normalized: +-1 means T is proportional to mu on the block. "
+                  "The stored operator is T itself, in " + HYPERFINE_UNIT + ", so the consumer "
+                  "changes the isotope without re-running this calculation ")
 
     def write(self, path, **kwargs) -> Path:
         return write_pseudospin(path, self, **kwargs)
@@ -360,6 +547,39 @@ def _site_axis(moment: np.ndarray, given: Optional[Sequence[float]],
     return axis, "principal magnetic axis"
 
 
+def _checked_hyperfine(hyperfine: Optional[Mapping[str, np.ndarray]],
+                       nuclei: Sequence[Dict[str, object]],
+                       d_model: int) -> Dict[str, np.ndarray]:
+    """The hyperfine operators as ``complex128``, with the two halves checked against each other.
+
+    ⚠ Matrices and table are refused apart rather than reconciled, in both directions: matrices
+    without a row name no nucleus and state no ``I``, and a row without matrices describes a
+    coupling the file cannot supply. A ``T`` matched to the wrong nucleus is Hermitian,
+    plausible and wrong, which is the failure this exists to make impossible.
+    """
+    if not hyperfine:
+        if nuclei:
+            raise ValueError(
+                "a nuclear table of {} row(s) was given with no hyperfine matrices; the table "
+                "alone describes a coupling the file cannot supply"
+                .format(len(nuclei)))
+        return {}
+    listed = [str(r.get("atom_label")) for r in nuclei]
+    if sorted(listed) != sorted(str(k) for k in hyperfine):
+        raise ValueError(
+            "the hyperfine matrices are keyed {} and the nuclear table lists {}; the two "
+            "halves of the contract must name the same nuclei, in the order the matrices are "
+            "to be written".format(sorted(str(k) for k in hyperfine), listed))
+    out_ops: Dict[str, np.ndarray] = {}
+    for label in listed:                       # [NUCLEI] order decides the written order
+        op = np.asarray(hyperfine[label], dtype=np.complex128)
+        if op.shape != (3, d_model, d_model):
+            raise ValueError("the hyperfine field of {0} must be (3, {1}, {1}), got {2}"
+                             .format(label, d_model, op.shape))
+        out_ops[label] = op
+    return out_ops
+
+
 def assign_pseudospin(h_eff: np.ndarray, mu: np.ndarray, site_dims: Sequence[int],
                       site_moments: Sequence[np.ndarray], *,
                       axes: Optional[Sequence[Optional[Sequence[float]]]] = None,
@@ -367,6 +587,9 @@ def assign_pseudospin(h_eff: np.ndarray, mu: np.ndarray, site_dims: Sequence[int
                       site_electrons: Optional[Sequence[Optional[int]]] = None,
                       orbitals: Optional[Sequence[Sequence[int]]] = None,
                       energy_shift: float = 0.0,
+                      hyperfine: Optional[Mapping[str, np.ndarray]] = None,
+                      hyperfine_nuclei: Sequence[Dict[str, object]] = (),
+                      hyperfine_record: Optional[Dict[str, object]] = None,
                       provenance: Optional[Dict[str, object]] = None,
                       comments: Sequence[str] = ()) -> PseudospinModel:
     """Assign pseudospin labels and rotate the model into the pseudospin basis.
@@ -390,6 +613,16 @@ def assign_pseudospin(h_eff: np.ndarray, mu: np.ndarray, site_dims: Sequence[int
         the frame OuluSpin's pseudospin operators live in. The applied rotation is
         recorded on the model and in the file; the default leaves everything in the
         input (ab initio) frame.
+    hyperfine : ``{atom label: (3, D, D)}`` over the same model product basis as ``mu``,
+        in Eh per nuclear magneton. ⚠ It rides through **both** transformations ``mu``
+        does — the frame rotation, as a Cartesian vector, and the ``t^dag O t``
+        congruence into the M-ordered basis — because the file states one frame and one
+        basis for every operator in it, and an operator that missed either would be
+        Hermitian, plausible and expressed in a frame the header denies.
+    hyperfine_nuclei, hyperfine_record : the ``[NUCLEI]`` rows and the container record,
+        as :func:`kuiva.props.dump.hyperfine_table` splits them. The labels must be exactly
+        the keys of ``hyperfine``: matrices with no table name no nucleus and state no ``I``,
+        and a table with no matrices describes a coupling the file cannot supply.
     """
     dims = tuple(int(d) for d in site_dims)
     h = np.asarray(h_eff, dtype=np.complex128)
@@ -404,6 +637,7 @@ def assign_pseudospin(h_eff: np.ndarray, mu: np.ndarray, site_dims: Sequence[int
         raise ValueError("{} site moments for {} sites".format(len(site_moments),
                                                                len(dims)))
     site_moments = [np.asarray(m, dtype=np.complex128) for m in site_moments]
+    hf = _checked_hyperfine(hyperfine, hyperfine_nuclei, d_model)
     if common_axis is not None and axes is not None:
         raise ValueError("give either per-site axes or one common_axis, not both")
     if rotate_frame and common_axis is None:
@@ -439,6 +673,11 @@ def assign_pseudospin(h_eff: np.ndarray, mu: np.ndarray, site_dims: Sequence[int
         if rotate_frame:
             mu = np.tensordot(triad, mu, axes=(1, 0))
             site_moments = [np.tensordot(triad, m, axes=(1, 0)) for m in site_moments]
+            # ⚠ The hyperfine field is a Cartesian vector operator and rotates with the rest:
+            # the header states ONE frame for the file, and a T left in the input frame would
+            # still be Hermitian, still have the right invariant magnitudes, and sit at an
+            # arbitrary angle to the mu the consumer pairs it with.
+            hf = {label: np.tensordot(triad, op, axes=(1, 0)) for label, op in hf.items()}
             frame = "quantization-axis frame (z = common axis)"
             frame_rotation = triad
             axes = [(0.0, 0.0, 1.0)] * len(dims)
@@ -485,18 +724,29 @@ def assign_pseudospin(h_eff: np.ndarray, mu: np.ndarray, site_dims: Sequence[int
         t = np.kron(t, r)
     h_ps = t.conj().T @ h @ t
     mu_ps = np.stack([t.conj().T @ m @ t for m in mu])
+    # the same congruence, because the file states one basis for every matrix in it
+    hf_ps = {label: np.stack([t.conj().T @ op_u @ t for op_u in op])
+             for label, op in hf.items()}
     energies, unitary = np.linalg.eigh(0.5 * (h_ps + h_ps.conj().T))
 
     return PseudospinModel(sites=tuple(sites), h=h_ps, mu=mu_ps, energies=energies,
                            unitary=unitary, energy_shift=float(energy_shift),
                            frame=frame, frame_rotation=frame_rotation,
                            provenance=dict(provenance or {}),
-                           comments=tuple(comments))
+                           comments=tuple(comments),
+                           # ⚠ `None`, never `{}`: "no nuclei were selected" and "the coupling
+                           # is small" must not be the same object downstream.
+                           hyperfine=hf_ps or None,
+                           hyperfine_nuclei=tuple(dict(r) for r in hyperfine_nuclei),
+                           hyperfine_record=dict(hyperfine_record or {}))
 
 
 def pseudospin_from_model(model, *, moments: Sequence[str] = ("mu_x", "mu_y", "mu_z"),
                           axes=None, common_axis=None, rotate_frame: bool = False,
                           energy_shift: float = 0.0,
+                          hyperfine: Optional[Mapping[str, Sequence[str]]] = None,
+                          hyperfine_nuclei: Sequence[Dict[str, object]] = (),
+                          hyperfine_record: Optional[Dict[str, object]] = None,
                           provenance: Optional[Dict[str, object]] = None,
                           comments: Sequence[str] = ()) -> PseudospinModel:
     """:func:`assign_pseudospin` from an ``EffectiveModel``-shaped object.
@@ -504,6 +754,13 @@ def pseudospin_from_model(model, *, moments: Sequence[str] = ("mu_x", "mu_y", "m
     Duck-typed on ``sites`` (each with ``dim``, ``charges``, ``orbitals``), ``operators``
     and ``site_operators`` — the same one-way-dependency idiom as
     ``ttno_from_cas_integrals``: :mod:`kuiva.props` never imports :mod:`kuiva.dmrg`.
+
+    ``hyperfine`` maps a nucleus's atom label to the **three operator names** its Cartesian
+    components were contracted under, so the naming convention stays with the caller that
+    chose it and this function learns nothing about nuclei beyond the table it passes on.
+    Only ``model.operators`` is read for them and never ``model.site_operators``: nothing
+    consumes a site-projected hyperfine matrix, which is why the export tells
+    :func:`kuiva.dmrg.manifold.effective_model` not to compute one at all.
 
     ⚠ Refuses a site whose multiplet space mixes particle-number sectors: ``|S, M>``
     presumes a multiplet, and a charge-mixed space is not one. The knob is the multiplet
@@ -517,19 +774,25 @@ def pseudospin_from_model(model, *, moments: Sequence[str] = ("mu_x", "mu_y", "m
                 "multiplet, which a charge-mixed space is not. Tighten the multiplet "
                 "rule so each site space sits in one N sector"
                 .format(k, sorted(counts)))
-    missing = [n for n in moments if n not in model.operators]
+    wanted = list(moments) + [n for names in (hyperfine or {}).values() for n in names]
+    missing = [n for n in wanted if n not in model.operators]
     if missing:
         raise ValueError("the effective model carries no operator(s) {}; build it with "
-                         "operators={{name: terms}} for the three moment components"
+                         "operators={{name: terms}} for the three moment components "
+                         "(and for each nucleus's three hyperfine components)"
                          .format(missing))
     mu = np.stack([model.operators[n] for n in moments])
     site_moments = [np.stack([model.site_operators[n][k] for n in moments])
                     for k in range(len(model.sites))]
+    hf = {label: np.stack([model.operators[n] for n in names])
+          for label, names in (hyperfine or {}).items()}
     return assign_pseudospin(
         model.h_eff, mu, [sp.dim for sp in model.sites], site_moments, axes=axes,
         common_axis=common_axis, rotate_frame=rotate_frame,
         site_electrons=[sp.n_electrons for sp in model.sites],
         orbitals=[sp.orbitals for sp in model.sites], energy_shift=energy_shift,
+        hyperfine=hf or None, hyperfine_nuclei=hyperfine_nuclei,
+        hyperfine_record=hyperfine_record,
         provenance=provenance, comments=comments)
 
 
@@ -541,10 +804,35 @@ def write_pseudospin(path, model: PseudospinModel, *, title: str = "",
     path = Path(path)
     if not model.provenance:
         log.warning("the pseudospin file %s carries no Hamiltonian provenance; once the "
-                    "ab initio route feeds this file, the 6.2/6.5 screening and "
+                    "ab initio route feeds this file, the screening and "
                     "decoupling records belong in it ", path.name)
 
     d = model.model_dim
+    if model.has_hyperfine:
+        # ⚠ The same standing obligation the property dump discharges, for the one operator
+        # family whose treatment is not a choice: what was done (always the picture change),
+        # and what no number in the file can show (the contact part needs a spin polarization
+        # a valence active space does not carry).
+        log.warning("%s carries HYPERFINE FIELD operators for %s. They are the "
+                    "isotope-independent operator T in %s, always X2C picture-changed, with "
+                    "the unperturbed transformation and no two-electron picture change; "
+                    "H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u over the product of this "
+                    "model space with the nuclear spins, and the nuclear-spin algebra and "
+                    "any A tensor belong to the consumer. The isotropic part comes from "
+                    "core-s spin polarization, which a VALENCE active space does not carry",
+                    path.name, ", ".join(model.hyperfine_labels), HYPERFINE_UNIT)
+        product = model.product_dim()
+        if product > PRODUCT_DIM_WARN:
+            # Reported, never refused: Kuiva does not form this space (module docstring).
+            log.warning("the electron-nuclear product space of %s is %d x %d for the listed "
+                        "isotopes (%d electronic states x the nuclear multiplicities); one "
+                        "dense complex operator of that size is %.1f GB and the consumer "
+                        "builds %d of them. Kuiva does not form this space -- drop a nucleus, "
+                        "or a lighter isotope, if that is too large",
+                        path.name, product, product, d,
+                        16.0 * product * product / 1024.0 ** 3,
+                        4 + 3 * len(model.hyperfine_nuclei))
+
     header = [
         ("format", "KUIVA_PSEUDOSPIN"),
         ("format_version", str(FORMAT_VERSION)),
@@ -563,6 +851,19 @@ def write_pseudospin(path, model: PseudospinModel, *, title: str = "",
         ("frame", model.frame),
         ("phase_convention", "arbitrary (not canonicalized)"),
     ]
+    if model.has_hyperfine:
+        header.extend(hyperfine_header(
+            model.hyperfine_record, len(model.hyperfine_nuclei),
+            g_electron=float(model.hyperfine_record.get("g_electron", 0.0))))
+        header.extend([
+            ("nuclear_site_order",
+             "nuclear sites follow the electronic sites, in [NUCLEI] order; within each, "
+             "M_I = -I .. +I ascending (the [BASIS] order extended, not a second convention)"),
+            # ⚠ Reported so the consumer knows what it is about to allocate, never refused:
+            # Kuiva does not form the product space, which is why the isotope is the
+            # consumer's to change.
+            ("product_dim", str(model.product_dim())),
+        ])
 
     lines: List[str] = []
     w = lines.append
@@ -574,6 +875,32 @@ def write_pseudospin(path, model: PseudospinModel, *, title: str = "",
       "# diagonal; [ENERGIES] lists its eigenvalues and [MATRIX U] the diagonalizing\n"
       "# unitary (columns = ab initio states over product-basis rows).\n")
     w("#\n")
+    if model.has_hyperfine:
+        w("# T_<k>_x/y/z are the HYPERFINE FIELD operator of nucleus <k> (its atom label),\n"
+          "# in Eh per nuclear magneton, over the same product basis as mu. On the product\n"
+          "# of this model space with the nuclear spins the interaction is\n"
+          "#\n"
+          "#     H_hf = sum_k g_N(k) sum_u T_<k>_u (x) I_<k>_u        [Eh]\n"
+          "#\n"
+          "# with g_N and I from the [NUCLEI] table below, whose order is the order the\n"
+          "# nuclear sites are to be built in, after the electronic sites. The nuclear-spin\n"
+          "# algebra, the Kronecker products and any A tensor belong to the consumer. The\n"
+          "# operator is the ISOTOPE-INDEPENDENT field, so the isotope -- or the subset of\n"
+          "# nuclei -- may be changed without re-running the electronic calculation, and the\n"
+          "# product dimension in the header is reported for that reason rather than imposed.\n"
+          "#\n"
+          "# The X2C picture change IS applied to these operators, always, independently of\n"
+          "# what the header says about mu: a bare hyperfine operator is wrong by a factor of\n"
+          "# 4-10 wherever s character carries spin density. The transformation uses the\n"
+          "# unperturbed X and R, no two-electron picture change is applied, and the nuclear\n"
+          "# magnetization follows the nuclear charge model named in the header.\n"
+          "#\n"
+          "# WARNING: the isotropic (contact) part comes from core-s spin polarization, which\n"
+          "# a VALENCE active space does not carry. For a 4f ion that is minor, the orbital\n"
+          "# mechanism dominating; for s/d spin density, for ligand nuclei and for spin-only\n"
+          "# ions it is qualitatively wrong. Judge these matrices against the active space in\n"
+          "# the provenance below.\n")
+        w("#\n")
     w("# WARNING: state phases are arbitrary and degenerate states mix arbitrarily.\n"
       "# Compare this file only through invariants: degeneracy patterns, relative\n"
       "# energies, and Tr_block(mu_i mu_j) with its principal g values.\n")
@@ -598,6 +925,22 @@ def write_pseudospin(path, model: PseudospinModel, *, title: str = "",
     for row in np.asarray(model.frame_rotation, dtype=float):
         w("  {:+.14f} {:+.14f} {:+.14f}\n".format(*row))
     w("[END]\n\n")
+
+    if model.has_hyperfine:
+        w("# The nuclei the T matrices below belong to, in the order they are written and in\n"
+          "# the order the nuclear sites of the product space are to be built: each nucleus a\n"
+          "# pseudospin site of dimension 2I+1, with M_I = -I .. +I ascending, following the\n"
+          "# electronic sites of [SITES]. Q is 'none' where no signed quadrupole moment is\n"
+          "# tabulated -- refuse rather than substitute a magnitude, since the sign of Q is\n"
+          "# the sign of every quadrupole splitting.\n")
+        w("[NUCLEI]\n")
+        w("# {:>3s} {:>5s}  {:<10s} {:<4s} {:>4s}  {:<10s} {:>4s}  {:>22s}  {:>16s}"
+          "  {:>22s} {:>22s} {:>22s}  | source\n"
+          .format("k", "atom", "label", "elem", "Z", "isotope", "2I", "g_N", "Q [barn]",
+                  "x [bohr]", "y [bohr]", "z [bohr]"))
+        for k, record in enumerate(model.hyperfine_nuclei):
+            w(nucleus_line(k, record))
+        w("[END]\n\n")
 
     w("[SITES]\n")
     w("# site   2S  dim   axis_x        axis_y        axis_z        axis_choice | N | orbitals\n")
@@ -629,6 +972,15 @@ def write_pseudospin(path, model: PseudospinModel, *, title: str = "",
     for k, axis in enumerate("xyz"):
         blocks.append(("mu_" + axis, model.mu[k], "mu_B",
                        "magnetic moment, {}".format(axis)))
+    # ⚠ Written whenever the reference ingested them and governed by no second switch: asking
+    # for the nuclei at ingestion IS the request, and a file that computed the operators and
+    # then did not write them would be the one thing a reader cannot recover from.
+    for label in model.hyperfine_labels:
+        for k, axis in enumerate("xyz"):
+            blocks.append(("T_{}_{}".format(label, axis), model.hyperfine[label][k],
+                           HYPERFINE_UNIT,
+                           "hyperfine field of {}, {}; H_hf = g_N sum_u T_u (x) I_u"
+                           .format(label, axis)))
     blocks.append(("U", model.unitary, "1",
                    "columns: ab initio states; rows: pseudospin product basis"))
     for name, mat, unit, note in blocks:
@@ -672,15 +1024,20 @@ def read_pseudospin(path) -> Dict[str, object]:
     """Parse a file written by :func:`write_pseudospin` — the round-trip test.
 
     Returns ``{"header": {...}, "provenance": {...}, "frame_rotation": ndarray,
-    "sites": [...], "basis": ndarray, "energies": ndarray, "matrices": {name: ndarray},
-    "site_matrices": {(site, name): ndarray}}``. Refuses an unknown ``format_version``
-    rather than guessing.
+    "sites": [...], "nuclei": [...], "basis": ndarray, "energies": ndarray,
+    "matrices": {name: ndarray}, "site_matrices": {(site, name): ndarray}}``. Refuses an
+    unknown ``format_version`` rather than guessing.
+
+    ``"nuclei"`` is the ``[NUCLEI]`` table when the file carries hyperfine operators and an
+    empty list otherwise; its entries are keyed exactly as the property dump's are, so a
+    consumer reads one vocabulary whichever of the two files it opened.
     """
     text = Path(path).read_text().splitlines()
     header: Dict[str, str] = {}
     provenance: Dict[str, object] = {}
     frame_rows: List[List[float]] = []
     sites: List[Dict[str, object]] = []
+    nuclei: List[Dict[str, object]] = []
     basis: List[List[int]] = []
     energies: List[float] = []
     matrices: Dict[str, np.ndarray] = {}
@@ -727,6 +1084,8 @@ def read_pseudospin(path) -> Dict[str, object]:
                 "axis_choice": fields[6].replace("_", " "),
                 "n_electrons": None if n_str == "?" else int(n_str),
                 "orbitals": tuple(int(x) for x in orb_str.split()) if orb_str else ()})
+        elif section == "NUCLEI":
+            nuclei.append(parse_nucleus_line(line))
         elif section == "BASIS":
             parts = line.split()
             basis.append([int(x) for x in parts[1:]])
@@ -752,14 +1111,21 @@ def read_pseudospin(path) -> Dict[str, object]:
             "{} declares format_version {} and this parser knows version {}; refusing "
             "to guess (the version exists so a consumer can refuse rather than "
             "misinterpret)".format(path, version, FORMAT_VERSION))
+    declared = int(header.get("n_hyperfine_nuclei", len(nuclei)))
+    if declared != len(nuclei):
+        raise ValueError(
+            "{} declares {} hyperfine nuclei in its header and its [NUCLEI] table has {} rows. "
+            "A T matrix matched to the wrong nucleus is Hermitian, plausible and wrong, so "
+            "this is refused rather than reconciled.".format(path, declared, len(nuclei)))
     return {"header": header, "provenance": provenance,
             "frame_rotation": (np.array(frame_rows, dtype=float) if frame_rows
                                else np.eye(3)),
-            "sites": sites, "basis": np.array(basis, dtype=np.int64),
+            "sites": sites, "nuclei": nuclei, "basis": np.array(basis, dtype=np.int64),
             "energies": np.array(energies, dtype=float), "matrices": matrices,
             "site_matrices": site_matrices}
 
 
-__all__ = ["FORMAT_VERSION", "AXIS_DEGENERACY_RTOL", "PseudospinSite", "PseudospinModel",
+__all__ = ["FORMAT_VERSION", "AXIS_DEGENERACY_RTOL", "PRODUCT_DIM_WARN", "PseudospinSite",
+           "PseudospinModel",
            "assign_pseudospin", "pseudospin_from_model", "write_pseudospin",
            "read_pseudospin"]

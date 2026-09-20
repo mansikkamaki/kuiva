@@ -53,6 +53,45 @@ Validation goes through phase-invariant reductions **only**.
   about otherwise — is added to the total operators after the contraction (a scalar cannot
   be attributed to one site).
 
+## The hyperfine field
+
+⚠ **The hyperfine field operators are written whenever the reference ingested them**
+(`hyperfine=` on [`ScalarSCF`](ScalarSCF.md)), with a `[NUCLEI]` table, and there is no
+second switch here: naming the nuclei at ingestion *is* the request. They are the three
+Cartesian components of the isotope-independent field operator `T` of each treated nucleus,
+in Eh per nuclear magneton, over the same pseudospin product basis as `mu` and in the same
+frame — the same section names, the same table and the same units the
+[property dump](PropertyDump.md) uses, so a consumer reads one vocabulary whichever file it
+opened. On the electron–nuclear product space the interaction is
+$`H_{hf} = \sum_k g_N(k) \sum_u T_{k,u} \otimes I_{k,u}`$, and everything in that except the
+matrices of `T` is nuclear-spin algebra belonging to the external code.
+
+⚠ **Kuiva never forms the electron–nuclear product space.** Storing the electronic matrices
+and a nuclear table separately is what lets the isotope, or the subset of nuclei, be changed
+without re-running the calculation, so the product dimension
+$`D \times \prod_k (2I_k+1)`$ is **reported** — in the header, in the stage summary, and above
+a stated size as a warning — and never refused: the allocation is the consumer's.
+
+⚠ **There are no site-projected `T` matrices**, unlike the site-projected moments. OuluSpin
+consumes none, and a nucleus feels every electronic site (transferred hyperfine), so a
+per-site table would invite being read as "this site's coupling" when what the interaction is
+made of is the sum. Skipping it also saves one model-space contraction per nucleus per site
+and loses no information here: on the charge-pure site spaces this export requires, the
+per-site parts of a one-electron operator sum back to the whole.
+
+⚠ **The isotropic part is only as good as the active space.** The contact mechanism comes
+from core-s spin polarization, which a valence active space does not carry; the front end
+warns at the point of selection and this file's provenance carries the active space so a
+reader can judge. For a 4f ion the effect is minor (the orbital mechanism dominates); for
+s/d spin density, ligand nuclei and spin-only ions the isotropic part is qualitatively wrong.
+See [limitations](../../limitations.md).
+
+The report beside the file gives the phase-invariant reduction: the principal `|A|` values in
+MHz at the isotope named in the table, and `A.g`, the normalized mixed invariant
+$`\mathrm{Tr}_b(\mu \cdot T)`$, whose sign is the relative sign of `A` and `g`. ⚠ Both are
+*reductions*, in the same sense the principal g values are — Kuiva fits no A tensor and writes
+none.
+
 ## The file
 
 The same dull shape as the property dump — versioned header, `[SECTION]` markers, atomic
@@ -60,5 +99,7 @@ write, the full Hamiltonian provenance (an empty provenance warns) — with ⚠ 
 difference, stated in the header: `H` is *not* diagonal.** `[ENERGIES]` lists its
 eigenvalues and `[MATRIX U]` the diagonalizing unitary. The `M` convention and the storage
 order are OuluSpin's, restated in every file, so the file needs no permutation on the way
-in; phases are never canonicalized. Spin operator matrices are deliberately not written —
-the format is confirmed against what OuluSpin reads, and nothing else widens it.
+in; phases are never canonicalized. Nuclear sites follow the electronic ones, in `[NUCLEI]`
+order, each with `M_I = −I … +I` ascending — the same lexicographic order extended, not a
+second convention. Spin operator matrices are deliberately not written — the format is
+confirmed against what OuluSpin reads, and nothing else widens it.
