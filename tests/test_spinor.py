@@ -282,3 +282,60 @@ def test_odd_block_is_refused():
     c = _kramers_paired_set(4, 4, seed=1)
     with pytest.raises(ValueError, match="even number of columns"):
         time_reversal_closed_span(c, [np.array([0, 1, 2])])
+
+
+# --- the Pauli decomposition -------------------------------------------------------------
+
+def test_pauli_decompose_is_exact_for_an_arbitrary_operator():
+    """``H = A (x) 1 + sum_c B_c (x) sigma_c`` round-trips for a **general** complex ``H``.
+
+    ⚠ This is the property that distinguishes it from :func:`decompose_two_component`, which
+    *projects* onto the time-reversal-even form and is therefore lossy by design. A hyperfine
+    or moment operator is time **odd**, so the projecting decomposition returns essentially
+    zero on it — which would read as a vanishing spin mechanism rather than as the wrong tool.
+    """
+    from kuiva.spinor.expand import (decompose_two_component, pauli_decompose, sigma_dot)
+
+    rng = np.random.default_rng(11)
+    n = 6
+    h = rng.standard_normal((2 * n, 2 * n)) + 1j * rng.standard_normal((2 * n, 2 * n))
+    a, b = pauli_decompose(h)
+    assert np.abs(spin_block_diagonal(a) + sigma_dot(b) - h).max() < 1e-13
+    # The projecting decomposition is lossy on the same input, which is why both exist.
+    lossy = two_component_operator(*decompose_two_component(h))
+    assert np.abs(lossy - h).max() > 0.1
+
+
+def test_pauli_decompose_inverts_the_assembly_component_by_component():
+    """Each ``B_c`` comes back as itself, so the component *order* is pinned and not merely the
+    sum: a cyclic permutation of the three would round-trip through the assembly and be a
+    different convention."""
+    from kuiva.spinor.expand import pauli_decompose, sigma_dot
+
+    rng = np.random.default_rng(12)
+    n = 5
+    a_in = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
+    b_in = rng.standard_normal((3, n, n)) + 1j * rng.standard_normal((3, n, n))
+    a, b = pauli_decompose(spin_block_diagonal(a_in) + sigma_dot(b_in))
+    assert np.abs(a - a_in).max() < 1e-13
+    assert np.abs(b - b_in).max() < 1e-13
+
+
+def test_pauli_decompose_keeps_a_hermitian_operator_hermitian():
+    """For Hermitian ``H`` all four parts are Hermitian — which is what lets a caller weight
+    one of them (the ``g_e - 2`` anomaly on the spin part) and reassemble something Hermitian."""
+    from kuiva.spinor.expand import pauli_decompose
+
+    rng = np.random.default_rng(13)
+    n = 4
+    h = rng.standard_normal((2 * n, 2 * n)) + 1j * rng.standard_normal((2 * n, 2 * n))
+    h = h + h.conj().T
+    a, b = pauli_decompose(h)
+    for m in (a, *b):
+        assert np.abs(m - m.conj().T).max() < 1e-13
+
+
+def test_pauli_decompose_refuses_an_odd_dimension():
+    from kuiva.spinor.expand import pauli_decompose
+    with pytest.raises(ValueError, match="even dimension"):
+        pauli_decompose(np.zeros((5, 5)))

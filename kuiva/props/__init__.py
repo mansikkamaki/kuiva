@@ -32,10 +32,11 @@ from .molden import MoldenOrbital, SpinorMoldenReport, write_molden, write_spino
 from .multiplet import (
     AXIS_DEFINED_RTOL, G_ELECTRON, HARTREE_TO_CM, PSEUDO_DOUBLET_HINT_CM, Multiplet,
     analyse_spectrum,
-    axis_is_defined, block_dipole_tensor, block_line_strengths, block_moment_tensor,
+    axis_is_defined, block_collinearity, block_cross_tensor, block_dipole_tensor,
+    block_hyperfine_tensor, block_line_strengths, block_moment_tensor,
     block_operator_tensor, degeneracy_pattern, degenerate_blocks,
     g_determinant_sign, lande_g, magnetic_moment_matrices, multiplet_g_axes,
-    multiplet_g_values, spectrum_line_strengths,
+    multiplet_g_values, multiplet_hyperfine_values, spectrum_line_strengths,
 )
 from .population import (
     AtomicPopulations, AtomicReferenceCharges, OrbitalPopulations, atomic_populations,
@@ -50,6 +51,8 @@ __all__ = [
     "inactive_moment", "state_operator_matrices", "write_dump", "read_dump",
     "G_ELECTRON", "HARTREE_TO_CM", "Multiplet", "analyse_spectrum", "block_moment_tensor",
     "block_operator_tensor", "block_dipole_tensor", "block_line_strengths",
+    "block_hyperfine_tensor", "block_cross_tensor", "block_collinearity",
+    "multiplet_hyperfine_values",
     "spectrum_line_strengths",
     "degeneracy_pattern", "degenerate_blocks", "lande_g", "magnetic_moment_matrices",
     "multiplet_g_values",

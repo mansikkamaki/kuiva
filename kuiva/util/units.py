@@ -1,4 +1,4 @@
-"""Energy units: the one CODATA table every layer converts through.
+"""Energy units and the atomic-unit constants: the one CODATA table every layer converts through.
 
 Why a module in ``util/``
 -------------------------
@@ -23,12 +23,27 @@ Conventions
   ...). An unknown unit is refused naming the accepted ones; nothing is guessed.
 * ``kcal/mol`` uses the thermochemical calorie, ``1 cal = 4.184 J`` exactly.
 
+Besides the energy table this module carries the handful of **atomic-unit constants** whose
+value is a property of nature rather than of a method: the electron ``g`` factor, the nuclear
+magneton, and the barn. They live here for the reason the energy factors do — every one of
+them has more than one consumer, and a constant defined inside its first consumer is imported
+sideways by the next one across a dependency boundary the package forbids — the electron ``g``
+factor used to live in :mod:`kuiva.props.multiplet`, where the hyperfine field operator in
+:mod:`kuiva.interface` could not reach it. :data:`kuiva.props.multiplet.G_ELECTRON` is now an
+*import* of the value below, bitwise the literal it always was. ⚠ **Nothing else re-exports
+these**: a second import path for one constant is the problem this table solves.
+
+⚠ **The speed of light is deliberately NOT here.** It belongs to whatever produced the
+integrals it is combined with (see :mod:`kuiva.x2c.decouple`), so a Hamiltonian reading it from
+a shared table is exactly the mismatch that rule exists to prevent.
+
 References
 ----------
 * CODATA 2018 recommended values: E. Tiesinga, P. J. Mohr, D. B. Newell, B. N. Taylor,
   Rev. Mod. Phys. 93, 025010 (2021), doi:10.1103/RevModPhys.93.025010 — the Hartree energy in
-  eV, K and J (with the exact 2019 SI value of the Avogadro constant for the molar units) and
-  the Hartree-to-wavenumber factor ``E_h / (h c)``.
+  eV, K and J (with the exact 2019 SI value of the Avogadro constant for the molar units), the
+  Hartree-to-wavenumber factor ``E_h / (h c)``, the Hartree-to-frequency factor ``E_h / h``,
+  the electron ``g`` factor, the proton-electron mass ratio and the Bohr radius.
 """
 from __future__ import annotations
 
@@ -48,6 +63,31 @@ HARTREE_TO_K = 315775.02480407
 HARTREE_TO_KJ_MOL = 2625.4996394799
 #: Hartree -> kilocalorie per mole [kcal/mol], thermochemical calorie (``4.184 J`` exactly).
 HARTREE_TO_KCAL_MOL = HARTREE_TO_KJ_MOL / 4.184
+#: Hartree -> megahertz, ``E_h / h`` [MHz] (CODATA 2018, ``E_h/h = 6.579683920502e15 Hz``).
+#: ⚠ It is a **frequency**, not an energy in disguise: hyperfine couplings are quoted in MHz
+#: throughout the EPR literature, and every ``A`` value this program reports is converted with
+#: this factor and no other. It is deliberately not in :data:`FACTORS` — the energy table is
+#: for spectra and state selection, where a unit named ``MHz`` would invite a state window
+#: stated in a linewidth.
+HARTREE_TO_MHZ = 6.579683920502e9
+
+#: The free-electron ``g`` factor (CODATA 2018). ⚠ Dirac theory gives exactly ``2``; the
+#: difference is the QED anomaly, and *which of the two a given operator carries* is a
+#: statement each property operator has to make for itself — the four-component magnetic
+#: interaction ``c alpha.A`` carries Dirac's ``2`` and the anomaly is a separate term.
+G_ELECTRON = 2.00231930436256
+
+#: Proton-to-electron mass ratio (CODATA 2018), the only place the proton mass enters.
+PROTON_ELECTRON_MASS_RATIO = 1836.15267343
+
+#: The nuclear magneton in **atomic units**, ``mu_N = mu_B m_e / m_p = 1 / (2 m_p/m_e)``.
+#: ⚠ In Hartree atomic units ``mu_B = 1/2``, not ``1``; dropping the one half is a factor-of-two
+#: error in every hyperfine coupling and it looks entirely plausible.
+NUCLEAR_MAGNETON = 1.0 / (2.0 * PROTON_ELECTRON_MASS_RATIO)
+
+#: The barn in bohr squared, ``1e-28 m^2 / a_0^2`` with ``a_0 = 5.29177210903e-11 m`` (CODATA
+#: 2018) — for nuclear quadrupole moments, which every compilation tabulates in barn.
+BARN_TO_BOHR2 = 1e-28 / 5.29177210903e-11 ** 2
 
 #: Canonical unit name -> ``1 Eh`` in that unit. The canonical names are the ASCII spellings
 #: used in the output stream.
@@ -106,5 +146,7 @@ def from_hartree(value: float, unit: str) -> float:
 
 
 __all__ = ["HARTREE_TO_CM", "HARTREE_TO_EV", "HARTREE_TO_MEV", "HARTREE_TO_K",
-           "HARTREE_TO_KJ_MOL", "HARTREE_TO_KCAL_MOL", "FACTORS", "ALIASES", "UNITS",
+           "HARTREE_TO_KJ_MOL", "HARTREE_TO_KCAL_MOL", "HARTREE_TO_MHZ", "G_ELECTRON",
+           "PROTON_ELECTRON_MASS_RATIO", "NUCLEAR_MAGNETON", "BARN_TO_BOHR2",
+           "FACTORS", "ALIASES", "UNITS",
            "canonical_unit", "factor", "to_hartree", "from_hartree"]

@@ -2417,6 +2417,12 @@ class PropertyDump(_Stage):
     the operator and its invariants; oscillator strengths and radiative rates are the external
     property code's job, as the crystal-field analysis is.
 
+    ⚠ **The hyperfine field operators are written whenever the reference ingested them**
+    (``hyperfine=`` on :class:`ScalarSCF`), with a ``[NUCLEI]`` table, and there is no second
+    switch here: naming the nuclei is the request. The same boundary holds — what the file
+    carries is the isotope-independent operator ``T_{k,u}``, and the A tensor, the spin
+    Hamiltonian and the nuclear-spin algebra belong to the external code.
+
     ``source`` is a finished ``solver="ci"`` :class:`CASSCF` or :class:`CASCI` — or a
     finished :class:`NEVPT2` on either, in which case the corrected energies replace the
     diagonal **and the header records the hybrid protocol** (``H`` from perturbation theory,
@@ -2477,13 +2483,17 @@ class PropertyDump(_Stage):
         return self.states_stage.assign(matrices=self.matrices, tol_cm=tol_cm, report=report)
 
     def _summary_entries(self):
-        return [
+        entries = [
             ("file", str(self.path)),
             ("states", str(self.matrices.n_states)),
             ("energies", "NEVPT2-corrected (hybrid protocol, recorded)"
              if isinstance(self.source, NEVPT2)
              else type(self.states_stage).__name__),
         ]
+        if self.matrices.has_hyperfine:
+            entries.append(("hyperfine nuclei",
+                            ", ".join(self.matrices.hyperfine_labels)))
+        return entries
 
 
 class PseudospinExport(_Stage):

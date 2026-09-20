@@ -33,6 +33,7 @@ data, under `tests/`, not here.
 [Quantum-computing CI solvers](#quantum-computing-ci-solvers) ·
 [Population analysis and orbital files](#population-analysis-and-orbital-files) ·
 [Multiplets, magnetic moments, and pseudospin](#multiplets-magnetic-moments-and-pseudospin) ·
+[Hyperfine coupling and nuclear data](#hyperfine-coupling-and-nuclear-data) ·
 [The CI sigma vector and determinant addressing](#the-ci-sigma-vector-and-determinant-addressing) ·
 [Atomic Slater–Condon parameters](#atomic-slater-condon-parameters) ·
 [Numerical methods](#numerical-methods)
@@ -450,6 +451,32 @@ data, under `tests/`, not here.
 <a id="r183"></a>**[183]** J. Olsen, B. O. Roos, P. Jørgensen, H. J. Aa. Jensen, *J. Chem. Phys.* **89**, 2185 (1988). DOI: [10.1063/1.455063](https://doi.org/10.1063/1.455063) — determinant-based CI with RAS spaces; the one-particle transition-density route to moment matrices, and the string-driven sigma-vector formulation with the folded one-electron operator. ⚠ Kuiva applies **no picture-change transformation** to L and S by default (the same choice OpenMolcas RASSI makes); what removing that approximation requires is [27].
 
 <a id="r184"></a>**[184]** E. Tiesinga, P. J. Mohr, D. B. Newell, B. N. Taylor, *Rev. Mod. Phys.* **93**, 025010 (2021). DOI: [10.1103/RevModPhys.93.025010](https://doi.org/10.1103/RevModPhys.93.025010) — CODATA 2018 recommended values: the free-electron g factor and the reporting value of the speed of light.
+
+## Hyperfine coupling and nuclear data
+
+<a id="r201"></a>**[201]** N. J. Stone, *Table of Recommended Nuclear Magnetic Dipole Moments*, IAEA INDC(NDS)-0794 (2019). DOI: [10.61092/iaea.yjpc-cns6](https://doi.org/10.61092/iaea.yjpc-cns6) — the recommended nuclear magnetic dipole moments the tabulated nuclear g factors are derived from.
+
+<a id="r202"></a>**[202]** N. J. Stone, *Table of Nuclear Electric Quadrupole Moments*, IAEA INDC(NDS)-0833 (2021) — the companion compilation for electric quadrupole moments.
+
+<a id="r203"></a>**[203]** P. Pyykkö, *Mol. Phys.* **116**, 1328 (2018). DOI: [10.1080/00268976.2018.1426131](https://doi.org/10.1080/00268976.2018.1426131) — year-2017 nuclear quadrupole moments, and the source of their **signs**. ⚠ Several widely circulated tables carry the magnitude with the sign dropped; a quadrupole moment whose sign is not verified is stored as absent rather than as a magnitude, because the sign of Q is the sign of every splitting computed from it.
+
+<a id="r204"></a>**[204]** J. Meija, T. B. Coplen, M. Berglund, W. A. Brand, P. De Bièvre, M. Gröning, N. E. Holden, J. Irrgeher, R. D. Loss, T. Walczyk, T. Prohaska, *Pure Appl. Chem.* **88**, 293 (2016). DOI: [10.1515/pac-2015-0503](https://doi.org/10.1515/pac-2015-0503) — isotopic compositions of the elements; the natural abundances that decide which isotope a per-element hyperfine request means.
+
+<a id="r205"></a>**[205]** J. Autschbach, *J. Chem. Theory Comput.* **13**, 710 (2017). DOI: [10.1021/acs.jctc.6b01014](https://doi.org/10.1021/acs.jctc.6b01014) — hyperfine coupling under the X2C transformation, with the **unperturbed** X and R. That is the choice Kuiva makes, and it is what lets the hyperfine field be an *operator* usable between different states rather than a derivative of one state's energy.
+
+<a id="r206"></a>**[206]** L. Birnoschi, N. F. Chilton, *J. Chem. Theory Comput.* **18**, 4719 (2022). DOI: [10.1021/acs.jctc.2c00257](https://doi.org/10.1021/acs.jctc.2c00257) — Hyperion: hyperfine coupling from spin-orbit multireference wavefunctions. ⚠ The result carried over here is that after the picture change the Fermi-contact and spin-dipole mechanisms are **one** spin-dependent term and do not separate, so one total operator per Cartesian component is written and never an FC/SD/PSO decomposition of matrices.
+
+<a id="r207"></a>**[207]** Y. J. Franzke, J. M. Yu, *J. Chem. Theory Comput.* **18**, 323 (2022). DOI: [10.1021/acs.jctc.1c01027](https://doi.org/10.1021/acs.jctc.1c01027) — the complete X2C derivative for hyperfine coupling, its local (DLU) form, and the finite nucleus applied to the vector as well as the scalar potential. ⚠ Kuiva deliberately does **not** take the response of the decoupling to the nuclear moment; this is the reference for the size of what is left out.
+
+<a id="r208"></a>**[208]** E. Malkin, M. Repiský, S. Komorovský, P. Mach, O. L. Malkina, V. G. Malkin, *J. Chem. Phys.* **134**, 044111 (2011) — four-component hyperfine coupling with a **Gaussian magnetization** distribution equal to the nuclear charge distribution, which is the finite-nucleus model the hyperfine integrals inherit from the molecule.
+
+<a id="r209"></a>**[209]** A. L. Wysocki, K. Park, arXiv:[2309.09349](https://arxiv.org/abs/2309.09349) (2023) — hyperfine coupling for lanthanide single-molecule magnets, with the table of picture-change factors: the bare operator is wrong by 4–10 wherever s character carries spin density, which is why the hyperfine operator is *always* picture-changed here.
+
+<a id="r210"></a>**[210]** P. A. B. Haase, E. Eliav, M. Iliaš, A. Borschevsky, *J. Phys. Chem. A* **124**, 3157 (2020) — finite-nucleus and Bohr–Weisskopf contributions to hyperfine coupling; the orientation for how large the nuclear-model choice is at high Z.
+
+<a id="r211"></a>**[211]** K. Sharkas, B. Pritchard, J. Autschbach, *J. Chem. Theory Comput.* **11**, 538 (2015). DOI: [10.1021/ct500988h](https://doi.org/10.1021/ct500988h) — hyperfine coupling for Kramers doublets from spin–orbit multireference states, and the `A A^T = 3/[S(S+1)(2S+1)] · Tr_block(h_u h_v)` construction. ⚠ Kuiva uses it only as a **phase-invariant reduction** for reporting, in the same sense as the principal g values: no tensor is fitted, no sign is recovered, and nothing of the kind is written to a file. The matrices of the hyperfine field operator are what is stored, and any A tensor belongs to the external property code.
+
+<a id="r212"></a>**[212]** R. Feng, T. J. Duignan, J. Autschbach, *J. Chem. Theory Comput.* **17**, 255 (2021). DOI: [10.1021/acs.jctc.0c01005](https://doi.org/10.1021/acs.jctc.0c01005) — X2C property operators evaluated between spin–orbit states, and the caveat that a valence active space carries no core-s spin polarization, hence little of the isotropic (contact) coupling. That limitation is announced at the point a nucleus is selected and restated in the header of every file that carries these operators.
 
 ## The CI sigma vector and determinant addressing
 

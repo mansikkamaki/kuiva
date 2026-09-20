@@ -34,6 +34,29 @@ coincide is not a coincidence: a Kramers doublet is the ``J = 1/2`` case. This g
 free-ion test system an **analytic** target that no program's conventions can affect
 (Ce(3+) ``2F5/2``: g = 6/7; Yb(3+) ``2F7/2``: g = 8/7; Dy(3+) ``6H15/2``: g = 4/3).
 
+The hyperfine field, and why it needs a *second* invariant
+----------------------------------------------------------
+The hyperfine field operators ``T_{K,u}`` that :mod:`kuiva.props.dump` writes are vector
+operators of exactly the same kind as ``mu``, so ``Tr_b(T_u T_v)`` is invariant for the same
+reason — :func:`block_hyperfine_tensor` is :func:`block_operator_tensor` under another name and
+another unit. Its principal values reduce to ``|A|`` in MHz for a stated isotope through
+:func:`multiplet_hyperfine_values`, which is the ``A A^T`` construction every published
+molecular implementation uses on a doublet, generalized to a ``2J+1`` block exactly as
+:func:`multiplet_g_values` generalizes ``g g^T``. ⚠ **It is a reduction and not a fitted
+tensor**: no sign is recovered, no pseudospin rotation is performed and nothing is written to a
+file. Kuiva writes operators; A tensors belong to the external code.
+
+⚠ **Squaring an operator throws its orientation away, and for the hyperfine field that matters
+more than it does for ``g``.** ``Tr_b(T_u T_v)`` fixes ``|A|`` and says nothing about where
+``A``'s axes sit relative to ``g``'s, nor about the two operators' relative sign — and the
+relative sign is measurable. The **mixed** invariant ``X_uv = Tr_b(mu_u T_v)``
+(:func:`block_cross_tensor`) carries both, is real for Hermitian operators, and is invariant
+under the same unitary mixing. :func:`block_collinearity` is its one-number reading,
+``sum_u Tr_b(mu_u T_u) / sqrt(Tr M Tr T)``, which lies in ``[-1, 1]`` by Cauchy-Schwarz and
+reaches ``+-1`` exactly when ``T`` is proportional to ``mu`` on the block — which is what the
+Wigner-Eckart theorem makes true inside a free-ion ``J`` manifold, and what a wrong component
+ordering, frame or conjugation breaks.
+
 ⚠ The non-Kramers pseudo-doublet, and why it needs saying
 ----------------------------------------------------------
 An **integer**-spin ion — Tb(3+) ``7F6``, Ho(3+) ``5I8``, the Ln SMMs this program exists for
@@ -81,24 +104,31 @@ References
 * Lande g factor and free-ion multiplets: standard atomic theory, e.g. R. D. Cowan,
   "The Theory of Atomic Structure and Spectra", Univ. California Press (1981), ch. 11.
 * Free electron g factor: CODATA 2018 recommended values, doi:10.1103/RevModPhys.93.025010.
+* The ``A A^T`` reduction of :func:`multiplet_hyperfine_values`, on a doublet: K. Sharkas,
+  B. Pritchard, J. Autschbach, J. Chem. Theory Comput. 11, 538 (2015), doi:10.1021/ct500988h;
+  L. Birnoschi, N. F. Chilton, J. Chem. Theory Comput. 18, 4719 (2022),
+  doi:10.1021/acs.jctc.2c00257. ⚠ Used here as a reduction for reporting, never as a fit.
+* The free-ion hyperfine constant of a single ``nl`` electron,
+  ``A_j = a_l l(l+1)/[j(j+1)]``, which gives the test suite an analytic target independent of
+  the radial function: A. Abragam, B. Bleaney, ibid., ch. 17.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
 from ..util.logging import get_logger
-#: Hartree -> wavenumber conversion (CODATA 2018). ⚠ Re-exported from the one unit table,
-#: :mod:`kuiva.util.units`, bitwise the literal that has always lived here; every layer that
-#: converts through it imports either name and gets the same number.
-from ..util.units import HARTREE_TO_CM
+#: Two constants re-exported from the one unit table, :mod:`kuiva.util.units`, bitwise the
+#: literals that have always lived here — every layer imports either name and gets the same
+#: number. :data:`HARTREE_TO_CM` is the Hartree -> wavenumber conversion (CODATA 2018);
+#: :data:`G_ELECTRON` is the free-electron g factor, used in ``mu = -(L + g_e S) mu_B``. ⚠ The
+#: latter moved to the table because the hyperfine field operator needs it too and
+#: :mod:`kuiva.interface` may not import :mod:`kuiva.props`.
+from ..util.units import G_ELECTRON, HARTREE_TO_CM, HARTREE_TO_MHZ
 
 log = get_logger(__name__)
-
-#: Free-electron g factor (CODATA 2018). Used in mu = -(L + g_e S) mu_B.
-G_ELECTRON = 2.00231930436256
 
 #: ⚠ **Advisory only, and not a physical tolerance.** Two singlets closer than this warn that
 #: they *may* be a tunnelling-split non-Kramers pseudo-doublet (module docstring). It states
@@ -161,6 +191,16 @@ class Multiplet:
         second moment and says nothing about a transition **out** of the block — that is
         :func:`block_line_strengths` — and for a charged molecule it moves with the gauge
         origin.
+    hyperfine : dict of str -> np.ndarray, shape (3, 3)
+        Per treated nucleus (keyed by its atom label), the invariant
+        ``T_ij = Tr_b(T_i T_j)`` in ``(Eh/mu_N)^2`` (:func:`block_hyperfine_tensor`), or
+        ``None`` if no hyperfine matrices were given. :func:`multiplet_hyperfine_values` turns
+        one of these into ``|A|`` in MHz for a stated isotope.
+    hyperfine_cross : dict of str -> np.ndarray, shape (3, 3)
+        Per nucleus, the **mixed** invariant ``X_ij = Tr_b(mu_i T_j)``
+        [``mu_B Eh/mu_N``] — the part squaring ``T`` throws away, carrying the relative sign
+        and orientation of ``A`` against ``g`` (module docstring). ⚠ **Not symmetric** in
+        general, so it is not symmetrized. ``None`` where either operator is absent.
     """
     start: int
     size: int
@@ -173,6 +213,8 @@ class Multiplet:
     non_kramers: bool = False
     tunnelling_gap_cm: Optional[float] = None
     d_tensor: Optional[np.ndarray] = None
+    hyperfine: Optional[Dict[str, np.ndarray]] = None
+    hyperfine_cross: Optional[Dict[str, np.ndarray]] = None
 
     @property
     def j(self) -> float:
@@ -336,6 +378,115 @@ def block_dipole_tensor(d: np.ndarray, start: int, size: int) -> np.ndarray:
     block; what a transition needs is :func:`block_line_strengths`, between two of them.
     """
     return block_operator_tensor(d, start, size)
+
+
+def block_hyperfine_tensor(t: np.ndarray, start: int, size: int) -> np.ndarray:
+    """The invariant ``T_ij = Tr_b(T_i T_j)`` [``(Eh/mu_N)^2``] over one degenerate block.
+
+    The hyperfine counterpart of :func:`block_moment_tensor`, and — like it and like
+    :func:`block_dipole_tensor` — the *same* :func:`block_operator_tensor`, because the
+    invariance argument is one argument and the three differ only in units. It is the
+    reduction any validation of a stored ``T`` matrix must go through: the file fixes no phase
+    convention and degenerate states mix arbitrarily.
+
+    ⚠ **This is the isotope-independent half.** ``T`` is the hyperfine *field* operator, in
+    Hartree per nuclear magneton; multiplying by ``g_N`` and converting is
+    :func:`multiplet_hyperfine_values`, and which isotope that is, is the consumer's choice
+    rather than a property of this tensor.
+    """
+    return block_operator_tensor(t, start, size)
+
+
+def block_cross_tensor(a: np.ndarray, b: np.ndarray, start: int, size: int) -> np.ndarray:
+    """The mixed invariant ``X_ij = Tr_b(A_i B_j)`` over one block, for two vector operators.
+
+    ``Tr_b(mu_i T_j)`` is what this exists for: the relative sign and orientation of the
+    hyperfine field against the magnetic moment, which ``Tr_b(T_i T_j)`` cannot carry because
+    it is quadratic in one operator alone (module docstring). Invariant under any unitary
+    mixing inside the block and under any per-state phase, exactly as
+    :func:`block_operator_tensor` is, and **real** whenever both operators are Hermitian —
+    ``Tr(AB)* = Tr(BA) = Tr(AB)``.
+
+    ⚠ **Not symmetrized, unlike** :func:`block_operator_tensor`: ``Tr_b(A_i B_j)`` and
+    ``Tr_b(A_j B_i)`` are different numbers for two different operators, and averaging them
+    would discard the antisymmetric part, which is precisely the relative *rotation* of the two
+    operators' frames. The imaginary part is rounding and is discarded.
+    """
+    sl = slice(start, start + size)
+    x = np.asarray(a)[:, sl, sl]
+    y = np.asarray(b)[:, sl, sl]
+    if x.shape != y.shape:
+        raise ValueError("the two operators must have the same shape over the block; got {} "
+                         "and {}".format(x.shape, y.shape))
+    return np.real(np.einsum("iab,jba->ij", x, y))
+
+
+def block_collinearity(a: np.ndarray, b: np.ndarray, start: int, size: int) -> float:
+    """``sum_i Tr_b(A_i B_i) / sqrt(Tr_b(A.A) Tr_b(B.B))`` — one number in ``[-1, 1]``.
+
+    The scalar reading of :func:`block_cross_tensor`, and the sharpest program-independent
+    statement available about a pair of vector operators on one degenerate block. Writing
+    ``<A, B> = sum_i Tr_b(A_i B_i)`` — a genuine inner product on Hermitian block operators —
+    this is ``<A, B> / sqrt(<A,A> <B,B>)``, so Cauchy-Schwarz bounds it by one and the bound is
+    attained **exactly when ``B`` is a real multiple of ``A`` on the block**, the sign being
+    the sign of that multiple.
+
+    That is not a decoration: inside a free-ion ``2J+1`` manifold the Wigner-Eckart theorem
+    makes every vector operator proportional to ``J``, so ``mu`` and ``T`` must be collinear
+    there to machine precision, and ``+-1`` is therefore an analytic target no convention in
+    this program or any other can move. A wrong Cartesian component ordering, a rotated frame
+    or a **conjugation** error breaks it while leaving every quadratic invariant intact.
+    ⚠ The last of those is worth spelling out, because it is invisible to most checks: orbital
+    coefficients and density matrices transform *oppositely* (``|p'> = sum_p |p> U_{pp'}`` sends
+    ``gamma -> U^T gamma U*``, not ``U^dag gamma U``), the two laws coincide in real arithmetic,
+    and a wrong one leaves occupations bounded, traces right and every matrix still Hermitian.
+    Any test of this quantity must therefore rotate by a **genuinely complex** unitary.
+
+    Returns ``0.0`` when either operator vanishes on the block — "not defined here", which for
+    a ``size = 1`` block is the honest answer.
+    """
+    sl = slice(start, start + size)
+    x = np.asarray(a)[:, sl, sl]
+    y = np.asarray(b)[:, sl, sl]
+    xx = float(np.real(np.einsum("iab,iba->", x, x)))
+    yy = float(np.real(np.einsum("iab,iba->", y, y)))
+    if xx <= 0.0 or yy <= 0.0:
+        return 0.0
+    return float(np.real(np.einsum("iab,iba->", x, y)) / np.sqrt(xx * yy))
+
+
+def multiplet_hyperfine_values(t_tensor: np.ndarray, size: int,
+                               g_nuclear: float) -> Tuple[float, ...]:
+    """Principal ``|A|`` values of a block, in **MHz**, for a nucleus of ``g_N = g_nuclear``.
+
+    The first-order hyperfine coupling on a block of dimension ``2S+1`` is
+    ``H = sum_uv I_u A_uv S_v``, so the block-restricted field operator ``g_N T_u`` equals
+    ``sum_v A_uv S_v`` and
+
+        ``(A A^T)_uv = 3 g_N^2 Tr_b(T_u T_v) / [S(S+1)(2S+1)]``,
+
+    which is the ``A A^T`` construction of every published molecular implementation
+    (Sharkas/Autschbach 2015; Birnoschi & Chilton 2022) with the same normalization
+    :func:`multiplet_g_values` uses for ``g g^T`` — a Kramers doublet is again the
+    ``S = 1/2`` case of a ``2J+1`` manifold, and for a free ion the values are the
+    experimentalist's ``A_J``. Returned ascending, in MHz, and an **empty tuple** for a
+    ``size = 1`` block, which carries no moment of any kind.
+
+    ⚠ **Magnitudes.** ``A A^T`` is quadratic, so the sign of ``A`` — and with it the sign of
+    ``g_N``, which is a real physical sign — is not recoverable from this alone. The relative
+    sign against ``g`` is :func:`block_collinearity`'s, and an absolute sign would require a
+    pseudospin fit, which Kuiva does not do (module docstring).
+
+    ⚠ **A report quantity, not a stored one.** Nothing in either formatted file carries it;
+    what is written is ``T`` itself, isotope-independent, and the consumer picks the isotope.
+    """
+    j = (size - 1) / 2.0
+    norm = j * (j + 1.0) * (2.0 * j + 1.0)
+    if norm <= 0.0:
+        return ()
+    eigs = np.clip(np.linalg.eigvalsh(np.asarray(t_tensor, dtype=float)), 0.0, None)
+    scale = abs(float(g_nuclear)) * HARTREE_TO_MHZ
+    return tuple(float(x) for x in scale * np.sqrt(3.0 * eigs / norm))
 
 
 def block_line_strengths(d: np.ndarray, blocks: Sequence[Tuple[int, int]]) -> np.ndarray:
@@ -552,7 +703,8 @@ def analyse_spectrum(energies_hartree: Sequence[float],
                      mu: Optional[np.ndarray] = None,
                      tol_cm: float = 1.0,
                      pseudo_doublet_tol_cm: Optional[float] = None,
-                     d: Optional[np.ndarray] = None) -> List[Multiplet]:
+                     d: Optional[np.ndarray] = None,
+                     hyperfine: Optional[Mapping[str, np.ndarray]] = None) -> List[Multiplet]:
     """Full phase-invariant description of a SOC spectrum: blocks + moment invariants.
 
     This is the canonical reduction applied to Kuiva's own output and to the OpenMolcas /
@@ -579,6 +731,11 @@ def analyse_spectrum(energies_hartree: Sequence[float],
         Electric dipole matrices in the same basis [e a_0]. Fills :attr:`Multiplet.d_tensor`
         and nothing else; the blocks and the grouping are decided by the energies exactly as
         before, so passing this changes no existing number.
+    hyperfine : mapping of str -> (3, n, n), optional
+        Hyperfine field matrices per nucleus, keyed by atom label, in the same basis
+        [Eh/mu_N]. Fills :attr:`Multiplet.hyperfine` and — when ``mu`` was given too —
+        :attr:`Multiplet.hyperfine_cross`. Like ``d``, it changes no existing number: the
+        blocking is the energies' decision alone.
     """
     e = np.asarray(energies_hartree, dtype=float)
     order = np.argsort(e)
@@ -589,6 +746,10 @@ def analyse_spectrum(energies_hartree: Sequence[float],
     d_sorted = None
     if d is not None:
         d_sorted = np.asarray(d)[:, order, :][:, :, order]
+    hf_sorted = None
+    if hyperfine:
+        hf_sorted = {str(k): np.asarray(v)[:, order, :][:, :, order]
+                     for k, v in hyperfine.items()}
 
     blocks = degenerate_blocks(e_cm, tol_cm=tol_cm)
     if pseudo_doublet_tol_cm is None:
@@ -612,13 +773,21 @@ def analyse_spectrum(energies_hartree: Sequence[float],
                 g_sign = g_determinant_sign(mu_sorted, start, size)
         d_tensor = (None if d_sorted is None
                     else block_dipole_tensor(d_sorted, start, size))
+        hf_tensors = hf_cross = None
+        if hf_sorted is not None:
+            hf_tensors = {k: block_hyperfine_tensor(v, start, size)
+                          for k, v in hf_sorted.items()}
+            if mu_sorted is not None:
+                hf_cross = {k: block_cross_tensor(mu_sorted, v, start, size)
+                            for k, v in hf_sorted.items()}
         out.append(Multiplet(start=start, size=size,
                              energy_cm=float(np.mean(blk_e)),
                              spread_cm=float(blk_e.max() - blk_e.min()),
                              m_tensor=m_tensor, g_values=g_vals,
                              g_axes=g_axes, g_sign=g_sign,
                              non_kramers=gap is not None, tunnelling_gap_cm=gap,
-                             d_tensor=d_tensor))
+                             d_tensor=d_tensor, hyperfine=hf_tensors,
+                             hyperfine_cross=hf_cross))
     log.debug("analysed SOC spectrum: %d states -> %d multiplets (tol=%.3g cm-1, %d "
               "non-Kramers pair(s))", e.size, len(out), tol_cm,
               sum(1 for m in out if m.non_kramers))
@@ -662,8 +831,11 @@ def degeneracy_pattern(multiplets: Sequence[Multiplet]) -> Tuple[int, ...]:
 
 
 __all__ = [
-    "G_ELECTRON", "HARTREE_TO_CM", "Multiplet", "analyse_spectrum", "block_moment_tensor",
+    "G_ELECTRON", "HARTREE_TO_CM", "HARTREE_TO_MHZ", "Multiplet", "analyse_spectrum",
+    "block_moment_tensor",
     "block_operator_tensor", "block_dipole_tensor", "block_line_strengths",
+    "block_hyperfine_tensor", "block_cross_tensor", "block_collinearity",
+    "multiplet_hyperfine_values",
     "spectrum_line_strengths",
     "degeneracy_pattern", "degenerate_blocks", "lande_g", "magnetic_moment_matrices",
     "multiplet_g_values",

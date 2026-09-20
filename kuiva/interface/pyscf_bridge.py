@@ -359,6 +359,11 @@ class PropertyIntegrals:
     nuclear_dipole: Optional[np.ndarray] = None
     molecular_charge: int = 0
     dipole_picture_change: Optional["PictureChangedDipole"] = None
+    #: The hyperfine field operators, when nuclei were selected. ⚠ **Always picture-changed,
+    #: independent of the flag above** (see :class:`HyperfineIntegrals`), and absent unless
+    #: ``hyperfine=`` asked for them: unlike ``mu`` and ``d`` there is no cheap default to fall
+    #: back on, because the cost is one four-component-transformed operator per nucleus.
+    hyperfine: Optional["HyperfineIntegrals"] = None
 
     @property
     def nao(self) -> int:
@@ -368,6 +373,11 @@ class PropertyIntegrals:
     def has_dipole(self) -> bool:
         """Whether the electric dipole was ingested beside the angular momentum."""
         return self.position is not None
+
+    @property
+    def has_hyperfine(self) -> bool:
+        """Whether hyperfine field operators were ingested."""
+        return self.hyperfine is not None and bool(self.hyperfine.nuclei)
 
     def moment_operator(self) -> Optional[np.ndarray]:
         """``(L + 2 S)`` picture-changed, or ``None`` when the bare operators are in use.
@@ -439,6 +449,21 @@ class PropertyIntegrals:
         """True for a charged molecule — see :attr:`molecular_charge`."""
         return int(self.molecular_charge) != 0
 
+    def hyperfine_integrals(self) -> "HyperfineIntegrals":
+        """The ingested :class:`HyperfineIntegrals`, or a refusal.
+
+        ⚠ Refuses rather than returning an empty container, for the same reason
+        :meth:`electric_dipole_ao` refuses rather than returning zeros: a hyperfine matrix that
+        is silently zero is exactly the plausible-wrong file this layer exists to prevent.
+        """
+        if not self.has_hyperfine:
+            raise ValueError(
+                "these property integrals carry no hyperfine operators: no nuclei were "
+                "selected. Pass hyperfine={'Tb1': True} (or a mapping naming the nuclei) to "
+                "the front end -- it is not a default, because the cost is one "
+                "four-component-transformed operator per nucleus.")
+        return self.hyperfine
+
     def provenance(self) -> Dict[str, object]:
         pc = "none (bare AO operators, used unchanged in the 2c basis)"
         if self.picture_change is not None:
@@ -446,7 +471,7 @@ class PropertyIntegrals:
         dipole_pc = "none (bare AO position operator, used unchanged in the 2c basis)"
         if self.dipole_picture_change is not None:
             dipole_pc = self.dipole_picture_change.label()
-        return {
+        record = {
             "gauge_origin_bohr": [float(x) for x in np.asarray(self.gauge_origin).ravel()],
             "gauge_origin_choice": self.origin_label,
             "picture_change": pc,
@@ -454,6 +479,11 @@ class PropertyIntegrals:
             "nuclear_dipole_ea0": [float(x) for x in self.nuclear_dipole_vector()],
             "molecular_charge": int(self.molecular_charge),
         }
+        # ⚠ Only when they exist. A ``"hyperfine": null`` in every header of every file this
+        # program has ever written would say that a feature exists, which is not provenance.
+        if self.has_hyperfine:
+            record["hyperfine"] = self.hyperfine.provenance()
+        return record
 
     def __repr__(self) -> str:
         r = np.asarray(self.gauge_origin).ravel()
@@ -599,7 +629,8 @@ def _atom_gauge_origin(mol, coords: np.ndarray, key) -> Tuple[np.ndarray, str]:
 def ingest_property_integrals(mol, gauge_origin=None, *, picture_change: bool = False,
                               approx: str = "1e",
                               decoupling_options: Optional[Dict[str, object]] = None,
-                              anomaly_picture_change: bool = False) -> PropertyIntegrals:
+                              anomaly_picture_change: bool = False,
+                              hyperfine=None) -> PropertyIntegrals:
     """Orbital angular momentum **and** electric dipole about a gauge origin, as plain arrays.
 
     ⚠ **The gauge origin is a real choice and it changes the answer.** ``L`` is defined
@@ -621,8 +652,25 @@ def ingest_property_integrals(mol, gauge_origin=None, *, picture_change: bool = 
     result. ⚠ **One flag governs both operators on purpose** — a file whose ``mu`` carries the
     correction and whose ``d`` does not would be a hybrid whose halves are not comparable with
     anything, and nothing in it would say so.
+
+    ``hyperfine`` selects the nuclei whose **hyperfine field operator** is built
+    (:func:`resolve_hyperfine_nuclei`). ⚠ **Those operators are always picture-changed, whatever
+    ``picture_change`` says** — the bare operator is wrong by a factor of 4-10 wherever s
+    character carries spin density — so this is the one property family the flag above does not
+    govern, and the exception is stated per operator family in every file's header. ⚠ It is
+    never a default and there is no "all magnetic nuclei": one four-component-transformed
+    operator is built and stored per nucleus.
+
+    ⚠ **The four-component problem and its decoupling are built at most once for the whole
+    call** (:class:`PropertyTransform`) and shared by the moment, the dipole and every nucleus.
+    Bitwise the same numbers as building one apiece, and the only way a molecule with several
+    metal centres does not pay for the same two matrices five times.
     """
     r_g, label = gauge_origin_for(mol, gauge_origin)
+    # ⚠ Resolved **first**, before the SCF's integrals are touched: a mistyped isotope, a ghost
+    # atom or an I = 0 nucleus then fails at the point it was written rather than after the
+    # four-component problem has been solved.
+    nuclei = None if hyperfine is None else resolve_hyperfine_nuclei(mol, hyperfine)
     res.require("one-electron property integrals",
                 property_integral_memory_gb(int(mol.nao)),
                 note="2 x (3, nao, nao) real, nao = {}".format(int(mol.nao)))
@@ -654,6 +702,13 @@ def ingest_property_integrals(mol, gauge_origin=None, *, picture_change: bool = 
             "meaningful Hamiltonian; set picture_change=True as well or neither.")
     pc = None
     dipole_pc = None
+    hf = None
+    # One four-component problem and one decoupling for every operator that needs them, built
+    # only if one does. ⚠ `hyperfine` needs it whether or not `picture_change` was asked for.
+    transform = (property_transform(mol, approx=approx,
+                                    decoupling_options=decoupling_options,
+                                    what="property")
+                 if (picture_change or nuclei is not None) else None)
     if picture_change:
         # ⚠ The origin is handed on in its TAGGED form. It is already resolved to bohr here,
         # and passing the bare array makes `gauge_origin_for` warn the user about a bare tuple
@@ -661,12 +716,18 @@ def ingest_property_integrals(mol, gauge_origin=None, *, picture_change: bool = 
         resolved = ("bohr",) + tuple(float(x) for x in np.asarray(r_g).ravel())
         pc = picture_changed_moment(mol, resolved, approx=approx,
                                     decoupling_options=decoupling_options,
-                                    anomaly_picture_change=anomaly_picture_change)
+                                    anomaly_picture_change=anomaly_picture_change,
+                                    transform=transform)
         # ⚠ One flag, both operators. A file whose mu carries the picture change and whose d
         # does not is a hybrid: nothing in it says which half is which, and the two halves are
         # not comparable with anything. See PropertyIntegrals.dipole_picture_change.
         dipole_pc = picture_changed_dipole(mol, resolved, approx=approx,
-                                           decoupling_options=decoupling_options)
+                                           decoupling_options=decoupling_options,
+                                           transform=transform)
+    if nuclei is not None:
+        hf = picture_changed_hyperfine(mol, nuclei, approx=approx,
+                                       decoupling_options=decoupling_options,
+                                       transform=transform)
     charge = int(mol.charge)
     return PropertyIntegrals(irxp=np.ascontiguousarray(irxp),
                              gauge_origin=np.ascontiguousarray(r_g), origin_label=label,
@@ -674,7 +735,8 @@ def ingest_property_integrals(mol, gauge_origin=None, *, picture_change: bool = 
                              position=np.ascontiguousarray(position),
                              nuclear_dipole=nuclear_dipole(mol, r_g),
                              molecular_charge=charge,
-                             dipole_picture_change=dipole_pc)
+                             dipole_picture_change=dipole_pc,
+                             hyperfine=hf)
 
 
 def property_integral_memory_gb(nao: int) -> float:
@@ -826,10 +888,86 @@ def _anomaly_small_block(xmol) -> np.ndarray:
     return np.stack([2.0 * sigma_dot(d[:, k]) - sig_p2[k] for k in range(3)])
 
 
+@dataclass(frozen=True)
+class PropertyTransform:
+    """The four-component problem and the ``(X, R)`` **every** property picture change shares.
+
+    ⚠ **It exists because the four-component one-electron problem and its decoupling are the
+    expensive part and they do not depend on the operator.** Built per operator — as it was
+    when there were only two — the magnetic moment and the electric dipole each paid for one
+    ``four_component_one_electron`` and one ``decoupling_matrices``; with the hyperfine field
+    there is one operator *per nucleus*, and a complex with three metal centres would have paid
+    five times for the same two matrices.
+
+    ⚠ **Sharing is bitwise, and that is asserted rather than assumed** (``tests/
+    test_property_picture_change.py``): both are deterministic functions of ``mol``, ``approx``
+    and ``light_speed``, so computing them once and handing them round changes no number. The
+    one thing it does change is the *order* in which the memory reservations are made — the
+    decoupling workspace is now reserved before the operator integrals rather than after — so
+    on a machine tight enough to refuse, the refusal names a different phase. No result moves.
+
+    Attributes
+    ----------
+    fc : MolecularFourComponent
+        The four-component blocks in the **decontracted** working basis, and the matrix that
+        contracts a transformed operator back to the molecule's own AO basis.
+    xmol : object
+        ⚠ The decontracted ``Mole``. It is a PySCF object and it **never leaves this module**:
+        every operator's integrals are taken over it, which is what guarantees they are all in
+        the basis ``fc`` was built in. Callers outside the bridge take the finished arrays.
+    x, r : ndarray (2*nao, 2*nao)
+        The decoupling and renormalization matrices, for :func:`kuiva.x2c.decouple.picture_change`.
+    approx : str
+        Which decoupling produced them (``"1e"``, ``"1e-dlu"``), recorded with every operator.
+    """
+
+    fc: "MolecularFourComponent"
+    xmol: object
+    x: np.ndarray
+    r: np.ndarray
+    approx: str
+
+
+def property_transform(mol, *, approx: str = "1e",
+                       decoupling_options: Optional[Dict[str, object]] = None,
+                       light_speed: Optional[float] = None,
+                       what: str = "property") -> PropertyTransform:
+    """Build the :class:`PropertyTransform` a picture change is applied through.
+
+    ``approx`` must be the decoupling the **Hamiltonian** uses; anything else is refused rather
+    than substituted, because a property operator transformed through a different decoupling
+    from the Hamiltonian whose eigenstates it is evaluated between is Hermitian, plausible and
+    describes two different pictures at once.
+    """
+    from pyscf.x2c import x2c
+
+    if approx not in ("1e", "1e-dlu"):
+        raise NotImplementedError(
+            "the property picture change is implemented for the exact molecular decoupling "
+            "(approx='1e') and the local one (approx='1e-dlu'), not for {!r}. The decoupling "
+            "used for the {} operator must be the one the Hamiltonian uses, so this is a "
+            "refusal rather than a silent substitution.".format(approx, what))
+
+    fc = four_component_one_electron(mol, uncontract=True, light_speed=light_speed)
+    helper = x2c.SpinOrbitalX2CHelper(mol)
+    helper.xuncontract = True
+    xmol, _ = helper.get_xmol(mol)
+    if int(xmol.nao) != int(fc.nao):
+        raise RuntimeError(
+            "the working basis of the four-component blocks ({} functions) and of the property "
+            "integrals ({}) differ; they must be the same decontracted basis or the picture "
+            "change would transform one operator in another's basis"
+            .format(fc.nao, xmol.nao))
+    x, r = _property_decoupling(mol, fc, approx, decoupling_options, what)
+    return PropertyTransform(fc=fc, xmol=xmol, x=x, r=r, approx=approx)
+
+
 def picture_changed_moment(mol, gauge_origin=None, *, approx: str = "1e",
                            decoupling_options: Optional[Dict[str, object]] = None,
                            light_speed: Optional[float] = None,
-                           anomaly_picture_change: bool = False) -> PictureChangedMoment:
+                           anomaly_picture_change: bool = False,
+                           transform: Optional[PropertyTransform] = None
+                           ) -> PictureChangedMoment:
     """Apply the X2C picture change to the magnetic moment operator.
 
     The property operators this project normally uses are the **bare** non-relativistic ``L``
@@ -867,6 +1005,10 @@ def picture_changed_moment(mol, gauge_origin=None, *, approx: str = "1e",
         Also return the picture-changed **spin** operator, for the ``g_e - 2`` anomaly term.
         Off by default: the anomaly is an even operator whose small-component block enters at
         ``O((g_e - 2)/c^2)``, and using the bare ``S`` there is the measured-negligible choice.
+    transform : PropertyTransform, optional
+        A pre-built four-component problem and decoupling to reuse (:func:`property_transform`).
+        Built here when omitted; passing one is what stops every operator in a dump from paying
+        for its own, and is **bitwise** equivalent.
 
     References
     ----------
@@ -875,30 +1017,20 @@ def picture_changed_moment(mol, gauge_origin=None, *, approx: str = "1e",
     * The restricted-kinetic-balance four-component setup and the decoupling: W. Kutzelnigg,
       W. Liu, J. Chem. Phys. 123, 241102 (2005), doi:10.1063/1.2137315.
     """
-    from pyscf.x2c import x2c
-
     from ..spinor.expand import spin_block_diagonal, spin_operator
-    from ..x2c.decouple import FourComponentBlocks, decoupling_matrices, picture_change
-
-    if approx not in ("1e", "1e-dlu"):
-        raise NotImplementedError(
-            "the property picture change is implemented for the exact molecular decoupling "
-            "(approx='1e') and the local one (approx='1e-dlu'), not for {!r}. The decoupling "
-            "used for the moment operator must be the one the Hamiltonian uses, so this is a "
-            "refusal rather than a silent substitution.".format(approx))
+    from ..x2c.decouple import FourComponentBlocks, picture_change
 
     r_g, _ = gauge_origin_for(mol, gauge_origin)
-    fc = four_component_one_electron(mol, uncontract=True, light_speed=light_speed)
-
-    helper = x2c.SpinOrbitalX2CHelper(mol)
-    helper.xuncontract = True
-    xmol, _ = helper.get_xmol(mol)
-    if int(xmol.nao) != int(fc.nao):
-        raise RuntimeError(
-            "the working basis of the four-component blocks ({} functions) and of the property "
-            "integrals ({}) differ; they must be the same decontracted basis or the picture "
-            "change would transform one operator in another's basis"
-            .format(fc.nao, xmol.nao))
+    if transform is None:
+        transform = property_transform(mol, approx=approx,
+                                       decoupling_options=decoupling_options,
+                                       light_speed=light_speed, what="moment")
+    elif transform.approx != approx:
+        raise ValueError(
+            "the shared property transform was built with approx={!r} and this moment operator "
+            "asks for {!r}; one file may not mix two decouplings"
+            .format(transform.approx, approx))
+    fc, xmol = transform.fc, transform.xmol
 
     res.require("picture-changed moment operator", 2.0 * moment_memory_gb(int(fc.nao)),
                 note="3 x (2 nao)^2 complex, working basis nao = {}".format(fc.nao))
@@ -922,7 +1054,7 @@ def picture_changed_moment(mol, gauge_origin=None, *, approx: str = "1e",
                 "this operator would be Hermitian, plausible and wrong."
                 .format(resid, MOMENT_IDENTITY_TOL))
 
-        x, r = _property_decoupling(mol, fc, approx, decoupling_options, "moment")
+        x, r = transform.x, transform.r
 
         zero = np.zeros_like(ls[0])
         moment = np.stack([
@@ -1156,7 +1288,9 @@ def _position_block_residual(xmol, r_g, ll: np.ndarray, ss: np.ndarray,
 
 def picture_changed_dipole(mol, gauge_origin=None, *, approx: str = "1e",
                            decoupling_options: Optional[Dict[str, object]] = None,
-                           light_speed: Optional[float] = None) -> PictureChangedDipole:
+                           light_speed: Optional[float] = None,
+                           transform: Optional[PropertyTransform] = None
+                           ) -> PictureChangedDipole:
     """Apply the X2C picture change to the electric dipole (position) operator.
 
     The default property operators in this program are the **bare** non-relativistic ones used
@@ -1183,6 +1317,9 @@ def picture_changed_dipole(mol, gauge_origin=None, *, approx: str = "1e",
         The decoupling, which must be the Hamiltonian's: ``"1e"`` or ``"1e-dlu"``. ⚠ **A DLU
         moment or dipole operator is unmeasured** and nothing computed from one may be quoted
         as a spectroscopic accuracy.
+    transform : PropertyTransform, optional
+        A pre-built four-component problem and decoupling to reuse; see
+        :func:`picture_changed_moment`.
 
     References
     ----------
@@ -1191,30 +1328,20 @@ def picture_changed_dipole(mol, gauge_origin=None, *, approx: str = "1e",
     * The restricted-kinetic-balance four-component setup and the decoupling: W. Kutzelnigg,
       W. Liu, J. Chem. Phys. 123, 241102 (2005), doi:10.1063/1.2137315.
     """
-    from pyscf.x2c import x2c
-
     from ..spinor.expand import decompose_two_component, two_component_operator
     from ..x2c.decouple import FourComponentBlocks, picture_change
 
-    if approx not in ("1e", "1e-dlu"):
-        raise NotImplementedError(
-            "the property picture change is implemented for the exact molecular decoupling "
-            "(approx='1e') and the local one (approx='1e-dlu'), not for {!r}. The decoupling "
-            "used for the dipole operator must be the one the Hamiltonian uses, so this is a "
-            "refusal rather than a silent substitution.".format(approx))
-
     r_g, _ = gauge_origin_for(mol, gauge_origin)
-    fc = four_component_one_electron(mol, uncontract=True, light_speed=light_speed)
-
-    helper = x2c.SpinOrbitalX2CHelper(mol)
-    helper.xuncontract = True
-    xmol, _ = helper.get_xmol(mol)
-    if int(xmol.nao) != int(fc.nao):
-        raise RuntimeError(
-            "the working basis of the four-component blocks ({} functions) and of the property "
-            "integrals ({}) differ; they must be the same decontracted basis or the picture "
-            "change would transform one operator in another's basis"
-            .format(fc.nao, xmol.nao))
+    if transform is None:
+        transform = property_transform(mol, approx=approx,
+                                       decoupling_options=decoupling_options,
+                                       light_speed=light_speed, what="dipole")
+    elif transform.approx != approx:
+        raise ValueError(
+            "the shared property transform was built with approx={!r} and this dipole operator "
+            "asks for {!r}; one file may not mix two decouplings"
+            .format(transform.approx, approx))
+    fc, xmol = transform.fc, transform.xmol
 
     res.require("picture-changed dipole operator", 2.0 * moment_memory_gb(int(fc.nao)),
                 note="3 x (2 nao)^2 complex, working basis nao = {}".format(fc.nao))
@@ -1234,7 +1361,7 @@ def picture_changed_dipole(mol, gauge_origin=None, *, approx: str = "1e",
                 "wrong, and every transition dipole built from this operator would be "
                 "Hermitian, plausible and wrong.".format(resid, DIPOLE_IDENTITY_TOL))
 
-        x, r = _property_decoupling(mol, fc, approx, decoupling_options, "dipole")
+        x, r = transform.x, transform.r
         zero = np.zeros_like(ll[0])
         position = np.stack([
             fc.contract(picture_change(
@@ -1257,6 +1384,604 @@ def picture_changed_dipole(mol, gauge_origin=None, *, approx: str = "1e",
                     "in the decoupling matrices and not physics", odd)
     return PictureChangedDipole(position=np.ascontiguousarray(position), decoupling=approx,
                                 identity_residual=float(resid))
+
+
+# --- the hyperfine field operator ----------------------------------------------------------
+#
+# ⚠ **What is built here is an OPERATOR, not a coupling constant.** Kuiva computes no A tensor
+# and fits no hyperfine spin Hamiltonian — the same boundary it draws for g tensors. What
+# crosses the front-end boundary is the matrix of
+#
+#     T_{K,u} = mu_N c alpha^2 [ (r_K / r_K^3) x alpha ]_u        [Eh per nuclear magneton]
+#
+# per nucleus K and Cartesian component u, so that the interaction on the electron-nuclear
+# product space is H_hf = sum_K g_N(K) sum_u T_{K,u} (x) I_{K,u} and the nuclear-spin algebra
+# belongs entirely to the external code. Exporting the matrices over the whole electronic model
+# space rather than a first-order coupling on one doublet is a strict superset of what every
+# published molecular implementation does: within the model space it is exact to all orders,
+# hyperfine-Zeeman cross terms and hyperfine-induced tunnel splittings included. What is lost is
+# second-order coupling to states *outside* the model space, and ⚠ the remedy for that is a
+# larger model space, never a correction term.
+
+#: Relative tolerance on the non-relativistic-limit identity below. ⚠ A **refusal**, exactly as
+#: :data:`MOMENT_IDENTITY_TOL` and :data:`DIPOLE_IDENTITY_TOL` are: the identity is exact algebra
+#: and holds to ~1e-16 in practice, so a violation means the spinor mapping, the component
+#: ordering, the sign, the factor of one half or the nuclear origin is wrong — and every one of
+#: those yields a Hermitian, time-reversal-odd, plausible and wrong hyperfine matrix.
+HYPERFINE_IDENTITY_TOL = 1e-10
+
+
+def hyperfine_memory_gb(nao: int, n_nuclei: int) -> float:
+    """Resident cost of the stored hyperfine operators (exact sizing function).
+
+    Two ``(3, 2*nao, 2*nao)`` complex arrays per nucleus — the total operator and its
+    spin-dependent part, which is kept because "is this Fermi-contact or orbital?" is the first
+    question a user asks of a hyperfine number and no consumer can recover it afterwards.
+    ``nao`` is the molecule's **own** AO basis: the decontracted working-basis arrays are
+    transients, one nucleus at a time.
+    """
+    return 2.0 * int(n_nuclei) * res.array_gb((3, 2 * int(nao), 2 * int(nao)), np.complex128)
+
+
+@dataclass(frozen=True)
+class HyperfineNucleus:
+    """One nucleus's picture-changed hyperfine field operator.
+
+    Attributes
+    ----------
+    atom : int
+        0-based atom index in the molecule's atom list. ⚠ Every *user-facing* number is 1-based
+        (:mod:`kuiva.basis.atommap`); this is the internal index, and :attr:`label` is what a
+        file or a report prints.
+    label : str
+        The atom's label as the rest of the program addresses it (``"Tb1"``, ``"O"``), from
+        ``mol.atom_symbol`` — so a per-atom basis or reference configuration that decorated the
+        symbol decorates this too and the nucleus can be matched back to the atom it is.
+    element : str
+        The plain element symbol.
+    atomic_number : int
+        ``Z`` as the **integrals** saw it (``mol.atom_charge``), not as an element table would
+        give it — the same discipline the nuclear dipole follows. It is carried because the
+        ``[NUCLEI]`` table of a stored property file states it, and a reader matching a nucleus
+        to an atom should not have to trust that two element tables agree.
+    moment : NuclearMoment
+        Which isotope was requested, with its ``I``, ``g`` and ``Q``. ⚠ The **operator does not
+        depend on it** beyond the nuclear size model — that is the whole point of writing the
+        field operator rather than a coupling — so the isotope may be changed by the consumer
+        without re-running Kuiva.
+    position : ndarray (3,)
+        The nucleus's position in **bohr**, carried because the operator is defined about it and
+        a file that does not say where is not interpretable.
+    operator : ndarray (3, 2*nao, 2*nao) complex
+        ``T_{K,u}`` in the molecule's own AO basis, **Eh per nuclear magneton**, Hermitian and
+        time-reversal **odd**. Includes the ``g_e - 2`` anomaly on its spin-dependent part.
+    spin_dependent : ndarray (3, 2*nao, 2*nao) complex
+        The spin (Fermi-contact + spin-dipole) mechanism alone, in the same units — the
+        complement of it in :attr:`operator` being the orbital (PSO-like) mechanism. ⚠ **After
+        the picture change Fermi contact and spin dipole are one term and do not separate**
+        (Birnoschi & Chilton 2022), so this is the only decomposition offered and there is
+        deliberately no FC/SD split.
+    identity_residual : float
+        Relative residual of the non-relativistic-limit identity, measured on every build.
+    """
+
+    atom: int
+    label: str
+    element: str
+    moment: "NuclearMoment"
+    position: np.ndarray
+    operator: np.ndarray
+    spin_dependent: np.ndarray
+    identity_residual: float
+    #: Defaulted, so an object assembled by hand in a test still constructs; every front-end
+    #: route fills it from the ``Mole`` the integrals were built on.
+    atomic_number: int = 0
+
+    @property
+    def nao(self) -> int:
+        return int(self.operator.shape[-1] // 2)
+
+    def as_dict(self) -> Dict[str, object]:
+        """Provenance for a stored file's ``[NUCLEI]`` table."""
+        d = dict(self.moment.as_dict())
+        d.update({"atom": int(self.atom) + 1, "atom_label": self.label,
+                  "element": self.element, "atomic_number": int(self.atomic_number),
+                  "position_bohr": [float(v) for v in np.asarray(self.position).ravel()],
+                  "identity_residual": float(self.identity_residual)})
+        return d
+
+
+@dataclass(frozen=True)
+class HyperfineIntegrals:
+    """The hyperfine field operators of every selected nucleus, and how they were made.
+
+    ⚠ **These operators are ALWAYS picture-changed**, independent of
+    ``property_picture_change=``, which keeps governing ``mu`` and ``d`` alone. A bare hyperfine
+    operator is wrong by a factor of 4-10 wherever s character carries spin density (Wysocki &
+    Park 2023), so there is no bare variant on the user surface; the bare blocks exist inside
+    this module only as one side of the identity check. That is a deliberate **exception** to
+    the rule that one flag governs both property operators, and the reason that rule exists — a
+    file that cannot say which half was corrected — is met differently: the header states the
+    treatment of each operator family separately.
+
+    ⚠ **Three approximations are made and every one of them is stated in the provenance rather
+    than hidden**: the transformation uses the **unperturbed** ``X`` and ``R`` (Autschbach 2017)
+    rather than their response to the nuclear moment (Franzke & Yu 2022), which is what makes
+    ``T`` an operator usable *between* different states; no two-electron picture change is
+    applied to it, the atomic-mean-field analogue being unmeasured for multireference
+    wavefunctions; and the nuclear magnetization distribution is the nuclear **charge**
+    distribution of the molecule's own nuclear model (Malkin et al. 2011).
+
+    ⚠ **And one limitation that is physics, not implementation**: a valence active space carries
+    essentially no core-s spin polarization, so the isotropic (contact-like) part is
+    qualitatively wrong wherever it comes from core polarization — transition metals and
+    spin-only ions especially. The 4f case is mild, because the orbital mechanism dominates
+    there. Selecting a hyperfine nucleus warns about exactly this, and the active space travels
+    in the header of every stored file so a reader can judge.
+    """
+
+    nuclei: Tuple[HyperfineNucleus, ...]
+    decoupling: str
+    nuclear_model: str
+    g_electron: float
+    #: The nuclear magneton [a.u.] the operators are scaled by, recorded because it is the one
+    #: constant standing between this operator and a coupling in MHz.
+    nuclear_magneton: float
+
+    @property
+    def nao(self) -> int:
+        return self.nuclei[0].nao if self.nuclei else 0
+
+    @property
+    def labels(self) -> Tuple[str, ...]:
+        return tuple(n.label for n in self.nuclei)
+
+    def get(self, label: str) -> HyperfineNucleus:
+        """One nucleus by its atom label, refusing rather than returning the first."""
+        for n in self.nuclei:
+            if n.label == label:
+                return n
+        raise KeyError("no hyperfine nucleus labelled {!r}; this calculation carries {}"
+                       .format(label, ", ".join(self.labels) or "none"))
+
+    def product_dimension(self, n_electronic: int) -> int:
+        """``N_el * prod_K (2 I_K + 1)`` — the size of the electron-nuclear product space.
+
+        ⚠ **Reported, never refused.** Kuiva does not form the product space — that is the
+        point of writing the electronic matrices and a nuclear table separately — so this is not
+        Kuiva's allocation to refuse. It is stated because the external code's is.
+        """
+        dim = int(n_electronic)
+        for n in self.nuclei:
+            dim *= n.moment.multiplicity
+        return dim
+
+    def label(self) -> str:
+        return ("X2C picture-changed hyperfine field operators (decoupling={}, nuclear "
+                "model={}, g_e={:.9f}, anomaly included, unperturbed X2C transformation, no "
+                "two-electron picture change)".format(self.decoupling, self.nuclear_model,
+                                                      self.g_electron))
+
+    def provenance(self) -> Dict[str, object]:
+        return {
+            "treatment": self.label(),
+            "decoupling": self.decoupling,
+            "nuclear_model": self.nuclear_model,
+            "g_electron": float(self.g_electron),
+            "nuclear_magneton_au": float(self.nuclear_magneton),
+            "unit": "Eh per nuclear magneton",
+            "operator": "H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u",
+            "anomaly_included": True,
+            "picture_change": "always applied; independent of property_picture_change",
+            "x2c_response": "not included (unperturbed X and R)",
+            "two_electron_picture_change": "not applied",
+            "nuclei": [n.as_dict() for n in self.nuclei],
+            "worst_identity_residual": (max(float(n.identity_residual) for n in self.nuclei)
+                                        if self.nuclei else 0.0),
+        }
+
+    def __repr__(self) -> str:
+        return "HyperfineIntegrals({} nuclei: {}, decoupling={})".format(
+            len(self.nuclei), ", ".join("{}({})".format(n.label, n.moment.label)
+                                        for n in self.nuclei), self.decoupling)
+
+
+def resolve_hyperfine_nuclei(mol, spec) -> Tuple[Tuple[int, str, str, "NuclearMoment"], ...]:
+    """Resolve a ``hyperfine=`` request into ``(atom index, label, element, moment)`` per nucleus.
+
+    ``spec`` is a mapping in the addressing of :mod:`kuiva.basis.atommap` — element symbol,
+    atom label (``"Tb1"``), or 1-based atom number — whose values are ``True`` (the most
+    abundant isotope with ``I > 0``), a mass number, an isotope label, or a
+    :class:`~kuiva.util.nuclei.NuclearMoment` for an isomer or a revised moment.
+
+    Four refusals, each because the alternative costs or misleads:
+
+    * ⚠ **A bare ``True`` on a molecule with more than one atom.** "All magnetic nuclei" is not
+      a selection: the integrals, the stored operators and every matrix built from them scale
+      with the count, and a complex has dozens of ``1``H. A one-atom molecule — the free ions
+      the validation rests on — is the one case where it means something unambiguous.
+    * ⚠ **A ``"default"`` key**, for the same reason: it is "all atoms" wearing a different word.
+    * **A ghost atom**, which has no nucleus at all (:mod:`kuiva.basis.ghosts`).
+    * An unknown element, an untabulated isotope or ``I = 0`` — refused by
+      :func:`kuiva.util.nuclei.resolve_isotope`, by name.
+    """
+    from ..basis.atommap import resolve_atom_assignments
+    from ..basis.ghosts import is_ghost
+    from ..util.nuclei import resolve_isotope
+
+    # `atom_pure_symbol`, never `atom_symbol`: the latter is the *decorated* label ("Ti2") for
+    # an atom carrying a per-atom basis or reference state, and atommap is given plain element
+    # symbols in molecule order everywhere else in the program (see `_atom_gauge_origin`).
+    symbols = [str(mol.atom_pure_symbol(i)) for i in range(mol.natm)]
+    if not isinstance(spec, dict):
+        if mol.natm != 1:
+            raise ValueError(
+                "hyperfine={!r} would select every atom of a {}-atom molecule, and 'all "
+                "magnetic nuclei' is not a selection: one four-component-transformed operator "
+                "per nucleus is built and stored, so the cost scales with the count. Name the "
+                "nuclei -- hyperfine={{'Tb1': True}}, {{'Dy': 163}}, {{1: '159Tb'}}."
+                .format(spec, mol.natm))
+        resolved = [spec]
+    else:
+        if any(isinstance(k, str) and k.strip().lower() == "default" for k in spec):
+            raise ValueError(
+                "hyperfine= takes no 'default' key: it would select every atom, which is the "
+                "one thing this argument exists to avoid (see the refusal above). Name the "
+                "nuclei individually.")
+        resolved, _ = resolve_atom_assignments(spec, symbols, what="hyperfine nucleus",
+                                               default=None, allow_scalar=False)
+
+    out_nuclei = []
+    for index, (symbol, request) in enumerate(zip(symbols, resolved)):
+        if request is None:
+            continue
+        if is_ghost(symbol):
+            raise ValueError(
+                "atom {} ({}) is a ghost: it carries basis functions but no nucleus, so it has "
+                "no hyperfine interaction. Remove it from the hyperfine request."
+                .format(index + 1, symbol))
+        moment = resolve_isotope(symbol, request)
+        # ⚠ **The label is always numbered**, ``"{element}{1-based atom number}"``, where the
+        # rest of the program's ``mol.atom_symbol`` decorates only when a per-atom basis or
+        # reference configuration forced it. Two reasons, and the first is not cosmetic: two
+        # atoms of one element would otherwise carry the *same* label, and a lookup by label
+        # would silently answer with the first of them — on exactly the polynuclear systems
+        # this feature exists for. The second is that the numbered form is the atom label
+        # `kuiva.basis.atommap` accepts as **input**, so a label printed in a property file is
+        # a key that selects that nucleus again. It coincides with `atom_symbol` wherever that
+        # one is decorated, because `build_mole` decorates with the same number.
+        out_nuclei.append((index, "{}{}".format(symbol, index + 1), symbol, moment))
+    if not out_nuclei:
+        raise ValueError(
+            "the hyperfine request {!r} selected no atom of this molecule. A request that "
+            "silently selected nothing would produce a property file with no hyperfine "
+            "matrices in it and no statement of why.".format(spec))
+    return tuple(out_nuclei)
+
+
+def _hyperfine_blocks(xmol, atom: int) -> np.ndarray:
+    """``W^LS_{K,u} = (1/2) <chi| [(r_K / r_K^3) x sigma]_u (sigma.p) |chi>``, ``(3, 2nao, 2nao)``.
+
+    The four-component hyperfine interaction is the derivative of the Dirac minimal-coupling
+    term ``c alpha.A`` with respect to the nuclear moment, ``A_K = alpha^2 (m_K x r_K)/r_K^3``.
+    Since ``alpha.(m x r) = m.(r x alpha)``, the field operator is
+    ``T_{K,u} = mu_N c alpha^2 [(r_K/r_K^3) x alpha]_u`` — **purely odd**, so its ``LL`` and
+    ``SS`` blocks vanish and only ``LS``/``SL`` survive, exactly as for the magnetic moment
+    (:func:`_odd_moment_blocks`).
+
+    ⚠ **No factor of ``c`` appears here, and the ``alpha^2`` and ``mu_N`` are applied by the
+    caller.** In the restricted-kinetic-balance normalization
+    :func:`four_component_one_electron` fixes, the small-component basis carries ``1/(2c)``,
+    which cancels the operator's explicit ``c`` exactly. A stray ``c``, ``1/2c`` or ``1/2`` is
+    the easiest way to produce a plausible wrong answer in this whole construction, and the
+    identity checked by :func:`_hyperfine_identity_residual` is what catches it.
+
+    ``atom`` is the 0-based atom index, and it means the same thing on ``xmol`` as on the
+    molecule because decontraction changes the basis and not the atom list.
+
+    ⚠ **The origin is set with ``with_rinv_at_nucleus``, not ``set_common_orig``** — two
+    different pointers on the ``Mole``, and the wrong one leaves ``1/r`` centred wherever the
+    last property integral put it. The nucleus form is also what applies the **finite-nucleus**
+    smearing: with ``nuclear_model="gaussian"`` the ``1/r`` of this integral is smeared with the
+    nuclear charge exponent, i.e. a Gaussian magnetization distribution equal to the charge
+    distribution (Malkin et al. 2011), which is measured to respond here and to grow with ``Z``.
+
+    ⚠ **The ``_spinor`` form of the integral is used deliberately**, for the same reason
+    :func:`_odd_moment_blocks` uses it: the spherical form is twelve components in a convention
+    :func:`kuiva.spinor.expand.two_component_operator` cannot assemble, while the spinor form is
+    one unambiguous ``(3, n2c, n2c)`` object mapped into this project's spin-blocked
+    ``[alpha; beta]`` rows by the unitary ``sph2spinor_coeff``. That mapping is *validated*, not
+    assumed — it is exactly what the non-relativistic-limit identity tests — and the twelve
+    component form is checked against it independently in the test suite, where the relation
+    ``raw_spinor_u = i sph[u,3] (x) 1 - sum_c sph[u,c] (x) sigma_c`` holds to 6e-18 relative.
+
+    ⚠ **The factor of one half is applied here and is not inside the integral**, unlike
+    ``int1e_cg_sa10sp`` which documents its own. Measured: with the half, the hydrogen 1s
+    expectation value of ``W^LS + W^SL`` is ``(8 pi/3) |psi(0)|^2`` exactly, which is the Fermi
+    contact operator with the textbook coefficient; without it, every hyperfine coupling in the
+    program is twice too large and entirely plausible.
+    """
+    ua, ub = xmol.sph2spinor_coeff()
+    u = np.vstack([np.asarray(ua), np.asarray(ub)])          # (2 nao, n2c), unitary
+    with xmol.with_rinv_at_nucleus(int(atom)):
+        raw = xmol.intor("int1e_sa01sp_spinor", comp=3)
+    return 0.5 * np.stack([u @ np.asarray(a) @ u.conj().T for a in raw])
+
+
+def _hyperfine_identity_residual(xmol, atom: int, ls: np.ndarray) -> float:
+    """The non-relativistic-limit identity on ``W^LS + W^SL``, as one relative residual.
+
+    In the limit ``c -> inf`` the picture change becomes the identity, so the transformed
+    operator must reduce to the Breit-Pauli hyperfine field — the paramagnetic spin-orbit
+    (orbital) term plus the spin-dipole and Fermi-contact terms::
+
+        W^LS + W^SL = (L_K / r_K^3) (x) 1  +  sum_c [ SD_uc + (8 pi/3) delta_uc delta(r_K) ] S_c
+
+    with ``S_c = sigma_c / 2``. Both sides are assembled from integrals here, and the point is
+    that they are **different** integrals reached through a different code path in the library:
+    the left-hand side is ``int1e_sa01sp`` in its spinor form, the right-hand side is
+    ``int1e_prinvxp`` for the orbital part and the second-derivative pair
+    ``int1e_ipiprinv`` / ``int1e_iprinvip`` for the spin part. The distributional identity
+
+        d_u d_c (1/r) - delta_uc laplacian(1/r) = SD_uc + (8 pi/3) delta_uc delta(r)
+
+    is what turns those two into the spin term (the ``-(4 pi/3) delta_uc delta`` inside the
+    second derivative and the ``+4 pi delta_uc delta`` from the Laplacian add to the textbook
+    contact coefficient), and each second derivative is reached by two integrations by parts,
+    ``<chi| d_u d_c f |chi> = <d_u d_c chi| f |chi> + <d_u chi| f |d_c chi> + (u <-> c)``.
+
+    This one check pins the spinor -> spin-blocked mapping, the Cartesian component ordering,
+    the overall sign, the factor of one half, the relative weight of the orbital and spin
+    mechanisms, and that the origin actually reached the integral. ⚠ It is exact with a
+    **Gaussian** nucleus as well as a point one, measured — every integral involved smears its
+    ``1/r`` through the same mechanism, so the delta function is smeared consistently on both
+    sides and nothing has to be evaluated at a second nuclear setting.
+
+    References
+    ----------
+    * The non-relativistic assembly follows the ``hfc`` module of the ``pyscf-properties``
+      package (cited, not imported), and the Breit-Pauli operators are those of A. Abragam,
+      B. Bleaney, *Electron Paramagnetic Resonance of Transition Ions* (1970).
+    """
+    from ..spinor.expand import sigma_dot, spin_block_diagonal
+
+    nao = int(xmol.nao)
+    with xmol.with_rinv_at_nucleus(int(atom)):
+        pso = np.asarray(xmol.intor("int1e_prinvxp", comp=3), dtype=float)
+        ipipr = np.asarray(xmol.intor("int1e_ipiprinv", comp=9),
+                           dtype=float).reshape(3, 3, nao, nao)
+        iprip = np.asarray(xmol.intor("int1e_iprinvip", comp=9),
+                           dtype=float).reshape(3, 3, nao, nao)
+    # <chi| d_a d_b (1/r) |chi>, symmetric in (a, b) and in the basis indices.
+    second = np.empty((3, 3, nao, nao))
+    for a in range(3):
+        for b in range(3):
+            second[a, b] = ipipr[a, b] + ipipr[a, b].T + iprip[a, b] + iprip[b, a]
+    laplacian = np.einsum("aaij->ij", second)
+
+    worst = 0.0
+    for u in range(3):
+        # ⚠ The one half is S_c = sigma_c / 2, and it is the reason the orbital and spin
+        # mechanisms come out with the weights they do. Dropping it halves every contact term.
+        spin = np.stack([0.5 * (second[u, c] - (laplacian if c == u else 0.0))
+                         for c in range(3)]).astype(np.complex128)
+        expected = spin_block_diagonal(-1j * pso[u]) + sigma_dot(spin)
+        scale = float(np.max(np.abs(expected))) or 1.0
+        worst = max(worst, float(np.max(np.abs(ls[u] + ls[u].conj().T - expected))) / scale)
+    return float(worst)
+
+
+def picture_changed_hyperfine(mol, hyperfine, *, approx: str = "1e",
+                              decoupling_options: Optional[Dict[str, object]] = None,
+                              light_speed: Optional[float] = None,
+                              g_electron: Optional[float] = None,
+                              transform: Optional[PropertyTransform] = None
+                              ) -> HyperfineIntegrals:
+    """Build the picture-changed hyperfine field operator of every selected nucleus.
+
+    ``hyperfine`` is the user's request (see :func:`resolve_hyperfine_nuclei`) or an
+    already-resolved tuple from it.
+
+    The construction, and what pins it
+    ----------------------------------
+    Per nucleus, the odd four-component blocks of :func:`_hyperfine_blocks` go through the
+    *same* ``R^dag (A_LL + A_LS X + X^dag A_SL + X^dag A_SS X) R`` the Hamiltonian, the magnetic
+    moment and the electric dipole go through — one implementation, DLU included. Before that,
+    two things happen that are specific to this operator:
+
+    1. **The identity check** of :func:`_hyperfine_identity_residual`, on the untransformed
+       blocks, at Dirac's ``g = 2``. **A violation raises.**
+    2. **The ``g_e - 2`` anomaly.** The blocks are split by
+       :func:`kuiva.spinor.expand.pauli_decompose` into an orbital part (no ``sigma``) and a
+       spin part, and the spin part is weighted by ``g_e / 2`` before the transformation. ⚠ The
+       split is done **before** the picture change because that is the only place the two
+       mechanisms are still separate: afterwards Fermi contact, spin dipole and the transformed
+       orbital term are one operator. Kuiva includes the anomaly rather than leaving it to the
+       consumer — unlike ``mu``, where a separate ``S`` exists to add it from — and says so in
+       every file. It is ~0.1% of the spin-dependent part.
+
+    ⚠ **The nuclear model is read off the built ``Mole``**, never taken as an argument: an
+    atomic magnetization over a different nucleus from the molecular integrals is Hermitian,
+    plausible and wrong. ⚠ And the isotope chosen does **not** change the Gaussian exponent,
+    which comes from the integral library's main-isotope masses; that is recorded rather than
+    reconciled (:mod:`kuiva.util.nuclei`).
+
+    References
+    ----------
+    * Hyperfine coupling under X2C with the unperturbed transformation: J. Autschbach,
+      J. Chem. Theory Comput. 13, 710 (2017), doi:10.1021/acs.jctc.6b01014.
+    * The response of the decoupling to the nuclear moment, which is what is **not** done here:
+      Y. J. Franzke, J. M. Yu, J. Chem. Theory Comput. 18, 323 (2022),
+      doi:10.1021/acs.jctc.1c01027.
+    * The inseparability of Fermi contact and spin dipole after the transformation:
+      L. Birnoschi, N. F. Chilton, J. Chem. Theory Comput. 18, 4719 (2022),
+      doi:10.1021/acs.jctc.2c00257.
+    * The size of the picture change on a contact-like operator: A. L. Wysocki, K. Park,
+      arXiv:2309.09349 (2023).
+    * Gaussian nuclear magnetization: E. Malkin, M. Repiský, S. Komorovský, P. Mach,
+      O. L. Malkina, V. G. Malkin, J. Chem. Phys. 134, 044111 (2011).
+    """
+    from ..amf.atomic import nuclear_model_of
+    from ..spinor.expand import pauli_decompose, sigma_dot, spin_block_diagonal
+    from ..util.units import G_ELECTRON, NUCLEAR_MAGNETON
+    from ..x2c.decouple import FourComponentBlocks, picture_change
+
+    g_e = float(G_ELECTRON if g_electron is None else g_electron)
+    # Already-resolved input is passed straight through, so `ingest_property_integrals` can
+    # resolve (and refuse) **before** the SCF's integrals are touched and not resolve twice —
+    # which would also warn twice.
+    already_resolved = (isinstance(hyperfine, tuple) and hyperfine
+                        and isinstance(hyperfine[0], tuple) and len(hyperfine[0]) == 4)
+    selected = (tuple(hyperfine) if already_resolved
+                else resolve_hyperfine_nuclei(mol, hyperfine))
+    _warn_hyperfine_core_polarization(selected)
+
+    if transform is None:
+        transform = property_transform(mol, approx=approx,
+                                       decoupling_options=decoupling_options,
+                                       light_speed=light_speed, what="hyperfine")
+    elif transform.approx != approx:
+        raise ValueError(
+            "the shared property transform was built with approx={!r} and this hyperfine "
+            "operator asks for {!r}; one file may not mix two decouplings"
+            .format(transform.approx, approx))
+    fc, xmol, x, r = transform.fc, transform.xmol, transform.x, transform.r
+
+    # ⚠ `reserve`, not `require`: these arrays are **resident** — they live on the container for
+    # the whole calculation — and unlike the single moment and dipole operators there is one per
+    # nucleus, so the total is what a user can make large by asking for more nuclei.
+    res.reserve("hyperfine field operators",
+                hyperfine_memory_gb(int(fc.nao_target), len(selected)),
+                note="{} nuclei x 2 x (3, 2 nao)^2 complex, nao = {}".format(
+                    len(selected), fc.nao_target),
+                advice=["select fewer nuclei -- the cost is one stored operator per nucleus",
+                        "the operator is isotope-independent, so one nucleus per centre is "
+                        "usually enough and the consumer changes the isotope"])
+
+    # ⚠ alpha^2 = 1/c^2 with the c the INTEGRALS were built at, never a constant chosen
+    # elsewhere (kuiva.x2c.decouple): the vector potential's 1/c^2 and the small component's
+    # 1/(2c) have to be the same c or the two halves describe different physics.
+    scale = float(NUCLEAR_MAGNETON) / float(fc.light_speed) ** 2
+    coords = np.asarray(mol.atom_coords(), dtype=float)
+    built = []
+    with timer("hyperfine picture change"):
+        for atom, label, element, moment in selected:
+            ls = _hyperfine_blocks(xmol, atom)
+            resid = _hyperfine_identity_residual(xmol, atom, ls)
+            if resid > HYPERFINE_IDENTITY_TOL:
+                raise RuntimeError(
+                    "the four-component hyperfine operator of atom {} ({}) fails its "
+                    "non-relativistic-limit identity by {:.2e} relative (tolerance {:.0e}): "
+                    "<[(r/r^3) x sigma](sigma.p)> + h.c. must equal the Breit-Pauli PSO + "
+                    "spin-dipole + Fermi-contact operator exactly. The spinor mapping, the "
+                    "component ordering, the sign, the factor of one half or the nuclear "
+                    "origin is wrong, and every hyperfine matrix built from this operator "
+                    "would be Hermitian, plausible and wrong."
+                    .format(atom + 1, label, resid, HYPERFINE_IDENTITY_TOL))
+            zero = np.zeros_like(ls[0])
+            total, spin_only = [], []
+            for k in range(3):
+                orbital, spin = pauli_decompose(ls[k])
+                # The anomaly multiplies the spin mechanism and nothing else; the SL block is
+                # the dagger of the weighted LS block, so the operator stays Hermitian.
+                w_spin = sigma_dot(0.5 * g_e * spin)
+                w_full = spin_block_diagonal(orbital) + w_spin
+                total.append(scale * fc.contract(picture_change(
+                    FourComponentBlocks(ll=zero, ls=w_full, sl=w_full.conj().T, ss=zero), x, r)))
+                spin_only.append(scale * fc.contract(picture_change(
+                    FourComponentBlocks(ll=zero, ls=w_spin, sl=w_spin.conj().T, ss=zero), x, r)))
+            operator = np.ascontiguousarray(np.stack(total))
+            _check_hyperfine_symmetry(operator, label)
+            built.append(HyperfineNucleus(
+                atom=int(atom), label=str(label), element=str(element), moment=moment,
+                position=np.ascontiguousarray(coords[atom]), operator=operator,
+                spin_dependent=np.ascontiguousarray(np.stack(spin_only)),
+                identity_residual=float(resid),
+                # ⚠ `atom_charge`, not an element table: the nuclear charge the *integrals*
+                # were built against, exactly as `nuclear_dipole` takes it.
+                atomic_number=int(round(float(mol.atom_charge(atom))))))
+
+    result = HyperfineIntegrals(nuclei=tuple(built), decoupling=str(transform.approx),
+                                nuclear_model=nuclear_model_of(mol), g_electron=g_e,
+                                nuclear_magneton=float(NUCLEAR_MAGNETON))
+    _report_hyperfine(result)
+    return result
+
+
+def _check_hyperfine_symmetry(operator: np.ndarray, label: str) -> None:
+    """Hermiticity and time-reversal **oddness** of one nucleus's operator.
+
+    ⚠ The hyperfine field is a magnetic operator, so it is time **odd** — which makes the check
+    the mirror of the dipole's: what must vanish here is the time-*even* part, i.e. exactly what
+    :func:`kuiva.spinor.expand.decompose_two_component` keeps. A transposed or swapped spin
+    block shows up in this and in no norm or hermiticity test.
+    """
+    from ..spinor.expand import decompose_two_component, two_component_operator
+
+    scale = max(float(np.max(np.abs(operator))), 1.0)
+    worst = max(float(np.max(np.abs(m - m.conj().T))) for m in operator)
+    if worst > 1e-10 * scale:
+        log.warning("the hyperfine operator of %s is not Hermitian (max |A - A^dag| = %.2e); "
+                    "the decoupling matrices are suspect", label, worst)
+    even = max(float(np.max(np.abs(two_component_operator(*decompose_two_component(m)))))
+               for m in operator)
+    if even > 1e-10 * scale:
+        log.warning("the hyperfine operator of %s has a time-reversal-EVEN part of %.2e; the "
+                    "hyperfine field is time odd, so this is a symmetry breaking in the "
+                    "decoupling matrices and not physics", label, even)
+
+
+def _warn_hyperfine_core_polarization(selected) -> None:
+    """⚠ The limitation that cannot be fixed inside a valence active space, said out loud.
+
+    A valence CAS carries essentially no core-s spin polarization, and therefore almost no
+    Fermi-contact-like contribution from it. For 4f ions that is minor — the orbital mechanism
+    dominates, and minimal free-ion active spaces land within ~10% of experiment. For s/d spin
+    density, for ligand (super)hyperfine nuclei and for spin-only ions (Gd(III), Eu(II),
+    Mn(II)) the **isotropic part is qualitatively wrong**, by 25% and worse on transition
+    metals. The remedy inside this program's scope is core s shells in a *DMRG* active space,
+    not a correction term, so this is a warning at the point of selection rather than anything
+    the code can repair.
+    """
+    log.warning(
+        # ⚠ ASCII only in the output stream: this text is read over ssh, grepped and diffed on
+        # machines with unknown locales, so the emphasis markers that belong in a docstring do
+        # not belong here.
+        "hyperfine operators were requested for %s. The contact (isotropic) part comes from "
+        "core-s spin polarization, which a VALENCE active space does not carry: for a 4f ion "
+        "this is minor because the orbital mechanism dominates, but for s/d spin density, for "
+        "ligand nuclei and for spin-only ions (Gd(III), Eu(II), Mn(II)) the isotropic part is "
+        "qualitatively wrong -- 25%% and worse on transition metals. The remedy is core s "
+        "shells in the active space, not a correction; judge a number against the active space "
+        "the file's header states.",
+        ", ".join("{} ({})".format(label, moment.label)
+                  for _a, label, _e, moment in selected))
+
+
+def _report_hyperfine(result: HyperfineIntegrals) -> None:
+    """The output block: what was built, for which nuclei, and how well the identity held."""
+    out.subsection(log, "Hyperfine field operators")
+    out.entries(log, [
+        ("decoupling", result.decoupling),
+        ("nuclear model (hyperfine integrals)", result.nuclear_model),
+        ("operator unit", "Eh / nuclear magneton",
+         "", "H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u"),
+        ("g_e (anomaly included)", result.g_electron, "", "", "{:.9f}"),
+        ("picture change", "applied (always, independent of property_picture_change)"),
+    ])
+    table = out.Table(log, [out.Column("nucleus", "{}", 10, align="<"),
+                            out.Column("isotope", "{}", 10, align="<"),
+                            out.Column("2I", "{:d}", 4),
+                            out.Column("g_N", "{:+.6f}", 12),
+                            out.Column("max |T| [Eh/mu_N]", out.SCI_FMT, 17),
+                            out.Column("spin part", out.SCI_FMT, 11),
+                            out.Column("identity", out.SCI_FMT, 11)])
+    table.start()
+    for n in result.nuclei:
+        table.row(n.label, n.moment.label, n.moment.twice_spin, n.moment.g,
+                  float(np.max(np.abs(n.operator))),
+                  float(np.max(np.abs(n.spin_dependent))), n.identity_residual)
+    table.end()
 
 
 @dataclass(frozen=True)
@@ -3637,6 +4362,7 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
                    one_centre: bool = True,
                    gauge_origin=None, property_picture_change: bool = False,
                    anomaly_picture_change: bool = False,
+                   hyperfine=None,
                    atomic_reference: bool = False,
                    point_group: Optional[str] = None,
                    classification="auto",
@@ -3722,6 +4448,20 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
     anomaly_picture_change : bool
         Also picture-change the spin operator used for the ``g_e - 2`` anomaly. Requires
         ``property_picture_change``; the effect is ``O((g_e - 2)/c^2)``.
+    hyperfine : mapping, optional
+        The nuclei whose **hyperfine field operator** to build, keyed by element symbol, atom
+        label (``"Tb1"``) or 1-based atom number — the same addressing per-atom bases and
+        reference configurations use — and valued ``True`` (the most abundant isotope with
+        ``I > 0``), a mass number, an isotope label (``"159Tb"``), or a
+        :class:`kuiva.util.nuclei.NuclearMoment` for an isomer or a revised moment.
+
+        ⚠ **There is no "all magnetic nuclei" and it is not a default**: one
+        four-component-transformed operator is built and stored per nucleus, and a complex has
+        dozens of ``1``H. ⚠ **These operators are always picture-changed**, whatever
+        ``property_picture_change`` says, because the bare operator is wrong by a factor of
+        4-10 wherever s character carries spin density. ⚠ **And the contact part needs core-s
+        spin polarization a valence active space does not carry** — selecting a nucleus warns
+        about exactly that.
     x2c_approx : str, optional
         The one-electron decoupling axis: ``"1e"`` (exact molecular, the default),
         ``"1e-dlu"`` (the local DLU approximation) or ``"atom1e"`` (PySCF's
@@ -4075,7 +4815,8 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
         props = ingest_property_integrals(
             mol, gauge_origin, picture_change=bool(property_picture_change),
             approx=chosen.decoupling, decoupling_options=decoupling_options,
-            anomaly_picture_change=bool(anomaly_picture_change))
+            anomaly_picture_change=bool(anomaly_picture_change),
+            hyperfine=hyperfine)
 
         eri = None
         df_cderi = None
@@ -4134,6 +4875,14 @@ def run_scalar_x2c(molecule, *, reference: str = "auto", fitting: Optional[str] 
             *np.asarray(props.gauge_origin).ravel()), "", props.origin_label),
         ("nuclear repulsion", float(mol.energy_nuc()), "Eh", "", out.E_FMT),
     ]
+    # ⚠ Only when they were asked for, like every other non-default row: an output file saying
+    # that a feature was not used is not information. The operators' own table is printed by
+    # `_report_hyperfine` at the point they are built.
+    if props.has_hyperfine:
+        rows.append(("hyperfine nuclei", "{} ({})".format(
+            len(props.hyperfine.nuclei),
+            ", ".join("{}:{}".format(n.label, n.moment.label)
+                      for n in props.hyperfine.nuclei))))
     if embedding is not None:
         # ⚠ Its own line, never folded into the nuclear repulsion: an embedded total and a
         # gas-phase one are then still separable into the part that is chemistry and the part
@@ -4658,6 +5407,9 @@ def run_scalar_aoc(element: str, configuration=None, *, basis,
 
 __all__ = ["ScalarX2CData", "SpinOrbitX2C", "PropertyIntegrals", "PictureChangedDipole",
            "picture_changed_dipole", "nuclear_dipole", "property_integral_memory_gb",
+           "PropertyTransform", "property_transform",
+           "HyperfineIntegrals", "HyperfineNucleus", "picture_changed_hyperfine",
+           "resolve_hyperfine_nuclei", "hyperfine_memory_gb", "HYPERFINE_IDENTITY_TOL",
            "MoleculeSpec",
            "build_mole", "cross_overlap",
            "run_scalar_x2c", "run_scalar_aoc", "ingest_spin_orbit",

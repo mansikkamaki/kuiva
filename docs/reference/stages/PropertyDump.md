@@ -1,8 +1,10 @@
 # `PropertyDump(source, path, ...)`
 
 The deliverable: a plain-text, self-describing file with the effective Hamiltonian `H`, the
-three magnetic-moment components `mu_x, mu_y, mu_z` (μ_B) and the three electric-dipole
-components `d_x, d_y, d_z` (e·a₀), **in the basis of the spin–orbit eigenstates**
+three magnetic-moment components `mu_x, mu_y, mu_z` (μ_B), the three electric-dipole
+components `d_x, d_y, d_z` (e·a₀) and — when the reference was built with
+[`hyperfine=`](ScalarSCF.md#hyperfine-nuclei-hyperfine) — the hyperfine field operator of each
+named nucleus, **in the basis of the spin–orbit eigenstates**
 [[183]](../../references.md#r183) — the contract with an external ITO / crystal-field
 analysis code. `source` is a finished `solver="ci"` [`CASSCF`](CASSCF.md) or
 [`CASCI`](CASCI.md), or a finished [`NEVPT2`](NEVPT2.md) on either (the tensor-network route
@@ -93,6 +95,60 @@ so a consumer can refuse rather than misinterpret. `kuiva.read_dump` is a workin
 - **The inactive contribution is computed and checked, never assumed away**: a
   Kramers-paired inactive set contributes exactly zero to the magnetic moment, and a nonzero
   result is a statement about the *orbitals* and warns rather than being dropped.
+
+## The hyperfine field
+
+When the reference was built with [`hyperfine=`](ScalarSCF.md#hyperfine-nuclei-hyperfine),
+the file additionally carries a `[NUCLEI]` table and, per named nucleus `k`, three blocks
+`T_<k>_x`, `T_<k>_y`, `T_<k>_z` in **Hartree per nuclear magneton**. There is **no switch
+here**: naming the nuclei at ingestion *is* the request, and a flag at this point could only
+throw away an operator already paid for, or leave a file that computed the coupling and did
+not say so. On the electron–nuclear product space the interaction is
+
+```math
+H_{\mathrm{hf}} = \sum_k g_N(k) \sum_u T_{k,u} \otimes I_{k,u}
+```
+
+with $`g_N`$ and $`I`$ from the `[NUCLEI]` table.
+
+- ⚠ **Kuiva writes no A tensor and no hyperfine spin Hamiltonian** — the same boundary it
+  draws for g tensors. Everything in the formula above except the matrices of $`T`$ is
+  nuclear-spin algebra, and it belongs to the external code, which also builds the Kronecker
+  products. Kuiva never forms the product space, so its dimension
+  $`N_{\mathrm{el}} \prod_k (2I_k+1)`$ is *reported* and never refused: it is not Kuiva's
+  allocation.
+- **The operator stored is the isotope-independent field**, so the isotope — or the subset of
+  nuclei the consumer wants — can be changed without re-running the electronic calculation.
+  That is the reason the nuclear data is a separate section rather than folded into the
+  matrices.
+- ⚠ **`T` is time odd**, like `L` and `S` and unlike `r`, so a Kramers-paired inactive set
+  contributes exactly zero to it; the measured trace is written in `[INACTIVE]` and a nonzero
+  value warns, being a statement about the orbitals.
+- **The phase-invariant reductions** are `Tr_block(T_i T_j)`
+  (`Multiplet.hyperfine`) and the **mixed** `Tr_block(mu_i T_j)`
+  (`Multiplet.hyperfine_cross`), both filled by `analyse()`. ⚠ The second is not redundant:
+  squaring `T` discards the orientation of `A`'s axes against `g`'s *and* the two operators'
+  relative sign, and the mixed invariant is the only phase-invariant quantity that carries
+  them. Its one-number reading, `Σ_u Tr_block(mu_u T_u)` normalized by
+  `√(Tr M · Tr T)`, lies in `[−1, 1]` and reaches `±1` exactly when `T` is proportional to
+  `mu` on the block — which the Wigner–Eckart theorem makes true inside a free-ion `J`
+  manifold, so it is an analytic target no program's conventions can move.
+- **The report prints `|A|` in MHz** for the isotope that was requested, from the
+  `A Aᵀ = 3 g_N² Tr_block(T_i T_j)/[J(J+1)(2J+1)]` construction
+  [[211]](../../references.md#r211) — the same normalization the principal g values use, and
+  a ⚠ **reduction, not a fit**: magnitudes only (it is quadratic, so no sign is recovered),
+  no pseudospin rotation, and nothing of the kind is written to the file. A block of one
+  state reports `nan`, never `0`, exactly as it does for `g`.
+- ⚠ **Fermi contact and spin dipole do not separate after the picture change**
+  [[206]](../../references.md#r206), so one total operator per Cartesian component is written
+  and there is deliberately no FC/SD/PSO decomposition of matrices.
+- ⚠ **The isotropic part is only as good as the active space** — see the core-polarization
+  warning on [`ScalarSCF`](ScalarSCF.md#hyperfine-nuclei-hyperfine). Writing the file warns
+  about it, and the active space travels in the header as a physical statement so a reader
+  can judge.
+
+Adding all of this moves **no** `format_version`: the sections and header keys are
+*additions*, and the version tracks a change in the meaning of a stored field.
 
 ## Reading files back
 

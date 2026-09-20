@@ -166,6 +166,12 @@ STAGES: Dict[str, Dict] = {
     "s2.4a": dict(kind="tier3", label="the first Tier-3 calculation: mn3_linear front end "
                                       "and feasibility ladder",
                   jobs=(("mn3_linear", ("r6",)),), budget=3.0 * 3600),
+    # ⚠ The stated calculation converged (user decision, 2026-09-13): CAS(15, 30) at guess
+    # orbitals, ten roots (the S = 5/2 sextet and the S = 3/2 quartet) at D = 32, then two
+    # witness roots. Measure first: whether ten is a boundary, |J| two ways, the ground spin.
+    "s2.4b": dict(kind="tier3-converge", label="mn3_linear converged at D = 32: ten roots, "
+                                               "then witnesses",
+                  jobs=(("mn3_linear", ("r10",)),), budget=3.0 * 3600),
 }
 
 
@@ -1400,6 +1406,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     record, heartbeat, deadline=deadline, keys=[key], caps=caps,
                     max_sweeps=(dmrg_phase2.TIER3_SWEEPS if args.max_sweeps == 30
                                 else args.max_sweeps))
+            elif plan["kind"] == "tier3-converge":
+                import dmrg_phase2
+                dmrg_phase2.stage_tier3_converge(record, heartbeat, deadline=deadline,
+                                                 keys=[key])
             elif plan["kind"] == "bridge":
                 import dmrg_phase2
                 dmrg_phase2.stage_bridge(

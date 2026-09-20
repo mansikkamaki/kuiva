@@ -641,6 +641,42 @@ def spin_operator(s_scalar: np.ndarray) -> np.ndarray:
     return ops
 
 
+def pauli_decompose(h: np.ndarray) -> "tuple":
+    """``H -> (A, B)`` with ``H = A (x) 1_2 + sum_c B_c (x) sigma_c`` — **exact for any** ``H``.
+
+    The inverse of :func:`spin_block_diagonal` plus :func:`sigma_dot`, and therefore the
+    complement of :func:`decompose_two_component`: that one *projects* onto the
+    time-reversal-even form (real symmetric ``A``, real antisymmetric ``w``) and discards
+    everything else, which is what makes it the right tool for a Hamiltonian and the wrong one
+    for a magnetic operator. This one loses nothing — the four Pauli matrices are a basis of
+    the ``2 x 2`` block, so::
+
+        A   = (H_aa + H_bb) / 2        B_x = (H_ab + H_ba) / 2
+        B_z = (H_aa - H_bb) / 2        B_y = i (H_ab - H_ba) / 2
+
+    and ``spin_block_diagonal(A) + sigma_dot(B)`` reproduces ``H`` bitwise up to the arithmetic
+    of the four sums. ``A`` and ``B_c`` are complex in general; for a Hermitian ``H`` all four
+    come out Hermitian.
+
+    ⚠ **What it is for: separating the orbital and spin *mechanisms* of one operator.** The
+    four-component hyperfine field, ``(a x sigma)_u (sigma.p)``, expands as
+    ``(a x p)_u (x) 1 + (spin-dependent)``; the first term is the orbital (PSO-like) mechanism
+    and carries Dirac's ``g = 2`` untouched, the second is the Fermi-contact/spin-dipole
+    mechanism and is what the ``g_e - 2`` anomaly multiplies. Nothing else in this project
+    distinguishes them, and a decomposition that projected — as the time-even one does — would
+    return zero on a time-odd operator and look like a vanishing spin mechanism.
+    """
+    h = np.asarray(h)
+    if h.ndim != 2 or h.shape[0] != h.shape[1] or h.shape[0] % 2:
+        raise ValueError("a two-component operator must be square with an even dimension "
+                         "(alpha block then beta block), got shape {}".format(h.shape))
+    n = h.shape[0] // 2
+    haa, hab, hba, hbb = h[:n, :n], h[:n, n:], h[n:, :n], h[n:, n:]
+    a = 0.5 * (haa + hbb)
+    b = np.stack([0.5 * (hab + hba), 0.5j * (hab - hba), 0.5 * (haa - hbb)])
+    return np.ascontiguousarray(a), np.ascontiguousarray(b)
+
+
 def decompose_two_component(h: np.ndarray) -> "tuple":
     """Inverse of :func:`two_component_operator`: ``H -> (A, w)`` in the fixed spinor conventions (kuiva/spinor/expand.py).
 
@@ -988,7 +1024,7 @@ def expand_unrestricted_mos(mo_alpha: np.ndarray, mo_beta: np.ndarray,
 __all__ = ["SpinorBasis", "expand_scalar_mos", "expand_unrestricted_mos",
            "time_reverse", "spin_block_diagonal",
            "two_component_operator", "sigma_dot", "spin_operator",
-           "decompose_two_component", "time_reversal_residual",
+           "pauli_decompose", "decompose_two_component", "time_reversal_residual",
            "is_time_reversal_even", "kramers_block_permutation",
            "spinor_indices", "spatial_index", "barred", "unbarred", "is_barred",
            "fold_to_kramers_pairs", "rotate_kramers_pairs", "nearest_kramers_paired",

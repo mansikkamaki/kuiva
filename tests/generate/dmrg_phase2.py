@@ -2619,6 +2619,344 @@ def print_tier3_summary(rows: Sequence[Dict]) -> None:
              (r["error"] or "-")[:60])))
 
 
+# ==============================================================================================
+# S2.4b — the stated calculation converged: ten roots at D = 32, then witnesses above them
+# ==============================================================================================
+
+#: The converged ensemble: the S = 5/2 sextet and the S = 3/2 quartet above it (user decision,
+#: 2026-09-13: the stated CAS(15, 30) at guess orbitals, measure first). ⚠ Ten because six is
+#: a cut inside a spin ladder a few cm^-1 wide at these orbitals (S2.4a): the Kambe levels of
+#: a linear Heisenberg trimer of three S = 5/2 put the S = 3/2 (S13 = 4) quartet 2.5|J| above
+#: the ground sextet and the S = 7/2 (S13 = 5) octet 3.5|J| above it, so ten roots is the
+#: first count that holds two whole spin multiplets, and whether it is a boundary is read off
+#: witnesses, never assumed.
+TIER3B_ROOTS = 10
+#: The cap of the converged run (user decision, 2026-09-13).
+TIER3B_CAP = 32
+#: The ramp from a random start: a sweep at D = 8 costs a minute and one at D = 32 most of an
+#: hour (S2.4a, cubic), and the variational manifold is the final cap's alone, so convergence
+#: is declared only on sweeps at D = 32.
+TIER3B_SCHEDULE = (8, 16, 16, 32)
+#: Convergence of the state-averaged energy between sweeps. ⚠ Tight on purpose: the question
+#: is a splitting of a fraction of a wavenumber (1 cm^-1 = 4.6e-6 Eh), and every root's own
+#: change per sweep is recorded beside it.
+TIER3B_CONV_TOL = 1.0e-8
+#: Sweeps across all blocks before the run is declared unconverged.
+TIER3B_MAX_SWEEPS = 30
+#: Witness roots: the ensemble grown past ten to see the state above the quartet. ⚠ On a
+#: truncated network an extra root can prove a count INcomplete and never complete. ⚠ Twelve,
+#: not the eighteen that would hold the whole S = 7/2 octet: the fifteen-node chain's two-site
+#: floor is 16 roots, eighteen forces three- and four-mode nodes (floor 64) and a sixteen-root
+#: solve on this system was already stopped for memory (dmrg notes 31.2). Two witnesses are
+#: the octet's lowest Kramers pair, |J| above the quartet on the Kambe ladder -- a second
+#: estimate of |J| beside the quartet's 2.5|J|, which is the check that the ladder is one.
+TIER3B_WITNESS_ROOTS = 12
+TIER3B_WITNESS_SWEEPS = 4
+
+
+def kambe_levels(n_spin_twice: int = 5, count: int = 6) -> List[Dict]:
+    """Levels of ``H = J (S1.S2 + S2.S3)`` for three equal spins, in units of ``J`` above the
+    ground level (``J > 0``, antiferromagnetic): ``E(S, S13) = (J/2)[S(S+1) - S13(S13+1) -
+    s(s+1)]``. The Kambe (1950) decomposition; what a converged ladder's spin-resolved gaps are
+    compared with, as ratios, because ``J`` itself is the unknown."""
+    s = n_spin_twice / 2.0
+    levels = []
+    for twice_s13 in range(0, int(2 * 2 * s) + 1, 2):
+        s13 = twice_s13 / 2.0
+        twice_min = int(round(2 * abs(s13 - s)))
+        for twice_total in range(twice_min, int(round(2 * (s13 + s))) + 1, 2):
+            total = twice_total / 2.0
+            e = 0.5 * (total * (total + 1) - s13 * (s13 + 1) - s * (s + 1))
+            levels.append({"S": total, "S13": s13, "degeneracy": int(twice_total + 1),
+                           "e_over_j": e})
+    levels.sort(key=lambda x: x["e_over_j"])
+    e0 = levels[0]["e_over_j"]
+    for lv in levels:
+        lv["gap_over_j"] = round(lv["e_over_j"] - e0, 6)
+    return levels[:count]
+
+
+def _heisenberg_reading(rel_cm: Sequence[float], spins: Optional[Sequence[float]]) -> Dict:
+    """What the converged spectrum says against the Kambe ladder, stated as a reading.
+
+    The sextet and quartet barycentres give ``|J|`` from the 2.5|J| gap; a witness octet, where
+    solved, gives a second estimate from 3.5|J| -- their ratio is 1.4 for a Heisenberg trimer
+    with equal couplings, and a ratio far from it says the network's low spectrum is not that
+    ladder (a truncation, or physics beyond an isotropic nearest-neighbour model). With the
+    two witnesses the octet's lowest pair gives ``|J|`` directly (it sits ``|J|`` above the
+    quartet), so the gap ratio to check is 0.4."""
+    e = np.asarray(rel_cm, dtype=float)
+    out: Dict = {"kambe": kambe_levels()}
+    if e.size >= 10:
+        sextet, quartet = float(np.mean(e[:6])), float(np.mean(e[6:10]))
+        out["sextet_spread_cm"] = round(float(e[5] - e[0]), 6)
+        out["quartet_spread_cm"] = round(float(e[9] - e[6]), 6)
+        out["gap_sextet_quartet_cm"] = round(quartet - sextet, 6)
+        out["j_from_quartet_cm"] = round((quartet - sextet) / 2.5, 6)
+    if e.size >= 12:
+        # the two lowest octet members, |J| above the quartet on the Kambe ladder
+        above = float(np.mean(e[10:12]))
+        out["gap_quartet_to_witnesses_cm"] = round(above - float(np.mean(e[6:10])), 6)
+        out["j_from_witnesses_cm"] = round(out["gap_quartet_to_witnesses_cm"], 6)
+        if out.get("gap_sextet_quartet_cm"):
+            out["ratio_witness_gap_to_quartet_gap"] = round(
+                out["gap_quartet_to_witnesses_cm"] / out["gap_sextet_quartet_cm"], 4)
+    if e.size >= 11:
+        out["gap_above_ten_cm"] = round(float(e[10] - e[9]), 6)
+    if spins is not None:
+        out["spins"] = [round(float(x), 4) for x in spins]
+    return out
+
+
+def tier3_converge_child(key: str, ints_path: Path, out_path: Path, *, cap: int, n_roots: int,
+                         witness_roots: int, block_sweeps: int, budget: float) -> int:
+    """S2.4b in one process block: converge, analyse, then the witness leg. Resumable.
+
+    Every completed sweep writes the network state (``<out>.network.h5``, rolling) and the
+    record, so a block that the budget -- or the harness -- stops loses at most the sweep it
+    was in, and the next invocation continues from the file with the cumulative sweep count
+    and the remaining ramp. ⚠ Nothing is ever repeated: a converged main leg is adopted, an
+    analysis on disk is kept, and the witness leg has its own checkpoint.
+    """
+    from progress import Heartbeat
+    from dmrg_memory_plan import rss_gb
+    from kuiva.dmrg import TTNOTemplate, one_electron_product_terms, random_state, solve_ttn
+    from kuiva.dmrg.checkpoint import read_network_state, write_network_state
+    from kuiva.dmrg.window import pad_roots
+    from kuiva.props.multiplet import HARTREE_TO_CM
+    from kuiva.util import resources as res
+    from kuiva.util.errors import SolverFailure
+
+    lims = res.ensure_configured()
+    deadline = time.time() + float(budget)
+    ints = _Tier3Integrals(ints_path)
+    n = ints._h.shape[0]
+    n_sites = int(max(ints.sites)) + 1
+    site_sizes = [sum(1 for x in ints.sites if x == k) for k in range(n_sites)]
+    sizes = bridge_partition(site_sizes, ints.n_elec, int(n_roots))
+    worst = min(a + b for a, b in zip(sizes, sizes[1:])) if len(sizes) > 1 else n
+    if camp.two_site_floor(n, ints.n_elec, worst) < int(witness_roots):
+        raise ValueError("the {}-root witness leg does not fit the {}-root partition's two-site "
+                         "floor ({})".format(witness_roots, n_roots,
+                                             camp.two_site_floor(n, ints.n_elec, worst)))
+    graph, site_nodes = bridge_graph(site_sizes, sizes)
+    main_ckpt = out_path.with_suffix(".network.h5")
+    witness_ckpt = out_path.with_name(out_path.stem + "_witness.network.h5")
+    rec: Dict = {}
+    if out_path.is_file():
+        try:
+            rec = json.loads(out_path.read_text())
+        except ValueError:
+            rec = {}
+    rec.update({"key": key, "cap": int(cap), "roots": int(n_roots),
+                "witness_roots": int(witness_roots), "schedule": list(TIER3B_SCHEDULE),
+                "conv_tol": TIER3B_CONV_TOL, "davidson_tol": TIER3_DAVIDSON_TOL,
+                "max_sweeps": TIER3B_MAX_SWEEPS, "n_modes": n, "n_elec": ints.n_elec,
+                "partition": {"node_sizes": sizes, "n_nodes": len(sizes),
+                              "sites_as_nodes": [list(g) for g in site_nodes]},
+                "memory_limit_gb": float(lims.memory_gb), "pid": os.getpid()})
+    rec.setdefault("blocks", []).append({"started": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                          "budget_s": float(budget)})
+    main = rec.setdefault("main", {"status": "pending", "sweeps": []})
+    heartbeat = Heartbeat("dmrg_cost_ladder_s2.4b", budget_seconds=budget,
+                          meta={"key": key, "pid": os.getpid()})
+    t_start = time.time()
+
+    def flush() -> None:
+        rec["blocks"][-1]["elapsed_s"] = round(time.time() - t_start, 1)
+        tmp = out_path.with_suffix(".json.part")
+        with open(tmp, "w") as fh:
+            json.dump(rec, fh, indent=1, sort_keys=True, default=_jsonable)
+        os.replace(tmp, out_path)
+
+    flush()
+    t0, c0 = time.time(), time.process_time()
+    template = TTNOTemplate(graph)
+    ttno = template.fill(ints.h_active_effective(), ints.active_eri())
+    rec["blocks"][-1]["compile_cpu_s"] = round(time.process_time() - c0, 1)
+    flush()
+
+    def sweep_leg(leg: Dict, state, ckpt: Path, *, max_bond: int, schedule, sweeps: int,
+                  label: str):
+        """Up to ``sweeps`` sweeps; every sweep on disk. Returns the SweepResult or None."""
+        t_sw, c_sw = [time.time()], [time.process_time()]
+        previous = [np.asarray(leg["sweeps"][-1]["energies"]) if leg["sweeps"] else None]
+
+        def on_sweep(state_, sweep=None, energies=None, converged=False):
+            now, cpu = time.time(), time.process_time()
+            e = np.asarray(energies, dtype=float) + ints.e_core
+            if converged and leg["sweeps"] and np.array_equal(
+                    e, np.asarray(leg["sweeps"][-1]["energies"])):
+                # the solver's extra call at convergence repeats the last sweep: the state
+                # is re-written flagged converged, the sweep is not counted twice
+                write_network_state(ckpt, state_, sweep=len(leg["sweeps"]),
+                                    energies=energies, converged=True)
+                return
+            entry = {"sweep": len(leg["sweeps"]) + 1, "wall_s": round(now - t_sw[-1], 1),
+                     "cpu_s": round(cpu - c_sw[-1], 1), "energies": [float(x) for x in e],
+                     "rss_gb": round(rss_gb(), 3), "block": len(rec["blocks"])}
+            if previous[0] is not None and previous[0].size == e.size:
+                entry["max_root_change_eh"] = float(np.max(np.abs(e - previous[0])))
+            previous[0] = e
+            leg["sweeps"].append(entry)
+            write_network_state(ckpt, state_, sweep=entry["sweep"], energies=energies,
+                                converged=bool(converged))
+            t_sw.append(now)
+            c_sw.append(cpu)
+            flush()
+            heartbeat.tick(len(leg["sweeps"]), stage=label, sweep=entry["sweep"],
+                           cpu=entry["cpu_s"])
+            print("    [{}] sweep {}: {:.0f} CPU s, E0 {:.9f}, rel {} cm^-1{}".format(
+                label, entry["sweep"], entry["cpu_s"], e[0],
+                np.round((e - e[0]) * HARTREE_TO_CM, 3).tolist(),
+                "" if "max_root_change_eh" not in entry else
+                ", max root change {:.2e} Eh".format(entry["max_root_change_eh"])),
+                flush=True)
+
+        try:
+            return solve_ttn(ttno, state, max_sweeps=int(sweeps), conv_tol=TIER3B_CONV_TOL,
+                             davidson_tol=TIER3_DAVIDSON_TOL, max_bond=int(max_bond),
+                             bond_schedule=schedule, n_elec=ints.n_elec, boundary_check=0,
+                             on_split="warn", checkpoint=on_sweep, memory_plan=True,
+                             plan_rdms=False, report=True)
+        except SolverFailure as exc:
+            leg["last_error"] = "SolverFailure: {}".format(exc)[:400]
+            flush()
+            print("    [{}] solver failure: {}".format(label, leg["last_error"][:200]),
+                  flush=True)
+            return None
+
+    # --- the main leg ----------------------------------------------------------------------
+    if main["status"] != "converged":
+        done = len(main["sweeps"])
+        if main_ckpt.is_file():
+            state, meta = read_network_state(main_ckpt, check_fingerprint=False)
+            main["resumed_at_sweep"] = done
+        else:
+            state = random_state(ttno, ints.n_elec, int(TIER3B_SCHEDULE[0]),
+                                 n_roots=int(n_roots), rng=np.random.default_rng(0))
+        remaining = list(TIER3B_SCHEDULE[done:]) if done < len(TIER3B_SCHEDULE) else None
+        if remaining is not None and remaining[-1] != int(cap):
+            remaining.append(int(cap))
+        budget_left = TIER3B_MAX_SWEEPS - done
+        sweeps = min(int(block_sweeps), budget_left)
+        main["status"] = "running"
+        flush()
+        result = None
+        if sweeps > 0:
+            result = sweep_leg(main, state, main_ckpt, max_bond=int(cap), schedule=remaining,
+                               sweeps=sweeps, label="main")
+        if result is not None and result.converged:
+            main.update(status="converged", n_sweeps=len(main["sweeps"]),
+                        w_disc=float(result.max_discarded),
+                        bond_used=int(result.max_bond_dim))
+        elif len(main["sweeps"]) >= TIER3B_MAX_SWEEPS:
+            main["status"] = "unconverged"
+        else:
+            main["status"] = "paused"
+        flush()
+        if main["status"] != "converged":
+            heartbeat.finish(status=main["status"])
+            print("    main leg {} after {} sweeps".format(main["status"], len(main["sweeps"])),
+                  flush=True)
+            return 0
+
+    # --- the analyses of the converged ten ------------------------------------------------------
+    state, _ = read_network_state(main_ckpt, check_fingerprint=False)
+    energies = np.asarray(main["sweeps"][-1]["energies"], dtype=float)
+    rel = (energies - energies[0]) * HARTREE_TO_CM
+    analysis = rec.setdefault("analysis", {})
+    analysis["rel_cm"] = [round(float(x), 6) for x in rel]
+    analysis["kramers_pair_spread_cm"] = round(float(np.max(rel[1::2] - rel[0::2])), 6)
+    if "spin" not in analysis and time.time() < deadline:
+        analysis["spin"] = _spin_of_roots(ints, template, graph, state, int(cap), int(n_roots))
+        flush()
+    spins = analysis.get("spin", {}).get("spin")
+    analysis["heisenberg"] = _heisenberg_reading(rel, spins)
+    flush()
+    if "product_model" not in analysis and time.time() < deadline:
+        ops = {name: one_electron_product_terms(ints.mu[k])
+               for k, name in enumerate(("mu_x", "mu_y", "mu_z"))}
+        weights = np.full(int(n_roots), 1.0 / int(n_roots))
+        analysis["product_model"] = _product_model(template, ints, state, weights, site_nodes,
+                                                   TIER3_SITE_DIM, ops, ints.n_elec, None)
+        flush()
+    print("    analysis: rel {} cm^-1; S {}; {}".format(
+        analysis["rel_cm"], spins, {k: v for k, v in analysis["heisenberg"].items()
+                                    if k not in ("kambe", "spins")}), flush=True)
+
+    # --- the witness leg: grown past ten, bounded ----------------------------------------------
+    witness = rec.setdefault("witness", {"status": "pending", "sweeps": []})
+    if witness["status"] in ("pending", "paused") and time.time() < deadline:
+        if witness_ckpt.is_file():
+            wstate, _ = read_network_state(witness_ckpt, check_fingerprint=False)
+        else:
+            wstate = pad_roots(state, int(witness_roots), np.random.default_rng(1))
+        left = TIER3B_WITNESS_SWEEPS - len(witness["sweeps"])
+        witness["status"] = "running"
+        flush()
+        wres = sweep_leg(witness, wstate, witness_ckpt, max_bond=int(cap), schedule=None,
+                         sweeps=max(0, min(int(block_sweeps), left)), label="witness")
+        if wres is not None and (wres.converged
+                                 or len(witness["sweeps"]) >= TIER3B_WITNESS_SWEEPS):
+            witness["status"] = "converged" if wres.converged else "bounded"
+            we = np.asarray(witness["sweeps"][-1]["energies"], dtype=float)
+            wrel = (we - we[0]) * HARTREE_TO_CM
+            witness["rel_cm"] = [round(float(x), 6) for x in wrel]
+            witness["w_disc"] = float(wres.max_discarded)
+            wstate_done, _ = read_network_state(witness_ckpt, check_fingerprint=False)
+            witness["spin"] = _spin_of_roots(ints, template, graph, wstate_done, int(cap),
+                                             int(witness_roots))
+            witness["heisenberg"] = _heisenberg_reading(wrel, witness["spin"].get("spin"))
+        else:
+            witness["status"] = "paused"
+        flush()
+    rec["status"] = ("done" if witness.get("status") in ("converged", "bounded")
+                     else "witness-" + witness.get("status", "pending"))
+    flush()
+    heartbeat.finish(status=rec["status"])
+    return 0
+
+
+def tier3_converge_path(key: str) -> Path:
+    return camp.RECORDS / "s2.4b" / "{}_converge.json".format(key)
+
+
+def stage_tier3_converge(record, heartbeat, *, deadline: float, keys: Sequence[str],
+                         block_sweeps: int = 3) -> None:
+    """S2.4b: one block of the converging child per invocation, its record folded in.
+
+    ⚠ The child is the unit of work and is resumable on its own
+    (:func:`tier3_converge_child`); the campaign's practice on this machine is to run it
+    directly as the only heavy process (``dmrg_phase2.py --tier3-converge``), block by block,
+    and to call this stage afterwards to adopt what it wrote. A finished record is adopted,
+    never re-run."""
+    for key in keys:
+        out = tier3_converge_path(key)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        child: Dict = {}
+        if out.is_file():
+            child = json.loads(out.read_text())
+        if child.get("status") != "done" and time.time() < deadline:
+            share = max(60.0, deadline - time.time() - 60.0)
+            cmd = [sys.executable, str(Path(__file__).resolve()), "--tier3-converge", key,
+                   str(tier3_integrals_path(key)), str(out), "--block-sweeps",
+                   str(int(block_sweeps)), "--budget", "{:.0f}".format(share)]
+            child, status, _ = _run_child(cmd, out, share)
+        main = child.get("main", {})
+        record.data["jobs"] = [j for j in record.data["jobs"] if j.get("key") != key]
+        record.add_job({"key": key, "stage_kind": "tier3-converge", "cap": child.get("cap"),
+                        "roots": child.get("roots"), "witness_roots": child.get("witness_roots"),
+                        "main_status": main.get("status"), "n_sweeps": len(main.get("sweeps", [])),
+                        "blocks": len(child.get("blocks", [])), "status": child.get("status"),
+                        "analysis": child.get("analysis"), "witness": {
+                            k: v for k, v in child.get("witness", {}).items() if k != "sweeps"},
+                        "cpu_s_main": round(sum(x["cpu_s"] for x in main.get("sweeps", [])), 1),
+                        "record": str(out)})
+        record.flush()
+        heartbeat.tick(0, system=key, stage="s2.4b", status=child.get("status"))
+
+
 def _jsonable(o):
     if isinstance(o, (np.integer,)):
         return int(o)
@@ -2636,17 +2974,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--feasibility-child", nargs=3, metavar=("INTS", "MODES", "OUT"))
     ap.add_argument("--tier3-front-end", nargs=2, metavar=("KEY", "OUT"))
     ap.add_argument("--tier3-ladder", nargs=3, metavar=("KEY", "INTS", "OUT"))
+    ap.add_argument("--tier3-converge", nargs=3, metavar=("KEY", "INTS", "OUT"))
+    ap.add_argument("--block-sweeps", type=int, default=3)
     ap.add_argument("--caps", default=",".join(str(c) for c in FEASIBILITY_CAPS))
     ap.add_argument("--roots", type=int, default=FEASIBILITY_ROOTS)
     ap.add_argument("--max-sweeps", type=int, default=FEASIBILITY_SWEEPS)
     ap.add_argument("--budget", type=float, default=1800.0)
     args = ap.parse_args(argv)
     if (args.feasibility_child is None and args.tier3_front_end is None
-            and args.tier3_ladder is None):
+            and args.tier3_ladder is None and args.tier3_converge is None):
         ap.error("this module is driven by dmrg_cost_ladder.py --stage s2.1 / s2.2 / "
                  "s2.4a; the direct entry points are the child processes "
                  "(--feasibility-child, --tier3-front-end, --tier3-ladder)")
-    out = (args.feasibility_child or args.tier3_front_end or args.tier3_ladder)[-1]
+    out = (args.feasibility_child or args.tier3_front_end or args.tier3_ladder
+           or args.tier3_converge)[-1]
     from kuiva.util import logging as klog
     import logging
     klog.set_verbosity("INFO")
@@ -2659,6 +3000,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.tier3_front_end is not None:
         key, out = args.tier3_front_end
         return tier3_front_end_child(key, Path(out), budget=float(args.budget))
+    if args.tier3_converge is not None:
+        key, ints, out = args.tier3_converge
+        return tier3_converge_child(key, Path(ints), Path(out), cap=TIER3B_CAP,
+                                    n_roots=TIER3B_ROOTS, witness_roots=TIER3B_WITNESS_ROOTS,
+                                    block_sweeps=int(args.block_sweeps),
+                                    budget=float(args.budget))
     if args.tier3_ladder is not None:
         key, ints, out = args.tier3_ladder
         return tier3_ladder_child(key, Path(ints), Path(out),

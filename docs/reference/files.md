@@ -25,9 +25,11 @@ undetected ambiguity in it). Plain text, line-oriented, `#` comments, `[SECTION]
 one `i j Re Im` record per matrix element — deliberately dull, optimized for being
 trivially parseable in any language.
 
-**Sections:** a versioned `[HEADER]`; a `[PROVENANCE]` block of JSON; `[ENERGIES]`; one
-section per matrix — `H`, `mu_x`, `mu_y`, `mu_z` (μ_B), `d_x`, `d_y`, `d_z` (e·a₀), and the
-bare `L`/`S` blocks when requested; `[INACTIVE]` with the inactive contributions.
+**Sections:** a versioned `[HEADER]`; a `[PROVENANCE]` block of JSON; `[NUCLEI]` when
+hyperfine operators were requested; `[ENERGIES]`; one section per matrix — `H`, `mu_x`,
+`mu_y`, `mu_z` (μ_B), `d_x`, `d_y`, `d_z` (e·a₀), `T_<k>_x`, `T_<k>_y`, `T_<k>_z` (Eh per
+nuclear magneton, per treated nucleus), and the bare `L`/`S` blocks when requested;
+`[INACTIVE]` with the inactive contributions.
 
 **Header fields a consumer must read:**
 
@@ -41,6 +43,24 @@ bare `L`/`S` blocks when requested; `[INACTIVE]` with the inactive contributions
 | `picture_change_on_properties`, `picture_change_on_dipole` | ⚠ what `mu` and `d` *mean*: the correction changes the operators while `format_version` stays put, so these fields are what distinguish the files — reading the header is obligatory, not optional. In a picture-changed file the `L`/`S` blocks are the bare operators `mu` was *not* built from, written for reference only |
 | `molecular_charge`, `dipole_origin_dependence` | ⚠ for a charged molecule the diagonal dipole obeys `d(R_G) = d(0) − q·R_G`; transition elements between distinct states do not move |
 | the nuclear dipole vector | so the electronic and nuclear parts stay separable (the nuclear term is on the diagonal only) |
+| `hyperfine_unit`, `hyperfine_operator` | what a `T_<k>_u` block *is*: the isotope-independent hyperfine **field** operator, and the one sentence that turns it into an interaction |
+| `hyperfine_picture_change`, `hyperfine_decoupling`, `hyperfine_nuclear_model`, `hyperfine_x2c_response`, `hyperfine_2e_picture_change` | ⚠ the treatment of the hyperfine operators, stated **separately** from `mu` and `d` because it is not the same: these are always picture-changed whatever the two fields above say. The rest are the three approximations no number in the file can show — the unperturbed transformation, the absent two-electron picture change, the nuclear magnetization model |
+| `n_hyperfine_nuclei` | checked against the `[NUCLEI]` row count; a disagreement is refused, because a `T` matrix matched to the wrong nucleus is Hermitian, plausible and wrong |
+
+The `[NUCLEI]` table is the other half of the hyperfine contract: one whitespace-delimited
+row per nucleus — site index, atom number, atom label, element, `Z`, isotope, `2I`, `g_N`,
+`Q` in barn, position in bohr, and the source of the nuclear data — in the order the `T`
+matrices are written and in the order the consumer is to build its nuclear sites, each a
+pseudospin site of dimension `2I+1` with `M_I = −I … +I` ascending. ⚠ `Q` is written `none`
+where no **signed** value is tabulated, and must be refused rather than replaced by a
+magnitude: the sign of `Q` is the sign of every quadrupole splitting computed from it. A row
+whose field count does not match is refused rather than read — that is how a
+whitespace-delimited table misparses into plausible numbers.
+
+⚠ **Kuiva never forms the electron–nuclear product space**, which is the whole point of
+storing electronic matrices and a nuclear table separately: the isotope, or the subset of
+nuclei, can be changed without re-running the electronic calculation, and the product
+dimension is *reported* rather than refused because the allocation is the consumer's.
 
 ⚠ `H` is **diagonal** (the CI roots are the spin–orbit eigenstates — stated in the header
 because a reader from a two-step workflow expects otherwise); ⚠ **phases are arbitrary and

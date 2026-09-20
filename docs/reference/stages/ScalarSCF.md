@@ -72,6 +72,7 @@ them)
 | `gauge_origin` | centre of mass | where `L` is defined about — fixed **here**, at ingestion; five forms below |
 | `property_picture_change` | `False` | picture-change-transform the property operators (`L+2S` and `r` together, never one alone) |
 | `anomaly_picture_change` | `False` | the further small-component term of the `g_e − 2` anomaly |
+| `hyperfine` | `None` | build the hyperfine field operator of the **named** nuclei — never a default, and always picture-changed whatever `property_picture_change` says; see below |
 | `atomic_reference` | `False` | compute the free-atom reference orbitals at ingestion — required for AVAS and the atomic-reference charges |
 | `point_group` | from the `Molecule` | abelian double-group symmetry; `classification=` likewise (see [Molecule](Molecule.md)) |
 
@@ -178,6 +179,56 @@ atoms is refused rather than resolved to the first. ⚠ **A bare `(x, y, z)` tup
 bohr**, and your geometry is in Angstrom — a coordinate copied out of the geometry lands
 1.89× too far out, moves the point every orbital moment is defined about, and every number
 stays plausible. The bare form warns; the tagged forms say nothing.
+
+## Hyperfine nuclei: `hyperfine=`
+
+Names the nuclei whose **hyperfine field operator** is built at ingestion, in the same
+per-atom addressing as `basis` and `configuration` (element symbol, atom label, 1-based
+number; most specific wins):
+
+```python
+kuiva.ScalarSCF(mol, hyperfine={"Tb1": True})          # the most abundant isotope with I > 0
+kuiva.ScalarSCF(mol, hyperfine={"Dy": 163})            # a mass number, or "163Dy"
+kuiva.ScalarSCF(mol, hyperfine={"Cu": 63, "Cu2": 65})  # two atoms of one element, differing
+kuiva.ScalarSCF(atom, hyperfine=True)                  # a ONE-atom molecule only
+```
+
+Values are `True` (the most abundant isotope that has a moment — not simply the most
+abundant, since the commonest nuclide of carbon, oxygen and half the transition metals has
+`I = 0`), a mass number, an isotope label, or a
+`kuiva.util.nuclei.NuclearMoment(spin=…, g=…, quadrupole_barn=…)` for an isomer, a revised
+moment, or an element the curated table does not carry.
+
+⚠ **It is never a default and there is no "all magnetic nuclei".** One
+four-component-transformed operator is built and *stored* per nucleus, and a complex has
+dozens of `1`H, so a bare `True` on anything but a one-atom molecule is refused, as is a
+`"default"` key. Ghost atoms, unknown isotopes and `I = 0` are each refused by name.
+
+⚠ **These operators always carry the X2C picture change**, independently of
+`property_picture_change`, which keeps governing `mu` and `d` alone: the bare hyperfine
+operator is wrong by a factor of 4–10 wherever s character carries spin density
+[[209]](../../references.md#r209). That is the one place the "one flag governs both property
+operators" rule does not hold, and what replaces its guarantee is that every stored file
+states the treatment of **each operator family** separately.
+
+⚠ **Selecting a nucleus warns about what no later number can show.** The isotropic (contact)
+part of the coupling comes from core-s spin polarization, which a *valence* active space
+does not carry [[212]](../../references.md#r212). For a 4f ion that is minor — the orbital
+mechanism dominates — but for s/d spin density, for ligand nuclei and for spin-only ions
+(Gd(III), Eu(II), Mn(II)) the isotropic part is qualitatively wrong, by 25% and worse on
+transition metals. The remedy is core s shells in the active space, not a correction term.
+
+Three further approximations are recorded in every file rather than hidden: the
+transformation uses the **unperturbed** `X` and `R` [[205]](../../references.md#r205) rather
+than their response to the nuclear moment [[207]](../../references.md#r207), which is what
+makes the result an *operator* usable between different states; no two-electron picture
+change is applied to it; and the nuclear magnetization distribution is the nuclear *charge*
+distribution of the molecule's own nuclear model [[208]](../../references.md#r208). ⚠ The
+isotope chosen here does **not** change that Gaussian exponent, which comes from the integral
+library's main-isotope masses — recorded rather than reconciled.
+
+What the operators become downstream is [`PropertyDump`](PropertyDump.md)'s `[NUCLEI]` table
+and `T_<k>_u` blocks.
 
 ## Reference configurations: `configuration=`
 

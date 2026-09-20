@@ -54,6 +54,40 @@ time-**even** ``r`` the same sum is a real and generally large number, so the wa
 switched off there (``expect_zero=False``) while the term itself is computed and used exactly
 as the others are.
 
+The hyperfine field, when nuclei were selected
+----------------------------------------------
+With ``hyperfine=`` at ingestion the file additionally carries, per treated nucleus ``k``, the
+three components of the **hyperfine field operator**
+
+    T^{IJ}_{k,u} = sum_{tu} T_{k,u,tu} gamma^{IJ}_{tu}
+                   + delta_IJ sum_{i in inactive} T_{k,u,ii}        [Eh per nuclear magneton]
+
+— the same contraction as ``mu`` and ``d``, over the same transition densities, plus a
+``[NUCLEI]`` table of what each nucleus is. ⚠ **Kuiva writes no A tensor and no hyperfine spin
+Hamiltonian**: on the electron-nuclear product space the interaction is
+``H_hf = sum_k g_N(k) sum_u T_{k,u} (x) I_{k,u}``, and everything in that formula except the
+matrices of ``T`` is nuclear-spin algebra belonging to the external code. Writing the
+electronic matrices and a nuclear table separately is what lets the isotope, or the subset of
+nuclei, be changed without re-running Kuiva.
+
+Three consequences that are decisions rather than details:
+
+* ⚠ **``T`` is time odd, exactly as ``L`` and ``S`` are**, so a Kramers-paired inactive set
+  contributes exactly zero to it and :func:`inactive_moment` is called with
+  ``expect_zero=True``. The electric dipole is the exception among the four, not the rule.
+* ⚠ **These operators always carry the X2C picture change**, whatever
+  ``property_picture_change`` says, because a bare hyperfine operator is wrong by a factor of
+  4-10 wherever s character carries spin density. That is a deliberate exception to "one flag
+  governs both property operators", and the reason behind that rule — a file that cannot say
+  which half was corrected — is met instead by the header stating the treatment of **each
+  operator family** separately.
+* ⚠ **The isotropic part is only as good as the active space.** The contact mechanism comes
+  from core-s spin polarization, which a valence CAS does not carry; the front end warns at
+  the point of selection and the active space travels in this file's header so a reader can
+  judge. The reductions to compare through are
+  :func:`kuiva.props.multiplet.block_hyperfine_tensor` and the mixed
+  :func:`kuiva.props.multiplet.block_cross_tensor`, never an element of ``T`` itself.
+
 Four things about this file that are decisions, not details
 -----------------------------------------------------------
 1. ⚠ **``H`` is diagonal**, unlike OpenMolcas RASSI's. Kuiva's CI is already two-component,
@@ -139,7 +173,8 @@ import numpy as np
 from ..util import output as out
 from ..util.logging import get_logger
 from .multiplet import (G_ELECTRON, HARTREE_TO_CM, Multiplet, analyse_spectrum,
-                        block_line_strengths, spectrum_line_strengths)
+                        block_collinearity, block_line_strengths, multiplet_hyperfine_values,
+                        spectrum_line_strengths)
 
 log = get_logger(__name__)
 
@@ -147,6 +182,13 @@ log = get_logger(__name__)
 #: a header key does not require a bump; renaming one, or changing a unit or a sign
 #: convention, does. A consumer that does not recognise the version must refuse the file.
 FORMAT_VERSION = 1
+
+#: The unit of every ``T_<k>_<u>`` block in the file: Hartree per nuclear magneton, so that
+#: ``H_hf = sum_k g_N(k) sum_u T_<k>_u (x) I_<k>_u`` is in Hartree with the **dimensionless**
+#: nuclear g factor and nothing else. ⚠ The operator written is the isotope-independent
+#: *field*, never ``g_N mu_N T``: that is the whole reason the nuclear table is a separate
+#: section, and it is what lets a consumer change the isotope without Kuiva.
+HYPERFINE_UNIT = "Eh/mu_N"
 
 #: Tolerance [hbar] on the inactive contribution to ``L`` and ``S``, which is exactly zero
 #: for a Kramers-paired inactive set. Sized well above the 1e-13-ish rounding of a congruence
@@ -231,10 +273,13 @@ def inactive_moment(op_mo: np.ndarray, inactive: Sequence[int], *,
     trace = np.array([np.real(np.trace(opk[np.ix_(idx, idx)])) for opk in op])
     worst = float(np.max(np.abs(trace)))
     if expect_zero and worst > tol:
-        log.warning("the inactive space contributes %.3e hbar to <%s>, which must be exactly "
-                    "zero for a Kramers-paired inactive set (L and S are both time odd). The "
+        # ⚠ The operator is NAMED rather than assumed to be L or S: the hyperfine field goes
+        # through this same check, in its own units, and a message insisting on "hbar" for it
+        # would send a reader looking for an angular momentum.
+        log.warning("the inactive space contributes %.3e to <%s>, which must be exactly "
+                    "zero for a Kramers-paired inactive set (this operator is time odd). The "
                     "inactive spinors are evidently no longer Kramers paired; the "
-                    "contribution is included in the moment matrices as computed, but the "
+                    "contribution is included in the property matrices as computed, but the "
                     "orbitals are worth inspecting", worst, name)
     return trace
 
@@ -310,6 +355,29 @@ class PropertyMatrices:
         either both ``"none"`` or both a Peng-Reiher record. It is a separate field because a
         consumer reading only the header must be able to see what ``d`` means without parsing
         the provenance JSON.
+    hyperfine : dict of str -> ``(3, n_states, n_states)`` complex, or ``None``
+        The hyperfine field operator of each treated nucleus, keyed by its **atom label**
+        (``"Tb1"``), in ``Eh`` per nuclear magneton. ``None`` — never an empty dict and never
+        zeros — where the reference carried no hyperfine integrals: "not computed" and
+        "computed and small" are different statements about a quantity a whole active space
+        can be wrong about.
+    hyperfine_nuclei : tuple of dict
+        What each nucleus **is**, in the order :attr:`hyperfine`'s matrices are written:
+        isotope, ``2I``, ``g_N``, ``Q``, position and source, from
+        :meth:`kuiva.interface.pyscf_bridge.HyperfineNucleus.as_dict`. ⚠ This is the ``[NUCLEI]``
+        section of the file and half of its contract — the matrices alone say nothing about
+        which nucleus they belong to or what its spin is.
+    hyperfine_inactive : dict of str -> ``(3,)``
+        The measured inactive contribution per nucleus. ⚠ Like :attr:`inactive_l` and unlike
+        :attr:`inactive_d` this is **zero** for a Kramers-paired inactive set: the hyperfine
+        field is time odd.
+    hyperfine_record : dict
+        The container-level provenance of the operators — treatment, decoupling, nuclear
+        model, ``g_e``, the nuclear magneton, and the defining sentence of the interaction —
+        from :meth:`kuiva.interface.pyscf_bridge.HyperfineIntegrals.provenance` with its
+        per-nucleus list removed (that is :attr:`hyperfine_nuclei`). ⚠ It states the
+        approximations no number in the file can show: the unperturbed X2C transformation, the
+        absent two-electron picture change, and the nuclear magnetization model.
     """
 
     energies: np.ndarray
@@ -332,6 +400,29 @@ class PropertyMatrices:
     inactive_d: np.ndarray = field(default_factory=lambda: np.zeros(3))
     molecular_charge: int = 0
     dipole_picture_change: str = ""
+    #: ⚠ ``None`` rather than ``{}``, for the reason :attr:`d` is ``None`` rather than zeros.
+    hyperfine: Optional[Dict[str, np.ndarray]] = None
+    hyperfine_nuclei: Tuple[Dict[str, object], ...] = ()
+    hyperfine_inactive: Dict[str, np.ndarray] = field(default_factory=dict)
+    hyperfine_record: Dict[str, object] = field(default_factory=dict)
+
+    @property
+    def has_hyperfine(self) -> bool:
+        """Whether hyperfine field matrices are present."""
+        return bool(self.hyperfine)
+
+    @property
+    def hyperfine_labels(self) -> Tuple[str, ...]:
+        """The treated nuclei's atom labels, in the order the file writes them."""
+        return tuple(self.hyperfine) if self.hyperfine else ()
+
+    def nucleus(self, label: str) -> Dict[str, object]:
+        """One nucleus's record from :attr:`hyperfine_nuclei`, refusing rather than guessing."""
+        for record in self.hyperfine_nuclei:
+            if str(record.get("atom_label")) == str(label):
+                return record
+        raise KeyError("no nucleus labelled {!r} in these matrices; they carry {}"
+                       .format(label, ", ".join(self.hyperfine_labels) or "none"))
 
     @property
     def picture_changed(self) -> bool:
@@ -375,7 +466,8 @@ class PropertyMatrices:
         :func:`kuiva.props.multiplet.analyse_spectrum`.
         """
         return analyse_spectrum(self.energies, self.mu, tol_cm=tol_cm,
-                                pseudo_doublet_tol_cm=pseudo_doublet_tol_cm, d=self.d)
+                                pseudo_doublet_tol_cm=pseudo_doublet_tol_cm, d=self.d,
+                                hyperfine=self.hyperfine)
 
     def line_strengths(self, tol_cm: float = 1.0,
                        multiplets: Optional[List[Multiplet]] = None) -> np.ndarray:
@@ -454,6 +546,7 @@ class PropertyMatrices:
         table.end(note + " ")
         self._report_axes(logger, multiplets)
         self._report_dipole(logger, multiplets)
+        self._report_hyperfine(logger, multiplets)
 
     @staticmethod
     def _report_axes(logger, multiplets: List[Multiplet]) -> None:
@@ -544,6 +637,78 @@ class PropertyMatrices:
                   "[(e*a0)^2]. Both are phase invariant; individual matrix elements are not. "
                   "S is a line strength and NOT an oscillator strength or a rate ")
 
+    def _report_hyperfine(self, logger, multiplets: List[Multiplet]) -> None:
+        """The hyperfine reduction: ``|A|`` per block per nucleus, and how it sits against ``g``.
+
+        ⚠ **Everything here is a reduction of the stored operator, and none of it is stored.**
+        What the file carries is ``T`` in Eh per nuclear magneton, isotope-independent; the
+        ``|A|`` values below are :func:`kuiva.props.multiplet.multiplet_hyperfine_values`
+        evaluated at the isotope that was *requested*, which is a report quantity in exactly
+        the sense the principal g values are — a phase-invariant reduction, not a fitted tensor
+        and not a spin Hamiltonian.
+
+        The last column is the mixed invariant's one-number reading
+        (:func:`kuiva.props.multiplet.block_collinearity`). ``+-1`` means ``T`` is proportional
+        to ``mu`` on that block, which the Wigner-Eckart theorem guarantees inside a free-ion
+        ``J`` manifold and which nothing else in this table can see; the **sign** is the
+        relative sign of ``A`` and ``g``, the part ``|A|`` throws away by being quadratic.
+        """
+        if not self.hyperfine:
+            return
+        order = np.argsort(np.asarray(self.energies, dtype=float))
+        out.subsection(logger, "Hyperfine field operators")
+        out.entries(logger, [
+            ("nuclei", len(self.hyperfine_nuclei),
+             "", ", ".join("{} ({})".format(r.get("atom_label"), r.get("label"))
+                           for r in self.hyperfine_nuclei)),
+            ("operator unit", HYPERFINE_UNIT, "",
+             str(self.hyperfine_record.get("operator", ""))),
+            # The one-line reading; the full treatment sentence goes to the file's header,
+            # where it is read once, rather than across the output stream's width.
+            ("picture change",
+             str(self.hyperfine_record.get("picture_change", "unrecorded")), "",
+             "decoupling={}, nuclear model={}".format(
+                 self.hyperfine_record.get("decoupling", "?"),
+                 self.hyperfine_record.get("nuclear_model", "?"))),
+            ("worst inactive contribution",
+             max((float(np.max(np.abs(v))) for v in self.hyperfine_inactive.values()),
+                 default=0.0), HYPERFINE_UNIT,
+             "exactly zero for a Kramers-paired inactive set; T is time odd", "{:.2e}"),
+        ])
+        table = out.Table(logger, [
+            out.col_count("block", 7), out.Column("states", "{:d}", 8),
+            out.Column("E [cm^-1]", out.CM_FMT, 14),
+            out.Column("nucleus", "{}", 10, align="<"),
+            out.Column("isotope", "{}", 9, align="<"),
+            out.Column("|A_1| [MHz]", "{:.4g}", 13),
+            out.Column("|A_2| [MHz]", "{:.4g}", 13),
+            out.Column("|A_3| [MHz]", "{:.4g}", 13),
+            out.Column("A.g", "{:+.4f}", 9)])
+        table.start()
+        mu_sorted = np.asarray(self.mu)[:, order, :][:, :, order]
+        t_sorted = {label: np.asarray(op)[:, order, :][:, :, order]
+                    for label, op in self.hyperfine.items()}
+        for i, m in enumerate(multiplets):
+            for label in self.hyperfine_labels:
+                record = self.nucleus(label)
+                tensor = None if m.hyperfine is None else m.hyperfine.get(label)
+                if tensor is None:
+                    continue
+                a = multiplet_hyperfine_values(tensor, m.size,
+                                               float(record.get("g", 0.0)))
+                coll = block_collinearity(mu_sorted, t_sorted[label], m.start, m.size)
+                # ⚠ `nan`, never 0, for a block that carries no moment: a size-1 block has no
+                # A tensor for the same reason it has no g, and the two must not print alike.
+                a3 = a if a else (float("nan"),) * 3
+                table.row(i, m.size, m.energy_cm, label, str(record.get("label", "?")),
+                          a3[0], a3[1], a3[2], coll)
+        table.end("|A| are principal values of 3 g_N^2 Tr_block(T_i T_j)/[J(J+1)(2J+1)], the "
+                  "A.A^T reduction at the isotope named -- magnitudes only, since it is "
+                  "quadratic. A.g is Tr_block(mu.T) normalized: +-1 means T is proportional to "
+                  "mu on the block (exact inside a free-ion J manifold) and its sign is the "
+                  "relative sign of A and g. The stored operator is T itself, in "
+                  + HYPERFINE_UNIT + ", so the isotope may be changed by the consumer ")
+
     def write(self, path, **kwargs) -> Path:
         """Write the property dump file. See :func:`write_dump`."""
         return write_dump(path, self, **kwargs)
@@ -575,7 +740,14 @@ class PropertyMatrices:
         zeros. A molecule whose symmetry forbids a dipole has a genuinely zero ``d``, so
         zero-filling would make "this file does not carry a dipole" and "this molecule has no
         dipole" the same object, and :meth:`line_strengths` would then answer a question the
-        file never asked.
+        file never asked. The hyperfine matrices follow the same rule, and for a sharper
+        reason: a hyperfine operator that is missing and one that is small look identical in
+        every number, and a whole active space can be the difference.
+
+        ⚠ **The hyperfine half is rebuilt from the file's own two sections, never from the
+        provenance JSON** — the ``[NUCLEI]`` table and the ``hyperfine_*`` header keys. A file
+        is readable by a consumer that parses no JSON at all, and this method reads what that
+        consumer reads.
         """
         raw = read_dump(path)
         header, matrices = raw["header"], raw["matrices"]
@@ -604,6 +776,38 @@ class PropertyMatrices:
              else np.ascontiguousarray(np.stack(d_found)))
         nuclear = np.asarray([float(x) for x in
                               header.get("nuclear_dipole_ea0", "0 0 0").split()], dtype=float)
+
+        nuclei = tuple(raw.get("nuclei") or ())
+        hyperfine: Optional[Dict[str, np.ndarray]] = None
+        hf_inactive: Dict[str, np.ndarray] = {}
+        for record in nuclei:
+            label = str(record["atom_label"])
+            found = [matrices.get("T_{}_{}".format(label, a)) for a in "xyz"]
+            if any(m is None for m in found):
+                raise ValueError(
+                    "{}: the [NUCLEI] table lists {} but the file has no complete set of "
+                    "T_{}_x/y/z matrices. A nuclear table without its operators describes a "
+                    "coupling the file cannot supply".format(path, label, label))
+            hyperfine = hyperfine or {}
+            hyperfine[label] = np.ascontiguousarray(np.stack(found))
+            hf_inactive[label] = np.asarray(
+                inactive.get("T({})".format(label), np.zeros(3)), dtype=float)
+        record_keys = (("operator", "hyperfine_operator"),
+                       ("picture_change", "hyperfine_picture_change"),
+                       ("decoupling", "hyperfine_decoupling"),
+                       ("nuclear_model", "hyperfine_nuclear_model"),
+                       ("treatment", "hyperfine_treatment"),
+                       ("x2c_response", "hyperfine_x2c_response"),
+                       ("two_electron_picture_change",
+                        "hyperfine_2e_picture_change"))
+        hf_record: Dict[str, object] = {}
+        if hyperfine is not None:
+            hf_record = {name: header[key] for name, key in record_keys if key in header}
+            hf_record["unit"] = header.get("hyperfine_unit", HYPERFINE_UNIT)
+            if "hyperfine_g_electron" in header:
+                hf_record["g_electron"] = float(header["hyperfine_g_electron"])
+            if "nuclear_magneton_au" in header:
+                hf_record["nuclear_magneton_au"] = float(header["nuclear_magneton_au"])
         return cls(
             energies=energies, mu=mu, l=stack("L"), s=stack("S"),
             d=d, nuclear_dipole=nuclear if nuclear.size == 3 else np.zeros(3),
@@ -619,7 +823,9 @@ class PropertyMatrices:
             provenance=dict(raw.get("provenance") or {}),
             inactive_l=np.asarray(inactive.get("L", np.zeros(3)), dtype=float),
             inactive_s=np.asarray(inactive.get("S", np.zeros(3)), dtype=float),
-            picture_change="" if picture == "none" else picture)
+            picture_change="" if picture == "none" else picture,
+            hyperfine=hyperfine, hyperfine_nuclei=nuclei,
+            hyperfine_inactive=hf_inactive, hyperfine_record=hf_record)
 
     def __repr__(self) -> str:
         return "PropertyMatrices({} states, gauge origin {}, |dE| = {:.1f} cm^-1)".format(
@@ -686,6 +892,8 @@ def property_matrices(coeff_ao: np.ndarray, spaces, tdm: np.ndarray, energies,
 
     d_states, inact_d = _dipole_states(coeff_ao, properties, act, inactive, tdm,
                                        inactive_tol=inactive_tol)
+    hf_states, hf_inactive, hf_nuclei, hf_record = _hyperfine_states(
+        coeff_ao, properties, act, inactive, tdm, inactive_tol=inactive_tol)
 
     return PropertyMatrices(
         energies=np.asarray(energies, dtype=float).ravel(), mu=mu, l=l_states, s=s_states,
@@ -704,7 +912,9 @@ def property_matrices(coeff_ao: np.ndarray, spaces, tdm: np.ndarray, energies,
         molecular_charge=int(getattr(properties, "molecular_charge", 0) or 0),
         dipole_picture_change=("" if getattr(properties, "dipole_picture_change", None) is None
                                else str(properties.provenance()
-                                        .get("dipole_picture_change", ""))))
+                                        .get("dipole_picture_change", ""))),
+        hyperfine=hf_states, hyperfine_inactive=hf_inactive, hyperfine_nuclei=hf_nuclei,
+        hyperfine_record=hf_record)
 
 
 def _dipole_states(coeff_ao: np.ndarray, properties, act: np.ndarray, inactive: np.ndarray,
@@ -741,9 +951,111 @@ def _dipole_states(coeff_ao: np.ndarray, properties, act: np.ndarray, inactive: 
             inact_d)
 
 
+def _hyperfine_states(coeff_ao: np.ndarray, properties, act: np.ndarray, inactive: np.ndarray,
+                      tdm: np.ndarray, *, inactive_tol: float):
+    """``({label: T^{IJ}}, {label: inactive}, nuclear table, record)`` — or four empties.
+
+    The same contraction as ``mu`` and ``d``, once per nucleus, and nothing about it is
+    special. The two things that *are* worth saying at the point they happen:
+
+    * ⚠ ``expect_zero=True``, because the hyperfine field is time **odd** — unlike ``r``. A
+      Kramers-paired inactive set contributes exactly nothing, and a nonzero value is a
+      statement about the orbitals, not about the nucleus. The term is used as computed either
+      way, exactly as it is for ``L``.
+    * ⚠ **...and the tolerance is scaled by the operator's own magnitude, unlike ``L``'s.**
+      ``L`` and ``S`` are of order one in hbar, so :data:`DEFAULT_INACTIVE_TOL` is an absolute
+      number far above the rounding of a congruence and far below any real moment. The
+      hyperfine field is of order ``1e-08`` Eh per nuclear magneton, so the *same* absolute
+      tolerance sits four orders **above** the operator itself and the guard could never fire —
+      a check that cannot fail, on exactly the quantity it exists to protect. The number is
+      therefore read as a relative one here, against ``max|T|``.
+    * The nuclear table and the container record are split out of the front end's provenance
+      here, rather than at the writer, so that a :class:`PropertyMatrices` built in one process
+      and written in another carries the same two objects the file's ``[NUCLEI]`` section and
+      header are made of.
+
+    ⚠ **Nothing is scaled by ``g_N`` or ``mu_N``.** What is contracted and stored is the
+    isotope-independent field operator; every isotope-dependent number in this program is a
+    *report* quantity computed from it.
+    """
+    if not getattr(properties, "has_hyperfine", False):
+        return None, {}, (), {}
+    integrals = properties.hyperfine_integrals()
+    ix = np.ix_(act, act)
+    states: Dict[str, np.ndarray] = {}
+    inactive_traces: Dict[str, np.ndarray] = {}
+    for nucleus in integrals.nuclei:
+        t_mo = spinor_operator(coeff_ao, nucleus.operator)
+        scale = float(np.max(np.abs(t_mo))) if t_mo.size else 0.0
+        trace = inactive_moment(t_mo, inactive, name="T({})".format(nucleus.label),
+                                tol=inactive_tol * (scale or 1.0), expect_zero=True)
+        states[nucleus.label] = state_operator_matrices(
+            np.stack([tk[ix] for tk in t_mo]), tdm, trace)
+        inactive_traces[nucleus.label] = trace
+    record = dict(integrals.provenance())
+    nuclei = tuple(record.pop("nuclei", ()))
+    return states, inactive_traces, nuclei, record
+
+
 # --- the file ------------------------------------------------------------------------------
 
 _ELEMENT_FMT = "{:6d} {:6d}  {:+.16e} {:+.16e}\n"
+
+#: The ``[NUCLEI]`` columns, in order, before the ``|`` that begins the free-text source. ⚠ The
+#: writer and the parser both read this tuple, so a column cannot be added to one and forgotten
+#: in the other — which is the way a whitespace-delimited table silently shifts.
+_NUCLEUS_COLUMNS = ("index", "atom", "atom_label", "element", "atomic_number", "label",
+                    "twice_spin", "g", "quadrupole_barn", "x", "y", "z")
+
+
+def _nucleus_line(index: int, record: Dict[str, object]) -> str:
+    """One ``[NUCLEI]`` row. ⚠ Every field is whitespace-free; see :attr:`_NUCLEUS_COLUMNS`."""
+    position = list(np.asarray(record.get("position_bohr", (0.0, 0.0, 0.0)),
+                               dtype=float).ravel())
+    q = record.get("quadrupole_barn")
+    return ("  {:>3d} {:>5d}  {:<10s} {:<4s} {:>4d}  {:<10s} {:>4d}  {:+.16e}  {:>16s}"
+            "  {:+.16e} {:+.16e} {:+.16e}  | {}\n").format(
+        int(index), int(record.get("atom", 0)),
+        _token(record.get("atom_label", "?")), _token(record.get("element", "?")),
+        int(record.get("atomic_number", 0)), _token(record.get("label", "?")),
+        int(record.get("twice_spin", 0)), float(record.get("g", 0.0)),
+        "none" if q is None else "{:+.8e}".format(float(q)),
+        position[0], position[1], position[2], record.get("source", "unrecorded"))
+
+
+def _token(value: object) -> str:
+    """A whitespace-free field for a whitespace-delimited table.
+
+    ⚠ Every label that reaches here is already free of spaces by construction
+    (:attr:`kuiva.util.nuclei.NuclearMoment.label` says so), so this collapses nothing in
+    practice; it exists because a table whose columns can be shifted by one stray space in a
+    user-supplied string is a file that misparses into plausible numbers.
+    """
+    return "".join(str(value).split()) or "?"
+
+
+def _parse_nucleus_line(line: str) -> Dict[str, object]:
+    """The inverse of :func:`_nucleus_line` — the parser half of the ``[NUCLEI]`` contract."""
+    body, _, source = line.partition("|")
+    fields = body.split()
+    if len(fields) != len(_NUCLEUS_COLUMNS):
+        raise ValueError(
+            "a [NUCLEI] row has {} fields before the '|' and this parser expects {} ({}); "
+            "the table is whitespace delimited and cannot be read past a shifted column"
+            .format(len(fields), len(_NUCLEUS_COLUMNS), ", ".join(_NUCLEUS_COLUMNS)))
+    values = dict(zip(_NUCLEUS_COLUMNS, fields))
+    return {
+        "atom": int(values["atom"]), "atom_label": values["atom_label"],
+        "element": values["element"], "atomic_number": int(values["atomic_number"]),
+        "label": values["label"], "twice_spin": int(values["twice_spin"]),
+        "g": float(values["g"]),
+        # ⚠ ``None``, not 0.0: "no signed Q is known here" and "Q is zero" are different
+        # statements, and a consumer must refuse rather than substitute one for the other.
+        "quadrupole_barn": (None if values["quadrupole_barn"].lower() == "none"
+                            else float(values["quadrupole_barn"])),
+        "position_bohr": [float(values[a]) for a in "xyz"],
+        "source": source.strip() or "unrecorded",
+    }
 
 
 def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
@@ -767,6 +1079,13 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
     threshold : float
         Skip matrix elements smaller than this in modulus. ``0.0`` (the default) writes every
         element, which keeps the file's row count predictable from ``n_states`` alone.
+
+    ⚠ **The hyperfine operators have no switch of their own and that is deliberate.** Naming
+    the nuclei at ingestion *is* the request — it is never a default, and it costs one
+    four-component-transformed operator per nucleus — so a second flag here could only ever
+    throw away something already paid for, and would let a file exist that computed the
+    coupling and did not say so. The ``[NUCLEI]`` table goes with them: matrices without it
+    name no nucleus and state no ``I``.
 
     ⚠ Emits a standing ``WARNING`` about the treatment of the property operators every time it
     is called — whichever treatment was used. That is deliberate and it is not configurable:
@@ -792,6 +1111,20 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
                     "from Z=5 to Z=81, 0.02%% on a 3d complex's ground doublet, and it splits "
                     "no degeneracy at all. It is recorded in the header of %s", path.name)
 
+    if matrices.has_hyperfine:
+        # ⚠ The same standing obligation the picture-change warning discharges, for the one
+        # operator family whose treatment is not a choice: it says what was done (always the
+        # picture change) and what no number in the file can show (the contact part needs a
+        # spin polarization a valence active space does not carry).
+        log.warning("%s carries HYPERFINE FIELD operators for %s. They are the "
+                    "isotope-independent operator T in %s, always X2C picture-changed, with "
+                    "the unperturbed transformation and no two-electron picture change; "
+                    "H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u, and the nuclear-spin algebra "
+                    "and any A tensor belong to the consumer. The isotropic part comes from "
+                    "core-s spin polarization, which a VALENCE active space does not carry, "
+                    "so judge it against the active space in the header",
+                    path.name, ", ".join(matrices.hyperfine_labels), HYPERFINE_UNIT)
+
     write_dipole = bool(include_dipole) and matrices.has_dipole
     if write_dipole and matrices.dipole_is_origin_dependent:
         log.warning("this molecule carries a charge of %+d, so the ELECTRIC DIPOLE is "
@@ -814,6 +1147,16 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
             blocks.append(("d_" + axis, matrices.d[k], "e*a0",
                            "electric dipole, {}; electronic + nuclear (diagonal only)"
                            .format(axis)))
+    # ⚠ Written whenever the reference ingested them and governed by no second switch: asking
+    # for the nuclei at ingestion IS the request, and a file that computed the operators and
+    # then did not write them would be the one thing a reader cannot recover from.
+    if matrices.has_hyperfine:
+        for label in matrices.hyperfine_labels:
+            for k, axis in enumerate("xyz"):
+                blocks.append(("T_{}_{}".format(label, axis),
+                               matrices.hyperfine[label][k], HYPERFINE_UNIT,
+                               "hyperfine field of {}, {}; H_hf = g_N sum_u T_u (x) I_u"
+                               .format(label, axis)))
     if include_l_s:
         for k, axis in enumerate("xyz"):
             blocks.append(("L_" + axis, matrices.l[k], "hbar",
@@ -854,6 +1197,28 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
              "elements between distinct states do not" if matrices.dipole_is_origin_dependent
              else "none (neutral molecule)"),
         ])
+    if matrices.has_hyperfine:
+        record = matrices.hyperfine_record
+        header.extend([
+            ("hyperfine_unit", HYPERFINE_UNIT),
+            ("hyperfine_operator",
+             str(record.get("operator", "H_hf = sum_k g_N(k) sum_u T_k_u (x) I_k_u"))),
+            # ⚠ Stated unconditionally, because for this operator family it is not a choice:
+            # `property_picture_change` governs mu and d and this one is transformed anyway.
+            ("hyperfine_picture_change", str(record.get("picture_change",
+                                                        "always applied"))),
+            ("hyperfine_decoupling", str(record.get("decoupling", "?"))),
+            ("hyperfine_nuclear_model", str(record.get("nuclear_model", "?"))),
+            ("hyperfine_treatment", str(record.get("treatment", "unrecorded"))),
+            ("hyperfine_g_electron", "{:.11f}".format(
+                float(record.get("g_electron", matrices.g_electron)))),
+            ("nuclear_magneton_au", "{:.15e}".format(
+                float(record.get("nuclear_magneton_au", 0.0)))),
+            ("hyperfine_x2c_response", str(record.get("x2c_response", "?"))),
+            ("hyperfine_2e_picture_change",
+             str(record.get("two_electron_picture_change", "?"))),
+            ("n_hyperfine_nuclei", str(len(matrices.hyperfine_nuclei))),
+        ])
 
     lines: List[str] = []
     w = lines.append
@@ -892,6 +1257,30 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
               "# degenerate block shift by -q R_G if the origin moves; transition elements\n"
               "# between distinct states do not. Compare charged systems only at one origin.\n")
         w("#\n")
+    if matrices.has_hyperfine:
+        w("# T_<k>_x/y/z are the HYPERFINE FIELD operator of nucleus <k>, in Eh per nuclear\n"
+          "# magneton, over the same states as mu. On the electron-nuclear product space the\n"
+          "# interaction is\n"
+          "#\n"
+          "#     H_hf = sum_k g_N(k) sum_u T_<k>_u (x) I_<k>_u        [Eh]\n"
+          "#\n"
+          "# with g_N and I from the [NUCLEI] table below; the nuclear-spin algebra, the\n"
+          "# Kronecker products and any A tensor belong to the consumer. The operator is the\n"
+          "# ISOTOPE-INDEPENDENT field, so the isotope -- or the subset of nuclei -- may be\n"
+          "# changed without re-running the electronic calculation.\n"
+          "#\n"
+          "# The X2C picture change IS applied to these operators, always, independently of\n"
+          "# what the header says about mu and d: a bare hyperfine operator is wrong by a\n"
+          "# factor of 4-10 wherever s character carries spin density. The transformation uses\n"
+          "# the unperturbed X and R, no two-electron picture change is applied, and the\n"
+          "# nuclear magnetization follows the nuclear charge model named in the header.\n"
+          "#\n"
+          "# WARNING: the isotropic (contact) part comes from core-s spin polarization, which a\n"
+          "# VALENCE active space does not carry. For a 4f ion that is minor, the orbital\n"
+          "# mechanism dominating; for s/d spin density, for ligand nuclei and for spin-only\n"
+          "# ions it is qualitatively wrong. Judge these matrices against the active space in\n"
+          "# the header.\n")
+        w("#\n")
     w("# WARNING: state phases are arbitrary and degenerate states mix arbitrarily. Compare\n"
       "# these matrices only through invariants: degeneracy patterns, relative energies, and\n"
       "# M_ij = Tr_block(mu_i mu_j) with its principal g values. For the dipole the invariants\n"
@@ -915,6 +1304,21 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
     w(json.dumps(matrices.provenance, sort_keys=True, indent=2))
     w("\n[END]\n\n")
 
+    if matrices.has_hyperfine:
+        w("# The nuclei the T matrices below belong to, in the order they are written and in\n"
+          "# the order the nuclear sites of the product space are to be built: each nucleus a\n"
+          "# pseudospin site of dimension 2I+1, with M_I = -I .. +I ascending. Q is 'none'\n"
+          "# where no signed quadrupole moment is tabulated -- refuse rather than substitute a\n"
+          "# magnitude, since the sign of Q is the sign of every quadrupole splitting.\n")
+        w("[NUCLEI]\n")
+        w("# {:>3s} {:>5s}  {:<10s} {:<4s} {:>4s}  {:<10s} {:>4s}  {:>22s}  {:>16s}"
+          "  {:>22s} {:>22s} {:>22s}  | source\n"
+          .format("k", "atom", "label", "elem", "Z", "isotope", "2I", "g_N", "Q [barn]",
+                  "x [bohr]", "y [bohr]", "z [bohr]"))
+        for k, record in enumerate(matrices.hyperfine_nuclei):
+            w(_nucleus_line(k, record))
+        w("[END]\n\n")
+
     rel = matrices.relative_energies_cm()
     w("[ENERGIES]\n")
     w("# index    energy [Eh]                relative [cm^-1]\n")
@@ -924,7 +1328,8 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
 
     w("[INACTIVE]\n")
     w("# sum over inactive spinors of <i|A|i>; exactly zero for a Kramers-paired inactive\n"
-      "# set, since L and S are both time odd. Computed, not assumed.\n")
+      "# set, since L, S and the hyperfine field T are all time odd. Computed, not\n"
+      "# assumed.\n")
     w("L  " + " ".join("{:+.6e}".format(x) for x in np.asarray(matrices.inactive_l)) + "\n")
     w("S  " + " ".join("{:+.6e}".format(x) for x in np.asarray(matrices.inactive_s)) + "\n")
     if write_dipole:
@@ -934,6 +1339,13 @@ def write_dump(path, matrices: PropertyMatrices, *, title: str = "",
           "# so the total can be taken apart again.\n")
         w("d  " + " ".join("{:+.6e}".format(x)
                            for x in np.asarray(matrices.inactive_d)) + "\n")
+    for label in matrices.hyperfine_labels:
+        # ⚠ Zero for a Kramers-paired inactive set, like L and S and unlike d: the hyperfine
+        # field is time odd. Already inside the T matrices; written so it can be taken out.
+        w("T({})  ".format(label)
+          + " ".join("{:+.6e}".format(x)
+                     for x in np.asarray(matrices.hyperfine_inactive.get(label, np.zeros(3))))
+          + "\n")
     w("[END]\n\n")
 
     for name, mat, unit, note in blocks:
@@ -967,7 +1379,13 @@ def read_dump(path) -> Dict[str, object]:
     """Parse a file written by :func:`write_dump`. The round-trip test, and a worked example.
 
     Returns ``{"header": {...}, "provenance": {...}, "energies": ndarray,
-    "inactive": {"L": ndarray, "S": ndarray}, "matrices": {name: complex ndarray}}``.
+    "inactive": {"L": ndarray, "S": ndarray}, "nuclei": [{...}],
+    "matrices": {name: complex ndarray}}``.
+
+    ``"nuclei"`` is the ``[NUCLEI]`` table when the file carries hyperfine operators and an
+    empty list otherwise; its entries are keyed exactly as
+    :meth:`kuiva.interface.pyscf_bridge.HyperfineNucleus.as_dict` keys them, so a consumer
+    reads one vocabulary whether it came from a live calculation or from a file.
 
     Refuses a file whose ``format_version`` it does not know, rather than guessing — the
     version exists precisely so that a consumer can refuse.
@@ -977,6 +1395,7 @@ def read_dump(path) -> Dict[str, object]:
     provenance: Dict[str, object] = {}
     energies: List[float] = []
     inactive: Dict[str, np.ndarray] = {}
+    nuclei: List[Dict[str, object]] = []
     matrices: Dict[str, np.ndarray] = {}
 
     section: Optional[str] = None
@@ -1010,6 +1429,8 @@ def read_dump(path) -> Dict[str, object]:
         elif section == "INACTIVE":
             parts = line.split()
             inactive[parts[0]] = np.array([float(x) for x in parts[1:]])
+        elif section == "NUCLEI":
+            nuclei.append(_parse_nucleus_line(line))
         elif section == "MATRIX":
             parts = line.split()
             if parts[0] == "shape":
@@ -1033,11 +1454,17 @@ def read_dump(path) -> Dict[str, object]:
             "{} declares format_version {} and this parser knows version {}; refusing to "
             "guess. The version exists so that a consumer can refuse rather than "
             "misinterpret.".format(path, version, FORMAT_VERSION))
+    declared = int(header.get("n_hyperfine_nuclei", len(nuclei)))
+    if declared != len(nuclei):
+        raise ValueError(
+            "{} declares {} hyperfine nuclei in its header and its [NUCLEI] table has {} rows. "
+            "A T matrix matched to the wrong nucleus is Hermitian, plausible and wrong, so "
+            "this is refused rather than reconciled.".format(path, declared, len(nuclei)))
     return {"header": header, "provenance": provenance,
             "energies": np.array(energies, dtype=float), "inactive": inactive,
-            "matrices": matrices}
+            "nuclei": nuclei, "matrices": matrices}
 
 
-__all__ = ["FORMAT_VERSION", "DEFAULT_INACTIVE_TOL", "PropertyMatrices",
+__all__ = ["FORMAT_VERSION", "DEFAULT_INACTIVE_TOL", "HYPERFINE_UNIT", "PropertyMatrices",
            "property_matrices", "spinor_operators", "spinor_operator", "inactive_moment",
            "state_operator_matrices", "write_dump", "read_dump"]

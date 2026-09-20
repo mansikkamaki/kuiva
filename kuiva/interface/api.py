@@ -200,6 +200,7 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                          orbit_pivots: bool = True, one_centre: bool = True,
                          gauge_origin=None, property_picture_change: bool = False,
                          anomaly_picture_change: bool = False,
+                         hyperfine=None,
                          atomic_reference: bool = False,
                          point_group: Optional[str] = None,
                          classification=None,
@@ -241,6 +242,12 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
     shifted-space workspace and vector sets) too, so a request those stages cannot hold is
     refused here, before the SCF is paid for. Planning only; the CASSCF still states its
     own space.
+    ``hyperfine`` names the nuclei whose hyperfine field operator is built — ``{"Tb1": True}``,
+    ``{"Dy": 163}``, ``{1: "159Tb"}`` — in the same per-atom addressing as ``basis`` and
+    ``configuration``. ⚠ Never a default and never "all magnetic nuclei" (one stored operator
+    per nucleus), always picture-changed whatever ``property_picture_change`` says, and it warns
+    that the contact part needs core-s spin polarization a valence active space does not carry.
+
     ``factors`` is where the three-index factor rows live: ``"in-core"``, ``"scratch"``
     (spilled to a scratch file after the decomposition and streamed back in sequential
     blocks — bitwise identical), ``"streamed"`` (the decomposition itself runs out of core,
@@ -280,6 +287,7 @@ def scalar_x2c_reference(molecule: Molecule, *, reference: str = "auto", fitting
                           one_centre=one_centre, gauge_origin=gauge_origin,
                           property_picture_change=property_picture_change,
                           anomaly_picture_change=anomaly_picture_change,
+                          hyperfine=hyperfine,
                           atomic_reference=atomic_reference,
                           point_group=(molecule.point_group if point_group is None
                                        else point_group),
